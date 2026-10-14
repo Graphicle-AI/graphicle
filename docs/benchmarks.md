@@ -10,7 +10,7 @@ endorsement is implied.
 | Area | Status | Result |
 |---|---|---|
 | Code-graph engine: parity | Done, 13 October 2026; widened 14 October 2026 | 96 of 96 comparison checks against Graphify 0.9.88 pass, with reviewed upstream fixes applied to nine of the reference's modules. Widened on 14 October, they run 354 of its 402 test files against the engine: 350 pass and 4 have known differences (7 tests). The limits are [below](#parity-with-graphify) |
-| Code-graph engine: speed | Done, on a pre-release build that followed Graphify 0.9.77 | Django: code-only extract 7.5 s against 72.8 s for Graphify 0.9.77. The 0.1.0 engine, which follows Graphify 0.9.88, has no published timing yet |
+| Code-graph engine: speed | Done, on a pre-release build that followed Graphify 0.9.77. The 0.1.0 engine: an exploratory survey, 14 October 2026; its registered quiet-host repeat is pending | Django (pre-release build): code-only extract 7.5 s against 72.8 s for Graphify 0.9.77. Kubernetes v1.37.1 (the 0.1.0 engine, which follows Graphify 0.9.88; exploratory, one run each on one Linux host, the same 16 CPUs, 8 workers, with four recorded deviations): code-only extract 198.4 s against 1,597.9 s for Graphify 0.9.88, the same graph, with about 2.1 times more peak memory for Graphicle. [Details](#speed-on-kubernetes) |
 | Agent memory: comparison with seven memory systems | Done, on development sets, with a proxy evaluator | Every system's scores and the 21 registered comparisons are [below](#agent-memory-comparison-with-seven-memory-systems). None of them is a headline claim |
 | Agent memory: retrieval defaults | Chosen | Model-free retrieval runs on development data, plus held-out checks; their records are not published yet, so no numbers are given |
 
@@ -111,9 +111,10 @@ build of the engine, when the engine followed Graphify 0.9.77, and it compares
 that build with Graphify 0.9.77. The 0.1.0 engine follows Graphify 0.9.88. Its
 first registered timing run against Graphify 0.9.88 (13 and 14 October 2026)
 shared its host with other work, so, as that run's protocol requires, it will
-be repeated on a quiet host and both runs will be published here. Until then
-the 0.1.0 engine has no published timing. The record is kept as it was
-published.
+be repeated on a quiet host and both runs will be published here. The 0.1.0
+engine's first published timing is the exploratory survey in
+[Speed on Kubernetes](#speed-on-kubernetes) below; the registered quiet-host
+repeat is still pending. The record is kept as it was published.
 
 | Repository | Operation | Graphify 0.9.77 (Python) | Graphicle (pre-release build of 8 October 2026) | Speed-up | Peak memory, Python / Graphicle |
 |---|---|---|---|---|---|
@@ -143,6 +144,139 @@ published.
   [evidence/graphify-comparison-v4/](evidence/README.md#engine-speed-graphify-comparison-v4)
   with every timed run (protocol SHA-256 `361c8a15…8f610f96` as recorded,
   binary SHA-256 `0a1f83d1…60104de9`).
+
+### Speed on Kubernetes
+
+The first published timing of the 0.1.0 engine against Graphify 0.9.88 is an
+exploratory survey, measured on 14 October 2026. **Label for every figure in
+this section:** exploratory survey; one Linux host (Intel Xeon Platinum 8480C;
+no GPU or model); for each repository, both programs pinned to the same 16
+CPUs with 8 workers each; times include program start-up. Each figure also
+names its repository and tag. No figure here is a registered claim, and no
+figure is pooled across repositories. Kubernetes and VS Code had one run per
+program, and four deviations from the registered plan apply to them (listed
+under Method, below).
+
+**Kubernetes v1.37.1** (Go, 31,256 files), code-only extract into an empty
+output folder, one run per program:
+
+| Program | Time | CPU time | Peak memory (PSS) | Graph written |
+|---|---|---|---|---|
+| Graphicle 0.1.0 (a Linux test build; deviation 2) | 198.4 s (3 min 18 s) | 262.5 s | 5,871 MiB (about 5.7 GiB) | 256,329 nodes, 1,400,392 edges |
+| Graphify 0.9.88 | 1,597.9 s (26 min 38 s) | 1,729.1 s | 2,770 MiB (about 2.7 GiB) | the same 256,329 nodes and 1,400,392 edges |
+
+- **Same graph, 8.1× faster on this run.** Both programs wrote identical node
+  and edge records: the canonical digests of all node records and of all edge
+  records are equal. Graphicle also used 6.6 times less CPU time.
+- **Memory: Graphicle used about 2.1 times more.** Its peak PSS (the process
+  tree's proportional set size, sampled every 0.5 s) was 5,871 MiB against
+  2,770 MiB for Graphify, and the resident-set sum agrees (5,916 against
+  2,797 MiB).
+- **Updates stopped at the graph-file cap.** Kubernetes' `graph.json` is about
+  570 MB, above the default 512 MiB cap on the graph file that both programs
+  share. Every update of both programs (a priming update, then an update with
+  nothing changed) stopped at that cap and exited with an error: Graphicle
+  after about 3 s, when it read the stored graph and before re-extracting
+  anything; Graphify after about 24 minutes (1,434 s and 1,430 s), when it read
+  the stored graph to merge its new extraction. These are failed runs, so
+  there is no update comparison. To update a graph this large with Graphicle,
+  raise the cap with `GRAPHICLE_MAX_GRAPH_BYTES`, in bytes or as `<N>GB`
+  (gibibytes): for example, `GRAPHICLE_MAX_GRAPH_BYTES=1GB graphicle graph update .`
+
+**VS Code 1.141.1** (TypeScript, 19,971 files): not admitted, because the two
+programs' graphs differ, so no speed-up is given. After the extract,
+Graphicle's graph has 3 more nodes and 11 fewer edges than Graphify's (249,081
+nodes and 974,695 edges against 249,078 and 974,706). The graphs after the
+updates differ too: after the update with no change, nearly every node record
+differs (249,266 of Graphicle's 253,812 against 249,263 of Graphify's
+253,809), as do 585 against 596 edge records. The differences are reported as
+found, not investigated. The times as measured, one run per
+program, are not a comparison of the same output:
+
+| Operation | Graphicle 0.1.0 | Graphify 0.9.88 |
+|---|---|---|
+| Code-only extract | 90.6 s | 393.2 s |
+| Priming update | 132.0 s | 642.6 s |
+| Update with no change | 110.7 s | 387.9 s |
+
+**The survey's smaller repositories**, measured before access to the host was
+lost: one warm-up, then 3 measured runs per program in alternating order.
+Times are medians; a speed-up is the median of the per-run ratios, with the
+least and most favourable run in brackets.
+
+| Repository | Tag | Language | Files | Code-only extract: Graphicle / Graphify | Speed-up | Update with no change: Graphicle / Graphify | Speed-up | Peak memory (PSS), extract: Graphicle / Graphify | Same graph |
+|---|---|---|---|---|---|---|---|---|---|
+| pallets/flask | 3.1.3 | Python | 235 | 0.27 s / 1.98 s | 7.4× [7.2–7.8] | 0.16 s / 1.52 s | 9.3× [9.2–9.5] | not measured: runs too short | yes, in every run of every operation |
+| BurntSushi/ripgrep | 15.2.0 | Rust | 221 | 0.36 s / 1.93 s | 5.4× [5.4–5.5] | 0.27 s / 1.59 s | 5.8× [5.8–5.9] | not measured: runs too short | yes, in every run of every operation |
+| redis/redis | 8.10.2 | C | 1,861 | 2.49 s / 11.8 s | not admitted: graphs differ | 2.09 s / 10.1 s | not admitted: graphs differ | 373 / 413 MiB, not compared: graphs differ | no: every operation differs |
+| prometheus/prometheus | v3.15.0 | Go | 1,686 | 3.44 s / 18.6 s | 5.4× [5.3–5.5] | 3.24 s / 18.8 s | 5.8× [5.7–5.8] | 487 / 455 MiB, no ratio: PSS and the resident-set sum disagree | yes, in every run of every operation |
+| tokio-rs/tokio | tokio-1.53.3 | Rust | 867 | 1.03 s / 5.80 s | 5.6× [5.5–5.7] | 1.00 s / 5.46 s | 5.4× [5.4–5.7] | 205 / 230 MiB: 1.2 times less for Graphicle (median of the per-run ratios; the resident-set sum agrees) | yes, in every run of every operation |
+
+- **redis.** After the extract, Graphify's graph has one more node and two
+  more edges: `contains` edges from two Visual Studio solution files in
+  `deps/jemalloc/msvc/`. After the update with no change, 15,945 node records
+  differ in content (in the examples kept, the community name). Each program
+  wrote the same graph in all of its own runs. Reported as found, not
+  investigated.
+- **Not run.** facebook/react was cut short in its warm-up when access to the
+  host was lost, so it has no measured run; vercel/next.js, pandas-dev/pandas,
+  scikit-learn/scikit-learn, spring-projects/spring-boot and rails/rails were
+  not run. Kubernetes and VS Code ran later (deviation 3).
+
+**Method.**
+
+- **Registered first.** The survey was registered on 14 October 2026 at
+  09:18 UTC, before any clone or measurement, as a dated amendment to the
+  protocol of the registered timing run named above. It lists 13 repositories
+  of several languages and sizes, tests none of that protocol's hypotheses,
+  and publishes every result whatever it shows.
+- **Exploratory.** Kubernetes and VS Code had one run per program, with no
+  warm-up and a 45-minute limit per run; the smaller repositories had one
+  warm-up and 3 measured runs. With so few runs, the figures describe these
+  runs only.
+- **Host.** One Linux host with Intel Xeon Platinum 8480C processors; no GPU
+  or model was used. For each repository, both programs were pinned to the
+  same 16 CPUs with 8 extraction workers each and ran one after the other.
+  The smaller repositories ran on CPUs 32-47 while another registered timing
+  run used the host's other socket. Before each program run, the harness
+  waited until its own CPUs were under 5% busy.
+- **Operations.** `extract <repo> --code-only --force` into an empty output
+  folder, then a priming update and an update with nothing changed; the page
+  cache was not dropped. Each repository was pinned to its latest stable
+  release tag when it was cloned.
+- **Measurements.** Wall time, including program start-up; CPU time of the
+  process tree; peak memory as the PSS summed over the process tree, sampled
+  every 0.5 s. A memory ratio is given only when the resident-set sum agrees
+  in direction.
+- **Same output.** A speed-up is given only when both programs wrote the same
+  graph, with every node and every edge record equal, in every measured run
+  of that operation. Differences are reported as found.
+- **Programs.** Graphify 0.9.88 (Python 3.12.13) in a hash-locked environment.
+  Graphicle: `graphicle-graph` 0.1.0 built for Linux on the measuring host from
+  the release source, not the published download; for the smaller
+  repositories SHA-256 `32d7f800…`, and for Kubernetes and VS Code see
+  deviation 2.
+- **Deviations from the registration** (Kubernetes and VS Code):
+  1. Kubernetes and VS Code ran at the same time, one on each of the host's
+     two processor sockets (CPUs 32-47 and 64-79), where the registration ran
+     one repository at a time. Other work ran on Kubernetes' socket (CPUs
+     0-15) during all of Graphicle's Kubernetes extract, and on the other
+     socket during Graphify's failed Kubernetes updates. Its effect was not
+     measured.
+  2. The Graphicle binary is a Linux test build of 0.1.0 (SHA-256
+     `491a4b35…`), made on the measuring host from the release source; its
+     engine source is identical to the release's. It is not the published
+     download.
+  3. The runs started after the survey's registered time box, and out of its
+     registered order.
+  4. No host-wide load record was kept; the registration asked for one every
+     3 minutes.
+- **Records.** [evidence/engine-speed-2026-10-14.json](evidence/engine-speed-2026-10-14.json)
+  ([described here](evidence/README.md#engine-speed-survey-engine-speed-2026-10-14json))
+  holds every program run of Kubernetes and VS Code and the smaller
+  repositories' medians, with the digests of the graphs written. The full run
+  records (per-run rows, analysis output, setup receipts and logs) name local
+  paths, so they stay with the maintainers.
 
 ## Agent memory: comparison with seven memory systems
 

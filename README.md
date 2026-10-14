@@ -88,7 +88,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 
 ## Why Graphicle
 
-- **Native and fast.** One Rust program. On Django, a pre-release build of its engine ran a code-only extract in 7.5 s, against 72.8 s for Graphify 0.9.77, and built the same graph.
+- **Native and fast.** One Rust program. On Kubernetes (31k files), the 0.1.0 engine ran a code-only extract in 3 min 18 s, against 26 min 38 s for Graphify 0.9.88, and built the same graph (one exploratory run each, one Linux host, the same 16 CPUs, 8 workers).
 - **Context, not re-reading.** Your agent asks Graphicle and gets the relevant code, docs and decisions as cited excerpts, within a token budget.
 - **Answers you can check.** Every excerpt names its file and lines. Memories an agent proposes wait for your approval.
 - **One program, not a stack.** The code graph, the memory, one MCP server, the web app and the command line come in one install, with one SQLite file. No Python, Docker or database server.
@@ -96,8 +96,8 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/speed-django-dark.svg">
-    <img src="assets/speed-django-light.svg" alt="Django, about 54,000 nodes. Shorter is faster. Code-only extract: Graphicle (pre-release build), 7.5 seconds; Graphify 0.9.77, 72.8 seconds. Update after one added definition: Graphicle (pre-release build), 9.8 seconds; Graphify 0.9.77, 107.9 seconds. Medians of five alternating runs, start-up included, one shared Linux host, 8 workers, 8 October 2026. Both built the same graph. The released engine has no published timing yet." width="860">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/speed-kubernetes-dark.svg">
+    <img src="assets/speed-kubernetes-light.svg" alt="Kubernetes, about 31,000 files. Shorter is faster. Code-only extract: Graphicle 0.1.0, 3 minutes 18 seconds; Graphify 0.9.88, 26 minutes 38 seconds. One run each, Linux, the same 16 CPUs, 8 workers. Both built the same graph: 256,329 nodes and 1,400,392 edges." width="860">
   </picture>
 </p>
 
@@ -154,7 +154,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 
 ## Benchmarks
 
-**Speed.** The chart above: Django, a pre-release build of the engine against Graphify 0.9.77, both building the same graph. [Method and every run](docs/benchmarks.md#speed-against-graphify-0977).
+**Speed.** The chart above: Kubernetes (31k files), the 0.1.0 engine (a Linux test build of the release source) against Graphify 0.9.88, one exploratory run each, both building the same graph ([Kubernetes run](docs/benchmarks.md#speed-on-kubernetes)). Earlier, on Django, a pre-release build ran a code-only extract in 7.5 s against 72.8 s for Graphify 0.9.77 (medians of five alternating runs, one shared Linux host, 8 workers), both building the same graph ([the 8 October record](docs/benchmarks.md#speed-against-graphify-0977)).
 
 **Memory.** In a comparison with seven memory systems, registered before any answer was scored and run with one open model as every system's reader and judge, a pre-release build of Graphicle trails none on three development sets. [Every score, with its method and caveats](docs/benchmarks.md#agent-memory-comparison-with-seven-memory-systems).
 

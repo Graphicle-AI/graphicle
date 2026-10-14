@@ -1,0 +1,764 @@
+{
+ "schema": "graphicle.engine-speed-survey.v1",
+ "what": "The rows behind \"Speed on Kubernetes\" in docs/benchmarks.md: an exploratory survey of the code-graph engine of Graphicle 0.1.0 against Graphify 0.9.88, 14 October 2026. Compiled for publication from the run records, which name local paths and stay with the maintainers.",
+ "label": "Exploratory survey, one Linux host (Intel Xeon Platinum 8480C; no GPU and no model), both programs pinned to the same 16 CPUs for each repository with 8 workers each, 14 October 2026. Every figure also names its repository and tag. No figure is a registered claim, and no figure is pooled across repositories. The deviations below apply to Kubernetes and VS Code.",
+ "registered_utc": "2026-10-14T09:18:32Z",
+ "registration": "A dated amendment to the protocol of the registered timing run of the 0.1.0 engine, made before any clone or measurement under it. It publishes every result whatever it shows, including failures and differing graphs.",
+ "method": {
+  "operations": "extract <repo> --code-only --force into an empty output folder, then a priming update (recorded, secondary) and an update with nothing changed; the page cache was not dropped. If an extract fails, that program's updates are not run.",
+  "runs": "Kubernetes and VS Code: one run per program, no warm-up, 45-minute limit per run. The smaller repositories: one warm-up, then 3 measured runs, with the program order alternating.",
+  "wall_s": "wall time including program start-up (wait4)",
+  "cpu_s": "user plus system CPU time of the process tree (rusage)",
+  "peak_pss_mib": "peak proportional set size summed over the process tree, sampled every 0.5 s; a memory ratio is quoted only when the resident-set sum agrees in direction",
+  "equality_gate": "a speed-up is admitted only when both programs wrote the same canonical graph: every node and every edge record equal (nodes_sha256, edges_sha256), in every measured run of that operation. Differences are reported as found.",
+  "speed_up": "Graphify time / Graphicle time"
+ },
+ "programs": {
+  "graphify": "Graphify 0.9.88 (graphifyy) on CPython 3.12.13, in a hash-locked environment",
+  "graphicle_kubernetes_vscode": {
+   "what": "graphicle-graph 0.1.0: a Linux (x86_64) test build of Graphicle 0.1.0, made on the measuring host from the release source (engine source identical to the release); not the published download",
+   "sha256": "491a4b3590b1378f00f6f46bb80429e5cd3823b4d39b97d8f12345a704633145"
+  },
+  "graphicle_smaller_repositories": {
+   "what": "graphicle-graph 0.1.0: a Linux (x86_64) build of the 0.1.0 engine, made on the measuring host from the release source (engine source identical to the release); not the published download",
+   "sha256": "32d7f8003cfade2b4ca98335771f65e79a4b68e1172c38ced3c216066643d927"
+  }
+ },
+ "deviations": [
+  "Kubernetes and VS Code ran at the same time, one on each of the host's two processor sockets (Kubernetes on CPUs 32-47, VS Code on CPUs 64-79), where the registration ran one repository at a time. Other work ran on Kubernetes' socket (CPUs 0-15) from 10:59:56Z to 11:07:19Z, during all of Graphicle's Kubernetes extract, and on the other socket (CPUs 80-95) from 11:56:40Z to 12:05:10Z, during Graphify's failed Kubernetes updates. Its effect was not measured.",
+  "The Graphicle binary for Kubernetes and VS Code is a Linux test build of 0.1.0 made on the measuring host from the release source (engine source identical to the release). It is not the published download.",
+  "The runs started at 11:03Z, after the survey's registered time box (no repository was to start after 10:10Z), and out of its registered order.",
+  "No host-wide load record was kept (the registration asked for one every 3 minutes). Before each program run the harness waited until its own CPUs were under 5% busy."
+ ],
+ "very_large_repositories": [
+  {
+   "repository": "kubernetes/kubernetes",
+   "tag": "v1.37.1",
+   "commit": "f78e722310e50bcaca9276be22276d9e91d91308",
+   "language": "Go",
+   "files": 31256,
+   "code_files": 18205,
+   "cpus": "32-47",
+   "first_program": "graphicle",
+   "equality_gate": {
+    "code-only extract": "equal: the same node and edge records",
+    "priming update": "failed runs for both programs",
+    "update with no change": "failed runs for both programs"
+   },
+   "note": "Both updates of both programs exited 1 at the default 512 MiB cap on the graph file (536,870,912 bytes): graph.json is 570,316,045 bytes (Graphicle) and 570,316,028 bytes (Graphify), with the same records. Graphicle refuses when it reads the stored graph, before re-extracting; Graphify 0.9.88 when it reads it to merge its new extraction. GRAPHICLE_MAX_GRAPH_BYTES (and GRAPHIFY_MAX_GRAPH_BYTES) raise the cap.",
+   "runs": [
+    {
+     "program": "graphicle",
+     "operation": "code-only extract",
+     "started_utc": "2026-10-14T11:03:39Z",
+     "exit_code": 0,
+     "timed_out": false,
+     "wall_s": 198.43,
+     "cpu_s": 262.5,
+     "peak_pss_mib": 5871,
+     "pss_samples": 388,
+     "peak_rss_sum_mib": 5916,
+     "processes": 1,
+     "nodes": 256329,
+     "edges": 1400392,
+     "nodes_sha256": "2a66818d77b980a4ca38ff50b51c39e2723b626a910e5cf8d40c9ee9a04d0cc2",
+     "edges_sha256": "ca614cd37c8f6b6d7b86174c83af46eed0665fff474fc5541f2983974c787040",
+     "graph_json_bytes": 570316045
+    },
+    {
+     "program": "graphicle",
+     "operation": "priming update",
+     "started_utc": "2026-10-14T11:07:18Z",
+     "exit_code": 1,
+     "timed_out": false,
+     "wall_s": 3.08,
+     "cpu_s": 11.5,
+     "peak_pss_mib": 1692,
+     "pss_samples": 7,
+     "peak_rss_sum_mib": 1694,
+     "processes": 1,
+     "nodes": null,
+     "edges": null,
+     "nodes_sha256": null,
+     "edges_sha256": null,
+     "graph_json_bytes": null
+    },
+    {
+     "program": "graphicle",
+     "operation": "update with no change",
+     "started_utc": "2026-10-14T11:07:29Z",
+     "exit_code": 1,
+     "timed_out": false,
+     "wall_s": 3.05,
+     "cpu_s": 11.5,
+     "peak_pss_mib": 446,
+     "pss_samples": 6,
+     "peak_rss_sum_mib": 1678,
+     "processes": 1,
+     "nodes": null,
+     "edges": null,
+     "nodes_sha256": null,
+     "edges_sha256": null,
+     "graph_json_bytes": null
+    },
+    {
+     "program": "graphify",
+     "operation": "code-only extract",
+     "started_utc": "2026-10-14T11:07:47Z",
+     "exit_code": 0,
+     "timed_out": false,
+     "wall_s": 1597.92,
+     "cpu_s": 1729.1,
+     "peak_pss_mib": 2770,
+     "pss_samples": 3148,
+     "peak_rss_sum_mib": 2797,
+     "processes": 9,
+     "nodes": 256329,
+     "edges": 1400392,
+     "nodes_sha256": "2a66818d77b980a4ca38ff50b51c39e2723b626a910e5cf8d40c9ee9a04d0cc2",
+     "edges_sha256": "ca614cd37c8f6b6d7b86174c83af46eed0665fff474fc5541f2983974c787040",
+     "graph_json_bytes": 570316028
+    },
+    {
+     "program": "graphify",
+     "operation": "priming update",
+     "started_utc": "2026-10-14T11:34:46Z",
+     "exit_code": 1,
+     "timed_out": false,
+     "wall_s": 1434.0,
+     "cpu_s": 1434.5,
+     "peak_pss_mib": 2758,
+     "pss_samples": 2782,
+     "peak_rss_sum_mib": 14742,
+     "processes": 9,
+     "nodes": null,
+     "edges": null,
+     "nodes_sha256": null,
+     "edges_sha256": null,
+     "graph_json_bytes": null
+    },
+    {
+     "program": "graphify",
+     "operation": "update with no change",
+     "started_utc": "2026-10-14T11:58:47Z",
+     "exit_code": 1,
+     "timed_out": false,
+     "wall_s": 1430.3,
+     "cpu_s": 1429.4,
+     "peak_pss_mib": 2762,
+     "pss_samples": 2774,
+     "peak_rss_sum_mib": 2776,
+     "processes": 1,
+     "nodes": null,
+     "edges": null,
+     "nodes_sha256": null,
+     "edges_sha256": null,
+     "graph_json_bytes": null
+    }
+   ]
+  },
+  {
+   "repository": "microsoft/vscode",
+   "tag": "1.141.1",
+   "commit": "7baac39ec3ca969dab74ac12c097f6a486e46593",
+   "language": "TypeScript",
+   "files": 19971,
+   "code_files": 14842,
+   "cpus": "64-79",
+   "first_program": "graphify",
+   "equality_gate": {
+    "code-only extract": "differs",
+    "priming update": "differs",
+    "update with no change": "differs"
+   },
+   "note": "Not a comparison of the same output, so no speed-up or memory ratio is given. Reported as found, not investigated.",
+   "runs": [
+    {
+     "program": "graphify",
+     "operation": "code-only extract",
+     "started_utc": "2026-10-14T11:03:36Z",
+     "exit_code": 0,
+     "timed_out": false,
+     "wall_s": 393.18,
+     "cpu_s": 711.3,
+     "peak_pss_mib": 5962,
+     "pss_samples": 776,
+     "peak_rss_sum_mib": 5965,
+     "processes": 9,
+     "nodes": 249078,
+     "edges": 974706,
+     "nodes_sha256": "710d9f94cb2a0e697789585bd02e518359455de92f8ed4e5da64c76e8928baf5",
+     "edges_sha256": "01a81ef7038f5d00ff168220522f19292213d1d5cabb76717b72ed80b380a54c",
+     "graph_json_bytes": 470311830
+    },
+    {
+     "program": "graphify",
+     "operation": "priming update",
+     "started_utc": "2026-10-14T11:10:24Z",
+     "exit_code": 0,
+     "timed_out": false,
+     "wall_s": 642.57,
+     "cpu_s": 1017.1,
+     "peak_pss_mib": 9888,
+     "pss_samples": 1249,
+     "peak_rss_sum_mib": 12222,
+     "processes": 9,
+     "nodes": 253809,
+     "edges": 981859,
+     "nodes_sha256": "565d585ef016cf326036d721ac63ae36e4eab20536658900fbec2e783b655683",
+     "edges_sha256": "695878d161605c70a0f7c4f23ece7d063e0a71b911babcbe4cc556cd16cd2179",
+     "graph_json_bytes": 484053282
+    },
+    {
+     "program": "graphify",
+     "operation": "update with no change",
+     "started_utc": "2026-10-14T11:21:22Z",
+     "exit_code": 0,
+     "timed_out": false,
+     "wall_s": 387.85,
+     "cpu_s": 767.2,
+     "peak_pss_mib": 10029,
+     "pss_samples": 757,
+     "peak_rss_sum_mib": 12707,
+     "processes": 9,
+     "nodes": 253809,
+     "edges": 981859,
+     "nodes_sha256": "565d585ef016cf326036d721ac63ae36e4eab20536658900fbec2e783b655683",
+     "edges_sha256": "695878d161605c70a0f7c4f23ece7d063e0a71b911babcbe4cc556cd16cd2179",
+     "graph_json_bytes": 484053282
+    },
+    {
+     "program": "graphicle",
+     "operation": "code-only extract",
+     "started_utc": "2026-10-14T11:28:11Z",
+     "exit_code": 0,
+     "timed_out": false,
+     "wall_s": 90.58,
+     "cpu_s": 191.7,
+     "peak_pss_mib": 5597,
+     "pss_samples": 177,
+     "peak_rss_sum_mib": 5663,
+     "processes": 1,
+     "nodes": 249081,
+     "edges": 974695,
+     "nodes_sha256": "689ef3946e5e30609fe88f3f91496b7be582f5362a3bb4291c4f78789291558c",
+     "edges_sha256": "6098074150cb6e7e9ecb3fa2938e7b8c15a94b68d964b8c934d740c8f41d9fa2",
+     "graph_json_bytes": 470292053
+    },
+    {
+     "program": "graphicle",
+     "operation": "priming update",
+     "started_utc": "2026-10-14T11:29:56Z",
+     "exit_code": 0,
+     "timed_out": false,
+     "wall_s": 131.99,
+     "cpu_s": 257.9,
+     "peak_pss_mib": 8381,
+     "pss_samples": 260,
+     "peak_rss_sum_mib": 8396,
+     "processes": 2,
+     "nodes": 253812,
+     "edges": 981848,
+     "nodes_sha256": "43672694c352f18499443c00cb02b2b973b96f862bc6f410c7ca53c168677053",
+     "edges_sha256": "02800e4a6d97356c62634be6568f8c31d81f5270c3f464947f5c96ee8fc1434a",
+     "graph_json_bytes": 484026496
+    },
+    {
+     "program": "graphicle",
+     "operation": "update with no change",
+     "started_utc": "2026-10-14T11:32:22Z",
+     "exit_code": 0,
+     "timed_out": false,
+     "wall_s": 110.68,
+     "cpu_s": 212.1,
+     "peak_pss_mib": 8413,
+     "pss_samples": 218,
+     "peak_rss_sum_mib": 8421,
+     "processes": 1,
+     "nodes": 253812,
+     "edges": 981848,
+     "nodes_sha256": "43672694c352f18499443c00cb02b2b973b96f862bc6f410c7ca53c168677053",
+     "edges_sha256": "02800e4a6d97356c62634be6568f8c31d81f5270c3f464947f5c96ee8fc1434a",
+     "graph_json_bytes": 484026496
+    }
+   ]
+  }
+ ],
+ "smaller_repositories": [
+  {
+   "repository": "pallets/flask",
+   "tag": "3.1.3",
+   "commit": "22d924701a6ae2e4cd01e9a15bbaf3946094af65",
+   "language": "Python",
+   "files": 235,
+   "code_files": 86,
+   "warm_ups": 1,
+   "measured_runs": 3,
+   "complete": true,
+   "operations": {
+    "code-only extract": {
+     "graphicle": {
+      "wall_median_s": 0.269,
+      "cpu_median_s": 0.61,
+      "peak_pss_median_mib": null,
+      "nodes": 2096,
+      "edges": 3435,
+      "nodes_sha256": "e8a53f7e3b007d6d4c68e47cfe4582f1e1bf6f91d3366d47941aac38c3ede308",
+      "edges_sha256": "fabebedd5be805910d7f061384f37b7dc1f8446478c5b752da41e616dd8a03f7"
+     },
+     "graphify": {
+      "wall_median_s": 1.977,
+      "cpu_median_s": 3.69,
+      "peak_pss_median_mib": null,
+      "nodes": 2096,
+      "edges": 3435,
+      "nodes_sha256": "e8a53f7e3b007d6d4c68e47cfe4582f1e1bf6f91d3366d47941aac38c3ede308",
+      "edges_sha256": "fabebedd5be805910d7f061384f37b7dc1f8446478c5b752da41e616dd8a03f7"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 7.35,
+      "least_favourable": 7.19,
+      "most_favourable": 7.77
+     },
+     "verdict": "faster in every run",
+     "memory": "not measured: fewer than 3 PSS samples in some run (run too short)"
+    },
+    "priming update": {
+     "graphicle": {
+      "wall_median_s": 0.304,
+      "cpu_median_s": 0.49,
+      "peak_pss_median_mib": null,
+      "nodes": 2114,
+      "edges": 3440,
+      "nodes_sha256": "d4058817a40f0e31c9cefe777b43766575aa5585dd4e52f5bb47fe44ed8b7742",
+      "edges_sha256": "ff1d4516fc49191d71e19b16085919a68a4e979e1383d0d2de19b35b044fbfaa"
+     },
+     "graphify": {
+      "wall_median_s": 2.135,
+      "cpu_median_s": 2.13,
+      "peak_pss_median_mib": null,
+      "nodes": 2114,
+      "edges": 3440,
+      "nodes_sha256": "d4058817a40f0e31c9cefe777b43766575aa5585dd4e52f5bb47fe44ed8b7742",
+      "edges_sha256": "ff1d4516fc49191d71e19b16085919a68a4e979e1383d0d2de19b35b044fbfaa"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 7.0,
+      "least_favourable": 6.99,
+      "most_favourable": 7.1
+     },
+     "verdict": "faster in every run",
+     "memory": "not measured: fewer than 3 PSS samples in some run (run too short)"
+    },
+    "update with no change": {
+     "graphicle": {
+      "wall_median_s": 0.164,
+      "cpu_median_s": 0.27,
+      "peak_pss_median_mib": null,
+      "nodes": 2114,
+      "edges": 3440,
+      "nodes_sha256": "d4058817a40f0e31c9cefe777b43766575aa5585dd4e52f5bb47fe44ed8b7742",
+      "edges_sha256": "ff1d4516fc49191d71e19b16085919a68a4e979e1383d0d2de19b35b044fbfaa"
+     },
+     "graphify": {
+      "wall_median_s": 1.516,
+      "cpu_median_s": 1.53,
+      "peak_pss_median_mib": null,
+      "nodes": 2114,
+      "edges": 3440,
+      "nodes_sha256": "d4058817a40f0e31c9cefe777b43766575aa5585dd4e52f5bb47fe44ed8b7742",
+      "edges_sha256": "ff1d4516fc49191d71e19b16085919a68a4e979e1383d0d2de19b35b044fbfaa"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 9.33,
+      "least_favourable": 9.21,
+      "most_favourable": 9.46
+     },
+     "verdict": "faster in every run",
+     "memory": "not measured: fewer than 3 PSS samples in some run (run too short)"
+    }
+   }
+  },
+  {
+   "repository": "BurntSushi/ripgrep",
+   "tag": "15.2.0",
+   "commit": "e89fff89ac9af12e8d4ce9d5fd07beb408ca730f",
+   "language": "Rust",
+   "files": 221,
+   "code_files": 103,
+   "warm_ups": 1,
+   "measured_runs": 3,
+   "complete": true,
+   "operations": {
+    "code-only extract": {
+     "graphicle": {
+      "wall_median_s": 0.355,
+      "cpu_median_s": 0.85,
+      "peak_pss_median_mib": null,
+      "nodes": 4232,
+      "edges": 8995,
+      "nodes_sha256": "70a06c337c212f05687adc22451fa7cf8e0e9a48ad8e0bbb35d3adae1796c6b5",
+      "edges_sha256": "695099782944807a81dc426881b8b845a791cc897a4dc9a5aa371e8b68bc9806"
+     },
+     "graphify": {
+      "wall_median_s": 1.935,
+      "cpu_median_s": 3.76,
+      "peak_pss_median_mib": null,
+      "nodes": 4232,
+      "edges": 8995,
+      "nodes_sha256": "70a06c337c212f05687adc22451fa7cf8e0e9a48ad8e0bbb35d3adae1796c6b5",
+      "edges_sha256": "695099782944807a81dc426881b8b845a791cc897a4dc9a5aa371e8b68bc9806"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.43,
+      "least_favourable": 5.39,
+      "most_favourable": 5.46
+     },
+     "verdict": "faster in every run",
+     "memory": "not measured: fewer than 3 PSS samples in some run (run too short)"
+    },
+    "priming update": {
+     "graphicle": {
+      "wall_median_s": 0.546,
+      "cpu_median_s": 0.91,
+      "peak_pss_median_mib": null,
+      "nodes": 4330,
+      "edges": 9071,
+      "nodes_sha256": "696fde24fba82218b69fca3e23342d5ca29585497cade0b759d7b015723c21b6",
+      "edges_sha256": "ab9515a2bdf48c07c0219f9a7aa4da78bc0a167eb8e7044382d06777e7030e05"
+     },
+     "graphify": {
+      "wall_median_s": 3.028,
+      "cpu_median_s": 3.15,
+      "peak_pss_median_mib": null,
+      "nodes": 4330,
+      "edges": 9071,
+      "nodes_sha256": "696fde24fba82218b69fca3e23342d5ca29585497cade0b759d7b015723c21b6",
+      "edges_sha256": "ab9515a2bdf48c07c0219f9a7aa4da78bc0a167eb8e7044382d06777e7030e05"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.56,
+      "least_favourable": 5.47,
+      "most_favourable": 5.69
+     },
+     "verdict": "faster in every run",
+     "memory": "not measured: fewer than 3 PSS samples in some run (run too short)"
+    },
+    "update with no change": {
+     "graphicle": {
+      "wall_median_s": 0.274,
+      "cpu_median_s": 0.47,
+      "peak_pss_median_mib": null,
+      "nodes": 4330,
+      "edges": 9071,
+      "nodes_sha256": "696fde24fba82218b69fca3e23342d5ca29585497cade0b759d7b015723c21b6",
+      "edges_sha256": "ab9515a2bdf48c07c0219f9a7aa4da78bc0a167eb8e7044382d06777e7030e05"
+     },
+     "graphify": {
+      "wall_median_s": 1.589,
+      "cpu_median_s": 1.6,
+      "peak_pss_median_mib": null,
+      "nodes": 4330,
+      "edges": 9071,
+      "nodes_sha256": "696fde24fba82218b69fca3e23342d5ca29585497cade0b759d7b015723c21b6",
+      "edges_sha256": "ab9515a2bdf48c07c0219f9a7aa4da78bc0a167eb8e7044382d06777e7030e05"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.8,
+      "least_favourable": 5.78,
+      "most_favourable": 5.91
+     },
+     "verdict": "faster in every run",
+     "memory": "not measured: fewer than 3 PSS samples in some run (run too short)"
+    }
+   }
+  },
+  {
+   "repository": "redis/redis",
+   "tag": "8.10.2",
+   "commit": "498ecd0d6d007db11ddb3aea9428552598a78622",
+   "language": "C",
+   "files": 1861,
+   "code_files": 954,
+   "warm_ups": 1,
+   "measured_runs": 3,
+   "complete": true,
+   "operations": {
+    "code-only extract": {
+     "graphicle": {
+      "wall_median_s": 2.486,
+      "cpu_median_s": 6.55,
+      "peak_pss_median_mib": 373,
+      "nodes": 16859,
+      "edges": 60338,
+      "nodes_sha256": "9ea0bd6d95a660f58e04877faba8de3def09b61e1cdd5739c76046d57ecf0efd",
+      "edges_sha256": "6e9ca5659c1126524ada63b17383f948d16b865e4c7cd51918741306b15b06de"
+     },
+     "graphify": {
+      "wall_median_s": 11.838,
+      "cpu_median_s": 25.09,
+      "peak_pss_median_mib": 413,
+      "nodes": 16860,
+      "edges": 60340,
+      "nodes_sha256": "b4a02268bf0b25986c81368307ee5d4fc6172a8f96ad0c2869842842f279fc10",
+      "edges_sha256": "81793060fdd9c79542c86eace66c2aed11fc3941e76e88d25f12abd52f24a588"
+     },
+     "same_graph_every_run": false,
+     "speed_up": null,
+     "verdict": "not admitted: the graphs differ",
+     "memory": "not compared: the graphs differ"
+    },
+    "priming update": {
+     "graphicle": {
+      "wall_median_s": 3.349,
+      "cpu_median_s": 6.04,
+      "peak_pss_median_mib": 555,
+      "nodes": 17090,
+      "edges": 60577,
+      "nodes_sha256": "8d4c1eb209b2ee6c5a83f0b035fe35875733cd39e9f214252d0aa690f81108d7",
+      "edges_sha256": "46efb0ddec3b2dda0413dd91c935506b1d98c2dbfbb5734060902ba71c9e7c67"
+     },
+     "graphify": {
+      "wall_median_s": 19.358,
+      "cpu_median_s": 19.68,
+      "peak_pss_median_mib": 497,
+      "nodes": 17091,
+      "edges": 60579,
+      "nodes_sha256": "684acced25ec70a257de0074fa5807c9090db6ef11e72591ae28045b1015504f",
+      "edges_sha256": "0ae57410fecfbd5f74d8c63d5814232fe233b53f798b2f7a478f3b0ef1c2dfa5"
+     },
+     "same_graph_every_run": false,
+     "speed_up": null,
+     "verdict": "not admitted: the graphs differ",
+     "memory": "not compared: the graphs differ"
+    },
+    "update with no change": {
+     "graphicle": {
+      "wall_median_s": 2.092,
+      "cpu_median_s": 3.48,
+      "peak_pss_median_mib": 536,
+      "nodes": 17090,
+      "edges": 60577,
+      "nodes_sha256": "8d4c1eb209b2ee6c5a83f0b035fe35875733cd39e9f214252d0aa690f81108d7",
+      "edges_sha256": "46efb0ddec3b2dda0413dd91c935506b1d98c2dbfbb5734060902ba71c9e7c67"
+     },
+     "graphify": {
+      "wall_median_s": 10.124,
+      "cpu_median_s": 10.26,
+      "peak_pss_median_mib": 433,
+      "nodes": 17091,
+      "edges": 60579,
+      "nodes_sha256": "684acced25ec70a257de0074fa5807c9090db6ef11e72591ae28045b1015504f",
+      "edges_sha256": "0ae57410fecfbd5f74d8c63d5814232fe233b53f798b2f7a478f3b0ef1c2dfa5"
+     },
+     "same_graph_every_run": false,
+     "speed_up": null,
+     "verdict": "not admitted: the graphs differ",
+     "memory": "not compared: the graphs differ"
+    }
+   },
+   "note": "The graphs differ in every operation, so no speed-up or memory ratio is given. After the extract, Graphify's graph has one more node and two more edges: contains edges from the Visual Studio solution files deps/jemalloc/msvc/jemalloc_vc2015.sln and jemalloc_vc2017.sln. After the update with no change, 15,945 node records differ in content (in the examples kept, community_name). Each program gave the same graph in all of its own runs. Reported as found, not investigated."
+  },
+  {
+   "repository": "prometheus/prometheus",
+   "tag": "v3.15.0",
+   "commit": "5241a27fe3c6983549fccc32f6e65917408c63cd",
+   "language": "Go",
+   "files": 1686,
+   "code_files": 1015,
+   "warm_ups": 1,
+   "measured_runs": 3,
+   "complete": true,
+   "operations": {
+    "code-only extract": {
+     "graphicle": {
+      "wall_median_s": 3.438,
+      "cpu_median_s": 7.92,
+      "peak_pss_median_mib": 487,
+      "nodes": 15800,
+      "edges": 66449,
+      "nodes_sha256": "869a8c5e2a81dd8330c077626c224c8edf79fa663415fe76af6bee7b59ee9525",
+      "edges_sha256": "18ade945f29477bd8e67428705b36de18ab4f20fc355d6d4a6e70fd9b4e02bc4"
+     },
+     "graphify": {
+      "wall_median_s": 18.572,
+      "cpu_median_s": 29.76,
+      "peak_pss_median_mib": 455,
+      "nodes": 15800,
+      "edges": 66449,
+      "nodes_sha256": "869a8c5e2a81dd8330c077626c224c8edf79fa663415fe76af6bee7b59ee9525",
+      "edges_sha256": "18ade945f29477bd8e67428705b36de18ab4f20fc355d6d4a6e70fd9b4e02bc4"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.4,
+      "least_favourable": 5.31,
+      "most_favourable": 5.5
+     },
+     "verdict": "faster in every run",
+     "memory": "no ratio: PSS and the resident-set sum disagree"
+    },
+    "priming update": {
+     "graphicle": {
+      "wall_median_s": 4.567,
+      "cpu_median_s": 8.09,
+      "peak_pss_median_mib": 643,
+      "nodes": 16849,
+      "edges": 67437,
+      "nodes_sha256": "4a023a03b825febb91651f71e98eb50e253633e900ebfc14e10a7d4ecf7edee5",
+      "edges_sha256": "4d32d69d789f024dcff5fa5726574acd2af61e8eb87049be7e0eb17a9be70e4f"
+     },
+     "graphify": {
+      "wall_median_s": 27.246,
+      "cpu_median_s": 31.19,
+      "peak_pss_median_mib": 530,
+      "nodes": 16849,
+      "edges": 67437,
+      "nodes_sha256": "4a023a03b825febb91651f71e98eb50e253633e900ebfc14e10a7d4ecf7edee5",
+      "edges_sha256": "4d32d69d789f024dcff5fa5726574acd2af61e8eb87049be7e0eb17a9be70e4f"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.97,
+      "least_favourable": 5.64,
+      "most_favourable": 6.12
+     },
+     "verdict": "faster in every run",
+     "memory": "no ratio: PSS and the resident-set sum disagree"
+    },
+    "update with no change": {
+     "graphicle": {
+      "wall_median_s": 3.238,
+      "cpu_median_s": 5.52,
+      "peak_pss_median_mib": 648,
+      "nodes": 16849,
+      "edges": 67437,
+      "nodes_sha256": "4a023a03b825febb91651f71e98eb50e253633e900ebfc14e10a7d4ecf7edee5",
+      "edges_sha256": "4d32d69d789f024dcff5fa5726574acd2af61e8eb87049be7e0eb17a9be70e4f"
+     },
+     "graphify": {
+      "wall_median_s": 18.817,
+      "cpu_median_s": 22.4,
+      "peak_pss_median_mib": 452,
+      "nodes": 16849,
+      "edges": 67437,
+      "nodes_sha256": "4a023a03b825febb91651f71e98eb50e253633e900ebfc14e10a7d4ecf7edee5",
+      "edges_sha256": "4d32d69d789f024dcff5fa5726574acd2af61e8eb87049be7e0eb17a9be70e4f"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.75,
+      "least_favourable": 5.7,
+      "most_favourable": 5.84
+     },
+     "verdict": "faster in every run",
+     "memory": "no ratio: PSS and the resident-set sum disagree"
+    }
+   }
+  },
+  {
+   "repository": "tokio-rs/tokio",
+   "tag": "tokio-1.53.3",
+   "commit": "a85c3f5baa298a6b554fd3700daf0342289881af",
+   "language": "Rust",
+   "files": 867,
+   "code_files": 791,
+   "warm_ups": 1,
+   "measured_runs": 3,
+   "complete": true,
+   "operations": {
+    "code-only extract": {
+     "graphicle": {
+      "wall_median_s": 1.026,
+      "cpu_median_s": 2.62,
+      "peak_pss_median_mib": 205,
+      "nodes": 12172,
+      "edges": 25913,
+      "nodes_sha256": "2d861fbf6bbcd036b8dc5c058fc99ff74abe7cd8548604276d663f080317ac1a",
+      "edges_sha256": "ad9e9947985d40bb170fa5a15e3256e8cc815a8a2cd12db5554f7e1c940ebc1e"
+     },
+     "graphify": {
+      "wall_median_s": 5.8,
+      "cpu_median_s": 10.46,
+      "peak_pss_median_mib": 230,
+      "nodes": 12172,
+      "edges": 25913,
+      "nodes_sha256": "2d861fbf6bbcd036b8dc5c058fc99ff74abe7cd8548604276d663f080317ac1a",
+      "edges_sha256": "ad9e9947985d40bb170fa5a15e3256e8cc815a8a2cd12db5554f7e1c940ebc1e"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.62,
+      "least_favourable": 5.54,
+      "most_favourable": 5.66
+     },
+     "verdict": "faster in every run",
+     "memory": "less peak memory for Graphicle in every run (PSS and the resident-set sum agree)"
+    },
+    "priming update": {
+     "graphicle": {
+      "wall_median_s": 1.657,
+      "cpu_median_s": 2.88,
+      "peak_pss_median_mib": 352,
+      "nodes": 13023,
+      "edges": 26742,
+      "nodes_sha256": "6015f7a6382c173c13080db20a3e72b0465a7c76a92e435e91b872a3dee34bed",
+      "edges_sha256": "8488750cd2d5530a39b2dd755350e9b4d5713ca95c88c67e05601c9a09ebcc78"
+     },
+     "graphify": {
+      "wall_median_s": 9.741,
+      "cpu_median_s": 9.96,
+      "peak_pss_median_mib": 244,
+      "nodes": 13023,
+      "edges": 26742,
+      "nodes_sha256": "6015f7a6382c173c13080db20a3e72b0465a7c76a92e435e91b872a3dee34bed",
+      "edges_sha256": "8488750cd2d5530a39b2dd755350e9b4d5713ca95c88c67e05601c9a09ebcc78"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.87,
+      "least_favourable": 5.75,
+      "most_favourable": 6.26
+     },
+     "verdict": "faster in every run",
+     "memory": "no ratio: PSS and the resident-set sum disagree"
+    },
+    "update with no change": {
+     "graphicle": {
+      "wall_median_s": 0.996,
+      "cpu_median_s": 1.63,
+      "peak_pss_median_mib": null,
+      "nodes": 13023,
+      "edges": 26742,
+      "nodes_sha256": "6015f7a6382c173c13080db20a3e72b0465a7c76a92e435e91b872a3dee34bed",
+      "edges_sha256": "8488750cd2d5530a39b2dd755350e9b4d5713ca95c88c67e05601c9a09ebcc78"
+     },
+     "graphify": {
+      "wall_median_s": 5.458,
+      "cpu_median_s": 5.53,
+      "peak_pss_median_mib": null,
+      "nodes": 13023,
+      "edges": 26742,
+      "nodes_sha256": "6015f7a6382c173c13080db20a3e72b0465a7c76a92e435e91b872a3dee34bed",
+      "edges_sha256": "8488750cd2d5530a39b2dd755350e9b4d5713ca95c88c67e05601c9a09ebcc78"
+     },
+     "same_graph_every_run": true,
+     "speed_up": {
+      "median": 5.43,
+      "least_favourable": 5.35,
+      "most_favourable": 5.74
+     },
+     "verdict": "faster in every run",
+     "memory": "not measured: fewer than 3 PSS samples in some run (run too short)"
+    }
+   }
+  }
+ ],
+ "not_run": "facebook/react was cut short in its warm-up when the host became unreachable (no measured run); vercel/next.js, pandas-dev/pandas, scikit-learn/scikit-learn, spring-projects/spring-boot and rails/rails were not run. Kubernetes and VS Code ran later, with the deviations above."
+}
