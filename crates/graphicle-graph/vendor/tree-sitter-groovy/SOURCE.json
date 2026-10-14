@@ -1,0 +1,14 @@
+{
+  "url": "https://codeload.github.com/amaanq/tree-sitter-groovy/tar.gz/refs/tags/v0.1.2",
+  "sha256": "d3eafa455e3a092d79c2d3488fa58a461c1a18cdfa1b7edb22e168b513e454fe",
+  "python_sdist_sha256": "49b004c4ae946d3f01a602f325cd8996423e034e5b3ad36fc34a1d1e42afa8da",
+  "parser_matches_python_sdist": true,
+  "license": "MIT declared in upstream Cargo.toml; no standalone license file exists in the tag or sdist",
+  "files": {
+    "UPSTREAM-LICENSE-DECLARATION.toml": "0af286697aafa4b08ff692ee10f7b4dcef9e24925883e33cdaa2ee6d2d9edfd4",
+    "src/parser.c": "786637c026add3b2112aa717fa17b34e3093ea291b3b46d60438ba84382fdb06",
+    "src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+    "src/tree_sitter/array.h": "4ff743903dc46f5db6aa54f31c6b4d160a8a9779e5b2ab1ee59ae7ebcd850ea1",
+    "src/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a"
+  }
+}

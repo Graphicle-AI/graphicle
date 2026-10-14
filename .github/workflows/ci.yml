@@ -1,0 +1,143 @@
+# Continuous integration for Graphicle Core. Each crate under crates/ is its
+# own Cargo workspace with its own lockfile: crates/graphicle (the graphicle
+# program), crates/graphicle-graph (the graph engine and its graphicle-graph
+# program) and crates/graphicle-memory (the memory library). Each is
+# formatted, linted and tested on macOS (Apple silicon) and Linux (x86-64), in
+# its own job: the three build folders together would not fit a runner's disk.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # The toolchain releases are built and tested with. The crates declare
+  # rust-version 1.94.1, which the msrv job checks.
+  RUST_TOOLCHAIN: "1.95.0"
+
+jobs:
+  core:
+    name: ${{ matrix.crate }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-latest]
+        crate: [graphicle, graphicle-graph, graphicle-memory]
+        include:
+          - crate: graphicle
+            dir: crates/graphicle
+          # The engine with its opt-in features too (postgres, bedrock,
+          # transcription), so that they stay built, linted and tested.
+          - crate: graphicle-graph
+            dir: crates/graphicle-graph
+            fmt: --package graphicle --package graphicle-graph
+            features: --features postgres,bedrock,transcription
+          - crate: graphicle-memory
+            dir: crates/graphicle-memory
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+          rustup default "$RUST_TOOLCHAIN"
+      # The memory library (and the graphicle program through it) compiles its
+      # grammars from the checksum-pinned parser sources in .tslp-root; see
+      # crates/graphicle/.cargo/config.toml. The engine does not use them.
+      - name: zstd (unpacks the parser sources)
+        if: matrix.crate != 'graphicle-graph'
+        run: |
+          if ! command -v zstd >/dev/null; then
+            if [ "$RUNNER_OS" = macOS ]; then brew install zstd; else sudo apt-get update && sudo apt-get install -y zstd; fi
+          fi
+      - name: Cache parser sources
+        if: matrix.crate != 'graphicle-graph'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .tslp-root
+          key: parser-sources-${{ runner.os }}-${{ hashFiles('crates/graphicle/tools/prepare_parser_sources.py', 'crates/graphicle/.cargo/config.toml', 'crates/graphicle-memory/.cargo/config.toml') }}
+      - name: Prepare parser sources (verifies a restored folder)
+        if: matrix.crate != 'graphicle-graph'
+        run: python3 crates/graphicle/tools/prepare_parser_sources.py
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ matrix.dir }}
+          key: ${{ matrix.crate }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Format
+        working-directory: ${{ matrix.dir }}
+        run: cargo fmt ${{ matrix.fmt }} --check
+      - name: Clippy
+        working-directory: ${{ matrix.dir }}
+        run: cargo clippy --locked --all-targets ${{ matrix.features }} -- -D warnings
+      - name: Clippy with local inference
+        if: matrix.crate == 'graphicle'
+        working-directory: crates/graphicle
+        run: cargo clippy --locked --all-targets --features local-inference -- -D warnings
+      - name: Tests
+        working-directory: ${{ matrix.dir }}
+        run: cargo test --locked --all-targets ${{ matrix.features }}
+
+  licences:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - name: cargo-deny and cargo-about
+        run: cargo install --locked cargo-deny@0.20.2 cargo-about@0.9.2
+      - name: Engine dependencies (licences, advisories, sources)
+        working-directory: crates/graphicle-graph
+        run: cargo deny check
+      - name: Memory library and program dependency licences
+        run: |
+          (cd crates/graphicle-memory && cargo deny check licenses)
+          (cd crates/graphicle && cargo deny check licenses)
+      - name: Adapted-file headers
+        working-directory: crates/graphicle-graph
+        run: python3 tools/mark_adapted_files.py --check
+      # The committed pages the release archives ship (CONTRIBUTING.md,
+      # Dependencies): regenerated from the locks, they must not change.
+      - name: Third-party licence pages are current
+        run: |
+          (cd crates/graphicle-graph && cargo fetch --locked && cargo about generate --frozen --fail --all-features about.hbs -o licenses/THIRD_PARTY_LICENSES.html)
+          (cd crates/graphicle && cargo fetch --locked && cargo about generate --frozen --fail --all-features about.hbs -o THIRD_PARTY_LICENSES.html)
+          git diff --exit-code -- crates/graphicle-graph/licenses/THIRD_PARTY_LICENSES.html crates/graphicle/THIRD_PARTY_LICENSES.html
+
+  msrv:
+    # Reported, not gating: the crates declare rust-version 1.94.1.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install 1.94.1 --profile minimal && rustup default 1.94.1
+      - name: Parser sources
+        run: python3 crates/graphicle/tools/prepare_parser_sources.py
+      - name: Engine
+        working-directory: crates/graphicle-graph
+        run: cargo check --locked --all-targets
+      - name: Memory library
+        working-directory: crates/graphicle-memory
+        run: cargo check --locked --all-targets
+      - name: Program
+        working-directory: crates/graphicle
+        run: cargo check --locked --all-targets

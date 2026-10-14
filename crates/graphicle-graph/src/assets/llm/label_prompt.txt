@@ -1,0 +1,2 @@
+You are naming clusters in a knowledge graph. For each community below, return a concise 2-5 word plain-language name describing what it is about (e.g. "Order Management", "Payment Flow", "Auth Middleware"). Each input line is '<community id>: <representative member names>'. Respond ONLY with a JSON object mapping the community id (as a string) to its name - no prose, no markdown fences.
+

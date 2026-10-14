@@ -1,0 +1,18 @@
+This package declares MIT in its published Cargo manifest. Neither that archive nor its recorded source revision includes a standalone license file. The standard SPDX MIT text is supplied alongside the unmodified manifest below; it is not represented as an upstream copyright notice.
+
+```toml
+[package]
+authors = ["Jeff Muizelaar <jmuizelaar@mozilla.com>"]
+name = "adobe-cmap-parser"
+version = "0.4.1"
+license = "MIT"
+documentation = "https://docs.rs/crate/adobe-cmap-parser/"
+description = "A library to parse Adobe CMap files"
+keywords = ["cmap", "font", "pdf", "postscript"]
+repository = "https://github.com/jrmuizel/adobe-cmap-parser"
+include = ["src/lib.rs"]
+
+[dependencies]
+pom = "1.0.1"
+
+```

@@ -1,0 +1,124 @@
+[
+  {
+    "package": "adobe-cmap-parser",
+    "version": "0.4.1",
+    "revision": "ac107d55f0d31a9d47955082238ab9e4fb157cdb",
+    "licenses": [],
+    "missing": "No root license at the recorded VCS revision"
+  },
+  {
+    "package": "jni",
+    "version": "0.22.4",
+    "revision": "5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7",
+    "licenses": [
+      {
+        "url": "https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-MIT",
+        "sha256": "fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960",
+        "file": "licenses/upstream-crates/jni-0.22.4/LICENSE-MIT"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+        "file": "licenses/upstream-crates/jni-0.22.4/LICENSE-APACHE"
+      }
+    ]
+  },
+  {
+    "package": "jni-macros",
+    "version": "0.22.4",
+    "revision": "33045a124105c939d1e2cbdcb5a39e5d868ffa03",
+    "licenses": [
+      {
+        "url": "https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-MIT",
+        "sha256": "fea1d5bf3dd71605ce5d7d2ff695c1837e914c77195e523a86b5391716477960",
+        "file": "licenses/upstream-crates/jni-macros-0.22.4/LICENSE-MIT"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+        "file": "licenses/upstream-crates/jni-macros-0.22.4/LICENSE-APACHE"
+      }
+    ]
+  },
+  {
+    "package": "jni-sys-macros",
+    "version": "0.4.1",
+    "revision": "64d77b7a5f119d7b55b4e2c169a4668067ff59e6",
+    "licenses": [
+      {
+        "url": "https://raw.githubusercontent.com/jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-MIT",
+        "sha256": "1d85bd754b04ceec93e98e890edd1fa3c6a22e81bcb32135806beeccefa51cd1",
+        "file": "licenses/upstream-crates/jni-sys-macros-0.4.1/LICENSE-MIT"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/jni-rs/jni-sys/64d77b7a5f119d7b55b4e2c169a4668067ff59e6/LICENSE-APACHE",
+        "sha256": "c6596eb7be8581c18be736c846fb9173b69eccf6ef94c5135893ec56bd92ba08",
+        "file": "licenses/upstream-crates/jni-sys-macros-0.4.1/LICENSE-APACHE"
+      }
+    ]
+  },
+  {
+    "package": "mac",
+    "missing": "No VCS receipt; locate the matching upstream release"
+  },
+  {
+    "package": "match_token",
+    "version": "0.35.0",
+    "revision": "6db7bbf1c4dfaecd28731950d427e40c8b911bef",
+    "licenses": [
+      {
+        "url": "https://raw.githubusercontent.com/servo/html5ever/6db7bbf1c4dfaecd28731950d427e40c8b911bef/LICENSE-MIT",
+        "sha256": "86dd7f026f916daf7511e39951ad8ea8cf55a8db67ae64060dacf829761c18f3",
+        "file": "licenses/upstream-crates/match_token-0.35.0/LICENSE-MIT"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/servo/html5ever/6db7bbf1c4dfaecd28731950d427e40c8b911bef/LICENSE-APACHE",
+        "sha256": "a60eea817514531668d7e00765731449fe14d059d3249e0bc93b36de45f759f2",
+        "file": "licenses/upstream-crates/match_token-0.35.0/LICENSE-APACHE"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/servo/html5ever/6db7bbf1c4dfaecd28731950d427e40c8b911bef/COPYRIGHT",
+        "sha256": "c6b91503fc0a9852e688b56eef715dba9a1ab4b074e86875af2471ce0163b2e5",
+        "file": "licenses/upstream-crates/match_token-0.35.0/COPYRIGHT"
+      }
+    ]
+  },
+  {
+    "package": "pdf-extract",
+    "version": "0.12.1",
+    "revision": "47b792ba04c5f3b6e478072b2efb8e1a2a06ec7e",
+    "licenses": [],
+    "missing": "No root license at the recorded VCS revision"
+  },
+  {
+    "package": "rustls-platform-verifier-android",
+    "missing": "No VCS receipt; locate the matching upstream release"
+  },
+  {
+    "package": "tree-sitter-language-pack",
+    "version": "1.20.0",
+    "revision": "f4b24ece538efed9ab2c4e6db9409fbfc4cc3a67",
+    "licenses": [
+      {
+        "url": "https://raw.githubusercontent.com/xberg-io/tree-sitter-language-pack/f4b24ece538efed9ab2c4e6db9409fbfc4cc3a67/LICENSE",
+        "sha256": "a072c04f582d847b35e348b4160e7845b753cce4503783320717b3c69416e207",
+        "file": "licenses/upstream-crates/tree-sitter-language-pack-1.20.0/LICENSE"
+      }
+    ]
+  },
+  {
+    "package": "type1-encoding-parser",
+    "version": "0.1.1",
+    "revision": "55d193e28c9a5909be02a5b1f91fd3f76b076747",
+    "licenses": [],
+    "missing": "No root license at the recorded VCS revision"
+  },
+  {
+    "package": "winapi-i686-pc-windows-gnu",
+    "missing": "No VCS receipt; locate the matching upstream release"
+  },
+  {
+    "package": "winapi-x86_64-pc-windows-gnu",
+    "missing": "No VCS receipt; locate the matching upstream release"
+  }
+]

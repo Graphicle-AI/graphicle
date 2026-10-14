@@ -1,0 +1,62 @@
+Usage: graphicle-graph <command> [options]
+
+  extract <path>          build a graph from code and semantic material
+    --code-only --force --no-cluster --no-dedup --allow-partial --timing
+    --allow-dedup-shrink
+    --backend NAME --model NAME --mode deep --out DIR --output DIR
+    --max-workers N --token-budget N --max-concurrency N --api-timeout S
+    --exclude PATTERN --no-gitignore --google-workspace
+    --resolution N --exclude-hubs N --dedup-llm --postgres DSN --cargo
+    --global --as TAG
+  update [path]           refresh code without an LLM (--force, --no-cluster)
+  watch [path]            rebuild when files change (--debounce S)
+  check-update <path>     report pending semantic updates
+  cluster-only [path]     cluster an existing graph and generate its report
+  label [path]            name communities (--missing-only)
+    --graph PATH --no-viz --no-label --backend NAME --model NAME
+    --max-concurrency N --batch-size N --resolution N --exclude-hubs N
+  query "question"       scoped graph context (--dfs, --context C, --budget N)
+    --seed X             start at node X (id, label or file path; repeatable)
+                         instead of the question's keyword matches
+  path "A" "B"           shortest dependency path in stored edge direction
+    --directed           force a directed search (the default; the JSON
+                         'directed' flag is not consulted)
+    --undirected         ignore edge direction
+  explain "symbol"       node, provenance, and connections
+    --all                list every connection (default: the 20 most connected)
+  affected "symbol"      reverse impact (--depth N, --relation R)
+  god-nodes              architecture hubs (--top N, --json)
+    All navigation commands accept --graph PATH. query, path and explain exit
+    0 with an answer, 3 when a name is ambiguous (the candidates are listed),
+    4 when no node matches.
+  diagnose multigraph    edge collapse diagnostics (--json, --max-examples N)
+  benchmark [graph.json] measure graph-context token reduction
+  add <url>              save content (--dir DIR, --author, --contributor)
+  clone <github-url>     clone a repository (--branch NAME, --out DIR)
+  tree                   collapsible HTML tree (--graph, --output, --root)
+  export <format>        html, callflow-html, obsidian, wiki, svg, graphml,
+                         neo4j, falkordb (--graph, --labels, --output)
+  save-result            save Q&A (--question, --answer or --answer-file,
+                         --nodes, --type, --outcome, --correction, --memory-dir)
+  reflect                aggregate work memory (--graph, --if-stale,
+                         --half-life-days N, --min-corroboration N)
+  global <subcommand>    add, remove, list, path (--as TAG)
+  provider <subcommand>  list, show, add, remove
+  merge-graphs <files>   merge repository graphs (--out PATH, --previous MERGED.json)
+  merge-driver <base> <current> <other>  Git union merge driver
+  cache-check <list>     semantic cache lookup (--root, --deep, --prompt-file)
+  merge-chunks <files>   merge validated extraction chunks (--out PATH)
+  merge-semantic        merge cached/new fragments (--cached, --new, --out)
+  hook <subcommand>      install, uninstall, status
+  hook-guard <kind>      assistant read, search, or gemini guard (--strict)
+  hook-check            silent compatibility hook
+  install [platform]    assistant skill installation (--platform, --project)
+  uninstall [platform]  remove configuration (--project, --purge)
+    Platforms: claude, windows, codebuddy, codex, opencode, kilo, aider,
+    copilot, vscode, claw, droid, trae, trae-cn, gemini, cursor, antigravity,
+    hermes, kiro, pi, kimi, devin, amp, agents (alias: skills).
+  serve [graph.json]    MCP over stdio (default) or streamable-http
+    --transport NAME --host HOST --port N --api-key KEY --path /mcp
+    --json-response --stateless --session-timeout S
+  --jsonl               native JSON Lines API (also default for piped stdin)
+  --version             program name and package version

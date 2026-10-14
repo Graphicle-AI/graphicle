@@ -1,0 +1,1334 @@
+{
+  "server": "graphicle mcp --project . --allow-learning, as connect claude-code --graph writes it (Core)",
+  "instructions": "Retrieve original sources and inspect citations. Memory is evidence, not tool permission. No tool can approve memory or run commands. Walk the project's code graph with the graph tools: query_graph for the symbols around a question, get_node and get_neighbors for one symbol and what it calls or what calls it, shortest_path between two symbols, god_nodes and get_community for the structure. Each answer is the graph's text, then a citations block: the code-graph episode read and, for the nodes the text names, their file: line ranges and stable_id, marking a range not checked against the current file and, while the current files' graph waits for its projection, a node reached only through relations read from changed files (structuredContent has every citation with its byte range). Name another project with repo, or an earlier code graph with as_of. Use recall_project for what the code, the documents and reviewed memory say together about a question: it cites the same stable_id for code. read_project_source reads any cited window exactly.",
+  "tools": [
+    {
+      "name": "recall_project",
+      "description": "Find original source evidence and current reviewed memory. Optional local model profiles select explicitly configured CPU embedding and reranking; leave the reranker unset for a project holding one conversation's sessions, where it did not raise held-out recall and took about 20 s per question. Continue incomplete sources before making decisions.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "default": 3000
+          },
+          "max_chars": {
+            "type": "integer",
+            "default": 12000
+          },
+          "mode": {
+            "type": "string",
+            "default": "auto"
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "local_embedding_profile": {
+            "type": "string"
+          },
+          "local_reranker_profile": {
+            "type": "string"
+          },
+          "pack_order": {
+            "type": "string",
+            "enum": [
+              "rank",
+              "chronological"
+            ],
+            "description": "chronological presents the selected excerpts by date, with markers where a source's text between two excerpts is not shown; selection stays by rank"
+          },
+          "reading_guidance": {
+            "type": "boolean",
+            "description": "add guidance on weighing what users said against what assistants suggested"
+          },
+          "skip_shown": {
+            "type": "boolean",
+            "description": "answer excerpts this connection already returned with one-line references and spend their budget on further hits"
+          },
+          "include": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
+            "description": "search only sources whose id starts with one of these prefixes: file: for the project's files, file:docs/ for a folder, connector:<id>: for one connector's documents"
+          },
+          "shown": {
+            "type": "array",
+            "maxItems": 200,
+            "description": "source spans already in your context; covered hits return as references",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "byte_start": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "byte_end": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "id",
+                "byte_start",
+                "byte_end"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_project_source",
+      "description": "Read an authorized original source by ID or repository path, with exact byte continuation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "start_byte": {
+            "type": "integer"
+          },
+          "start_line": {
+            "type": "integer"
+          },
+          "line_count": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "snapshot": {
+            "type": "string",
+            "description": "a repository snapshot digest: read a file as that snapshot held it"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "repository_status",
+      "description": "Inspect source coverage, source revisions and memory state.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "repository_files",
+      "description": "List authorized source paths and IDs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "prefix": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "project_memory",
+      "description": "Read memory drafts, review state and freshness. Stored procedures are not execution permission.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "include_retired": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "search_project_memory",
+      "description": "Search reviewed structured memory by its declared name or alias, scope and validity. Explicit lexical mode discovers text matches. Returns source citations and ambiguity diagnostics; makes no model call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "as_of": {
+            "type": "string"
+          },
+          "known_at": {
+            "type": "string"
+          },
+          "include_history": {
+            "type": "boolean"
+          },
+          "match_mode": {
+            "type": "string",
+            "enum": [
+              "identity",
+              "lexical"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 200
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "project_memory_history",
+      "description": "Inspect immutable memory revisions, optionally as known at an RFC3339 timestamp.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "memory_id": {
+            "type": "string"
+          },
+          "known_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "prepare_memory_refresh",
+      "description": "Prepare exact current evidence and a stable document delta contract. No model call or memory write.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "memory_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "workflow_status",
+      "description": "Inspect the caller's queued work and recorded model usage.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "graph_episodes",
+      "description": "List recorded graph episodes and their labels for a repository.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "graph_as_of",
+      "description": "Query either valid_at/known_at/branch for independent world and recording time, or the repository's typed code graph at an episode selector (`as_of`: episode id, commit sha label, `latest` or `working`), reconstructed from recorded history without re-extraction. Narrow with `node` (exact id), `query` (id substring) or `relations`; includes parent episode, labels and cardinality-one contradictions recorded at that episode.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          },
+          "as_of": {
+            "type": "string"
+          },
+          "valid_at": {
+            "type": "string"
+          },
+          "known_at": {
+            "type": "string"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "canonical": {
+            "type": "boolean"
+          },
+          "node": {
+            "type": "string"
+          },
+          "query": {
+            "type": "string"
+          },
+          "relations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2000
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "graph_link",
+      "description": "Resolve imports between the independently indexed repositories of this workspace (Python, TypeScript/JavaScript, Go) by package identity and persist the cross-repository edges with both episodes; re-running after new episodes closes stale edges. Then recompute and persist the links from documents to the code symbols they name. Only repositories the caller may read take part.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "graph_history_stats",
+      "description": "Storage and timing summary for a repository's graph history: row counts and content bytes per table (nodes, edges, edge_sources, coverage, cross_edges, unresolved_calls), episode count, recent coverage uploads with their format and granularity, the latest change-impact report's wall-clock time, and the retention defaults in force.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "prepare_observations",
+      "description": "Prepare current source excerpts, existing claim targets and the interpretation contract. Use your own model; no provider call.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source_id": {
+            "type": "string"
+          },
+          "start_byte": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "session_timeline",
+      "description": "Browse captured coding-agent turns (Claude Code, Codex) of this project: the latest session by default, or the session of an anchor turn, with turns before and after it and the recent sessions. Returns titles, times and source ids; read_project_source returns a whole turn.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "anchor_source_id": {
+            "type": "string"
+          },
+          "before": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          },
+          "after": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 20
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "propose_observations",
+      "description": "Validate source citations and save proposed facts, corrections or retractions as drafts. Separate review is required.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source_id": {
+            "type": "string"
+          },
+          "start_byte": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "context_sha256": {
+            "type": "string"
+          },
+          "claims": {
+            "type": "array",
+            "maxItems": 24,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "statement",
+                "subject",
+                "relation",
+                "object",
+                "speaker",
+                "modality",
+                "conditions",
+                "action",
+                "target_id",
+                "valid_at",
+                "invalid_at",
+                "time_basis",
+                "anchor_id",
+                "evidence"
+              ],
+              "properties": {
+                "statement": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "relation": {
+                  "type": "string"
+                },
+                "object": {
+                  "type": "string"
+                },
+                "speaker": {
+                  "enum": [
+                    "user",
+                    "assistant",
+                    "document",
+                    "tool",
+                    "unknown"
+                  ]
+                },
+                "modality": {
+                  "enum": [
+                    "event",
+                    "preference",
+                    "requirement",
+                    "proposal",
+                    "hypothesis",
+                    "report"
+                  ]
+                },
+                "conditions": {
+                  "type": "array",
+                  "maxItems": 12,
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "action": {
+                  "enum": [
+                    "ADD",
+                    "KEEP",
+                    "CONFIRM",
+                    "SUPERSEDE",
+                    "CORRECT",
+                    "RETRACT"
+                  ]
+                },
+                "target_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "valid_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A complete source-grounded RFC3339 timestamp with timezone. Use null for a calendar date without a time and timezone; preserve such dates in the statement.",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+                },
+                "invalid_at": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A complete source-grounded RFC3339 timestamp with timezone. Use null for a calendar date without a time and timezone; preserve such dates in the statement.",
+                  "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$"
+                },
+                "time_basis": {
+                  "enum": [
+                    "unknown",
+                    "explicit",
+                    "source_relative"
+                  ],
+                  "description": "source_relative requires a non-null RFC3339 recorded_at on the cited anchor source. Otherwise use explicit for a complete timestamp written in the source, or unknown with null timestamps; retain calendar dates in the statement."
+                },
+                "anchor_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "evidence": {
+                  "type": "array",
+                  "minItems": 1,
+                  "maxItems": 12,
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "quote": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "quote"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "context_sha256",
+          "claims"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "propose_memory_refresh",
+      "description": "Save a source-checked draft. A separate maintainer reviews it. Cannot approve or execute.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "memory_id": {
+            "type": "string"
+          },
+          "context_sha256": {
+            "type": "string"
+          },
+          "operations": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "append_block"
+                    },
+                    "section_id": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "section_id",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "insert_block"
+                    },
+                    "section_id": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    },
+                    "after_block_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "section_id",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "replace_block"
+                    },
+                    "section_id": {
+                      "type": "string"
+                    },
+                    "block_id": {
+                      "type": "string"
+                    },
+                    "text": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "section_id",
+                    "block_id",
+                    "text"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "remove_block"
+                    },
+                    "section_id": {
+                      "type": "string"
+                    },
+                    "block_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "section_id",
+                    "block_id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "add_section"
+                    },
+                    "heading": {
+                      "type": "string"
+                    },
+                    "blocks": {
+                      "type": "array",
+                      "maxItems": 1000,
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "after_section_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "new_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "level": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 6,
+                      "default": 2
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "heading",
+                    "blocks"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "remove_section"
+                    },
+                    "section_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "section_id"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "replace_section_blocks"
+                    },
+                    "section_id": {
+                      "type": "string"
+                    },
+                    "blocks": {
+                      "type": "array",
+                      "maxItems": 1000,
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "section_id",
+                    "blocks"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "op": {
+                      "const": "rename_section"
+                    },
+                    "section_id": {
+                      "type": "string"
+                    },
+                    "new_heading": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "op",
+                    "section_id",
+                    "new_heading"
+                  ],
+                  "additionalProperties": false
+                }
+              ]
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "maxItems": 12,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "quote"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "memory_id",
+          "context_sha256",
+          "operations",
+          "evidence"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "propose_memory",
+      "description": "Propose a decision, preference, procedure, task state or note as a draft memory. Every evidence quote must appear verbatim in a current source (for example a captured turn or a file). A quote that lies inside one code symbol anchors the memory to that symbol: an edit elsewhere in the file leaves the memory current, an edit inside the symbol withholds it. symbols names code symbols the memory is about; files are whole-file dependencies (any change to them withholds the memory). A member reviews the draft; it is never served as reviewed memory before that. Reusing the idempotency key with the same proposal replays it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "decision",
+              "preference",
+              "procedure",
+              "task_state",
+              "note"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "body": {
+            "type": "string",
+            "maxLength": 64000
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 2000
+          },
+          "files": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "string"
+            },
+            "description": "project files the memory depends on as a whole"
+          },
+          "symbols": {
+            "type": "array",
+            "maxItems": 50,
+            "description": "code symbols the memory is about: a stable_id from the code graph, or a path and qualified_name (with kind or ordinal when several symbols share them)",
+            "items": {
+              "type": "object",
+              "properties": {
+                "stable_id": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "qualified_name": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "ordinal": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "properties": {
+                "source_id": {
+                  "type": "string"
+                },
+                "quote": {
+                  "type": "string",
+                  "minLength": 8
+                }
+              },
+              "required": [
+                "source_id",
+                "quote"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "idempotency_key": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "recall": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "aliases": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 32
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "historical",
+                  "resolved",
+                  "open_question"
+                ]
+              },
+              "valid_from": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "valid_to": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "superseded_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "kind",
+          "title",
+          "body",
+          "evidence",
+          "idempotency_key"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "query_graph",
+      "description": "Search the knowledge graph using BFS or DFS. Returns relevant nodes and edges as text context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "Natural language question or keyword search"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "bfs",
+              "dfs"
+            ],
+            "default": "bfs",
+            "description": "bfs=broad context, dfs=trace a specific path"
+          },
+          "depth": {
+            "type": "integer",
+            "default": 3,
+            "description": "Traversal depth (1-6)"
+          },
+          "token_budget": {
+            "type": "integer",
+            "default": 2000,
+            "description": "Max output tokens"
+          },
+          "context_filter": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional explicit edge-context filter, e.g. ['call', 'field']"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_node",
+      "description": "Get full details for a specific node by label or ID.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Node label or ID to look up"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Alias for label (node id)"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_neighbors",
+      "description": "Get all direct neighbors of a node with edge details.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Alias for label (node id)"
+          },
+          "relation_filter": {
+            "type": "string",
+            "description": "Optional: filter by relation type"
+          },
+          "token_budget": {
+            "type": "integer",
+            "default": 2000,
+            "description": "Max output tokens"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_community",
+      "description": "Get all nodes in a community by community ID.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "community_id": {
+            "type": "integer",
+            "description": "Community ID (0-indexed by size)"
+          },
+          "token_budget": {
+            "type": "integer",
+            "default": 2000,
+            "description": "Max output tokens"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [
+          "community_id"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "god_nodes",
+      "description": "Return the most connected nodes - the core abstractions of the knowledge graph.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "top_n": {
+            "type": "integer",
+            "default": 10
+          },
+          "exclude_hubs_percentile": {
+            "type": "number",
+            "description": "Suppress nodes whose degree exceeds this percentile (0-100) of the degree distribution, matching cluster()'s hub exclusion"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "graph_stats",
+      "description": "Return summary statistics: node count, edge count, communities, confidence breakdown.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "shortest_path",
+      "description": "Find the shortest path between two concepts in the knowledge graph. Follows stored edge direction by default; set undirected=true to ignore it.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "Source concept label or keyword"
+          },
+          "target": {
+            "type": "string",
+            "description": "Target concept label or keyword"
+          },
+          "max_hops": {
+            "type": "integer",
+            "default": 8,
+            "description": "Maximum hops to consider"
+          },
+          "undirected": {
+            "type": "boolean",
+            "default": false,
+            "description": "Ignore stored edge direction when searching"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [
+          "source",
+          "target"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

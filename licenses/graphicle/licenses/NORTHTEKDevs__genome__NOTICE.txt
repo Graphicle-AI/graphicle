@@ -1,0 +1,7 @@
+GENOME
+Copyright 2026 Northtek (FrostByte Digital LLC)
+
+This product includes software developed by Northtek (FrostByte Digital LLC).
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file for details.
+Contact: info@northtek.io

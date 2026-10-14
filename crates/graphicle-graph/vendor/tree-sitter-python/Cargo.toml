@@ -1,0 +1,13 @@
+[package]
+name = "graphicle-tree-sitter-python"
+version = "0.25.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Native binding to tree-sitter-python 0.25.0, the grammar of Graphify's pinned Python parser, with the grammar pack's fix for its scanner's serializer overflow"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1"

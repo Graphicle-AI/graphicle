@@ -1,0 +1,181 @@
+# Track authored research only: notes, scripts, configs and result summaries.
+# Checkpoints, datasets, archives, images, raw logs, environments and copies
+# of third-party or repository code stay local.
+*
+!*/
+!.gitignore
+!*.md
+!*.txt
+!*.py
+!*.sh
+!*.ipynb
+!*.json
+!*.csv
+!*.tsv
+!*.xml
+!*.toml
+!*.yaml
+!*.yml
+!*.cfg
+!*.ini
+!*.sql
+!*.tex
+!*.bib
+!*.patch
+!*.diff
+!*.rs
+!*.js
+!*.mjs
+!*.ts
+!*.css
+
+# Run folders. Each run under results/ and competitors/ keeps its scripts,
+# README or methodology, inputs record, summaries, the results the documents
+# cite and the files code reads as input. Raw samples, logs, per-case and
+# per-instance output, build receipts, diagnostics and copies stay local;
+# memory/integration/QUALIFICATION.json and migration/FINAL.json hold their
+# hashes. These rules override the extension allowlist above.
+/results/**
+/competitors/**
+!/results/**/
+!/competitors/**/
+!/results/**/*.py
+!/results/**/*.sh
+!/results/**/*.md
+!/results/**/INPUTS.json
+!/results/**/*summary*.json
+!/results/**/summary.csv
+!/competitors/**/*.py
+!/competitors/**/*.sh
+!/competitors/**/*.md
+!/competitors/*/summary.json
+!/results/benefits-20261001/BASELINE.json
+!/results/benefits-20261001/*_REVIEW.json
+!/results/benefits-20261001/compact-records-final.json
+!/results/benefits-20261001/django-atomic.json
+!/results/benefits-20261001/django-starting-commit.json
+!/results/benefits-20261001/packed-preliminary.json
+!/results/benefits-20261001/route-clients-final.json
+!/results/benefits-20261001/trigger-prototypes.json
+!/results/benefits-20261001/agent/PROTOCOL.json
+!/results/benefits-20261001/agent/RESULTS.json
+!/results/benefits-20261001/agent/RUN_INPUTS.json
+!/results/benefits-20261001/selection/holdout-v*.json
+!/results/benefits-20261001/mutation-selection/holdout-mutations-v1*.json
+!/results/benefits-20261001/mutation-selection/full-confirmation.json
+!/results/docs-20260929/*.json
+!/results/localization-20260928/subsets.json
+!/results/localization-20260929/final-4f6bcb06/*/instances.json
+!/results/localization-aider-20261004/overrides.txt
+!/results/perf-20260929/node-baseline.json
+!/results/profile-20260930/identity.txt
+!/results/profile-20260930/parity.txt
+!/results/profile-20260930/oracles/*.json
+!/results/program6-20260930/*-repin.txt
+!/results/program6-20260930/rust-pass/comparison.txt
+!/results/program7-20261001/MANIFEST.json
+!/results/program7-20261001/development-manifest.json
+!/results/program7-20261001/fastapi-oracle.json
+!/results/program7-20261001/fastapi-release-eval.json
+!/results/program7-20261001/identity/*.json
+!/results/program7-20261001/reconcile-development.json
+!/results/program7-20261001/release-results.json
+!/results/routes-20260929/*.json
+# Per-instance agent trials, per-build stage profiles and raw tool output.
+/results/benefits-20261001/agent/*/
+/results/benefits-20261001/agent/summary.json
+/results/profile-20260930/profiles/
+/competitors/*/raw-outputs/
+
+# Caches, environments and build output.
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.triton_cache/
+.venv/
+venv/
+*-venv/
+site-packages/
+node_modules/
+*.dist-info/
+*.egg-info/
+*.app/
+target/
+build/
+dist/
+wandb/
+checkpoint/
+checkpoints/
+tmp/
+.tmp/
+# bench/run.py --work-dir default: per-run graph.json scratch.
+/.work/
+
+# Bulk generated output: judge traffic, per-case results, coverage reports.
+judges/
+judge-snapshots/
+*-backups/
+snapshot/
+cases/
+requests/
+responses/
+transport*/
+raw/
+coverage/
+*-istanbul/
+pytest-*/
+test-fixtures*/
+
+# Copies of repository code, upstream sources and installed dependencies.
+source/
+source-*/
+*-source/
+*-source-v*/
+evaluation-source*/
+package/
+packages/
+deps/
+dependencies/
+third-party/
+third_party/
+vendor/
+official/
+hub/
+models--*/
+public-sources/
+upstream/
+upstream-code/
+**/sources/*.txt
+
+# Model tokenizer files (third-party) and macOS resource forks.
+tokenizer.json
+tokenizer_config.json
+special_tokens_map.json
+added_tokens.json
+generation_config.json
+vocab.json
+vocab.txt
+merges.txt
+._*
+
+# Credentials: workspace capability tokens, session tokens and generated passwords.
+private/
+.reqlith/
+*-connection.json
+local-session.json
+workspace.private.json
+*secrets*.json
+*credentials*.json
+team-private.json
+first-login.json
+
+# Generated files over 1 MB.
+/results/benefits-20261001/RAW_ARCHIVE.json
+/results/benefits-20261001/agent/swe-bench-lite.json
+/results/benefits-20261001/extract-oracle-failure.json
+/results/benefits-20261001/mutation-selection/before-canonical-coverage-results.json
+/results/benefits-20261001/mutation-selection/canonical-results.json
+/results/benefits-20261001/mutation-selection/results.json
+/results/benefits-20261001/selection/starlette-two-sided.json
+/results/benefits-20261001/selection/third-environment-attempt/starlette-two-sided.json

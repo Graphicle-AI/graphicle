@@ -1,0 +1,13 @@
+[package]
+name = "graphicle-tree-sitter-vb-dotnet"
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Native binding to the exact VB.NET grammar in Graphify's pinned tree-sitter-vb-dotnet 0.3.0 Python dependency"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1"

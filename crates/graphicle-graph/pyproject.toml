@@ -1,0 +1,25 @@
+# Python wheel of the native binary (`pip install`), built by maturin.
+# The distribution and the command it installs are both `graphicle-graph`.
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "graphicle-graph"
+description = "Graphicle graph engine: code and document knowledge graphs, MCP server and live watch in one binary"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "Apache-2.0"
+dynamic = ["version"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Environment :: Console",
+    "Topic :: Software Development",
+    "License :: OSI Approved :: Apache Software License",
+]
+
+[tool.maturin]
+bindings = "bin"
+# The executable is the `graphicle-graph` package of this workspace.
+manifest-path = "cli/Cargo.toml"
+strip = true

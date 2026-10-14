@@ -1,0 +1,13 @@
+{
+  "name": "@graphicle/sdk",
+  "version": "0.1.0",
+  "description": "Graphicle project evidence, memory, graph and workflow client",
+  "private": true,
+  "type": "module",
+  "engines": {"node": ">=22"},
+  "exports": {".": {"types": "./index.d.ts", "import": "./index.js"}},
+  "types": "./index.d.ts",
+  "files": ["index.js", "index.d.ts", "README.md", "LICENSE", "NOTICE"],
+  "scripts": {"test": "node --test test/*.test.js"},
+  "license": "Apache-2.0"
+}

@@ -1,0 +1,13 @@
+[env]
+# The memory library's grammar pack, tree-sitter-language-pack 1.20.0, compiles the grammars in
+# TSLP_LANGUAGES from C sources under PROJECT_ROOT. Prepare that folder once, before the first
+# build, with `python3 ../graphicle/tools/prepare_parser_sources.py`: it downloads the pack's
+# 36.6 MB parser bundle, checks its pinned SHA-256 and keeps what these builds read (about 540
+# MB). Builds then need no network and rebuild nothing when nothing changed. Without the folder
+# the pack downloads the bundle itself and unpacks all of it (about 2 GB) into the build folder,
+# but its cache check probes _parsers/<language> while the bundle unpacks to
+# _parsers/parsers/<language>: every Cargo command then downloads, unpacks and recompiles it and
+# the crates above it again, and none works offline.
+PROJECT_ROOT = { value = "../../.tslp-root", relative = true }
+TSLP_LINK_MODE = "static"
+TSLP_LANGUAGES = "python,javascript,typescript,tsx,rust,java,c,cpp,ruby,csharp,kotlin,scala,php,lua,swift,go,apex,bash,blade,commonlisp,dart,elixir,fortran,julia,objc,ocaml,pascal,powershell,sql,hcl,verilog,zig,json,yaml,toml,html,css,markdown,xml,r,haskell,make,cmake,dockerfile,vue,svelte,astro,razor,robot"

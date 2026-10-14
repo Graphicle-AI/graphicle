@@ -1,0 +1,57 @@
+[package]
+name = "graphicle-memory"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+description = "Source-backed memory operations for the Graphicle application"
+license = "Apache-2.0"
+
+[lib]
+name = "graphicle_memory"
+crate-type = ["rlib", "cdylib"]
+
+[[bin]]
+name = "graphicle-memory"
+path = "src/main.rs"
+# No unit tests here; tests/ runs the executable.
+test = false
+
+[features]
+# The engine's defaults: `bedrock` and `transcription` are opt-in.
+default = ["chinese", "precise-js", "grammars-extra"]
+bedrock = ["graphicle/bedrock"]
+chinese = ["graphicle/chinese"]
+transcription = ["graphicle/transcription"]
+postgres = ["graphicle/postgres"]
+precise-js = ["graphicle/precise-js"]
+grammars-extra = ["graphicle/grammars-extra"]
+
+[dependencies]
+graphicle = { path = "../graphicle-graph", default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["preserve_order"] }
+sha2 = "0.10"
+sha1 = "0.10"
+regex = "1.12"
+toml = { version = "0.8", features = ["preserve_order"] }
+hashbrown = { version = "=0.16.1", features = ["default-hasher"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "serde"] }
+tiktoken-rs = "0.12"
+tree-sitter = "0.27"
+tree-sitter-language-pack = { version = "=1.20.0", default-features = false, features = ["serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+# Keep the linker output intact. Post-link stripping with the installed macOS
+# toolchain can misalign LINKEDIT and produce a dylib that dyld rejects.
+strip = false
+
+# Development and test builds keep line tables only (file and line in
+# backtraces and panics), which keeps their folders small.
+[profile.dev]
+debug = "line-tables-only"

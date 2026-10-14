@@ -1,0 +1,12 @@
+{
+  "repository": "wpostma/tree-sitter-pascal",
+  "commit": "a55068ee73ec993e06d81ca4eb53b85452e79c72",
+  "license": "MIT",
+  "files": {
+    "LICENSE": "2e2fcc500eacb15b76c11fd2229aebf0a5b4c8ed476f068447c6dce778a17ac9",
+    "grammar/parser.c": "c628b3531bd6be19856106d80ac24de30d54ee3785f85f3cc7d8e49067392c86",
+    "grammar/node-types.json": "bf6f054b26c91fe3d187a9e8543ef03d1d966f42038cc3ad194111a65187e009",
+    "grammar/tree_sitter/parser.h": "a1f6ef161fbaf48a0e10fca90ef5290a062462b307b3898aa562993853b9f80a"
+  },
+  "reason": "Pinned permissive predecessor; Graphify optional Python parser 0.11.0 is AGPL-3.0-only and is not linked or shipped."
+}

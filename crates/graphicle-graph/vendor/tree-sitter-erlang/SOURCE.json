@@ -1,0 +1,18 @@
+{
+  "url": "https://files.pythonhosted.org/packages/40/20/b21748c3386effa68bc7ab6d2bd9b78eabe391adc5797b7d37b24930f3b3/tree_sitter_language_pack-0.11.0.tar.gz",
+  "sha256": "228901ce64c2b08feabfeeb687d6eb9450825bb8bd8cdf9caffffb9e7939614a",
+  "files": {
+    "grammar/parser.c": "d7fb06efcbc0179528c47af1f3361d421c33dc56079ada3e8456a6fc1e4c58be",
+    "grammar/scanner.c": "3cedecaad3e5f8461e4e3f7fb253e5c22acb0bd2297ecea38b52f4cf66512210",
+    "grammar/tree_sitter/parser.h": "64720a93d46ad7eb27cac63d142e1c7575c3b7207c15e4899cf0243aaff0c033",
+    "grammar/tree_sitter/alloc.h": "55fa70dbab101b72fb87c80d9fa51ee61ab6b94edbff0a73b1f382924a891c71",
+    "grammar/tree_sitter/array.h": "6ea7e03b02b5654e49bc6c4681d6eeaf30e38de70547b46bb0128f8c84957f9c",
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+  },
+  "note": "tree-sitter-language-pack 0.11.0 bundled Erlang parser (ABI 14).",
+  "grammar": {
+    "repo": "https://github.com/WhatsApp/tree-sitter-erlang",
+    "rev": "a260cb65eaa6e055289a34434f98c3aae6137ed5"
+  },
+  "license_url": "https://raw.githubusercontent.com/WhatsApp/tree-sitter-erlang/a260cb65eaa6e055289a34434f98c3aae6137ed5/LICENSE"
+}

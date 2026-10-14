@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Third-party licenses</title>
+<style>body{font-family:sans-serif;max-width:60em;margin:2em auto}pre{white-space:pre-wrap;background:#f6f6f6;padding:1em}</style>
+</head><body>
+<h1>Third-party licenses</h1>
+<p>This page lists the licenses of third-party crates linked into this package, grouped by license text.</p>
+<h2>Overview</h2>
+<ul>
+{{#each overview}}<li><a href="#{{id}}">{{name}}</a> &mdash; {{count}} crate(s)</li>
+{{/each}}</ul>
+<h2>Licenses</h2>
+{{#each licenses}}
+<h3 id="{{id}}">{{name}}</h3>
+<p>Used by:</p>
+<ul>{{#each used_by}}<li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}</ul>
+<pre>{{text}}</pre>
+{{/each}}
+</body></html>

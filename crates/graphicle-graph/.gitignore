@@ -1,0 +1,7 @@
+/target/
+/.reference-venv/
+**/__pycache__/
+/.pytest_cache/
+# The third-party licence texts are tracked (NOTICE, NOTICE.md and the release
+# archives ship them); this overrides older ignore rules for the folder.
+!/licenses/

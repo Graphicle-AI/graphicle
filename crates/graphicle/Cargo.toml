@@ -1,0 +1,74 @@
+[package]
+name = "graphicle-runtime"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+license = "Apache-2.0"
+description = "Native persistent memory service and model workflows for Graphicle"
+
+# The executable keeps the name `graphicle` (target/<profile>/graphicle,
+# --bin graphicle, CARGO_BIN_EXE_graphicle). doc = false: `cargo doc` would
+# otherwise write the bin's docs over those of the engine library `graphicle`.
+[[bin]]
+name = "graphicle"
+path = "src/main.rs"
+doc = false
+# The program has no unit tests; the integration tests run it.
+test = false
+
+# This crate builds the Core edition. Another edition depends on it and adds
+# its features through the extension registry (src/extension.rs).
+[features]
+local-inference = ["dep:ort", "dep:tokenizers"]
+
+[dependencies]
+graphicle-memory = { path = "../graphicle-memory" }
+graphicle = { path = "../graphicle-graph" }
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "fs", "io-util", "io-std"] }
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+clap = { version = "4", features = ["derive"] }
+url = "2"
+subtle = "2"
+ignore = "0.4"
+base64 = "0.22"
+regex = "1"
+libc = "0.2"
+mimalloc = { version = "0.1", default-features = false }
+jsonschema = { version = "0.33", default-features = false }
+aes-gcm = "0.10"
+rand = "0.8"
+sha2 = "0.10"
+sha1 = "0.10"
+ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["std", "load-dynamic"] }
+tokenizers = { version = "=0.22.2", optional = true, default-features = false, features = ["fancy-regex"] }
+quick-xml = "0.41"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+calamine = "0.36"
+pdf-extract = "0.12"
+html2text = "0.15"
+redis = { version = "=0.32.7", default-features = false, features = ["tokio-rustls-comp", "streams"] }
+tempfile = "3"
+ring = "0.17"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+
+# Build footprint: release programs carry no symbol table or debug
+# information, and development and test builds keep line tables only (file
+# and line in backtraces and panics, no variable or type information), so
+# trying Graphicle does not take a large disk.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+debug = false
+
+[profile.dev]
+debug = "line-tables-only"

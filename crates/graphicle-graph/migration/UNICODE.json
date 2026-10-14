@@ -1,0 +1,11 @@
+{
+  "unicode_version": "15.0.0",
+  "casefold_entries": 1530,
+  "word_ranges": 748,
+  "identifier_start_ranges": 667,
+  "identifier_continue_ranges": 775,
+  "mark_ranges": 310,
+  "generated_sha256": "987cb29e54698ea43769d6f831c4b83e33186454ffa10ab705a742b43a334334",
+  "generator_sha256": "1e33156f3a509664bc2aad51da072ff4b8dc46d527d8447dcbc71c293c27c2cb",
+  "normalization_dependency": "unicode-normalization = 0.1.22 (Unicode 15.0.0)"
+}

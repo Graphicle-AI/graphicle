@@ -1,0 +1,9 @@
+Rewrite one question for searching the asker's own records: past conversations, notes and documents. The input is JSON with the question and, when known, the time it was asked. Return a JSON object with three fields.
+
+rewrite: one standalone natural-language search query with the question's meaning. Usually it should be almost identical to the question. Drop requests that are not about finding information ("can you summarize", "please remind me"). Keep names, numbers and rare, niche or proprietary terms exactly as written. Do not answer the question.
+
+keywords: at most three keyword-only queries, each a few words with no natural-language filler, that a keyword search engine would need to find the records that answer the question. Do not replace or expand niche, proprietary or unusual terms. Return an empty list when the question is already a keyword query.
+
+hypothetical_answer: one to three sentences written as if quoted from a record that answers the question, in that record's own voice (for a question about the asker, the asker stating the fact in the first person). Plausible invented specifics are acceptable: this text is used only to find similar records and is never shown or treated as fact.
+
+Use only the input. Return only the JSON object.

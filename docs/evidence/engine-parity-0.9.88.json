@@ -1,0 +1,2330 @@
+{
+  "schema": "graphicle.engine-parity-run.v1",
+  "what": "The comparison checks of the graph engine against the pinned Graphify 0.9.88 reference: each check runs the upstream tests and comparisons named in its script against the release build below. Reproduce with tools/qualification.py and tools/qualify_all.py in crates/graphicle-graph/ (crates/graphicle-graph/README.md, \"Verification\").",
+  "run": "run-20261013T151011Z",
+  "passed": true,
+  "checks_passed": 96,
+  "checks": 96,
+  "upstream": {
+    "version": "0.9.88",
+    "commit": "a9860f70dc3cc2e9c2d8cb923484cfa0592b9067",
+    "archive": "Graphify-Labs__graphify-a9860f70dc3c.tar.gz",
+    "archive_sha256": "b0681491dbf8dd63bbbc04faad50bfd4aea6c68ea2ea5afef961099216f8273c"
+  },
+  "binary_sha256": "d5aaef3ccf6dea8b61d58db81eefb23d7a1db793a4bf39fe6e7a8b2ebb6fdb72",
+  "source_set_sha256": "85f2d451090c1e62c2c25d49b780a771151c7d1e1ebf415907f93d68716bc1ea",
+  "manifest": "d5aaef3ccf6dea8b61d58db81eefb23d7a1db793a4bf39fe6e7a8b2ebb6fdb72-85f2d451090c.json",
+  "manifest_sha256": "1a0dec3dad11c3c6eb23ca94b7e3969c0ed985bbe2a60a3c5baf2a525afa3c02",
+  "build": {
+    "profile": "release",
+    "features": [
+      "default",
+      "postgres",
+      "bedrock",
+      "transcription"
+    ],
+    "rustc": "rustc 1.95.0 (59807616e 2026-04-14)",
+    "built_utc": "2026-10-13T13:15:18.810248+00:00"
+  },
+  "harness_sha256": "c7f8a23f503c160acc794c378a9df2e405a2516270cac02d92a203f5c89d8fd9",
+  "check_results": [
+    {
+      "check": "check_affected.py",
+      "exit_code": 0,
+      "seconds": 18.44,
+      "check_sha256": "bc27f78c2becb9d6652f6860b73c4a9e48a21143b56c4d217af048ce25fa833d"
+    },
+    {
+      "check": "check_analyze.py",
+      "exit_code": 0,
+      "seconds": 13.75,
+      "check_sha256": "84cc05da8284b0eb02ff336e7ec6a60635dac28193229d00cd926daadfc327db"
+    },
+    {
+      "check": "check_apex.py",
+      "exit_code": 0,
+      "seconds": 10.0,
+      "check_sha256": "7e22f98797b61eb2cbc9e35666ffbdd25a209050eb01424fd1f661316eb6c51b"
+    },
+    {
+      "check": "check_bash.py",
+      "exit_code": 0,
+      "seconds": 9.28,
+      "check_sha256": "276ee870cf7fe773047877823f78f6eeaa89070e06b0ba31e6769abd66c5de6d"
+    },
+    {
+      "check": "check_benchmark.py",
+      "exit_code": 0,
+      "seconds": 7.49,
+      "check_sha256": "783be98b35676b23af1ad122fbae2ef93119149de339457b7653131f03ffad71"
+    },
+    {
+      "check": "check_blade.py",
+      "exit_code": 0,
+      "seconds": 5.76,
+      "check_sha256": "4f0cb2f5df3814229a368311006e354bc7490fbd212a8076cac0750c63309af4"
+    },
+    {
+      "check": "check_build.py",
+      "exit_code": 0,
+      "seconds": 11.79,
+      "check_sha256": "6f0651eaffa89306667b2e05e8188064e27c8c2b16337ce3a6a374f30592a6ca"
+    },
+    {
+      "check": "check_cache.py",
+      "exit_code": 0,
+      "seconds": 18.29,
+      "check_sha256": "22e807eab9ae2f010caf2c71ab046811e6bc01adb72a605b5cb5d5731b3644ee"
+    },
+    {
+      "check": "check_callflow_html.py",
+      "exit_code": 0,
+      "seconds": 11.42,
+      "check_sha256": "4d9a1dabbfaad95bd18b6a3b8e943aebbc1ec203a8683ef8d655c958860367dc"
+    },
+    {
+      "check": "check_cargo.py",
+      "exit_code": 0,
+      "seconds": 6.92,
+      "check_sha256": "8733a7e05bd996c5e341275b6de6faa5896135d0768139b738af5c240e04d86e"
+    },
+    {
+      "check": "check_cli.py",
+      "exit_code": 0,
+      "seconds": 13.89,
+      "check_sha256": "17c7e5f7a8d9a3a1a66f9e45d881693c2074379551e4fa1c872dab2a3d1acc9d"
+    },
+    {
+      "check": "check_cluster.py",
+      "exit_code": 0,
+      "seconds": 13.95,
+      "check_sha256": "47438394041099cf2bc0455b3971907ba057623e1c17fa5b088f11d3f4a914ba"
+    },
+    {
+      "check": "check_cobol.py",
+      "exit_code": 0,
+      "seconds": 6.94,
+      "check_sha256": "01e93a76ca221c40ffc73c7190facbea5d596283573d84beb04840a39f09a83a"
+    },
+    {
+      "check": "check_commonlisp.py",
+      "exit_code": 0,
+      "seconds": 6.49,
+      "check_sha256": "c9dc87dd1233928b9d8fc6c6a358b02ce5ef4b87dd463a7646bfcb9bab8356b7"
+    },
+    {
+      "check": "check_cross_repo_calls.py",
+      "exit_code": 0,
+      "seconds": 8.28,
+      "check_sha256": "87d21fc8e95a80f71e544e566c8975714930968fadc154e932830198beb1d6b0"
+    },
+    {
+      "check": "check_cross_repo_types.py",
+      "exit_code": 0,
+      "seconds": 21.13,
+      "check_sha256": "233635c59a30dafefb829b03a92d33f69c4654a3ae9309ed1b26a11c65580744"
+    },
+    {
+      "check": "check_csharp.py",
+      "exit_code": 0,
+      "seconds": 11.74,
+      "check_sha256": "c31b6a8d69a6bc31dc2ea5c2dd1c9a71b7496f42d63d15f7ca24d6ed3d6ff415"
+    },
+    {
+      "check": "check_csharp_dispatch.py",
+      "exit_code": 0,
+      "seconds": 7.19,
+      "check_sha256": "865469cbfcc6b002789e149504e3a6fc361f49e4db3701d0f09448696b2740bd"
+    },
+    {
+      "check": "check_dart.py",
+      "exit_code": 0,
+      "seconds": 6.28,
+      "check_sha256": "3063fd11b92b89ca7f26d8caff6b13392ca9e96b1afbdab3a74d951cbf14f767"
+    },
+    {
+      "check": "check_dedup.py",
+      "exit_code": 0,
+      "seconds": 10.23,
+      "check_sha256": "b6e413c009463e237953935b4461a8eb7bbcf5d2aeaebfada1a8954158939f39"
+    },
+    {
+      "check": "check_detect.py",
+      "exit_code": 0,
+      "seconds": 48.37,
+      "check_sha256": "7acf37c31725fe9b2c41d559b2bd8477a5a0f8f48421cf60e25ce02c908bfba4"
+    },
+    {
+      "check": "check_diagnostics.py",
+      "exit_code": 0,
+      "seconds": 7.37,
+      "check_sha256": "29721854cb4c93ab2159a0abdb8bfcabe8816f301ab08ee5634cc329f07600ed"
+    },
+    {
+      "check": "check_dm.py",
+      "exit_code": 0,
+      "seconds": 8.05,
+      "check_sha256": "7bd7b84cf995052224db265ad5cc07ef75cf73eac205a088b9b053733fa1e53b"
+    },
+    {
+      "check": "check_elixir.py",
+      "exit_code": 0,
+      "seconds": 7.45,
+      "check_sha256": "bebbae2fd3e8fba1dce40eb113834647f55cecd41cc3b366cd1abc11f63c9d54"
+    },
+    {
+      "check": "check_engine.py",
+      "exit_code": 0,
+      "seconds": 63.9,
+      "check_sha256": "6d93ba240f0689382d8d118c2b19a17f656a2f19908694740b70a0a8c1ab973e"
+    },
+    {
+      "check": "check_erlang.py",
+      "exit_code": 0,
+      "seconds": 7.31,
+      "check_sha256": "bfdae7628d15257908278f8dd69317a01f0ccd508c7f53dc4dfc3d0d90de56c1"
+    },
+    {
+      "check": "check_export.py",
+      "exit_code": 0,
+      "seconds": 11.48,
+      "check_sha256": "956a6b97c905d41309fa83a861a0081ab099fe46f098004814072db5f6120270"
+    },
+    {
+      "check": "check_export_graphdb.py",
+      "exit_code": 0,
+      "seconds": 1.84,
+      "check_sha256": "21910886eecd70a77f73c27e0ed2f0699848073603f04a558b400ce0365900ef"
+    },
+    {
+      "check": "check_export_html.py",
+      "exit_code": 0,
+      "seconds": 10.31,
+      "check_sha256": "a56c731f92874fd5579b3f875b6dc79eafed7f33d1e78a0e8c6474c64073468c"
+    },
+    {
+      "check": "check_exporters_base.py",
+      "exit_code": 0,
+      "seconds": 1.26,
+      "check_sha256": "85541485e1ac2c6d8a0817de1b51aa520215c44b938d38273861b2e33275c1a0"
+    },
+    {
+      "check": "check_extract.py",
+      "exit_code": 0,
+      "seconds": 104.92,
+      "check_sha256": "2e6e7e7993447a4031d06aa07da4d437b5b903de8fec659e46817ce4641494e1"
+    },
+    {
+      "check": "check_extractor_base.py",
+      "exit_code": 0,
+      "seconds": 6.57,
+      "check_sha256": "e8fd0b3e3965a5915f90eb45c0d2637af901dad873d48fefdd19ff0f3626b8f0"
+    },
+    {
+      "check": "check_extractors_registry.py",
+      "exit_code": 0,
+      "seconds": 1.13,
+      "check_sha256": "493350dcbf5872f3b1732a66dd7c859012103b739156881718ffe6f27312de80"
+    },
+    {
+      "check": "check_file_slice.py",
+      "exit_code": 0,
+      "seconds": 20.52,
+      "check_sha256": "94333d4bb4991fe94738524ddf2a8d561f1ba46b14e101352a944db9257c65e6"
+    },
+    {
+      "check": "check_fortran.py",
+      "exit_code": 0,
+      "seconds": 14.11,
+      "check_sha256": "4a1e05ea7c62d9a3fd4c44a13a50f0648d82f3cdf49aee12870efef684fd4d51"
+    },
+    {
+      "check": "check_global_graph.py",
+      "exit_code": 0,
+      "seconds": 6.64,
+      "check_sha256": "859c1411f0ac1f416e855024b16b4392788f55c6ceda958cf99c16d068d3dcd9"
+    },
+    {
+      "check": "check_go.py",
+      "exit_code": 0,
+      "seconds": 7.15,
+      "check_sha256": "dea90455b1b28717d9625d30eb816101ab0d206461d3925348e06a5abf2f55ed"
+    },
+    {
+      "check": "check_google_workspace.py",
+      "exit_code": 0,
+      "seconds": 7.5,
+      "check_sha256": "73f4c9f9a46be283afb50499996a1ec1e7fdb36f3070549601403fcb5dd10b76"
+    },
+    {
+      "check": "check_graph_session.py",
+      "exit_code": 0,
+      "seconds": 1.63,
+      "check_sha256": "83408bcc3f45f78ace40aa0b22896b9fa1fcd6fb02b49a06f1c6c6871f9177c5"
+    },
+    {
+      "check": "check_hooks.py",
+      "exit_code": 0,
+      "seconds": 11.59,
+      "check_sha256": "6feea511e6d47c7a69c025a8f98d8dd93b06b0c65be7915e89ac18106c10d514"
+    },
+    {
+      "check": "check_ids.py",
+      "exit_code": 0,
+      "seconds": 2.32,
+      "check_sha256": "bdb9e10cc8ccef4c314d72c083eec1e24ae24ffffa56937ce39f55484da413ad"
+    },
+    {
+      "check": "check_ingest.py",
+      "exit_code": 0,
+      "seconds": 16.23,
+      "check_sha256": "ebb653adc554333ae533beaf9ebf8034f08a4fd1f75aa93c59479032dcd212b6"
+    },
+    {
+      "check": "check_install.py",
+      "exit_code": 0,
+      "seconds": 20.56,
+      "check_sha256": "273c87912fc106381704ec9496098d576e37cbd9c734282450dcd365ecf3e3ed"
+    },
+    {
+      "check": "check_interface_dispatch.py",
+      "exit_code": 0,
+      "seconds": 8.82,
+      "check_sha256": "f9d0fa7fe7ebf3449721fa8eefa681c32f0f315f36867da92d2d98022731708c"
+    },
+    {
+      "check": "check_json_config.py",
+      "exit_code": 0,
+      "seconds": 6.9,
+      "check_sha256": "8d789084c327f1cdbe7701b401aa97b7bbde404b05b8f6b0b0fd3327b7163bdc"
+    },
+    {
+      "check": "check_julia.py",
+      "exit_code": 0,
+      "seconds": 7.4,
+      "check_sha256": "6d852e3847d2ca52716819447fcafc172facad1c51f765195760aeb19ad0977d"
+    },
+    {
+      "check": "check_llm.py",
+      "exit_code": 0,
+      "seconds": 12.09,
+      "check_sha256": "167272a75228a7f480340ced93a59eb142e14e63c34399a45f2a72d4e1fca593"
+    },
+    {
+      "check": "check_manifest.py",
+      "exit_code": 0,
+      "seconds": 0.87,
+      "check_sha256": "4fdf579d47c873aa4cc71208b5b6aae99a5bafc81d791b026cd7846f0c7a5dc5"
+    },
+    {
+      "check": "check_manifest_ingest.py",
+      "exit_code": 0,
+      "seconds": 7.29,
+      "check_sha256": "27fdc7f10b5820885219c1913c61852b12f5d9a2a604bf169707dddd4ddd6b21"
+    },
+    {
+      "check": "check_markdown.py",
+      "exit_code": 0,
+      "seconds": 8.68,
+      "check_sha256": "f2d4f4a7812cb148e863f1a42260e45bb2f37eeca842933f969601febc009d8e"
+    },
+    {
+      "check": "check_markdown_resolution.py",
+      "exit_code": 0,
+      "seconds": 6.08,
+      "check_sha256": "b752ff8af2cf84d9e43a228217f91fcf948567bafe67058c6657f9a2996f10d0"
+    },
+    {
+      "check": "check_mcp_ingest.py",
+      "exit_code": 0,
+      "seconds": 6.3,
+      "check_sha256": "bb8dda6386980f9c73b35f3ca57af4862e49489f30ead32087beb5b187a38165"
+    },
+    {
+      "check": "check_minhash.py",
+      "exit_code": 0,
+      "seconds": 7.35,
+      "check_sha256": "e12269c4ace35a489f060d7156da9b9995539e0de3e48a0945fc1aba3c4cdc38"
+    },
+    {
+      "check": "check_models.py",
+      "exit_code": 0,
+      "seconds": 1.24,
+      "check_sha256": "e88027de35135878456f33565f0aa6fc1388ac711ee0279e6d84dc6811d4f1d2"
+    },
+    {
+      "check": "check_multigraph.py",
+      "exit_code": 0,
+      "seconds": 1.31,
+      "check_sha256": "f1b986b7f76dd2942c0a886c620bdac84c7772b41adb54f68c0f657d3be205d2"
+    },
+    {
+      "check": "check_native_workflows.py",
+      "exit_code": 0,
+      "seconds": 45.95,
+      "check_sha256": "f82601e9eac20e378446e030cef85c23f124cabb02a7c1e1ee598c9d2b5450bd"
+    },
+    {
+      "check": "check_objc.py",
+      "exit_code": 0,
+      "seconds": 7.79,
+      "check_sha256": "48c0b2c08d4de0d4583d735caf3c9129ec2c7287f40df4d13642b81caa21b795"
+    },
+    {
+      "check": "check_ocaml.py",
+      "exit_code": 0,
+      "seconds": 6.25,
+      "check_sha256": "1ec104c8de06e21fb73807ffd8532b39e018cea5fbf1e7646aaeccda13132406"
+    },
+    {
+      "check": "check_pascal.py",
+      "exit_code": 0,
+      "seconds": 19.27,
+      "check_sha256": "f265aa2bbef15cf394cd85b1398d5a76d1ca0be3b115e7c008eed985440df7d0"
+    },
+    {
+      "check": "check_pascal_forms.py",
+      "exit_code": 0,
+      "seconds": 5.65,
+      "check_sha256": "0f2a47fb5d96fb77572c89b5276dae62162320e0558f4e24490ec7006ea6dc5d"
+    },
+    {
+      "check": "check_pascal_resolution.py",
+      "exit_code": 0,
+      "seconds": 6.69,
+      "check_sha256": "c3ec1966c4c18f0636424b731f37b6a19f4ea2963926e8a23d2607091dea96f3"
+    },
+    {
+      "check": "check_paths.py",
+      "exit_code": 0,
+      "seconds": 7.97,
+      "check_sha256": "7184bf0e101e5bd34797ad0ef543e00cdaf8c1c2515ff62fcd3f81a62e3be564"
+    },
+    {
+      "check": "check_pg_introspect.py",
+      "exit_code": 0,
+      "seconds": 5.98,
+      "check_sha256": "66c7ea90e82c5c6d730c78060388a3c671df13c7af4cde9e00f33828958b9e76"
+    },
+    {
+      "check": "check_powershell.py",
+      "exit_code": 0,
+      "seconds": 7.7,
+      "check_sha256": "72b704c8af47b4b217831dcc0fdb498a7863e59a82a3a6581b37967afd25059d"
+    },
+    {
+      "check": "check_prs.py",
+      "exit_code": 0,
+      "seconds": 13.18,
+      "check_sha256": "6f9fe276752cc347b6a0e703560cd397a3ed9bc2bb8ee515cd7b3635fa191c30"
+    },
+    {
+      "check": "check_public_api.py",
+      "exit_code": 0,
+      "seconds": 75.98,
+      "check_sha256": "6d450e2abfa65f5a8bfa8228f316a9f083c2dfe61f7d41b62508ddeb09324834"
+    },
+    {
+      "check": "check_querylog.py",
+      "exit_code": 0,
+      "seconds": 7.45,
+      "check_sha256": "026af021d1e14cf21d0ad2e4ecc6ed4575f078944bdba20aaea72d42e37b0da4"
+    },
+    {
+      "check": "check_r.py",
+      "exit_code": 0,
+      "seconds": 9.46,
+      "check_sha256": "8dd900368f9e52959c11eff1df2d6e32e2f0b027a007d2e50fa37d13539ea5fa"
+    },
+    {
+      "check": "check_razor.py",
+      "exit_code": 0,
+      "seconds": 9.21,
+      "check_sha256": "17aec709d3818d157444f6359dbddfa4cc73663dbc3f5b54840054a110e5d927"
+    },
+    {
+      "check": "check_rcfile.py",
+      "exit_code": 0,
+      "seconds": 15.33,
+      "check_sha256": "25fee30f62f770a83d3da6221893d69f4872c66fd538122d6e7895774c26f50c"
+    },
+    {
+      "check": "check_reflect.py",
+      "exit_code": 0,
+      "seconds": 13.25,
+      "check_sha256": "26f53109bbfa71182d306153dd781c69e9917de8fa30c52640bc0a7209e769c3"
+    },
+    {
+      "check": "check_report.py",
+      "exit_code": 0,
+      "seconds": 9.25,
+      "check_sha256": "537687d30b93f7d42d5dfc96ec3cb8177d7d6769d776e919d51feb1cb0c42bcc"
+    },
+    {
+      "check": "check_resolution.py",
+      "exit_code": 0,
+      "seconds": 32.77,
+      "check_sha256": "8e1ad0ac835e90a60956f5be483f525916b02c958d1864d59de5056230c63543"
+    },
+    {
+      "check": "check_resolver_registry.py",
+      "exit_code": 0,
+      "seconds": 1.05,
+      "check_sha256": "0b6864f449ec70f4db23711767cff4b1b54438c43704b3c4211e13c67df82b7f"
+    },
+    {
+      "check": "check_robot.py",
+      "exit_code": 0,
+      "seconds": 8.12,
+      "check_sha256": "c39e22bfebda80fbf930afea1a8d8f2ceb42f46bde8b15f21455bc34906a3fba"
+    },
+    {
+      "check": "check_ruby_resolution.py",
+      "exit_code": 0,
+      "seconds": 7.29,
+      "check_sha256": "7da82b7438673f5384ca968729d90c0d9ed9f7a89de3c2a66c0a100cc536e453"
+    },
+    {
+      "check": "check_rust.py",
+      "exit_code": 0,
+      "seconds": 10.93,
+      "check_sha256": "a9aaeebfb3fd97f0e6d62132aeaf293d5e1dab2d07b0932f549c8eac8e6eff73"
+    },
+    {
+      "check": "check_scip_ingest.py",
+      "exit_code": 0,
+      "seconds": 6.12,
+      "check_sha256": "dc5f61632ed8dd4dffb7097f8817463b4ce4c8960de4e35c5f67a75ff9df66be"
+    },
+    {
+      "check": "check_security.py",
+      "exit_code": 0,
+      "seconds": 6.9,
+      "check_sha256": "cdad6777949386557aa6fe182d388dbc2947d63848857c0395bc41c1c2b3655e"
+    },
+    {
+      "check": "check_semantic_cleanup.py",
+      "exit_code": 0,
+      "seconds": 15.48,
+      "check_sha256": "0390ee137779e74f4840b60786e78454a9e8ea1ddec3239e3888f4e4f8979750"
+    },
+    {
+      "check": "check_serve.py",
+      "exit_code": 0,
+      "seconds": 13.52,
+      "check_sha256": "a1fb78162226996988e6171a9dce3c98703a5abc9eca3cfd4ae1c41930a0ce6c"
+    },
+    {
+      "check": "check_sln.py",
+      "exit_code": 0,
+      "seconds": 5.81,
+      "check_sha256": "258eb34f9040178b5b38922d7a7325276bab0378e1e4cadde21df33b8d80129d"
+    },
+    {
+      "check": "check_solidity.py",
+      "exit_code": 0,
+      "seconds": 6.91,
+      "check_sha256": "0150692aab478f8fd9d359c39284afb2ca7a4164fbfebf298dd67b4bf7d5f271"
+    },
+    {
+      "check": "check_sql.py",
+      "exit_code": 0,
+      "seconds": 19.54,
+      "check_sha256": "9c614b33c1d89f083bdb210dee311625f884a87779da65d3889815132a0b22e3"
+    },
+    {
+      "check": "check_subset.py",
+      "exit_code": 0,
+      "seconds": 1.42,
+      "check_sha256": "a41d4ea88ed480434c8bfe4a9f5802099ae065f243455d756cb9d7340f390971"
+    },
+    {
+      "check": "check_swift_dispatch.py",
+      "exit_code": 0,
+      "seconds": 12.18,
+      "check_sha256": "932a850eb3b0616b311bbd16f6e9023966971c1759b8fefc335f75cdf90c8f35"
+    },
+    {
+      "check": "check_symbol_resolution.py",
+      "exit_code": 0,
+      "seconds": 16.31,
+      "check_sha256": "75d8878a974e7dc4178fcf75be3c1d15f9c476361e14d8da0e3c774723c8c4fd"
+    },
+    {
+      "check": "check_terraform.py",
+      "exit_code": 0,
+      "seconds": 12.67,
+      "check_sha256": "97b6da86cf984ffb63976d0dcd3062dcb35ca53637f049c6954de838e9dee08f"
+    },
+    {
+      "check": "check_transcribe.py",
+      "exit_code": 0,
+      "seconds": 41.41,
+      "check_sha256": "9570514f94e8654dbe13512bd274a1b61e504483ee7e40988f867e4b63b6ea99"
+    },
+    {
+      "check": "check_tree_html.py",
+      "exit_code": 0,
+      "seconds": 7.67,
+      "check_sha256": "706c45776db75848b28b09ce79308d1d1d0f3cbf23334158aac49b19cb358925"
+    },
+    {
+      "check": "check_validate.py",
+      "exit_code": 0,
+      "seconds": 7.97,
+      "check_sha256": "5a6ad48332a25ae0d2c2ea0291122f6220098f64643dcb00669caef800a6a416"
+    },
+    {
+      "check": "check_vbnet.py",
+      "exit_code": 0,
+      "seconds": 14.73,
+      "check_sha256": "28b0867600ee310910f2ab79e0bc1706fea233dcaeb794f09302755f2fe22558"
+    },
+    {
+      "check": "check_verilog.py",
+      "exit_code": 0,
+      "seconds": 11.57,
+      "check_sha256": "064e1f633918b01db2453016cdad160bd4e94bfb7ef513c6bf748929ac228777"
+    },
+    {
+      "check": "check_watch.py",
+      "exit_code": 0,
+      "seconds": 39.44,
+      "check_sha256": "f0617706714d47498c5b5584f171fab9aff5098bf51b56a9d72c3154e588c89d"
+    },
+    {
+      "check": "check_wiki.py",
+      "exit_code": 0,
+      "seconds": 18.21,
+      "check_sha256": "f07553b023e643c6290a21b0e15d82da612522a7df02f9d7e8719c37fe8cda58"
+    },
+    {
+      "check": "check_zig.py",
+      "exit_code": 0,
+      "seconds": 8.03,
+      "check_sha256": "120f68f4c9a8a5d8aa5b208fcf9a5265217a45287c596d064284e32961b27cea"
+    }
+  ],
+  "modules": [
+    {
+      "source": "graphify/__init__.py",
+      "source_sha256": "5afcd670aa65337ae49735582a9bc482a721abdfbfc063fcad1d0ccc90b0838a",
+      "lines": 30,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/lib.rs",
+        "src/model.rs",
+        "src/error.rs",
+        "tests/public_api.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "public-api.json",
+          "passed": true,
+          "native_calls": 2
+        }
+      ]
+    },
+    {
+      "source": "graphify/__main__.py",
+      "source_sha256": "bb40025c3c7c50a1e9cd202f1243de9e02ca242fc6b198238fda8dca77fe71df",
+      "lines": 1088,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/main.rs",
+        "src/lib.rs",
+        "src/cli.rs",
+        "src/cli_cluster.rs",
+        "src/cli_commands.rs",
+        "src/cli_export.rs",
+        "src/cli_extract.rs",
+        "src/cli_guard.rs",
+        "src/cli_merge.rs",
+        "src/cli_state.rs",
+        "src/serve.rs",
+        "src/serve_api.rs",
+        "src/serve_find.rs",
+        "src/serve_http.rs",
+        "src/serve_live.rs",
+        "src/serve_prs.rs",
+        "src/serve_search.rs",
+        "src/serve_socket.rs",
+        "src/serve_text.rs",
+        "src/watch.rs",
+        "src/watch_paths.rs",
+        "src/watch_reconcile.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "native-workflows.json",
+          "passed": true,
+          "native_calls": 9
+        }
+      ]
+    },
+    {
+      "source": "graphify/_minhash.py",
+      "source_sha256": "eea373a21d8f9c97beecb08ca06f0e2d273cd40e2e91dfbcaec4972bd45fdf0c",
+      "lines": 107,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/minhash.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "minhash.json",
+          "passed": true,
+          "native_calls": 845
+        }
+      ]
+    },
+    {
+      "source": "graphify/affected.py",
+      "source_sha256": "abde37fcc951a0a22e01bb1197861cac168ecb254d687e35053de5f671fe7dd2",
+      "lines": 393,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/affected.rs",
+        "src/graph.rs",
+        "src/session.rs",
+        "src/graph_node_link.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "affected.json",
+          "passed": true,
+          "native_calls": 4210
+        },
+        {
+          "receipt": "graph_session.json",
+          "passed": true,
+          "native_calls": 6068
+        }
+      ]
+    },
+    {
+      "source": "graphify/analyze.py",
+      "source_sha256": "b52f25c4d021d025d8f6a9f36fad0927b81107d45f2e6216caa8142217568977",
+      "lines": 834,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/analyze.rs",
+        "src/analyze_data.rs",
+        "src/graph_algorithms.rs",
+        "src/python_compat.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "analyze.json",
+          "passed": true,
+          "native_calls": 6404
+        }
+      ]
+    },
+    {
+      "source": "graphify/benchmark.py",
+      "source_sha256": "a08455d908b4bacf63927ca4eac3396d6294b716ac2db1d920b5235199b92964",
+      "lines": 121,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/benchmark.rs",
+        "src/query_terms.rs",
+        "src/assets/query/stopwords.json",
+        "src/assets/query/jieba-py-0.46.12.hmm"
+      ],
+      "receipts": [
+        {
+          "receipt": "benchmark.json",
+          "passed": true,
+          "native_calls": 1728
+        }
+      ]
+    },
+    {
+      "source": "graphify/build.py",
+      "source_sha256": "fc30a132e5877bc75c0253bb858408b6d415cf3f73a57455a35465fe5e897a83",
+      "lines": 2754,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/build.rs",
+        "src/build_normalize.rs",
+        "src/build_merge.rs",
+        "src/build_api.rs",
+        "src/build_global.rs",
+        "src/build_labels.rs",
+        "src/hyperedge_members.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "build.json",
+          "passed": true,
+          "native_calls": 7145
+        }
+      ]
+    },
+    {
+      "source": "graphify/cache.py",
+      "source_sha256": "b2bbfb7240caee2b12c57e11da7d9c0ee230d274ebb8420555fd573d8a784396",
+      "lines": 1924,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/cache.rs",
+        "src/cache_paths.rs",
+        "src/cache_api.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "cache.json",
+          "passed": true,
+          "native_calls": 5710
+        }
+      ]
+    },
+    {
+      "source": "graphify/callflow_html.py",
+      "source_sha256": "83d0667c3fd4d2a981a2b9b30fea340f3773b61a4aa0e44b7f68652c0ab4785c",
+      "lines": 2051,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/callflow_data.rs",
+        "src/callflow_html.rs",
+        "src/assets/callflow/templates.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "callflow_html.json",
+          "passed": true,
+          "native_calls": 16294
+        }
+      ]
+    },
+    {
+      "source": "graphify/cargo_introspect.py",
+      "source_sha256": "624bfd2481ccfe24cb71f9c922b936bc1e6ded8bd088594daf21aa53d783967f",
+      "lines": 166,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/cargo_introspect.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "cargo_introspect.json",
+          "passed": true,
+          "native_calls": 78
+        }
+      ]
+    },
+    {
+      "source": "graphify/cli.py",
+      "source_sha256": "8461bd654aa940d35627da7d0545ad870df45f090734e81f188296d5da1948ba",
+      "lines": 5190,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/cli.rs",
+        "src/cli_cluster.rs",
+        "src/cli_commands.rs",
+        "src/cli_export.rs",
+        "src/cli_extract.rs",
+        "src/cli_guard.rs",
+        "src/cli_merge.rs",
+        "src/cli_state.rs",
+        "src/assets/cli/constants.json",
+        "src/assets/cli/help.txt"
+      ],
+      "receipts": [
+        {
+          "receipt": "cli.json",
+          "passed": true,
+          "native_calls": 84
+        }
+      ]
+    },
+    {
+      "source": "graphify/cluster.py",
+      "source_sha256": "5decafa9a97ab85180b9b2a0cd48aec9c998f15202ebeab4d295bcc66fb5e3bf",
+      "lines": 482,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/cluster.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "cluster.json",
+          "passed": true,
+          "native_calls": 7058
+        }
+      ]
+    },
+    {
+      "source": "graphify/cross_repo_calls.py",
+      "source_sha256": "b45f710e1881a1a0b8db0a9ac3b56e5d8e681e9986fdd579919b7d13318c2dd5",
+      "lines": 247,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/cross_repo_calls.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "cross_repo_calls.json",
+          "passed": true,
+          "native_calls": 3603
+        }
+      ]
+    },
+    {
+      "source": "graphify/cross_repo_types.py",
+      "source_sha256": "5e4acb43496cd06a0bbe7fd8db69f40b7487c48c2f7c2248459e5f5cdf7cf626",
+      "lines": 75,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/cross_repo_types.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "cross_repo_types.json",
+          "passed": true,
+          "native_calls": 1508
+        }
+      ]
+    },
+    {
+      "source": "graphify/csharp_dispatch.py",
+      "source_sha256": "2c1faf090be3df8fdc4de365f2c38dde6d1a5d6c2345cb203b6557277c0d7731",
+      "lines": 38,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/csharp_dispatch.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "csharp_dispatch.json",
+          "passed": true,
+          "native_calls": 19958
+        }
+      ]
+    },
+    {
+      "source": "graphify/dedup.py",
+      "source_sha256": "f1460f10a54ba4156c6bdd047ca578010aa617de37189728a1377b752c4bdc0c",
+      "lines": 1595,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/dedup.rs",
+        "src/dedup_strings.rs",
+        "src/dedup_api.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "dedup.json",
+          "passed": true,
+          "native_calls": 14255
+        }
+      ]
+    },
+    {
+      "source": "graphify/detect.py",
+      "source_sha256": "1b90cbb7625d79cb3ac89d79c4a77790cf2e694492cc41db1079e31885faba35",
+      "lines": 2981,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/detect.rs",
+        "src/detect_types.rs",
+        "src/detect_ignore.rs",
+        "src/detect_documents.rs",
+        "src/detect_manifest.rs",
+        "src/assets/detect/constants.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "detect.json",
+          "passed": true,
+          "native_calls": 4286
+        }
+      ]
+    },
+    {
+      "source": "graphify/diagnostics.py",
+      "source_sha256": "2032df8c35a192c60c33cbc2eaf8e4516936bba301b8f25acf407ac54d333278",
+      "lines": 422,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/diagnostics.rs",
+        "src/diagnostics_report.rs",
+        "build.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "diagnostics.json",
+          "passed": true,
+          "native_calls": 1180
+        }
+      ]
+    },
+    {
+      "source": "graphify/export.py",
+      "source_sha256": "737cb97c5ca596f48a405a26e283140272b14d7ce5b63c89e6542ba8ac904e17",
+      "lines": 1431,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/export.rs",
+        "src/export_obsidian.rs",
+        "src/export_formats.rs",
+        "src/export_api.rs",
+        "src/assets/export/digit_ranges.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "export.json",
+          "passed": true,
+          "native_calls": 1639
+        }
+      ]
+    },
+    {
+      "source": "graphify/exporters/__init__.py",
+      "source_sha256": "0a1e96c29d7601843980a62a1069a95c05cb9f07d6f431a054feb8664abf21e1",
+      "lines": 1,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/exporters/mod.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "exporters_package.json",
+          "passed": true,
+          "native_calls": 3
+        }
+      ]
+    },
+    {
+      "source": "graphify/exporters/base.py",
+      "source_sha256": "225e77141d4f3d568c652d7ae3177bbcd4aa7749259bb77dcb4f1f0414249140",
+      "lines": 14,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/exporters/base.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "exporters_base.json",
+          "passed": true,
+          "native_calls": 2
+        }
+      ]
+    },
+    {
+      "source": "graphify/exporters/graphdb.py",
+      "source_sha256": "a660d8fc9673f696e32bea8c008c962105526965803f99f1b123b8d01d605517",
+      "lines": 210,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/exporters/graphdb.rs",
+        "src/exporters/common.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "export_graphdb.json",
+          "passed": true,
+          "native_calls": 919
+        }
+      ]
+    },
+    {
+      "source": "graphify/exporters/html.py",
+      "source_sha256": "9361da8b4aed616d52007acb747d5aade2ef7cf88c5e776d21e157a8a9e35eb0",
+      "lines": 781,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/exporters/html.rs",
+        "src/exporters/common.rs",
+        "src/assets/export_html/styles.html",
+        "src/assets/export_html/script.html.template",
+        "src/assets/export_html/hyperedges.html.template",
+        "src/assets/export_html/document.html.template"
+      ],
+      "receipts": [
+        {
+          "receipt": "export_html.json",
+          "passed": true,
+          "native_calls": 214
+        }
+      ]
+    },
+    {
+      "source": "graphify/extract.py",
+      "source_sha256": "f4d8270e18dfab82f0cd54425b13421e3d273ea36c21aac785da040689463952",
+      "lines": 10625,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extract.rs",
+        "src/extract_languages.rs",
+        "src/extract_members.rs",
+        "src/extract_merge.rs",
+        "src/extract_normalize.rs",
+        "src/extract_projects.rs",
+        "src/extract_python.rs",
+        "src/assets/extract/constants.json",
+        "src/cache.rs",
+        "src/cache_paths.rs",
+        "src/extractors/resolution.rs",
+        "src/extractors/parse_cache.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "extract.json",
+          "passed": true,
+          "native_calls": 1613
+        },
+        {
+          "receipt": "subset.json",
+          "passed": true,
+          "native_calls": 79
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/__init__.py",
+      "source_sha256": "9c809d014a2c90d2f3e442afc51cfa5b5c8b2eae78e169fe84843283eb51b69a",
+      "lines": 76,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/registry.rs",
+        "src/extractors/mod.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "extractors_registry.json",
+          "passed": true,
+          "native_calls": 36
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/apex.py",
+      "source_sha256": "6bef123a9b5d949785b23326309a0aa32babd19500c5e7e3ec0dc40c3ad02bcb",
+      "lines": 215,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/apex.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "apex.json",
+          "passed": true,
+          "native_calls": 717
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/base.py",
+      "source_sha256": "7df5685a7763e81b5deadbf53714988e174ab805d1f6eab4d08415f4927eb6dd",
+      "lines": 153,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/base.rs",
+        "src/extractors/builtins_data.rs",
+        "src/path_syntax.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "extractor_base.json",
+          "passed": true,
+          "native_calls": 9252
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/bash.py",
+      "source_sha256": "0eeb5f18a72d931e186407f54a3a6199f66133e4e54d510f1d281da211c94100",
+      "lines": 627,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/bash.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "bash.json",
+          "passed": true,
+          "native_calls": 3926
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/blade.py",
+      "source_sha256": "727bb59244c36e3634b56348e0a39675fe857cc45d6ee793bd71fa6257fda6bf",
+      "lines": 67,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/blade.rs",
+        "src/regex_compat.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "blade.json",
+          "passed": true,
+          "native_calls": 666
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/cobol.py",
+      "source_sha256": "37caeb86c222d05051a6132fff1f179543b5dab439f5a67e574cf2adfa8cb6db",
+      "lines": 297,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/cobol.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "cobol.json",
+          "passed": true,
+          "native_calls": 426
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/commonlisp.py",
+      "source_sha256": "85e2f72e9448cd91d956218e5614068b9faa964df103d2bcd031e63ec7bcf7d8",
+      "lines": 540,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/commonlisp.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "commonlisp.json",
+          "passed": true,
+          "native_calls": 585
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/csharp.py",
+      "source_sha256": "99a6d6c4ec6d218930b27536c5121d989541ca239f64bbf045aaf25b6f4c240c",
+      "lines": 567,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/csharp.rs",
+        "src/html_compat.rs",
+        "src/html_entities.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "csharp.json",
+          "passed": true,
+          "native_calls": 15174
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/dart.py",
+      "source_sha256": "36766e1f2ed5e2eb968b01e63fcc62258a7a34f0df68f939b43db19632373ed7",
+      "lines": 589,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/dart.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "dart.json",
+          "passed": true,
+          "native_calls": 485
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/dm.py",
+      "source_sha256": "96fea4078e02b91671c38090a537588ae68530a4897d23a503b58003b820daea",
+      "lines": 507,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/dm.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "dm.json",
+          "passed": true,
+          "native_calls": 4158
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/elixir.py",
+      "source_sha256": "9eb00c6ebd23ed90c3e656d39e273a40385fdfc0ced36c98eb3455dde6cd6921",
+      "lines": 464,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/elixir.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "elixir.json",
+          "passed": true,
+          "native_calls": 615
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/engine.py",
+      "source_sha256": "cb40a815008bcad9545fb3e201d7cf41efb4322ddd6d68747cb7b0393175e19d",
+      "lines": 9367,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/engine.rs",
+        "src/extractors/engine_calls.rs",
+        "src/extractors/engine_config.rs",
+        "src/extractors/engine_declarations.rs",
+        "src/extractors/engine_declarator.rs",
+        "src/extractors/engine_extra.rs",
+        "src/extractors/engine_parser.rs",
+        "src/extractors/engine_ruby.rs",
+        "src/extractors/engine_scope.rs",
+        "src/extractors/engine_semantics.rs",
+        "src/extractors/engine_types.rs",
+        "src/assets/engine/sets.json",
+        "src/assets/engine/configs.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "engine.json",
+          "passed": true,
+          "native_calls": 2229
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/erlang.py",
+      "source_sha256": "74d6e88527f6a06464508aa7c94e53361c561fd270ba3addb06bbb2f2622d55d",
+      "lines": 353,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/erlang.rs",
+        "vendor/tree-sitter-erlang/SOURCE.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "erlang.json",
+          "passed": true,
+          "native_calls": 444
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/fortran.py",
+      "source_sha256": "35ddaef34f93b7701938247f72809d75ad49b74bd092a3517166c7bdf2b56846",
+      "lines": 431,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/fortran.rs",
+        "src/process.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "fortran.json",
+          "passed": true,
+          "native_calls": 554
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/go.py",
+      "source_sha256": "ae541066c22502da2dc15871850b3719a4d8fc24c0484cb023bd7c6683782e6d",
+      "lines": 624,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/go.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "go.json",
+          "passed": true,
+          "native_calls": 460
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/json_config.py",
+      "source_sha256": "d29a0c791a02bf43c8c2ec0e85a2f8194d94f93b3c336eda0ad7c5a879b4056b",
+      "lines": 276,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/json_config.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "json_config.json",
+          "passed": true,
+          "native_calls": 393
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/julia.py",
+      "source_sha256": "97301df214c12675749734346af99460547653121179b0cf4e96fca1deb38156",
+      "lines": 498,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/julia.rs",
+        "src/extractors/engine_semantics.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "julia.json",
+          "passed": true,
+          "native_calls": 1150
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/markdown.py",
+      "source_sha256": "dc119c55d5ce4347b1ccb1b2932929c143715b6b72e2b753360d36376d364997",
+      "lines": 582,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/markdown.rs",
+        "src/extractors/markdown_data.rs",
+        "src/extractors/yaml_frontmatter.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "markdown.json",
+          "passed": true,
+          "native_calls": 1717
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/models.py",
+      "source_sha256": "30b6121cb518764a67da8c8470ff5fd56e583d3cace316c95be8175bd953b7e3",
+      "lines": 131,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/models.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "models.json",
+          "passed": true,
+          "native_calls": 38
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/objc.py",
+      "source_sha256": "f610ae3ad5337d2d1cbb468a026db1e0533aad8bce8033af23492aec454abc21",
+      "lines": 640,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/objc.rs",
+        "src/extractors/engine_declarator.rs",
+        "src/extractors/resolution_paths.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "objc.json",
+          "passed": true,
+          "native_calls": 1213
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/ocaml.py",
+      "source_sha256": "3620f208f2ffdd5baf8b751b9ffedabdca628b38168bf7bb06b5d160d17b48f3",
+      "lines": 357,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/ocaml.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "ocaml.json",
+          "passed": true,
+          "native_calls": 1152
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/pascal.py",
+      "source_sha256": "6a4cdd032f0aa3c536fb823b167abb1d2ecb79fc1c4a38f8f792c3e3f2925812",
+      "lines": 720,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/pascal.rs",
+        "src/extractors/pascal_paths.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "pascal.json",
+          "passed": true,
+          "native_calls": 9152
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/pascal_forms.py",
+      "source_sha256": "67d308befbef676e2f11e15ec69fee1bf520a897fb8807f897174c3e525e43cd",
+      "lines": 196,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/pascal_forms.rs",
+        "src/io_compat.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "pascal_forms.json",
+          "passed": true,
+          "native_calls": 328
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/powershell.py",
+      "source_sha256": "b595f10718ca7905f99b6fa9bd6a05eb0d0448bd0d4f7f7c4d5320aa24288584",
+      "lines": 601,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/powershell.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "powershell.json",
+          "passed": true,
+          "native_calls": 1738
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/r.py",
+      "source_sha256": "e38b588a615c39b28bcbbee991d3ab7b9fb11053c34a1a0199000ae9bf8c7e7f",
+      "lines": 482,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/r.rs",
+        "vendor/tree-sitter-r/SOURCE.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "r.json",
+          "passed": true,
+          "native_calls": 444
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/razor.py",
+      "source_sha256": "e59935a2cc3d9aa7d4ffc7a2a1f2668aff167fdebc342d0bc50936d1ad8ed4ff",
+      "lines": 196,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/razor.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "razor.json",
+          "passed": true,
+          "native_calls": 272
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/resolution.py",
+      "source_sha256": "9db3d52e7d29380ee71ee89d4c1c0c78e5ec6a6022816fdfff3289c723b622a0",
+      "lines": 4156,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/resolution.rs",
+        "src/extractors/resolution_facts.rs",
+        "src/extractors/resolution_js.rs",
+        "src/extractors/resolution_paths.rs",
+        "src/extractors/resolution_types.rs",
+        "src/extractors/pascal_paths.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "resolution.json",
+          "passed": true,
+          "native_calls": 19127
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/robot.py",
+      "source_sha256": "c5e97da0552d57d27e02426888966f9f94df2433bc407731e4fb7b5f349092dd",
+      "lines": 297,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/robot.rs",
+        "src/assets/robot/languages.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "robot.json",
+          "passed": true,
+          "native_calls": 1953
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/rust.py",
+      "source_sha256": "7eec865f36faa7f9b50066a6522114614e9193da698e26f2f1808af7f786c440",
+      "lines": 898,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/rust.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "rust.json",
+          "passed": true,
+          "native_calls": 858
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/sln.py",
+      "source_sha256": "9d893369fab2635d3aa79d95bee40461927f9d6222c98f873b363099d8c6dce4",
+      "lines": 92,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/sln.rs",
+        "src/fsutil.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "sln.json",
+          "passed": true,
+          "native_calls": 92
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/solidity.py",
+      "source_sha256": "9df2327e9371254b4a49493225b6fc97d69be274c08a58de1a05489f0f78f8a9",
+      "lines": 484,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/solidity.rs",
+        "vendor/tree-sitter-solidity/SOURCE.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "solidity.json",
+          "passed": true,
+          "native_calls": 439
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/sql.py",
+      "source_sha256": "1561314cd771b201157787085e0bf7ff578ea709fc1aea9e6b6347f2edb7e980",
+      "lines": 785,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/sql.rs",
+        "vendor/tree-sitter-sql/src/lib.rs",
+        "vendor/tree-sitter-sql/build.rs",
+        "vendor/tree-sitter-sql/grammar/parser.c",
+        "vendor/tree-sitter-sql/grammar/scanner.c",
+        "vendor/tree-sitter-sql/grammar/tree_sitter/parser.h",
+        "vendor/tree-sitter-sql/SOURCE.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "sql.json",
+          "passed": true,
+          "native_calls": 63629
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/terraform.py",
+      "source_sha256": "2fa7e53b26fae75270f64352a182254075bf1e7f3cd84ab4867bbc78244fbdf1",
+      "lines": 462,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/terraform.rs",
+        "vendor/tree-sitter-hcl/src/lib.rs",
+        "vendor/tree-sitter-hcl/build.rs",
+        "vendor/tree-sitter-hcl/grammar/parser.c",
+        "vendor/tree-sitter-hcl/grammar/scanner.c",
+        "vendor/tree-sitter-hcl/SOURCE.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "terraform.json",
+          "passed": true,
+          "native_calls": 2511
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/vbnet.py",
+      "source_sha256": "60498684b14413b1e8fb6ef9e4f77b3a35cee0b49e3c5f2162ed28a0cda3411f",
+      "lines": 433,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/vbnet.rs",
+        "vendor/tree-sitter-vb-dotnet/SOURCE.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "vbnet.json",
+          "passed": true,
+          "native_calls": 450
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/verilog.py",
+      "source_sha256": "5115140749a3e8b10d5d215de894693dd3b0d27069eacb424b65c720f2a999a6",
+      "lines": 364,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/verilog.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "verilog.json",
+          "passed": true,
+          "native_calls": 2946
+        }
+      ]
+    },
+    {
+      "source": "graphify/extractors/zig.py",
+      "source_sha256": "0b2460068d7fc8dd02b772181a2e67d40b1bbed4c3226224c540ab3161062cdd",
+      "lines": 245,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/extractors/zig.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "zig.json",
+          "passed": true,
+          "native_calls": 437
+        }
+      ]
+    },
+    {
+      "source": "graphify/file_slice.py",
+      "source_sha256": "6940a34b57dee4def85ef8e8bf371ea108b4099a34f0b70fd7d2bc01f19c5cb2",
+      "lines": 248,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/file_slice.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "file_slice.json",
+          "passed": true,
+          "native_calls": 569
+        }
+      ]
+    },
+    {
+      "source": "graphify/global_graph.py",
+      "source_sha256": "d928c1e4f5de47b8cdf8f6bf36f2c95d722ad699af51d77eb12238b18ccb0b62",
+      "lines": 201,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/global_graph.rs",
+        "src/build_global.rs",
+        "src/graph.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "global_graph.json",
+          "passed": true,
+          "native_calls": 2061
+        }
+      ]
+    },
+    {
+      "source": "graphify/google_workspace.py",
+      "source_sha256": "f5563580450aea0830159ebed58316594161b6bcb9539cd97d161ff529ceae9a",
+      "lines": 237,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/google_workspace.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "google_workspace.json",
+          "passed": true,
+          "native_calls": 90
+        }
+      ]
+    },
+    {
+      "source": "graphify/hooks.py",
+      "source_sha256": "71f98510d302e92eeb880bab464ccfccdc09ba9cd9c7aaab78c4fb022295f5e4",
+      "lines": 1064,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/hooks.rs",
+        "src/hooks_runtime.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "hooks.json",
+          "passed": true,
+          "native_calls": 63
+        }
+      ]
+    },
+    {
+      "source": "graphify/ids.py",
+      "source_sha256": "d9befd67479a2e484e0fdb884cdbfd77ee0c96487970196abda68751d4e69e4e",
+      "lines": 93,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/ids.rs",
+        "src/unicode15.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "ids.json",
+          "passed": true,
+          "native_calls": 285
+        }
+      ]
+    },
+    {
+      "source": "graphify/ingest.py",
+      "source_sha256": "24b3f65ce30c977e245473c75b75e12c23b423a83dcb9a318ac72a49d3888df6",
+      "lines": 371,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/ingest.rs",
+        "src/ingest_api.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "ingest.json",
+          "passed": true,
+          "native_calls": 409
+        }
+      ]
+    },
+    {
+      "source": "graphify/install.py",
+      "source_sha256": "eb46c8d93e29ff8816df3dfac27690b54b305df1e35fe7e721440f244a0a2f3e",
+      "lines": 2764,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/install.rs",
+        "src/install_fs.rs",
+        "src/install_platforms.rs",
+        "src/assets/install/SKILL.md",
+        "src/assets/install/constants.json",
+        "src/assets/install/workflows.md"
+      ],
+      "receipts": [
+        {
+          "receipt": "install.json",
+          "passed": true,
+          "native_calls": 1441
+        }
+      ]
+    },
+    {
+      "source": "graphify/interface_dispatch.py",
+      "source_sha256": "c6b8c335bd8d9023ea30068f2f823e594329e3c8c609a0a3d950b59cc74244d2",
+      "lines": 163,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/interface_dispatch.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "interface_dispatch.json",
+          "passed": true,
+          "native_calls": 21758
+        }
+      ]
+    },
+    {
+      "source": "graphify/llm.py",
+      "source_sha256": "09bf27b49eb4e44c8380f26c2306fcdf5a4e73654875a56d83448d4a222fa4ad",
+      "lines": 3642,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/llm.rs",
+        "src/llm_api.rs",
+        "src/llm_bedrock.rs",
+        "src/llm_config.rs",
+        "src/llm_extract.rs",
+        "src/llm_labels.rs",
+        "src/llm_parse.rs",
+        "src/llm_source.rs",
+        "src/llm_transport.rs",
+        "src/process.rs",
+        "src/assets/llm/backends.json",
+        "src/assets/llm/deep_extraction_suffix.txt",
+        "src/assets/llm/extraction_schema.json",
+        "src/assets/llm/extraction_system.txt",
+        "src/assets/llm/label_prompt.txt"
+      ],
+      "receipts": [
+        {
+          "receipt": "llm.json",
+          "passed": true,
+          "native_calls": 4239
+        }
+      ]
+    },
+    {
+      "source": "graphify/manifest.py",
+      "source_sha256": "c865a2c577d4bf618d19d512d1f687ea0c961b8c09879b40d414536f184f7da2",
+      "lines": 4,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/manifest.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "manifest.json",
+          "passed": true,
+          "native_calls": 6
+        }
+      ]
+    },
+    {
+      "source": "graphify/manifest_ingest.py",
+      "source_sha256": "c8a70be2f4f2c0569cef7a0fb107667cffa6385d0830042b061fa08e159e8ca4",
+      "lines": 337,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/manifest_ingest.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "manifest_ingest.json",
+          "passed": true,
+          "native_calls": 3995
+        }
+      ]
+    },
+    {
+      "source": "graphify/markdown_resolution.py",
+      "source_sha256": "e582a66581b5a4eca3951ddddf33ca891979671f40f088e00788bee4eb6e1ed8",
+      "lines": 231,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/markdown_resolution.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "markdown_resolution.json",
+          "passed": true,
+          "native_calls": 5187
+        }
+      ]
+    },
+    {
+      "source": "graphify/mcp_ingest.py",
+      "source_sha256": "7553845a7cae7c310803bf37d992b695b27d21e1b827c1c33dbed2b15971be61",
+      "lines": 386,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/mcp_ingest.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "mcp_ingest.json",
+          "passed": true,
+          "native_calls": 2714
+        }
+      ]
+    },
+    {
+      "source": "graphify/multigraph_compat.py",
+      "source_sha256": "73abcd5293c91f2584ea29539774a126fe99a783e3672887d69b5d70033c798b",
+      "lines": 212,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/multigraph_compat.rs",
+        "src/graph.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "multigraph_compat.json",
+          "passed": true,
+          "native_calls": 1503
+        }
+      ]
+    },
+    {
+      "source": "graphify/pascal_resolution.py",
+      "source_sha256": "e4e9400ee20e6b410e521ad24bfe4c7e09742590ba1b0964cc84b49158d9318f",
+      "lines": 129,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/pascal_resolution.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "pascal_resolution.json",
+          "passed": true,
+          "native_calls": 2403
+        }
+      ]
+    },
+    {
+      "source": "graphify/paths.py",
+      "source_sha256": "529cf874f7a990d8f318c8ca343bffced5378a5cff74f31c36404dc609ee5855",
+      "lines": 593,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/paths.rs",
+        "src/python_json.rs",
+        "src/security.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "paths.json",
+          "passed": true,
+          "native_calls": 5803
+        }
+      ]
+    },
+    {
+      "source": "graphify/pg_introspect.py",
+      "source_sha256": "dadb7ca401ff2d03bc5ec50e7c1c394353aff298420bab618ba7b9c674978c63",
+      "lines": 165,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/pg_introspect.rs",
+        "src/assets/postgres/transaction.sql",
+        "src/assets/postgres/tables.sql",
+        "src/assets/postgres/views.sql",
+        "src/assets/postgres/routines.sql",
+        "src/assets/postgres/foreign_keys.sql"
+      ],
+      "receipts": [
+        {
+          "receipt": "pg_introspect.json",
+          "passed": true,
+          "native_calls": 271
+        }
+      ]
+    },
+    {
+      "source": "graphify/prs.py",
+      "source_sha256": "af03748db52ad14fbd9af3ec29c6a89f0667337c40693ee2dc2c8f3725b0e595",
+      "lines": 808,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/prs.rs",
+        "src/prs_io.rs",
+        "src/prs_render.rs",
+        "src/prs_triage.rs",
+        "src/prs_api.rs",
+        "src/assets/prs/help.txt"
+      ],
+      "receipts": [
+        {
+          "receipt": "prs.json",
+          "passed": true,
+          "native_calls": 2629
+        }
+      ]
+    },
+    {
+      "source": "graphify/querylog.py",
+      "source_sha256": "953ad5fece9d380795a70e7dda4b72069ed7a57f56d8648fd339fea959a150a4",
+      "lines": 80,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/querylog.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "querylog.json",
+          "passed": true,
+          "native_calls": 1043
+        }
+      ]
+    },
+    {
+      "source": "graphify/rcfile.py",
+      "source_sha256": "8aa3114d6b1c2f571526a04d02192f77cc8a3a2ef4cf4bde91c0664db10bf7f9",
+      "lines": 252,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/rcfile.rs",
+        "src/par.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "rcfile.json",
+          "passed": true,
+          "native_calls": 13209
+        }
+      ]
+    },
+    {
+      "source": "graphify/reflect.py",
+      "source_sha256": "53d877f8009344cfc721d400444bbf2c7f7fcdcd3c4f97580a369c4f79b06db0",
+      "lines": 882,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/reflect.rs",
+        "src/python_datetime.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "reflect.json",
+          "passed": true,
+          "native_calls": 9681
+        }
+      ]
+    },
+    {
+      "source": "graphify/report.py",
+      "source_sha256": "bb9da8e8959bb92b6a309efdd972b0a0292d3cde82b03a6883098f7107738be3",
+      "lines": 408,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/report.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "report.json",
+          "passed": true,
+          "native_calls": 1564
+        }
+      ]
+    },
+    {
+      "source": "graphify/resolver_registry.py",
+      "source_sha256": "23a79bf81b0f66e3999dfd392678650e702abffaa5688ca5dce28c0d32738402",
+      "lines": 88,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/resolver_registry.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "resolver_registry.json",
+          "passed": true,
+          "native_calls": 501
+        }
+      ]
+    },
+    {
+      "source": "graphify/ruby_resolution.py",
+      "source_sha256": "3a300b61def823f78d2305a072ea26f27c4f1dd8cf67bc060ab151213e9142a2",
+      "lines": 524,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/ruby_resolution.rs",
+        "src/build_labels.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "ruby_resolution.json",
+          "passed": true,
+          "native_calls": 4849
+        }
+      ]
+    },
+    {
+      "source": "graphify/scip_ingest.py",
+      "source_sha256": "4de62f7da456e5dc28f78a0dc5d97200e036cfb01318a806539582d53e288aa5",
+      "lines": 363,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/scip_ingest.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "scip_ingest.json",
+          "passed": true,
+          "native_calls": 4492
+        }
+      ]
+    },
+    {
+      "source": "graphify/security.py",
+      "source_sha256": "92c4c6447c855195aa3ca0f50fde8810843d62028240aa4ec0f45be2eb0336a3",
+      "lines": 461,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/security.rs",
+        "src/ip_policy_data.rs",
+        "src/decimal_data.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "security.json",
+          "passed": true,
+          "native_calls": 1738
+        }
+      ]
+    },
+    {
+      "source": "graphify/semantic_cleanup.py",
+      "source_sha256": "cae3cc75d203ffc2a23e01d8fedff40ed1316ded1767698bc31b5b59e64673aa",
+      "lines": 336,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/semantic_cleanup.rs",
+        "src/hyperedge_members.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "semantic_cleanup.json",
+          "passed": true,
+          "native_calls": 4734
+        }
+      ]
+    },
+    {
+      "source": "graphify/serve.py",
+      "source_sha256": "5ed6d9b150aae093b2f7e3b8cd7a7d4b922d73f88829b4b3992a1399159520be",
+      "lines": 3007,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/serve.rs",
+        "src/serve_api.rs",
+        "src/serve_find.rs",
+        "src/serve_http.rs",
+        "src/serve_live.rs",
+        "src/serve_prs.rs",
+        "src/serve_search.rs",
+        "src/serve_socket.rs",
+        "src/serve_text.rs",
+        "src/assets/serve/constants.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "serve.json",
+          "passed": true,
+          "native_calls": 2109
+        }
+      ]
+    },
+    {
+      "source": "graphify/swift_dispatch.py",
+      "source_sha256": "1758eb1ca401f3047a989b65223de9a728a6a420e496a399dccbd06c16752364",
+      "lines": 46,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/swift_dispatch.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "swift_dispatch.json",
+          "passed": true,
+          "native_calls": 1517
+        }
+      ]
+    },
+    {
+      "source": "graphify/symbol_resolution.py",
+      "source_sha256": "e42da4eec86f364e47be29a4f9779713fad93f683a12cc118e9857861fda8932",
+      "lines": 577,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/symbol_resolution.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "symbol_resolution.json",
+          "passed": true,
+          "native_calls": 24738
+        }
+      ]
+    },
+    {
+      "source": "graphify/transcribe.py",
+      "source_sha256": "b01c127af5a7bf44865e517848dbb2d3dd88af0b146674c87ea56079cd926d55",
+      "lines": 186,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/transcribe.rs",
+        "src/transcribe_native.rs",
+        "src/transcribe_api.rs",
+        "src/assets/transcribe/models.json"
+      ],
+      "receipts": [
+        {
+          "receipt": "transcribe.json",
+          "passed": true,
+          "native_calls": 295
+        }
+      ]
+    },
+    {
+      "source": "graphify/tree_html.py",
+      "source_sha256": "b913c3ff17d9dff1cd7960b0afd26bd73d09e8e00c7d7d1202f652bc63f1b1c9",
+      "lines": 604,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/tree_html.rs",
+        "src/assets/tree.html.template"
+      ],
+      "receipts": [
+        {
+          "receipt": "tree_html.json",
+          "passed": true,
+          "native_calls": 894
+        }
+      ]
+    },
+    {
+      "source": "graphify/validate.py",
+      "source_sha256": "be068c6b2ff4e514f31663e0155a9d63f35096d154b98ab6c9c467a23febd6f7",
+      "lines": 95,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/validate.rs",
+        "src/python_compat.rs",
+        "src/python_repr_data.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "validate.json",
+          "passed": true,
+          "native_calls": 5940
+        }
+      ]
+    },
+    {
+      "source": "graphify/watch.py",
+      "source_sha256": "0516967b90630e8d81c569f50db21624c6a5751b17d85b51f87148e0c52dbfe7",
+      "lines": 2790,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/watch.rs",
+        "src/watch_paths.rs",
+        "src/watch_reconcile.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "watch.json",
+          "passed": true,
+          "native_calls": 2749
+        }
+      ]
+    },
+    {
+      "source": "graphify/wiki.py",
+      "source_sha256": "37d71ee5fe17b389f9b5c389baafdd7e473bc1f2a725e9797360544961d84502",
+      "lines": 455,
+      "status": "ported_verified",
+      "rust_files": [
+        "src/wiki.rs"
+      ],
+      "receipts": [
+        {
+          "receipt": "wiki.json",
+          "passed": true,
+          "native_calls": 2092
+        }
+      ]
+    }
+  ]
+}

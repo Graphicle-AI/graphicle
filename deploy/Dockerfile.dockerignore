@@ -1,0 +1,49 @@
+# Inputs of the Graphicle Core image. BuildKit reads this file for
+# deploy/Dockerfile instead of the context's own .dockerignore; the
+# context is the repository root. Only the crates' build inputs and the notices the
+# image ships are sent. A pattern that names a directory also admits
+# everything below it, so parent directories are not listed. A global
+# **/target exclusion would also remove real source files such as
+# cc/src/target/llvm.rs from vendored crates.
+**
+!crates/graphicle-graph/Cargo.toml
+!crates/graphicle-graph/build.rs
+!crates/graphicle-graph/src/
+!crates/graphicle-graph/src/**
+!crates/graphicle-graph/vendor/
+!crates/graphicle-graph/vendor/**
+!crates/graphicle-memory/Cargo.toml
+!crates/graphicle-memory/Cargo.lock
+!crates/graphicle-graph/NOTICE
+!crates/graphicle-graph/NOTICE.md
+!crates/graphicle-graph/licenses/
+!crates/graphicle-graph/licenses/**
+!crates/graphicle-memory/NOTICE.md
+!crates/graphicle-memory/src/
+!crates/graphicle-memory/src/**
+!crates/graphicle-memory/.cargo/
+!crates/graphicle-memory/.cargo/**
+!crates/graphicle/Cargo.toml
+!crates/graphicle/Cargo.lock
+!crates/graphicle/.cargo/
+!crates/graphicle/.cargo/**
+!crates/graphicle/.vendor/
+!crates/graphicle/.vendor/**
+!deploy/Dockerfile
+!deploy/.offline/
+!deploy/.offline/**
+!crates/graphicle/src/
+!crates/graphicle/src/**
+!crates/graphicle/web/
+!crates/graphicle/web/**
+!crates/graphicle/NOTICE.md
+!crates/graphicle/LICENSE
+!crates/graphicle/NOTICE
+!crates/graphicle/THIRD_PARTY_LICENSES.html
+!crates/graphicle/UPSTREAM.json
+!crates/graphicle/GRAMMAR_NOTICES.json
+!crates/graphicle/README.md
+!crates/graphicle/licenses/
+!crates/graphicle/licenses/**
+# Build output of the vendored path crates is never an input.
+crates/graphicle-graph/vendor/*/target

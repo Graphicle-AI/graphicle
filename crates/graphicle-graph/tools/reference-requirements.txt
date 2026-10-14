@@ -1,0 +1,73 @@
+# Reference interpreter for the comparison suite (development only): packages of
+# crates/graphicle-graph/.reference-venv, recorded from the environment that produced
+# the qualification receipts (2026-10-13, Graphify 0.9.88).
+#
+# - CPython 3.12.13 created by uv 0.11.6, include-system-site-packages = false.
+#   Always run `.reference-venv/bin/python tools/...`: console-script shebangs
+#   inside the venv are absolute paths.
+# - The venv chains a second one: site-packages/graphify-comparison-reference.pth
+#   holds the absolute path of crates/graphicle/.comparison-venv/lib/python3.12/
+#   site-packages (comparison-requirements.txt; pytest, networkx and most
+#   tree-sitter grammars). Packages listed here shadow those.
+# - `import graphify` is the pinned Graphify 0.9.88 checkout (commit a9860f70,
+#   migration/FILES.json source_root), which tools/parity.py puts first on
+#   sys.path. The installed graphifyy wheel (the same release, installed from
+#   its PyPI wheel with --require-hashes) is shadowed and never imported.
+#
+# Rebuild: uv venv --python 3.12.13 .reference-venv
+#          uv pip install --python .reference-venv/bin/python -r tools/reference-requirements.txt
+#          then write the .pth file naming the comparison venv's site-packages.
+annotated-types==0.8.0
+anthropic==1.8.0
+anyio==4.15.1
+boto3==1.43.100
+botocore==1.43.100
+charset-normalizer==3.5.1
+docstring_parser==0.18.0
+et_xmlfile==2.0.0
+FalkorDB==1.7.1
+graphifyy==0.9.88
+graspologic-native==1.2.5
+h11==0.16.0
+httpcore2==2.13.1
+httpx2==2.13.1
+idna==3.20
+jieba-py==0.46.12
+jiter==0.17.0
+jmespath==1.1.0
+lxml==6.1.3
+neo4j==6.3.1
+numpy==2.5.3
+openpyxl==3.1.5
+pillow==12.3.0
+psycopg==3.3.6
+psycopg-binary==3.3.6
+pydantic==2.13.5
+pydantic_core==2.46.5
+pypdf==6.19.0
+python-dateutil==2.9.0.post0
+python-docx==1.2.0
+pytz==2026.3.post1
+PyYAML==6.0.3
+redis==8.1.0
+reportlab==5.0.1
+robotframework==7.5
+s3transfer==0.19.2
+scipy==1.18.1
+six==1.17.0
+sniffio==1.3.1
+tree-sitter-commonlisp==0.4.1
+tree-sitter-dm==0.25.1
+tree-sitter-embedded-template==0.25.0
+tree-sitter-hcl==1.2.0
+tree-sitter-language-pack==0.11.0
+tree-sitter-ocaml==0.25.0
+tree-sitter-pascal==0.11.0
+tree-sitter-solidity==1.2.13
+tree-sitter-sql==0.3.11
+tree-sitter-vb-dotnet==0.3.0
+tree-sitter-yaml==0.7.2
+truststore==0.10.4
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+urllib3==2.8.0

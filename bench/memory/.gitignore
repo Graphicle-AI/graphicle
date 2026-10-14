@@ -1,0 +1,5 @@
+# Run outputs, stores and caches of the benchmark kit stay local.
+/runs/
+/.work/
+**/__pycache__/
+/.pytest_cache/

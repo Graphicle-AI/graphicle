@@ -1,0 +1,76 @@
+# cargo-deny configuration (cargo-deny >= 0.18; written against 0.20.2).
+# Licensing policy: anything not on the allow list is rejected; there is no
+# separate deny list in cargo-deny v2 config.
+#
+# Run: cargo deny check licenses bans sources advisories
+
+[graph]
+all-features = true
+
+[output]
+feature-depth = 1
+
+[licenses]
+# The project's allow list (+ Unicode-3.0 and CC0-1.0 which appear in the
+# Rust ecosystem and were approved for the gate). OpenSSL and BSL-1.0 are
+# intentionally NOT allowed so that they surface as findings if present.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unlicense",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "CC0-1.0",
+]
+confidence-threshold = 0.8
+# The allow list is shared policy across crates; entries this crate does not
+# use are not findings.
+unused-allowed-license = "allow"
+# Narrow, per-crate exceptions for permissive licences outside the list
+# (research/licensing-audit-2026-09-26/RIGHTS_AUDIT.md F1): the Mozilla CA
+# bundle data in webpki-roots, and libpq, compiled only by the optional
+# `postgres` feature. Both are OSI/permissive and attribution is retained.
+exceptions = [
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
+    { allow = ["PostgreSQL"], crate = "pq-src" },
+]
+# Path/workspace crates that are not published are first-party and are
+# audited separately (RIGHTS_AUDIT.md); do not gate them here.
+private = { ignore = true }
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "warn"
+# Every vulnerability and unsoundness advisory is fixed (legacy AWS TLS client
+# removed, lru >= 0.18.2). The remaining entries are "unmaintained" notices for
+# transitive crates with no known vulnerability and no maintained drop-in:
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build time only) via neo4rs -> nav-types -> nalgebra -> simba" },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser via pdf-extract -> lopdf; font tables are parsed only from local PDFs" },
+    { id = "RUSTSEC-2025-0075", reason = "unic-char-range via rustpython-parser (Python literal parsing); no vulnerability" },
+    { id = "RUSTSEC-2025-0080", reason = "unic-common via rustpython-parser; no vulnerability" },
+    { id = "RUSTSEC-2025-0081", reason = "unic-char-property via rustpython-parser; no vulnerability" },
+    { id = "RUSTSEC-2025-0090", reason = "unic-emoji-char via rustpython-parser; no vulnerability" },
+    { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version via rustpython-parser; no vulnerability" },
+    { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident via rustpython-parser; no vulnerability" },
+]

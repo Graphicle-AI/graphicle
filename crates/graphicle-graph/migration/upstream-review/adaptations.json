@@ -1,0 +1,160 @@
+{
+  "graphify/extractors/vbnet.py": [
+    {
+      "kind": "native_regression",
+      "reviewed_utc": "2026-10-02",
+      "behavior": "Preserve namespace qualification on module/type calls, search the caller namespace and parents before global names, support an explicit Global qualifier, and leave ambiguous short names unresolved. The 0.9.73 first-short-name lookup could bind Beta.Helpers.Log to Alpha.Helpers.Log.",
+      "native_regression": "tests/vbnet_namespaces.rs",
+      "oracle_adaptation": "Three exact-context hunks in vbnet.py add namespace-aware owner lookup and a set of possible owners per short name. check_vbnet.py uses this adapted reference for the original suite, generated files and complete corpora; twelve new namespace cases supplement the existing oracle. The pinned archive is unchanged."
+    }
+  ],
+  "graphify/extract.py": [
+    {
+      "kind": "native_regression",
+      "reviewed_utc": "2026-10-02",
+      "behavior": "Preserve Astro script bodies for quoted or unquoted JavaScript types and empty types. Read complete attributes and use only the first actual type attribute, so data-type and text inside another attribute cannot suppress executable code. Non-JavaScript types remain masked with line locations preserved.",
+      "native_regression": "tests/astro_script_types.rs; astro_mask_preserves_locations_with_reviewed_script_type_fix",
+      "oracle_adaptation": "Two exact-context hunks against Graphify 0.9.73 extract.py replace the backtracking negative lookahead with complete attribute parsing. check_extract.py applies extractor adaptations before rebinding the facade, compares explicit script-type cases, and records this deviation; the pinned archive is unchanged."
+    },
+    {
+      "kind": "native_regression",
+      "reviewed_utc": "2026-10-13",
+      "behavior": "EJS templates (Graphify 0.9.88, #3811) read inline <script> types with the same reviewed attribute parser as Astro and Svelte, so a quoted JavaScript type (type=\"module\", type=\"text/javascript\") keeps its body instead of being masked by the backtracking negative lookahead upstream shares between the three maskers.",
+      "native_regression": "tests/compat_0_9_88_languages.rs; ejs_masker_keeps_lines_and_neutralises_output_tags",
+      "oracle_adaptation": "One exact-context hunk against Graphify 0.9.88 extract.py makes _ejs_mask_non_script call _astro_script_is_javascript (added by the Astro hunk) instead of _NON_JS_SCRIPT_TYPE_RE; the pinned archive is unchanged."
+    }
+  ],
+  "graphify/cache.py": [
+    {
+      "kind": "native_regression",
+      "behavior": "Validate portable source paths after interpreting the root marker; preserve walked-path isolation.",
+      "native_regression": "rejected_semantic_cache_invalidation_is_file_prompt_and_mode_scoped",
+      "oracle_adaptation": "The pinned semantic identity helper strips only the literal $graphify-root$/ prefix before its existing path check; every other helper remains unchanged."
+    },
+    {
+      "kind": "native_regression",
+      "reviewed_utc": "2026-10-08",
+      "behavior": "Infer the walked directory root from the input file parent, preserving a final file symlink as its own source. Restore marked paths before ordinary relative paths, using the same walked root for both. A shared AST cache may move across canonical or symlinked checkouts without stale source paths or identifiers. Native schema 7 invalidates older affected records; the Linux-discovered relative-path restoration fix is compatible with schema 7 records.",
+      "native_regression": "cache_paths::directory_alias_tests::canonical_root_and_walked_files_restore_together_in_another_checkout; extract::tests::relocated_cache_preserves_walked_roots_and_file_symlinks (16 source/target pairs starting from a physical temporary directory so macOS /var aliases cannot mask relative-path entries); incremental::tests::missing_import_placeholders_follow_their_originating_files",
+      "oracle_adaptation": "Exact-context additions independently infer the walked directory prefix only when its full root-relative suffix agrees, restore marked values first, then anchor ordinary relative source fields under that same prefix. check_cache.py covers a fresh symlinked-root cache reused under a second checkout. Whole-extraction reference imports include the reviewed cache adaptation. Pinned source files remain unchanged."
+    }
+  ],
+  "graphify/cli.py": [
+    {
+      "kind": "native_regression",
+      "behavior": "Invalidate rejected semantic cache entries in the current file/prompt/mode so ordinary retries can recover.",
+      "native_regression": "check_native_workflows.py: native semantic rejection followed by ordinary retry"
+    }
+  ],
+  "graphify/cluster.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/2388",
+      "reviewed_head_sha": "14f8eb3a",
+      "behavior": "The oversized-community and low-cohesion re-splits run the second Leiden pass at the caller's `resolution` instead of _partition's default 1.0, so `--resolution 0.5`/`2.0` is no longer undone by the follow-up passes; output is unchanged at resolution 1.0. The Rust `split_community` keeps the Python default signature (1.0) and `split_community_at` carries the explicit resolution.",
+      "native_regression": "cluster::tests::oversized_community_splits_honour_the_callers_resolution",
+      "oracle_adaptation": "Four exact-context hunks to the pinned cluster.py: both `_split_community(G, nodes)` call sites pass `resolution`, the function gains `resolution: float = 1.0`, and it forwards `resolution=resolution` to `_partition`."
+    }
+  ],
+  "graphify/extractors/apex.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/3278",
+      "reviewed_head_sha": "07f910d026a1d79dca1f5205bcdfb3a6af61b470",
+      "behavior": "Class/interface heritage clauses and method return types accept namespace-qualified and generic types; heritage names split on top-level commas, drop generic arguments and keep the tail segment (supersedes PR 3276).",
+      "native_regression": "extractors::apex::tests::qualified_and_generic_heritage_and_return_types_are_recognised",
+      "oracle_adaptation": "The PR's _TYPE pattern, heritage_names helper, three regex edits and three heritage-loop rewrites are applied as five exact-context hunks to the pinned apex.py."
+    }
+  ],
+  "graphify/extractors/commonlisp.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/3544",
+      "reviewed_head_sha": "b26396b",
+      "behavior": "`define-condition` dispatches through the defclass handler (ahead of the data-definer fallback), so `(define-condition my-error (app-error) ...)` emits `inherits` edges to each superclass (stubbing unknown ones like `error`) instead of a plain data node with no hierarchy. Only the one-line dispatch change is adopted; the PR's separable `specializes`/ensure_class_ref changes are not.",
+      "native_regression": "extractors::commonlisp::tests::define_condition_keeps_its_superclass_edges",
+      "oracle_adaptation": "One exact-context hunk in _process_form of the pinned commonlisp.py: `if first_lower in (\"defclass\", \"define-condition\"):`."
+    }
+  ],
+  "graphify/extractors/markdown.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/3450",
+      "reviewed_head_sha": "207b98c0700ba874740b2593d70c90b6505ce805",
+      "behavior": "The wikilink pattern captures the page (possibly empty) and the #heading fragment separately. A same-page anchor ([[#Setup]], or [[notes#Setup]] resolving to the current file) is deferred and, once the whole page is walked, emits heading --references--> heading (page --references--> heading above the first heading) when that heading exists and is not the source; each (source, heading) pair is emitted once, `[[]]` emits nothing, and [[Other#Sec]] still references the other page.",
+      "native_regression": "extractors::markdown::tests::same_page_heading_anchors_link_sections_and_page_anchors_keep_the_page",
+      "oracle_adaptation": "Four exact-context hunks to the pinned markdown.py: the combined wikilink regex, an is_same_page helper plus pending_anchors list, the wikilink loop body, and the post-walk anchor edge emission before the return."
+    },
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/3772",
+      "reviewed_head_sha": "f50f96f3c8e0ba78f38186c79bbeecf7a18ef65b",
+      "behavior": "A table-escaped alias pipe (`[[notes/Target\\|Alias]]`) is not part of the wikilink page: the page group is lazy and an optional backslash precedes the alias pipe, so the target resolves exactly like the unescaped `[[notes/Target|Alias]]`.",
+      "native_regression": "extractors::markdown::tests::table_escaped_alias_pipe_is_not_part_of_the_wikilink_target",
+      "oracle_adaptation": "Merged upstream in 0.9.72 with its own lazy page and escaped-pipe pattern; the combined _MD_WIKILINK_RE hunk shared with PR #3450 now replaces the 0.9.72 line, keeping the heading capture #3450 needs.",
+      "merged_upstream": "0.9.72 (5793226ff4aa)"
+    },
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/3826",
+      "reviewed_head_sha": "48a8da896be0158fa89f5e4314b950e0d8f85822",
+      "behavior": "Prune ignored directories before descending and exclude ignored files from the vault-wide basename index (merged upstream in 0.9.71 as 57a263ce for issue #3822). Native additionally applies the rules under the canonical root while keeping walked link paths: upstream 0.9.71 passes walked paths under a symlinked root (macOS /var -> /private/var) to ignored_predicate, whose relative_to() then fails and nothing is ignored.",
+      "native_regression": "wikilink_index_prunes_ignored_trees_and_applies_nested_file_rules",
+      "oracle_adaptation": "One exact-context hunk against the 0.9.71 index builder: ignored_predicate is built for root.resolve() and each walked path is re-rooted there. The pinned source remains unchanged.",
+      "reviewed_utc": "2026-09-25T18:13:28Z",
+      "merged_upstream": "0.9.71 (57a263ce8f)"
+    }
+  ],
+  "graphify/extractors/rust.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/2963",
+      "reviewed_head_sha": "377244a8",
+      "behavior": "A plain `type_identifier` reading `Self` is not collected as a type reference, so `fn new() -> Self` no longer mints the corpus-wide sourceless `self` stub or `references` edges to it; scoped `Self::Item` and other identifiers are unchanged.",
+      "native_regression": "extractors::rust::tests::self_return_type_does_not_mint_a_sourceless_self_node",
+      "oracle_adaptation": "None since the 0.9.76 pin: `Self` is in _RUST_BUILTIN_TYPES with the #3973 prelude filter (0.9.74), so the pinned _rust_collect_type_refs skips it where the 0.9.73 hunk `if text and text != \"Self\":` did. The pinned rust.py is the oracle unchanged."
+    }
+  ],
+  "graphify/extractors/sln.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/3270",
+      "reviewed_head_sha": "00b70a31065894f92e4080fbea0cc3e6390cc0d7",
+      "behavior": "Solution entries whose project type GUID is 2150E333-8FDC-42A3-9474-1A3956D46DE8 (a virtual solution folder) emit no node and no edges; dependencies naming a skipped folder GUID are dropped. The `proj_path == proj_name` heuristic is removed, so a real project whose path equals its name is extracted and resolved like any other. The pinned upstream test test_sln_solution_folder_ids_are_relative asserts the superseded behaviour and is replaced in check_sln.py by the PR's two deterministic cases.",
+      "native_regression": "extractors::sln::tests::solution_folders_are_not_nodes_but_same_named_projects_are",
+      "oracle_adaptation": "Four exact-context hunks to the pinned sln.py: the _SOLUTION_FOLDER_TYPE_GUID constant, the type-GUID capture group in _PROJECT_RE, the shifted group reads plus the `continue`, and the unconditional path resolution replacing the is_solution_folder branch."
+    }
+  ],
+  "graphify/extractors/sql.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/3020",
+      "reviewed_head_sha": "8ec7b81eb30130c945b4473be41fb6efa65d7179",
+      "behavior": "Every explicit unqualified table definition also answers to public.<name>, so REFERENCES \"public\".\"t\" binds to CREATE TABLE \"t\" instead of minting a sourceless stub; explicit public.x definitions are never shadowed and other schemas still stub. Adapted from the PR: the alias pass runs before the secondary bare-name aliases, so a bare alias of another schema's table (\"space name\".\"order\") never captures \"public\".\"order\" (found by check_pg_introspect.py's view DDL).",
+      "native_regression": "extractors::sql::tests::default_schema_qualified_reference_binds_to_unqualified_table (includes the cross-schema alias case)",
+      "oracle_adaptation": "The PR's _DEFAULT_SCHEMA constant and default-schema alias loop are applied as two exact-context hunks to the pinned sql.py, with the loop inserted ahead of the bare-name alias pass. check_sql.py adds the aliased-schema view and mixed other/bare/public statements; check_pg_introspect.py and check_extract.py run their oracles with the adapted extractor modules."
+    },
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/2716",
+      "reviewed_head_sha": "6c5bfc11cd310c732a590dc1bce1ab2f569ef320",
+      "behavior": "Issue #2712: tree-sitter-sql has no T-SQL bracket delimiters, so `[dbo].[Alpha]` parses as ERROR tokens around an object_reference spanning `dbo].[Alpha`, which leaked into node labels (and stub ids/labels) as `dbo].[Alpha`. Every object_reference read (CREATE TABLE/VIEW/ALTER names, inline and constraint REFERENCES targets, trigger name/table, index table, CTE names, FROM/JOIN relations) now re-reads the identifier verbatim from the source when the span is preceded by `[` or contains a bracket, matching the routine-recovery identifier grammar (double-quoted with doubled quotes, bracketed with `]]` escapes, backticked, or bare `[\\w$]+` parts joined by `.`). Labels keep delimiters verbatim like routine labels already do (`[dbo].[Alpha]`, `[Gamma]`, `dbo.[Delta]`); ids and _norm_ident keys are unchanged (`<stem>_dbo_alpha`, `dbo.alpha`) so references still resolve. Names without brackets are byte-identical to the pin. This is the narrower variant recommended by the triage instead of PR 2716's full has_error regex fallbacks and PR 2723's label-convention rewrite.",
+      "native_regression": "extractors::sql::tests::bracket_delimited_tsql_names_keep_their_brackets_verbatim",
+      "oracle_adaptation": "Exact-context hunks to the pinned sql.py: module-level _BRACKET_IDENT_RE, an _ident(n) helper next to _read that expands the span over the preceding `[` and re-matches the identifier grammar, and the nine object_reference read sites switched from _read to _ident. check_sql.py adds deterministic bracketed table/view/ALTER/trigger/index/CTE/newline forms (including `[A]]B]`) and bracketed table/target choices to the randomized statements."
+    }
+  ],
+  "graphify/extractors/terraform.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/issues/3787",
+      "behavior": "A literal sensitive name in a name/value map redacts value and valueFrom, including list items. Ordinary name/value pairs retain their values.",
+      "native_regression": "secret_names_protect_paired_values_and_block_defaults",
+      "oracle_adaptation": "First-party fix of the reported reproduction; explicit Python counterpart uses the same documented predicate, with whole-module oracle comparison and a separate failing-then-passing native-binary reproduction."
+    }
+  ],
+  "graphify/llm.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/pull/3708",
+      "reviewed_head_sha": "315974e0a55358fc5f09a22f4334404dabd797e0",
+      "behavior": "Upstream merged #3708 in 0.9.66 (bounded retries of missing community labels). The oracle keeps the reviewed follow-up: missing ids are retried outside the batch parse, so a malformed nested retry keeps the labels it already had.",
+      "native_regression": "truncated_label_response_retries_only_missing_ids_and_counts_usage; label_retry_depth_is_bounded_and_shape_errors_are_typed; partial_labels_survive_a_failed_missing_id_retry",
+      "oracle_adaptation": "_label_batch_with_retry is replaced in memory: parse failures of the original batch still split and retry; missing-id groups retry independently and successful siblings are retained; non-parse provider errors still propagate."
+    }
+  ],
+  "graphify/serve.py": [
+    {
+      "url": "https://github.com/Graphify-Labs/graphify/issues/3041",
+      "behavior": "Invalidate pinned and LRU graph contexts when learning sidecars are created, changed or deleted.",
+      "native_regression": "learning_sidecar_invalidates_both_pinned_and_lru_contexts"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "url": "https://files.pythonhosted.org/packages/06/c9/ed79f643b0cec3e123171c09caffb6088a6111025a20fc69112b1468828b/tree_sitter_hcl-1.2.0.tar.gz",
+  "sha256": "f86cb7a9fd5cb93d83e2f788ae155544464c47755d09190505de562c0d6ad1dd",
+  "files": {
+    "LICENSE": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+    "grammar/parser.c": "0358f3edfad58c43a1a954efd1a77509faf8e7515e9034574580776353b02ee1",
+    "grammar/scanner.c": "846b6e63d4b352c6cf9de1255ca100100e52b1a3f8a7b9805c501bbc83d41966",
+    "grammar/tree_sitter/parser.h": "180b893c8734778fd32f372dfbc27bd6ad1cd2221f26150b31256ff6716320d2",
+    "grammar/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+    "grammar/tree_sitter/array.h": "5bdf6ed1a78e3409fd443e085ca967a64c188a5d082aaf7f819bccd53a471c94"
+  },
+  "note": "Native dependency, not Graphify application code. Exact generated parser differs from crates.io 1.1.0."
+}

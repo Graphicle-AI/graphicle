@@ -1,0 +1,645 @@
+{
+  "upstream_version": "0.9.88",
+  "upstream_commit": "a9860f70dc3cc2e9c2d8cb923484cfa0592b9067",
+  "files": {
+    "src/affected.rs": [
+      "graphify/affected.py",
+      "graphify/ids.py"
+    ],
+    "src/analyze.rs": [
+      "graphify/analyze.py"
+    ],
+    "src/analyze_data.rs": [
+      "graphify/analyze.py"
+    ],
+    "src/benchmark.rs": [
+      "graphify/benchmark.py"
+    ],
+    "src/build.rs": [
+      "graphify/build.py"
+    ],
+    "src/build_api.rs": [
+      "graphify/build.py"
+    ],
+    "src/build_global.rs": [
+      "graphify/build.py",
+      "graphify/global_graph.py"
+    ],
+    "src/build_labels.rs": [
+      "graphify/build.py",
+      "graphify/ruby_resolution.py"
+    ],
+    "src/build_merge.rs": [
+      "graphify/build.py"
+    ],
+    "src/build_normalize.rs": [
+      "graphify/build.py"
+    ],
+    "src/cache.rs": [
+      "graphify/cache.py",
+      "graphify/extract.py"
+    ],
+    "src/cache_api.rs": [
+      "graphify/cache.py"
+    ],
+    "src/cache_paths.rs": [
+      "graphify/cache.py",
+      "graphify/extract.py"
+    ],
+    "src/callflow_data.rs": [
+      "graphify/callflow_html.py"
+    ],
+    "src/callflow_html.rs": [
+      "graphify/callflow_html.py"
+    ],
+    "src/cargo_introspect.rs": [
+      "graphify/cargo_introspect.py"
+    ],
+    "src/cli.rs": [
+      "graphify/__main__.py",
+      "graphify/cli.py"
+    ],
+    "src/cli_cluster.rs": [
+      "graphify/__main__.py",
+      "graphify/cli.py"
+    ],
+    "src/cli_commands.rs": [
+      "graphify/__main__.py",
+      "graphify/cli.py"
+    ],
+    "src/cli_export.rs": [
+      "graphify/__main__.py",
+      "graphify/cli.py"
+    ],
+    "src/cli_extract.rs": [
+      "graphify/__main__.py",
+      "graphify/cli.py"
+    ],
+    "src/cli_guard.rs": [
+      "graphify/__main__.py",
+      "graphify/cli.py"
+    ],
+    "src/cli_merge.rs": [
+      "graphify/__main__.py",
+      "graphify/cli.py"
+    ],
+    "src/cli_state.rs": [
+      "graphify/__main__.py",
+      "graphify/cli.py"
+    ],
+    "src/cluster.rs": [
+      "graphify/cluster.py"
+    ],
+    "src/cross_repo_calls.rs": [
+      "graphify/cross_repo_calls.py"
+    ],
+    "src/cross_repo_types.rs": [
+      "graphify/cross_repo_types.py"
+    ],
+    "src/csharp_dispatch.rs": [
+      "graphify/csharp_dispatch.py"
+    ],
+    "src/decimal_data.rs": [
+      "graphify/security.py"
+    ],
+    "src/dedup.rs": [
+      "graphify/dedup.py"
+    ],
+    "src/dedup_api.rs": [
+      "graphify/dedup.py"
+    ],
+    "src/dedup_strings.rs": [
+      "graphify/dedup.py"
+    ],
+    "src/detect.rs": [
+      "graphify/detect.py"
+    ],
+    "src/detect_documents.rs": [
+      "graphify/detect.py"
+    ],
+    "src/detect_ignore.rs": [
+      "graphify/detect.py"
+    ],
+    "src/detect_manifest.rs": [
+      "graphify/detect.py"
+    ],
+    "src/detect_types.rs": [
+      "graphify/detect.py"
+    ],
+    "src/diagnostics.rs": [
+      "graphify/diagnostics.py"
+    ],
+    "src/diagnostics_report.rs": [
+      "graphify/diagnostics.py"
+    ],
+    "src/error.rs": [
+      "graphify/__init__.py"
+    ],
+    "src/export.rs": [
+      "graphify/export.py"
+    ],
+    "src/export_api.rs": [
+      "graphify/export.py"
+    ],
+    "src/export_formats.rs": [
+      "graphify/export.py"
+    ],
+    "src/export_obsidian.rs": [
+      "graphify/export.py"
+    ],
+    "src/exporters/base.rs": [
+      "graphify/exporters/base.py"
+    ],
+    "src/exporters/common.rs": [
+      "graphify/exporters/graphdb.py",
+      "graphify/exporters/html.py"
+    ],
+    "src/exporters/graphdb.rs": [
+      "graphify/exporters/graphdb.py"
+    ],
+    "src/exporters/html.rs": [
+      "graphify/exporters/html.py"
+    ],
+    "src/exporters/mod.rs": [
+      "graphify/exporters/__init__.py"
+    ],
+    "src/extract.rs": [
+      "graphify/extract.py"
+    ],
+    "src/extract_languages.rs": [
+      "graphify/extract.py"
+    ],
+    "src/extract_members.rs": [
+      "graphify/extract.py"
+    ],
+    "src/extract_merge.rs": [
+      "graphify/extract.py"
+    ],
+    "src/extract_normalize.rs": [
+      "graphify/extract.py"
+    ],
+    "src/extract_projects.rs": [
+      "graphify/extract.py"
+    ],
+    "src/extract_python.rs": [
+      "graphify/extract.py"
+    ],
+    "src/extractors/apex.rs": [
+      "graphify/extractors/apex.py"
+    ],
+    "src/extractors/base.rs": [
+      "graphify/extractors/base.py"
+    ],
+    "src/extractors/bash.rs": [
+      "graphify/extractors/bash.py"
+    ],
+    "src/extractors/blade.rs": [
+      "graphify/extractors/blade.py"
+    ],
+    "src/extractors/builtins_data.rs": [
+      "graphify/extractors/base.py"
+    ],
+    "src/extractors/cobol.rs": [
+      "graphify/extractors/cobol.py"
+    ],
+    "src/extractors/commonlisp.rs": [
+      "graphify/extractors/commonlisp.py"
+    ],
+    "src/extractors/csharp.rs": [
+      "graphify/extractors/csharp.py"
+    ],
+    "src/extractors/dart.rs": [
+      "graphify/extractors/dart.py"
+    ],
+    "src/extractors/dm.rs": [
+      "graphify/extractors/dm.py"
+    ],
+    "src/extractors/elixir.rs": [
+      "graphify/extractors/elixir.py"
+    ],
+    "src/extractors/engine.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/engine_calls.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/engine_config.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/engine_declarations.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/engine_declarator.rs": [
+      "graphify/extractors/engine.py",
+      "graphify/extractors/objc.py"
+    ],
+    "src/extractors/engine_extra.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/engine_parser.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/engine_ruby.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/engine_scope.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/engine_semantics.rs": [
+      "graphify/extractors/engine.py",
+      "graphify/extractors/julia.py"
+    ],
+    "src/extractors/engine_types.rs": [
+      "graphify/extractors/engine.py"
+    ],
+    "src/extractors/erlang.rs": [
+      "graphify/extractors/erlang.py"
+    ],
+    "src/extractors/fortran.rs": [
+      "graphify/extractors/fortran.py"
+    ],
+    "src/extractors/go.rs": [
+      "graphify/extractors/go.py"
+    ],
+    "src/extractors/json_config.rs": [
+      "graphify/extractors/json_config.py"
+    ],
+    "src/extractors/julia.rs": [
+      "graphify/extractors/julia.py"
+    ],
+    "src/extractors/markdown.rs": [
+      "graphify/extractors/markdown.py"
+    ],
+    "src/extractors/markdown_data.rs": [
+      "graphify/extractors/markdown.py"
+    ],
+    "src/extractors/mod.rs": [
+      "graphify/extractors/__init__.py"
+    ],
+    "src/extractors/models.rs": [
+      "graphify/extractors/models.py"
+    ],
+    "src/extractors/objc.rs": [
+      "graphify/extractors/objc.py"
+    ],
+    "src/extractors/ocaml.rs": [
+      "graphify/extractors/ocaml.py"
+    ],
+    "src/extractors/parse_cache.rs": [
+      "graphify/extract.py"
+    ],
+    "src/extractors/pascal.rs": [
+      "graphify/extractors/pascal.py"
+    ],
+    "src/extractors/pascal_forms.rs": [
+      "graphify/extractors/pascal_forms.py"
+    ],
+    "src/extractors/pascal_paths.rs": [
+      "graphify/extractors/pascal.py",
+      "graphify/extractors/resolution.py"
+    ],
+    "src/extractors/powershell.rs": [
+      "graphify/extractors/powershell.py"
+    ],
+    "src/extractors/r.rs": [
+      "graphify/extractors/r.py"
+    ],
+    "src/extractors/razor.rs": [
+      "graphify/extractors/razor.py"
+    ],
+    "src/extractors/registry.rs": [
+      "graphify/extractors/__init__.py"
+    ],
+    "src/extractors/resolution.rs": [
+      "graphify/extract.py",
+      "graphify/extractors/resolution.py"
+    ],
+    "src/extractors/resolution_facts.rs": [
+      "graphify/extractors/resolution.py"
+    ],
+    "src/extractors/resolution_js.rs": [
+      "graphify/extractors/resolution.py"
+    ],
+    "src/extractors/resolution_paths.rs": [
+      "graphify/extractors/objc.py",
+      "graphify/extractors/resolution.py"
+    ],
+    "src/extractors/resolution_types.rs": [
+      "graphify/extractors/resolution.py"
+    ],
+    "src/extractors/robot.rs": [
+      "graphify/extractors/robot.py"
+    ],
+    "src/extractors/rust.rs": [
+      "graphify/extractors/rust.py"
+    ],
+    "src/extractors/sln.rs": [
+      "graphify/extractors/sln.py"
+    ],
+    "src/extractors/solidity.rs": [
+      "graphify/extractors/solidity.py"
+    ],
+    "src/extractors/sql.rs": [
+      "graphify/extractors/sql.py"
+    ],
+    "src/extractors/terraform.rs": [
+      "graphify/extractors/terraform.py"
+    ],
+    "src/extractors/vbnet.rs": [
+      "graphify/extractors/vbnet.py"
+    ],
+    "src/extractors/verilog.rs": [
+      "graphify/extractors/verilog.py"
+    ],
+    "src/extractors/yaml_frontmatter.rs": [
+      "graphify/extractors/markdown.py"
+    ],
+    "src/extractors/zig.rs": [
+      "graphify/extractors/zig.py"
+    ],
+    "src/file_slice.rs": [
+      "graphify/file_slice.py"
+    ],
+    "src/fsutil.rs": [
+      "graphify/extractors/sln.py"
+    ],
+    "src/global_graph.rs": [
+      "graphify/global_graph.py"
+    ],
+    "src/google_workspace.rs": [
+      "graphify/google_workspace.py"
+    ],
+    "src/graph.rs": [
+      "graphify/affected.py",
+      "graphify/global_graph.py",
+      "graphify/ids.py",
+      "graphify/multigraph_compat.py",
+      "graphify/serve.py"
+    ],
+    "src/graph_algorithms.rs": [
+      "graphify/analyze.py"
+    ],
+    "src/graph_node_link.rs": [
+      "graphify/affected.py"
+    ],
+    "src/hooks.rs": [
+      "graphify/hooks.py"
+    ],
+    "src/hooks_runtime.rs": [
+      "graphify/hooks.py"
+    ],
+    "src/html_compat.rs": [
+      "graphify/extractors/csharp.py"
+    ],
+    "src/hyperedge_members.rs": [
+      "graphify/build.py",
+      "graphify/semantic_cleanup.py"
+    ],
+    "src/ids.rs": [
+      "graphify/ids.py"
+    ],
+    "src/ingest.rs": [
+      "graphify/ingest.py"
+    ],
+    "src/ingest_api.rs": [
+      "graphify/ingest.py"
+    ],
+    "src/install.rs": [
+      "graphify/install.py"
+    ],
+    "src/install_fs.rs": [
+      "graphify/install.py"
+    ],
+    "src/install_platforms.rs": [
+      "graphify/install.py"
+    ],
+    "src/interface_dispatch.rs": [
+      "graphify/interface_dispatch.py"
+    ],
+    "src/io_compat.rs": [
+      "graphify/extractors/pascal_forms.py"
+    ],
+    "src/ip_policy_data.rs": [
+      "graphify/security.py"
+    ],
+    "src/lib.rs": [
+      "graphify/__init__.py",
+      "graphify/__main__.py"
+    ],
+    "src/llm.rs": [
+      "graphify/llm.py"
+    ],
+    "src/llm_api.rs": [
+      "graphify/llm.py"
+    ],
+    "src/llm_bedrock.rs": [
+      "graphify/llm.py"
+    ],
+    "src/llm_config.rs": [
+      "graphify/llm.py"
+    ],
+    "src/llm_extract.rs": [
+      "graphify/llm.py"
+    ],
+    "src/llm_labels.rs": [
+      "graphify/llm.py"
+    ],
+    "src/llm_parse.rs": [
+      "graphify/llm.py"
+    ],
+    "src/llm_source.rs": [
+      "graphify/llm.py"
+    ],
+    "src/llm_transport.rs": [
+      "graphify/llm.py"
+    ],
+    "src/main.rs": [
+      "graphify/__main__.py"
+    ],
+    "src/manifest.rs": [
+      "graphify/manifest.py"
+    ],
+    "src/manifest_ingest.rs": [
+      "graphify/manifest_ingest.py"
+    ],
+    "src/markdown_resolution.rs": [
+      "graphify/markdown_resolution.py"
+    ],
+    "src/mcp_ingest.rs": [
+      "graphify/mcp_ingest.py"
+    ],
+    "src/minhash.rs": [
+      "graphify/_minhash.py"
+    ],
+    "src/model.rs": [
+      "graphify/__init__.py"
+    ],
+    "src/multigraph_compat.rs": [
+      "graphify/multigraph_compat.py"
+    ],
+    "src/par.rs": [
+      "graphify/rcfile.py"
+    ],
+    "src/pascal_resolution.rs": [
+      "graphify/pascal_resolution.py"
+    ],
+    "src/path_syntax.rs": [
+      "graphify/extractors/base.py"
+    ],
+    "src/paths.rs": [
+      "graphify/affected.py",
+      "graphify/paths.py"
+    ],
+    "src/pg_introspect.rs": [
+      "graphify/pg_introspect.py"
+    ],
+    "src/process.rs": [
+      "graphify/extractors/fortran.py",
+      "graphify/llm.py"
+    ],
+    "src/prs.rs": [
+      "graphify/prs.py"
+    ],
+    "src/prs_api.rs": [
+      "graphify/prs.py"
+    ],
+    "src/prs_io.rs": [
+      "graphify/prs.py"
+    ],
+    "src/prs_render.rs": [
+      "graphify/prs.py"
+    ],
+    "src/prs_triage.rs": [
+      "graphify/prs.py"
+    ],
+    "src/python_compat.rs": [
+      "graphify/analyze.py",
+      "graphify/ids.py",
+      "graphify/validate.py"
+    ],
+    "src/python_datetime.rs": [
+      "graphify/reflect.py"
+    ],
+    "src/python_json.rs": [
+      "graphify/paths.py"
+    ],
+    "src/python_repr_data.rs": [
+      "graphify/validate.py"
+    ],
+    "src/query_terms.rs": [
+      "graphify/benchmark.py",
+      "graphify/serve.py"
+    ],
+    "src/querylog.rs": [
+      "graphify/querylog.py"
+    ],
+    "src/rcfile.rs": [
+      "graphify/rcfile.py"
+    ],
+    "src/reflect.rs": [
+      "graphify/reflect.py"
+    ],
+    "src/regex_compat.rs": [
+      "graphify/extractors/blade.py"
+    ],
+    "src/report.rs": [
+      "graphify/report.py"
+    ],
+    "src/resolver_registry.rs": [
+      "graphify/resolver_registry.py"
+    ],
+    "src/ruby_resolution.rs": [
+      "graphify/ruby_resolution.py"
+    ],
+    "src/scip_ingest.rs": [
+      "graphify/scip_ingest.py"
+    ],
+    "src/security.rs": [
+      "graphify/paths.py",
+      "graphify/security.py"
+    ],
+    "src/semantic_cleanup.rs": [
+      "graphify/semantic_cleanup.py"
+    ],
+    "src/serve.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/serve_api.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/serve_find.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/serve_http.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/serve_live.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/serve_prs.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/serve_search.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/serve_socket.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/serve_text.rs": [
+      "graphify/__main__.py",
+      "graphify/serve.py"
+    ],
+    "src/session.rs": [
+      "graphify/affected.py",
+      "graphify/ids.py",
+      "graphify/serve.py"
+    ],
+    "src/swift_dispatch.rs": [
+      "graphify/swift_dispatch.py"
+    ],
+    "src/symbol_resolution.rs": [
+      "graphify/symbol_resolution.py"
+    ],
+    "src/transcribe.rs": [
+      "graphify/transcribe.py"
+    ],
+    "src/transcribe_api.rs": [
+      "graphify/transcribe.py"
+    ],
+    "src/transcribe_native.rs": [
+      "graphify/transcribe.py"
+    ],
+    "src/tree_html.rs": [
+      "graphify/tree_html.py"
+    ],
+    "src/unicode15.rs": [
+      "graphify/ids.py"
+    ],
+    "src/validate.rs": [
+      "graphify/validate.py"
+    ],
+    "src/watch.rs": [
+      "graphify/__main__.py",
+      "graphify/watch.py"
+    ],
+    "src/watch_paths.rs": [
+      "graphify/__main__.py",
+      "graphify/watch.py"
+    ],
+    "src/watch_reconcile.rs": [
+      "graphify/__main__.py",
+      "graphify/watch.py"
+    ],
+    "src/wiki.rs": [
+      "graphify/wiki.py"
+    ]
+  }
+}

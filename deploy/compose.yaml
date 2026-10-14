@@ -1,0 +1,31 @@
+services:
+  graphicle:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: graphicle:0.1.0
+    command: ["serve", "--port", "8854", "--public-origin", "https://${GRAPHICLE_DOMAIN:?Set the public domain}"]
+    volumes: ["graphicle-data:/var/lib/graphicle"]
+    # Caddy shares this network namespace. The app port stays on loopback.
+    ports: ["80:80", "443:443", "443:443/udp"]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+  caddy:
+    image: caddy:2.10.2-alpine
+    network_mode: "service:graphicle"
+    depends_on:
+      graphicle:
+        condition: service_healthy
+    environment:
+      GRAPHICLE_DOMAIN: "${GRAPHICLE_DOMAIN:?Set the public domain}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+volumes:
+  graphicle-data:
+  caddy-data:
+  caddy-config:

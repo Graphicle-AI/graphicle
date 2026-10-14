@@ -1,0 +1,15 @@
+# Build folders of the Cargo workspaces (crates/graphicle, crates/graphicle-graph
+# and crates/graphicle-memory) and the release archives
+# packaging/release_build.py writes.
+target/
+/dist/
+# Parser sources prepared by crates/graphicle/tools/prepare_parser_sources.py.
+/.tslp-root/
+# Offline Docker inputs (crates/graphicle/tools/prepare_linux_context.py).
+/deploy/.offline/
+# The code graph that graphicle and graphicle-graph write in each project they
+# index, and that the engine's tests leave in crates/graphicle-graph.
+.graphicle/
+__pycache__/
+*.pyc
+.DS_Store

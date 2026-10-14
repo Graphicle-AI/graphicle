@@ -1,0 +1,13 @@
+[package]
+name = "graphicle-tree-sitter-hcl"
+version = "1.2.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Native binding to the exact HCL grammar in Graphify's pinned Python dependency"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1"

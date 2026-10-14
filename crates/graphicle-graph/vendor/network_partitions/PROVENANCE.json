@@ -1,0 +1,50 @@
+{
+  "source": "https://github.com/graspologic-org/graspologic-native/tree/1.2.5/packages/network_partitions",
+  "tag_sha": "3c98966401effa0cbf766be4315ad956584bbdea",
+  "source_distribution_sha256": "27ea7e01fa44466c0b4cdd678d4561e5d3dc0cb400015683b7ae1386031257a0",
+  "adaptation": "Three explicit borrowed lifetimes added in neighboring_clusters.rs and compact_network.rs for current Rust diagnostics. Algorithms and defaults are unchanged. Application wrapper mirrors mediator RNG and parameter defaults.",
+  "files": {
+    "Cargo.toml": "cc98cc0f00bb70a03cc46dc4418af350553b8af4f3365ac2ea238cb8db0461c3",
+    "LICENSE": "9906940f61b1f0b533fa7d99baf55178b2808fbe113ea51dfbfad8572ccd5f2b",
+    "README.md": "5492abeee74decdf1dd845f32e8c94cbae388f63cd8d4de708568163ea807ac3",
+    "src/clustering.rs": "a6079a2f31f37cb1ddba670f767b8c67049c50f64b84a178766a6f741b181ef7",
+    "src/errors.rs": "344aa2eb157cb461de15e2cc7fba8bdcc74f36d7e496ae501dbb68f11b91fd84",
+    "src/leiden/full_network_clustering.rs": "26756cf40a7cf200f7aa35545cc476ef0eaf1dacb77dde8ba552f8a40674ac44",
+    "src/leiden/full_network_work_queue.rs": "a4eaa2e5d51d121f000e5461f75f0e5fc44bbb075825aded65760f193f171eca",
+    "src/leiden/hierarchical.rs": "6df42076d3f64bb96227820568de09e98e36eeb82f346cc539b5b4241183a0df",
+    "src/leiden/leiden_clustering.rs": "27a5226de6264cdc1d906f27c7b720b56800ca0607e8690d6fe106055cb95d72",
+    "src/leiden/mod.rs": "450c59cf372fc604185add1f2d0bf7e6dcb85e57e817763c7973d430cc5cd0ad",
+    "src/leiden/neighboring_clusters.rs": "d01cc2fe49ba8bf542958bd6f8683d3cde1fc5c42bead5603c7a62b80fdbddbe",
+    "src/leiden/quality_value_increment.rs": "795805f8e0908d9e62531fbc9961764a5318289fb21da7e0c0f406d446c6322e",
+    "src/leiden/subnetwork.rs": "095cd4ed884d00d2b132de3a7ad8149f0b895100d9e2d98c8d63475f30ba1064",
+    "src/lib.rs": "8bd6e097d78c0127a995323ddb82058a0e2322e7fa58be67a8859c0319fa702d",
+    "src/network/compact_network.rs": "64576a61def595859c058269d987fd622d0e078bbd653a4c735dfd0a88ff70ee",
+    "src/network/identifier.rs": "e9a948921a47bf29dd780222202530d7b4ddba89bda8f82b19e75763eeb754af",
+    "src/network/labeled_network.rs": "3d65bdecc81167aac8bb884b1d2d2f9735378cc6730fc8a0d7fa1b2e4cbfdd30",
+    "src/network/mod.rs": "d2d19f5d0f5dbd9e9e350190d9c3431b8da764905c1246a3073176b222ad388e",
+    "src/network/network.rs": "09cfee111d37793533fbaa24fbdec562010302c19bc2c3121859fb22e23b6105",
+    "src/network/network_builder.rs": "b4cfd02bc4aba0809e2b9e76cfa1ce2afd51453be30d1bb9195b21fd354c3f46",
+    "src/network/networks.rs": "b582883e63e7247dade8561a1856f196c1e61c0f1110abd6354c133f24d128d5",
+    "src/network/prelude.rs": "e37de137873472e5a6ac6382f3ab4efbe8b1cb5c892f47be9e2cf8f204f1c6b9",
+    "src/quality.rs": "e8091c618c5523396a3cb024110099909f64206602a365505c27f5581f837d53",
+    "src/random_vector.rs": "b8329b600821c143b4eb17a184db0b62e760bcfc421b8dce47b71a23dc29658f",
+    "src/resolution.rs": "f4c8038b31dbae99cd2ee2806c15408fcec608c7cf525a8bcf9e6e08876e1c6d",
+    "src/safe_vectors.rs": "ee6102fc3cc56952473976a0841d9aa66919cde0f255960328b9d4cccf01bbf0",
+    "tests/broken_org_graph.csv": "8d7a5d9d2e0420a2137216039885e2d6173d1144b2c714cca3ecc0df914c853c",
+    "tests/sbm_network.csv": "fe9e5a26b68b91b91a003e2503097f6e67975615919230f175edf0d207692ba9",
+    "tests/simple_org_graph.csv": "89a237e8dc6f8d90bb53447eeb44dd2b8f67445063fcb9bab07467097bbf3bf2",
+    "tests/test_network.rs": "b6f9adc19e1638b1742b9c2353ce409e5793bca7ce779165ca13623c87f88d4e"
+  },
+  "local_adaptations": {
+    "src/leiden/neighboring_clusters.rs": {
+      "upstream_sha256": "d01cc2fe49ba8bf542958bd6f8683d3cde1fc5c42bead5603c7a62b80fdbddbe",
+      "current_sha256": "d8772d90bd6d66caf6281e30b18fa80145b5fb1fa669b4b27bd7141ef75db0e3",
+      "change": "Explicit elided lifetime annotations only."
+    },
+    "src/network/compact_network.rs": {
+      "upstream_sha256": "64576a61def595859c058269d987fd622d0e078bbd653a4c735dfd0a88ff70ee",
+      "current_sha256": "e2d3026f387146c6d568c8e932b0f72fbb5ff1da73fe9078b23517f5cfdcacf0",
+      "change": "Explicit elided lifetime annotations only."
+    }
+  }
+}

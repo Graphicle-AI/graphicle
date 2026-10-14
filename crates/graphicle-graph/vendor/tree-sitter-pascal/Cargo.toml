@@ -1,0 +1,13 @@
+[package]
+name = "graphicle-tree-sitter-pascal"
+version = "0.10.0"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Native binding to permissive Pascal grammar"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1"

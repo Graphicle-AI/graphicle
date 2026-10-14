@@ -1,0 +1,13 @@
+[package]
+name = "graphicle-tree-sitter-sql"
+version = "0.3.11"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Native binding to Graphify's exact pinned SQL grammar"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1"

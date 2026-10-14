@@ -1,0 +1,43 @@
+Graphicle runtime and the graphicle program
+Copyright (c) 2026 KarLex AI, Inc.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The program links the Graphicle graph engine and memory library
+(../graphicle-graph/, ../graphicle-memory/), which include software adapted from
+Graphify (https://github.com/Graphify-Labs/graphify), release 0.9.88. The
+NOTICE of Graphify, reproduced as Apache-2.0 section 4(d) requires:
+
+  Graphify
+  Copyright 2026 Safi Shamsi and the Graphify contributors.
+
+  This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+  Portions of this software were contributed under the MIT License prior to the
+  relicensing and remain available under those terms. The original MIT license
+  text is retained in LICENSE-MIT.
+
+Graphify's LICENSE-MIT is retained as licenses/Graphify-Labs__graphify__LICENSE-MIT.txt.
+
+The NOTICE of genome by Northtek (FrostByte Digital LLC), reproduced as
+Apache-2.0 section 4(d) requires:
+
+  GENOME
+  Copyright 2026 Northtek (FrostByte Digital LLC)
+
+  This product includes software developed by Northtek (FrostByte Digital LLC).
+
+  Licensed under the Apache License, Version 2.0. See the LICENSE file for details.
+  Contact: info@northtek.io
+
+Copyright notices retained from adapted Apache-2.0 source files:
+  Copyright 2024, Zep Software, Inc.            (Graphiti, in the memory library)
+  Copyright 2008-2015 Nokia Networks
+  Copyright 2016- Robot Framework Foundation    (Robot Framework 7.5, in the
+                                                 graph engine)
+
+NOTICE.md describes every adapted source and design and where its licence text
+is kept in licenses/. THIRD_PARTY_LICENSES.html holds the licences of the Rust
+crates linked into the program. The graph engine's own notices and licence
+texts, including its vendored grammars and CPython-derived parts, are in
+../graphicle-graph/NOTICE, ../graphicle-graph/NOTICE.md and ../graphicle-graph/licenses/.

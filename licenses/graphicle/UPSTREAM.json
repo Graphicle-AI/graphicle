@@ -1,0 +1,1797 @@
+{
+  "schema": "graphicle.native-service.provenance.v1",
+  "version": "0.7.0",
+  "source_downloads": "Each entry of `projects` names its pinned commit and the SHA-256 of the source archive that was read; the download receipts are kept with the maintainers' records.",
+  "linked_core_receipt_sha256": "0141572b1aaaf92807c66f0610226763595746723cc4392caafb6baae8353161",
+  "projects": [
+    {
+      "repository": "Graphify-Labs/graphify",
+      "commit": "20a20d30d8e7eef77675651f0199d87f913bd3e7",
+      "archive_sha256": "eb086824b7be9e68049aa5b2e0b4e5891f9d61d5e4fc819ddeedc30d414f57ca",
+      "verification": "archive checksum and inspected file bytes reverified",
+      "url": "https://github.com/Graphify-Labs/graphify/tree/20a20d30d8e7eef77675651f0199d87f913bd3e7",
+      "selected_files": [
+        {
+          "path": "graphify/extractors/engine.py",
+          "sha256": "474710d9bd72565776273d344bc38b37f288a28590b7f973fed47e8b37812f2c",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "graphify/extractors/models.py",
+          "sha256": "038cbf04e17aec6dc71d8e6d886ab57fcfeffc36bf8d5d4fb0aeed88a6fc4719",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "graphify/extractors/base.py",
+          "sha256": "cd11628d3d4c05dcf0df002823712595ba2fac848fa146517a3bf41ff68cc2e8",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "tests/test_python_import_resolution.py",
+          "sha256": "879ae7e14212b767107ef61220fd6b500e26f7a7b74fdf9b755182c921d120e9",
+          "inspection": "Existing upstream fixtures for relative imports, package re-exports and type references; exercised with their actual pytest fixtures."
+        },
+        {
+          "path": "tests/test_issue_3405_python_resolution.py",
+          "sha256": "fafe374c96fa2d5d7d97c815b423f689ba4986208f1c0e10bc06661ec1dcbd21",
+          "inspection": "Existing upstream nested-scope and shadowing regressions; normalized call-graph comparison."
+        },
+        {
+          "path": "tests/test_unmapped_at_alias_resolution.py",
+          "sha256": "2a32cd9e813141095c8eb5513eed9482b0b493b0a40612d0238d601620285176",
+          "inspection": "Existing configured-alias versus inferred-convention cases; graphicle requires an explicit mapping for the latter."
+        },
+        {
+          "path": "graphify/extract.py",
+          "sha256": "bc4d446510ec248f2eaba85c33a9538b4ce9f009f980120370253f255b190ec8",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "graphify/extractors/resolution.py",
+          "sha256": "81fd34a31128b8bdae411fa72bd6f1b519923fc9def362798da97ab135b32bd4",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "graphify/resolver_registry.py",
+          "sha256": "bd5904412417ead6104852c1d79c3e8d1aebb7ab3f80a13330f19be7c18f307b",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "graphify/cache.py",
+          "sha256": "b630ce0c29cf5c00e2a43a7196492b7531ed905ac48c86f5f42c13e2ce841dbc",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "graphify/scip_ingest.py",
+          "sha256": "4de62f7da456e5dc28f78a0dc5d97200e036cfb01318a806539582d53e288aa5",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/structure.rs"
+      ],
+      "native_service_modules": [
+        "src/local.rs",
+        "src/query.rs",
+        "src/operations.rs"
+      ],
+      "integration_scope": "49 pinned grammar selections and source-located syntax relationships. Native review runs locally or behind an HTTPS proxy. Explicit Python/TypeScript/Rust import bindings, scoped shadowing checks and manifest-bounded JSONC path aliases; authored differential code fixtures compare the real pinned extractor.",
+      "not_ported": "Every language-specific compiler integration, the complete Graphify application and upstream API compatibility.",
+      "license_files": [
+        {
+          "path": "licenses/Graphify-Labs__graphify__LICENSE.txt",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "path": "licenses/Graphify-Labs__graphify__LICENSE-MIT.txt",
+          "sha256": "36ecff6bbb97aca1be64e95f42538cf796adde5864edac583e620643c096931a"
+        },
+        {
+          "path": "licenses/Graphify-Labs__graphify__NOTICE.txt",
+          "sha256": "3448ea175bba09f6fed8a743000139fb4c7112de83f164355b5540b158576621"
+        }
+      ],
+      "full_application_port": false,
+      "later_revisions": [
+        {
+          "commit": "0010e25d0d983bc127cef0ee0f7e490bed74e44c",
+          "committed_at": "2026-10-04T21:02:57+01:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/Graphify-Labs/graphify/tree/0010e25d0d983bc127cef0ee0f7e490bed74e44c",
+          "selected_files": [
+            {
+              "path": "graphify/cache.py",
+              "sha256": "1b3c3b4eed358a92ed6ca44c2a32c9ffb0c862ef0aa4d63454c348d47521455a",
+              "inspection": "985a017 (#3989): when one process names a second cache root, the outgoing root's stat index is flushed to the file it was loaded from (_stat_index_path, line 215; _flush_stat_index, line 398) and the new root is loaded fresh, so one project's entries no longer land in another's file. 6868fff raises _AST_CACHE_SCHEMA to 5 for the Python receiver-shadow facts it persists (line 39). graphicle ports both in src/cache.rs."
+            },
+            {
+              "path": "graphify/extract.py",
+              "sha256": "b77dee7bd8a13b6c0d127fccb3f71d20dea60477c13228518da6f47885c3f818",
+              "inspection": "43 commits from 20a20d30 to v0.9.76: COBOL, Erlang, R, Solidity and VB.NET extractors and Verilog headers; PHP closures and routes; JSX component calls; enum declarations for C++, Groovy and Scala 3; inherited and super calls in Java; Lua colon calls; external Python module calls, Python import bindings across sibling cases and scan-root imports; Svelte and Astro AST passes limited to their script blocks; Elixir import and use scoped to the declaring module; and a warning for a cleanly parsed code file with no symbols. graphicle ports them in src/extract.rs, src/extract_python.rs and the language extractors."
+            },
+            {
+              "path": "graphify/extractors/engine.py",
+              "sha256": "003c73b629cd073c957059b18becfcbed89c3672659c1a5ba812b3d570161ead",
+              "inspection": "38 commits from 20a20d30 to v0.9.76: self, super and this calls bound within the caller's class chain (Python, Ruby, Swift, JavaScript), paren-less Ruby self sends, PHP closure naming, routing and enum cases, Kotlin annotations and class literals, Scala context bounds and type definitions, C# null-conditional calls and tuple names, C++ member-function declarations and the shared fixes listed for extract.py. graphicle ports them in src/extractors/engine.rs and its engine_* modules."
+            },
+            {
+              "path": "graphify/extractors/resolution.py",
+              "sha256": "55f4a41cb6fbfb98e724a7686fff39270592b40e6f5baf97c9edae4aa6f529d9",
+              "inspection": "7 commits: guarded ambiguous absolute Python imports (45e9af9), retraction of provisional package import edges (310b317, f2b65b7), cross-file edges kept during incremental updates (8928031), tsconfig references for solution-file aliases (ef58341), nested scan-root imports by namespace projection (c66eebe, _resolve_python_namespace_dir at line 2456) and source entries preferred over built dist in workspace packages (81b0391). graphicle ports them in src/extractors/resolution.rs and resolution_js.rs."
+            },
+            {
+              "path": "tests/test_python_import_resolution.py",
+              "sha256": "928f78f03cfbb8375210b5f9985af1e8968da4da40815fb540d8a0480a129499",
+              "inspection": "23 tests at v0.9.76 covering absolute and scan-root package imports, ambiguous imports, provisional edge retraction, namespace projection, external module calls and bindings across sibling cases. graphicle ports the 6868fff and 33edd89 cases in tests/compat_0_9_76_python.rs, and its comparison checks run the upstream extractor against the port."
+            }
+          ],
+          "rust_files": [
+            "src/graph_projection.rs",
+            "src/query.rs",
+            "../graphicle-graph/src/cache.rs",
+            "../graphicle-graph/src/extract.rs",
+            "../graphicle-graph/src/extract_python.rs",
+            "../graphicle-graph/src/extractors/engine.rs",
+            "../graphicle-graph/src/extractors/resolution.rs",
+            "../graphicle-graph/tests/compat_0_9_76_python.rs"
+          ],
+          "adaptation": "Ported in graphicle, not in the native structure layer. The service builds and queries its code graph with graphicle (graphicle::incremental::extract, src/graph_projection.rs line 168), whose default output matches Graphify 0.9.76 (re-pinned in 1fd0a722), so these fixes apply to the service's code graph. The per-file structure analyses of graphicle-memory (structure.rs) only feed legacy_graph, the fallback for repositories without a recorded episode (src/query.rs line 48), and keep their 20a20d30 scope.",
+          "full_application_port": false
+        },
+        {
+          "commit": "5c7b84792f453582676548185aaec3824d51dfe2",
+          "committed_at": "2026-10-05T20:13:41+01:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/Graphify-Labs/graphify/tree/5c7b84792f453582676548185aaec3824d51dfe2",
+          "selected_files": [
+            {
+              "path": "graphify/extract.py",
+              "sha256": "8f7e3f9d1e57c98d42136f5644fe95b4feb12c684512272c035d1e7ea546881a",
+              "inspection": "Two changes from v0.9.76 to v0.9.77 (5c7b8479). c3d54bc: extract (line 7410) names each cleanly parsed code file without symbols by its path relative to the scan root and, when os.path.relpath raises ValueError because the file sits on another drive, falls back to its POSIX path (lines 7795-7798). 674338b (#4072): _astro_mask_non_script (line 2512) now ends each script with U+2028 and a semicolon (line 2535), as the Svelte masker (line 2396) does, so a trailing // comment cannot hide the next script while byte offsets and line numbers stay put. graphicle ports the Astro fix in src/extract_languages.rs (astro_mask_non_script); its symbolless-file warning (warn_symbolless_files, src/extract.rs) cannot fail on another drive and is pinned by the new upstream test."
+            },
+            {
+              "path": "graphify/extractors/engine.py",
+              "sha256": "4e979e15a4e88dbb37da2f325e5edef75f2060958f1053630db27f4059a84190",
+              "inspection": "Four changes from v0.9.76 to v0.9.77. 5c5ce7f (#3778): _js_find_exported_objects (line 2756) finds the objects a JavaScript or TypeScript module exports (CommonJS or ESM), so functions assigned onto them become method nodes with their calls. d2b5e19: a PHP $this or self call whose name is a language construct resolves only within the caller's own class (php_builtin_self_call, line 7404; _self_call_target, line 1406, gains require_method_owner). 1f078a3 (#4041): a zero-byte file keeps its file node without a source location. ee29272 (#4080): _scala_collect_context_bounds (line 1313) records type references for context bounds such as [T: Ordering] (lines 5154 and 6262). graphicle ports all four in src/extractors/ (engine.rs, engine_calls.rs, engine_declarations.rs, engine_extra.rs, engine_scope.rs and engine_types.rs)."
+            }
+          ],
+          "rust_files": [
+            "src/graph_projection.rs",
+            "src/query.rs",
+            "../graphicle-graph/src/extract.rs",
+            "../graphicle-graph/src/extract_languages.rs",
+            "../graphicle-graph/src/extractors/engine.rs",
+            "../graphicle-graph/src/extractors/engine_calls.rs",
+            "../graphicle-graph/src/extractors/engine_declarations.rs",
+            "../graphicle-graph/src/extractors/engine_extra.rs",
+            "../graphicle-graph/src/extractors/engine_scope.rs",
+            "../graphicle-graph/src/extractors/engine_types.rs"
+          ],
+          "adaptation": "Ported in graphicle, not in the native structure layer. The service builds and queries its code graph with graphicle (graphicle::incremental::extract, src/graph_projection.rs line 168), whose default output matches Graphify 0.9.77 (fixes ported in 839e82a3 and 24903981, re-pinned in 8e0d9c31 once the upstream checks passed against the port), so these fixes apply to the service's code graph. The per-file structure analyses of graphicle-memory (structure.rs) only feed legacy_graph, the fallback for repositories without a recorded episode (src/query.rs line 48), and keep their 20a20d30 scope.",
+          "full_application_port": false
+        },
+        {
+          "commit": "a9860f70dc3cc2e9c2d8cb923484cfa0592b9067",
+          "committed_at": "2026-10-12T22:05:07+00:00",
+          "review": "Reviewed 2026-10-13 at the v0.9.88 release tag (GitHub archive and the PyPI sdists of 0.9.78 to 0.9.88); the graph engine qualifies against this release.",
+          "url": "https://github.com/Graphify-Labs/graphify/tree/a9860f70dc3cc2e9c2d8cb923484cfa0592b9067",
+          "selected_files": [
+            {
+              "path": "graphify/cache.py",
+              "sha256": "b2bbfb7240caee2b12c57e11da7d9c0ee230d274ebb8420555fd573d8a784396",
+              "inspection": "0.9.80 to 0.9.88: the AST cache directory names the extractor version, the cache schema and a grammar fingerprint; entries record and check the files they resolved against; keys are salted by a language override. graphicle ports them in src/cache.rs (schema 8)."
+            },
+            {
+              "path": "graphify/extract.py",
+              "sha256": "f4d8270e18dfab82f0cd54425b13421e3d273ea36c21aac785da040689463952",
+              "inspection": "137 hunks from v0.9.77 to v0.9.88, mostly cross-file resolution: Python typed receivers, inherited self/cls/super calls and sibling and package import repointing; C# and Java member calls through receiver chains; JavaScript rescued and dynamic imports; EJS; language overrides; the decoded source reads. graphicle ports them in src/extract*.rs and the language extractors."
+            },
+            {
+              "path": "graphify/extractors/base.py",
+              "sha256": "7df5685a7763e81b5deadbf53714988e174ab805d1f6eab4d08415f4927eb6dd",
+              "inspection": "0.9.78 (#4146): _read_source_bytes and _read_source_text decode a source file that is not UTF-8 (UTF-32 or UTF-16 with a byte-order mark exactly, anything else as cp1252, then latin-1) and name such a file once per process. graphicle ports them in src/extractors/base.rs."
+            },
+            {
+              "path": "graphify/extractors/engine.py",
+              "sha256": "cb40a815008bcad9545fb3e201d7cf41efb4322ddd6d68747cb7b0393175e19d",
+              "inspection": "Changes from v0.9.77 to v0.9.88 (0.9.78, 0.9.80, 0.9.81, 0.9.83 and 0.9.85 to 0.9.88): C# namespace scope ids from source row and column, cast types as receivers, receiver chains, constructor bodies, generic arity in type ids and per-class return-type tables; Python typed parameters and locals (receiver_type), self.X attribute types, nested classes qualified by their enclosing class, opaque bases, property reads and imports under TYPE_CHECKING; every source read through _read_source_bytes. graphicle ports them in src/extractors/engine.rs and its engine_* modules."
+            },
+            {
+              "path": "graphify/extractors/models.py",
+              "sha256": "30b6121cb518764a67da8c8470ff5fd56e583d3cace316c95be8175bd953b7e3",
+              "inspection": "0.9.88: .ejs joins _JS_CACHE_BYPASS_SUFFIXES. graphicle ports it in src/extractors/models.rs."
+            },
+            {
+              "path": "graphify/extractors/resolution.py",
+              "sha256": "9db3d52e7d29380ee71ee89d4c1c0c78e5ec6a6022816fdfff3289c723b622a0",
+              "inspection": "0.9.78 to 0.9.88: JavaScript and Python symbol-resolution facts, Python module paths with the frozen standard-library module names, tsconfig alias and import-path resolution, Java imports and type references. graphicle ports them in src/extractors/resolution*.rs."
+            },
+            {
+              "path": "graphify/resolver_registry.py",
+              "sha256": "23a79bf81b0f66e3999dfd392678650e702abffaa5688ca5dce28c0d32738402",
+              "inspection": "0.9.87: run_language_resolvers passes the active language overrides on. graphicle ports it in src/resolver_registry.rs."
+            }
+          ],
+          "rust_files": [
+            "src/graph_projection.rs",
+            "src/query.rs",
+            "../graphicle-graph/src/cache.rs",
+            "../graphicle-graph/src/extract.rs",
+            "../graphicle-graph/src/extract_languages.rs",
+            "../graphicle-graph/src/extractors/base.rs",
+            "../graphicle-graph/src/extractors/engine.rs",
+            "../graphicle-graph/src/extractors/engine_calls.rs",
+            "../graphicle-graph/src/extractors/engine_config.rs",
+            "../graphicle-graph/src/extractors/engine_declarations.rs",
+            "../graphicle-graph/src/extractors/engine_declarator.rs",
+            "../graphicle-graph/src/extractors/engine_extra.rs",
+            "../graphicle-graph/src/extractors/engine_parser.rs",
+            "../graphicle-graph/src/extractors/engine_ruby.rs",
+            "../graphicle-graph/src/extractors/engine_scope.rs",
+            "../graphicle-graph/src/extractors/engine_semantics.rs",
+            "../graphicle-graph/src/extractors/engine_types.rs",
+            "../graphicle-graph/src/extractors/models.rs",
+            "../graphicle-graph/src/extractors/resolution.rs",
+            "../graphicle-graph/src/resolver_registry.rs"
+          ],
+          "adaptation": "Ported in graphicle, not in the native structure layer. The service builds and queries its code graph with graphicle (graphicle::incremental::extract, src/graph_projection.rs), whose default output matches Graphify 0.9.88 (the eleven releases 0.9.78 to 0.9.88 ported and qualified against the release), so these changes apply to the service's code graph. The per-file structure analyses of graphicle-memory (structure.rs) only feed legacy_graph, the fallback for repositories without a recorded episode (src/query.rs), and keep their 20a20d30 scope.",
+          "full_application_port": false
+        }
+      ]
+    },
+    {
+      "repository": "MemTensor/MemOS",
+      "commit": "a7367d07e55db61099f7b4e2c1108bc5831a24f3",
+      "archive_sha256": "15bbe0022e7d3ad9b06c68facf7105533b92b9d8e36bd9f29ca5f9fe8e893912",
+      "verification": "archive checksum and inspected file bytes reverified",
+      "url": "https://github.com/MemTensor/MemOS/tree/a7367d07e55db61099f7b4e2c1108bc5831a24f3",
+      "selected_files": [
+        {
+          "path": "src/memos/embedders/cache.py",
+          "sha256": "20561a6dda8fe40a6c33718db9be708b6be20cf87e643b6e4de6122d6d15bddc",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "src/memos/mem_scheduler/base_mixins/queue_ops.py",
+          "sha256": "8717f168761e3a2df4a2d47ccb378da2bd8c03b63444f60b1bd5aa7d1a27b10a",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "src/memos/mem_scheduler/schemas/task_schemas.py",
+          "sha256": "0c5006b12ea7b822cac467e538ccba00c289f1cc36054b5917316443197309e2",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "src/memos/memories/textual/tree_text_memory/retrieve/advanced_searcher.py",
+          "sha256": "4fbbac24e4c1bacc9542890b2d6e6a6414f3653b363576aec81dba7458868994",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "src/memos/memories/textual/tree_text_memory/retrieve/searcher.py",
+          "sha256": "6fe45af4f2438e5e772243ad6349397668a60a0a58dba53c8f08d92013321cfd",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "src/memos/memories/textual/tree_text_memory/retrieve/recall.py",
+          "sha256": "8c52b55e8f84de39dc681b48a4deec3db58258456688aea093297209b2b1a483",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "src/memos/templates/prefer_complete_prompt.py",
+          "sha256": "a57823e60fbc495fd9ee11f08a381e34da13f4d290fd2a671c852749b8ab11c2",
+          "inspection": "Explicit and implicit preference evidence rules (user-attributed statements, adopted suggestions only, reasons, preference changes) adapted into observer rule 7 of src/observer.rs; read at the pinned clean commit, not the compromised v2.0.34 tag."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/cache.rs",
+        "../graphicle-memory/src/lifecycle.rs"
+      ],
+      "native_service_modules": [
+        "src/jobs.rs",
+        "src/model.rs",
+        "src/distributed.rs",
+        "src/maintenance.rs",
+        "src/cli.rs",
+        "src/observer.rs"
+      ],
+      "integration_scope": "SQLite coordination and bounded Redis-compatible inference dispatch with leases, cancellation and pending recovery; scoped reuse, current-access checks, usage ledger and byte-bounded feature caches with ordered eviction. Explicit job retries keep earlier usage and deduplicate repeated retry requests. The default conversation observer adapts the user-attributed preference evidence rules.",
+      "not_ported": "Complete upstream scheduler/application parity, transformer KV replacement, neural training and model-weight changes.",
+      "license_files": [
+        {
+          "path": "licenses/MemTensor__MemOS__LICENSE.txt",
+          "sha256": "154f9be8df2d55ceddcd4646c8d8d4206d48867ae1da2b81ce2ab86b51a5f075"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "getzep/graphiti",
+      "commit": "16cdf7045378c8d53ae01f94e2fa60d238cb0f68",
+      "archive_sha256": "775f040210b7db483ffe6d49f78164beea12f10e0cd0b6149d0fb7b9854a7e96",
+      "verification": "archive checksum and inspected file bytes reverified",
+      "url": "https://github.com/getzep/graphiti/tree/16cdf7045378c8d53ae01f94e2fa60d238cb0f68",
+      "selected_files": [
+        {
+          "path": "graphiti_core/search/search_utils.py",
+          "sha256": "304b1acf9fc50adc1b6fe705667853a7774cd54fd8000feb87575e4f6753221f",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "graphiti_core/utils/maintenance/edge_operations.py",
+          "sha256": "b773ff4489968af2a996d5074e679cab9806cc0904a7ff9f2aecc74382325abe",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "graphiti_core/prompts/dedupe_edges.py",
+          "sha256": "607cb830bb02a6020fdfea013e321345c0c0d5629f7895dc76622130cefc22c6",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "graphiti_core/helpers.py",
+          "sha256": "15e14d0b9ac09b13147f8f65c5772576878ece70fb7dbc072417e925f0c35fdd",
+          "inspection": "normalize_l2 definition used by differential qualification; not an application port"
+        },
+        {
+          "path": "graphiti_core/prompts/dedupe_nodes.py",
+          "sha256": "2e7a9db7e2f6ea73b62cfd10022fcd16828b79ec2e4165a913c16f9b57b7b518",
+          "inspection": "Contextual entity matching instructions and structured candidate interface."
+        },
+        {
+          "path": "graphiti_core/graphiti.py",
+          "sha256": "2d0ffbb8b6de59787269326a9255d875f74da63ed66fd4f4fad3f159538d0fdd",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "graphiti_core/search/search_config_recipes.py",
+          "sha256": "e06aae4698478499695d084064ec926270b30566284f0c65263e3879339abd94",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "graphiti_core/llm_client/openai_client.py",
+          "sha256": "a01747a1f9972e6588ac4cc642a22622a02c27325e6b88e74ac74a233a64489e",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "graphiti_core/embedder/openai.py",
+          "sha256": "6c84e15282cc7869471b6fb75629332ba2597ce1ca9f83cabd4331e6c1f1272f",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/retrieval.rs",
+        "../graphicle-memory/src/temporal.rs",
+        "../graphicle-memory/src/semantic.rs"
+      ],
+      "native_service_modules": [
+        "src/claims.rs",
+        "src/memory.rs",
+        "src/operations.rs",
+        "src/graph.rs",
+        "src/query.rs",
+        "src/workflows.rs",
+        "src/projection.rs"
+      ],
+      "integration_scope": "Grounded revision proposals, scoped entities, reviewed identity links, immutable event/knowledge clocks, bounded graph traversal and optional Neo4j projection with current-source checks. Durable scoped cleanup survives deletion and prevents racing publication.",
+      "not_ported": "Full Graphiti SDK/service and graph-maintenance implementation. Identity links deliberately require review.",
+      "license_files": [
+        {
+          "path": "licenses/getzep__graphiti__LICENSE.txt",
+          "sha256": "2825300b20d7b951209835a4a331f29e24725a39d65168e4b831df53aa372650"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "mem0ai/mem0",
+      "commit": "a39a802bbc93e85b820078cd3c4dbaf53af25dbe",
+      "archive_sha256": "71221342a0a58b5411182816b03b91a137f2b040d05a4e8332782856c166313d",
+      "verification": "archive checksum and inspected file bytes reverified",
+      "url": "https://github.com/mem0ai/mem0/tree/a39a802bbc93e85b820078cd3c4dbaf53af25dbe",
+      "selected_files": [
+        {
+          "path": "mem0/configs/prompts.py",
+          "sha256": "10bc8a34b3b5f0ce24560a2a3190c9112b979a891b981f48393bbd168d915a5c",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "mem0/memory/main.py",
+          "sha256": "5b1b75e2f00aca7bd368a6e9cd5905145d60fd05a0e36d6b1ef3e2f1b4f28ca1",
+          "inspection": "Targeted add/search/get_all and phased extraction regions used by the reference comparison."
+        },
+        {
+          "path": "mem0/llms/openai.py",
+          "sha256": "37e6d3c22b55df0731740f4e0868b95bd480ce44363227fe53461db328c5f67e",
+          "inspection": "Provider request and usage callback regions."
+        },
+        {
+          "path": "mem0/configs/llms/openai.py",
+          "sha256": "d8df3a7a75da977fdb64cde5df698a724fd3cf1295f89bb002d37c850dd0e57f",
+          "inspection": "Local endpoint and decoding configuration."
+        },
+        {
+          "path": "mem0/embeddings/fastembed.py",
+          "sha256": "3ec2ae87df5d0bebedb8b5471366c3412975847458499f66097f7b8c9ac8c9b8",
+          "inspection": "Reference embedding construction and query encoding."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/semantic.rs"
+      ],
+      "native_service_modules": [
+        "src/claims.rs",
+        "src/workflows.rs",
+        "src/jobs.rs",
+        "src/model.rs",
+        "src/settings.rs",
+        "src/vector.rs"
+      ],
+      "integration_scope": "Contextual extraction with source/target checks and review; seven model API protocols, encrypted workspace profiles and local/Qdrant vectors. The pinned OSS runtime is separately exercised in development comparisons. Date-only facts retain their precision; typed timestamps require a timezone and relative-time claims require a source clock.",
+      "not_ported": "Managed proprietary optimizations, every provider/vector store, complete SDK/API compatibility and model training.",
+      "license_files": [
+        {
+          "path": "licenses/mem0ai__mem0__LICENSE.txt",
+          "sha256": "0bbcbe931c353293a2fafce08326181dfeea0e568c566afd4ce8337a70f5e219"
+        }
+      ],
+      "full_application_port": false,
+      "later_revisions": [
+        {
+          "commit": "94c3fe9f238f3dbf29c9ce98643bd71eb13077cd",
+          "committed_at": "2026-09-25T23:04:12+05:30",
+          "review": "Reviewed 2026-09-30 after upstream_watch flagged the file; read only, nothing executed.",
+          "url": "https://github.com/mem0ai/mem0/tree/94c3fe9f238f3dbf29c9ce98643bd71eb13077cd",
+          "selected_files": [
+            {
+              "path": "mem0/memory/main.py",
+              "sha256": "f329ca4a17af1fbefb32ac10d4cc7ae7ddbdb7435a87eb74c30915cff98b8b7c",
+              "inspection": "Records the vector store rejected are excluded from ADD results and history (#7066); Memory/AsyncMemory context-manager protocol (#7354); procedural-memory deprecation note."
+            }
+          ],
+          "rust_files": [],
+          "adaptation": "Nothing to port. #7066 guards a partial write across two stores; a Graphicle session or memory is written in one SQLite transaction or not at all. #7354: the Python SDK Memory facade already supports with-blocks.",
+          "full_application_port": false
+        }
+      ]
+    },
+    {
+      "repository": "microsoft/graphrag",
+      "commit": "82b87bf0434fc69f857663280e2c36a1c48e52fe",
+      "archive_sha256": "956c2a7f319b5ab41b112f0550cb593796c08cee58d92c5eb70d7bba0c444afe",
+      "verification": "archive checksum and inspected file bytes reverified",
+      "url": "https://github.com/microsoft/graphrag/tree/82b87bf0434fc69f857663280e2c36a1c48e52fe",
+      "selected_files": [
+        {
+          "path": "packages/graphrag/graphrag/query/context_builder/community_context.py",
+          "sha256": "1a5157f1471ac7f697e017212a600e5eb8f734c0d6e8c1c42be174c01c965719",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/community.rs",
+        "../graphicle-memory/src/packing.rs"
+      ],
+      "native_service_modules": [],
+      "integration_scope": "Through the linked core: distinct-source community weights and token-counted report context (community.rs) and token-counted context batching in evidence packing (packing.rs). The service's own community reports, graph-local retrieval, global map/reduce and DRIFT were archived before the open-source release; the graph engine keeps the unchanged network_partitions from graspologic-native 1.2.5 (native_clustering_source).",
+      "not_ported": "Indexing, community reports and every query mode, prompt/runtime parity and the complete application.",
+      "license_files": [
+        {
+          "path": "licenses/microsoft__graphrag__LICENSE.txt",
+          "sha256": "c2cfccb812fe482101a8f04597dfc5a9991a6b2748266c47ac91b6a5aae15383"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "onyx-dot-app/onyx",
+      "commit": "4d0a9c9ea3bd69d4ac4a3de03db93d27dec90307",
+      "archive_sha256": "2dd7ff974e694be7adf212686250076e9af1f42f3638a5170cce874515497740",
+      "verification": "archive checksum and inspected file bytes reverified",
+      "url": "https://github.com/onyx-dot-app/onyx/tree/4d0a9c9ea3bd69d4ac4a3de03db93d27dec90307",
+      "selected_files": [
+        {
+          "path": "backend/onyx/indexing/chunking/text_section_chunker.py",
+          "sha256": "53ea7465f7ed83821d3e084cc3e707062ff74a49c888765d3dff57da285612c7",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "backend/onyx/indexing/chunking/section_chunker.py",
+          "sha256": "98600e877768a5cd3c33f6abb6e5efc6d7b950c2498621f55e7f41002c7c2c7b",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "backend/onyx/indexing/chunker.py",
+          "sha256": "b3ee4583df7b3e645cbbb8a82cb2a388ac608e6039649c446651fafc8c6cfc0f",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "backend/onyx/connectors/github/connector.py",
+          "sha256": "116e431e5288fb6bfdeef6c243bd695679f52e7d19ecb321efc21daa8c9e4e53",
+          "inspection": "Issue/comment and original-file conversion functions, source timestamps and connector interfaces."
+        },
+        {
+          "path": "backend/onyx/connectors/slack/connector.py",
+          "sha256": "10ce346699d17779dc8d98d3d3effb773a63c0193496f19f092339110db53356",
+          "inspection": "Thread/document construction, pagination and attribution regions."
+        },
+        {
+          "path": "backend/onyx/connectors/notion/connector.py",
+          "sha256": "ecf179d0823276164184031ee1c56b82a30e8a6590ee2bf757b9904726b30b59",
+          "inspection": "Nested block pagination and partial-failure handling regions."
+        },
+        {
+          "path": "backend/onyx/connectors/google_drive/file_retrieval.py",
+          "sha256": "8b17c0e52ab1c12df03b7c6a644fe37373a5e34df719573031baa3cea4dee8d9",
+          "inspection": "Folder/file listing, pagination and deleted-file filters; targeted interface inspection."
+        },
+        {
+          "path": "backend/onyx/connectors/google_drive/doc_conversion.py",
+          "sha256": "72c2e398fe39580bdcdbc9923e304243fc650298b7fe4d400d4ea72290aa3c2e",
+          "inspection": "Source/document conversion interfaces; targeted inspection, not a parser port."
+        },
+        {
+          "path": "backend/onyx/context/search/pipeline.py",
+          "sha256": "35dff286b356667dcf9b034742aeb342028a5f22d8b8c9757a866bdf560f1f8e",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "backend/onyx/context/search/retrieval/search_runner.py",
+          "sha256": "97c82761b2a1608e6cb56b28abb31797db37042510abeba1387d587167b4229e",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "backend/onyx/document_index/factory.py",
+          "sha256": "b0abed2aa2d5d90318ff6efe816a5df03c8e3a212569f36dcf540db6f80e2b0d",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/ingest.rs"
+      ],
+      "native_service_modules": [
+        "src/connectors.rs",
+        "src/permissions.rs",
+        "src/oauth.rs",
+        "src/vault.rs",
+        "src/documents.rs",
+        "src/memory.rs",
+        "src/maintenance.rs"
+      ],
+      "integration_scope": "Native GitHub/Slack/Notion/recursive Drive adapters; OAuth and encrypted credentials; user/group permission refresh; retained originals, PDF/Office/EPUB/HTML parsing and Mac OCR. Staged source activation remains atomic.",
+      "not_ported": "Enterprise-licensed code, every connector and provider ACL model, and unqualified live accounts. Notion uses explicitly authorized audiences. Graphicle team access is an independent implementation.",
+      "license_files": [
+        {
+          "path": "licenses/onyx-dot-app__onyx__LICENSE.txt",
+          "sha256": "d4847240794058c7ac3cfdf8e5d528fe8b0edf15b32a96612ecb9b3e182092b7"
+        }
+      ],
+      "full_application_port": false,
+      "later_revisions": [
+        {
+          "commit": "a7a17725f83ae34af3c498b0fd4f1a42c9c50989",
+          "committed_at": "2026-09-29T16:54:14Z",
+          "review": "Reviewed 2026-09-28 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/onyx-dot-app/onyx/tree/a7a17725f83ae34af3c498b0fd4f1a42c9c50989",
+          "selected_files": [
+            {
+              "path": "backend/onyx/prompts/chat_prompts.py",
+              "sha256": "c466974f5f25d2d0cc8a5be6ddc09a26d8e723f6b235f38d2603d155a0fb93ac",
+              "inspection": "ANSWER_COMPLETENESS_REMINDER wording (MIT portion, outside ee/)."
+            }
+          ],
+          "rust_files": [
+            "src/search.rs"
+          ],
+          "adaptation": "The grounded-v2 answer contract ends its input with a final_check adapted from the completeness reminder: answer every part, keep exact values, abstain instead of answering with adjacent information.",
+          "full_application_port": false
+        },
+        {
+          "commit": "a7a17725f83ae34af3c498b0fd4f1a42c9c50989",
+          "committed_at": "2026-09-29T16:54:14Z",
+          "review": "Reviewed 2026-09-30 after upstream_watch flagged the file; read only, nothing executed.",
+          "url": "https://github.com/onyx-dot-app/onyx/tree/a7a17725f83ae34af3c498b0fd4f1a42c9c50989",
+          "selected_files": [
+            {
+              "path": "backend/onyx/connectors/github/connector.py",
+              "sha256": "dcdcbf1a2e57de046d15deb638b03a15afc569f77a7528a8dae398bffb9efb32",
+              "inspection": "BoundedGithubRetry: server-requested retry waits pass through bound_server_wait (#14988)."
+            }
+          ],
+          "rust_files": [
+            "src/connectors.rs"
+          ],
+          "adaptation": "Graphicle never sleeps on a server-requested delay: a rate-limited sync fails and reports the wait, so a server cannot pin a worker and there is no wait to bound. The review found that GitHub rate limits answered as 403 (x-ratelimit-remaining 0, or retry-after) were treated as revoked access, which withheld every synced document of the connector; they are now reported as rate limits and leave the synced documents available.",
+          "full_application_port": false
+        },
+        {
+          "commit": "b2186a2dba8123ab597e3d28043b6e64619bf135",
+          "committed_at": "2026-10-02T00:14:47Z",
+          "review": "Reviewed 2026-10-02 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/onyx-dot-app/onyx/tree/b2186a2dba8123ab597e3d28043b6e64619bf135",
+          "selected_files": [
+            {
+              "path": "backend/onyx/prompts/search_prompts.py",
+              "sha256": "b88250ea6fd99e4fba3f73c2bba0d67b555452c0eed3ebb97640541ca49f85cb",
+              "inspection": "SEMANTIC_QUERY_REPHRASE_SYSTEM_PROMPT/USER_PROMPT (lines 15, 24) and KEYWORD_REPHRASE_SYSTEM_PROMPT/USER_PROMPT (lines 58, 67) wording (MIT portion, outside ee/)."
+            },
+            {
+              "path": "backend/onyx/tools/tool_implementations/search/constants.py",
+              "sha256": "463c7a93580a8b70e83240d79472f1ee9f505158b665391432e54df8300583bd",
+              "inspection": "LLM_SEMANTIC_QUERY_WEIGHT 1.3, LLM_KEYWORD_QUERY_WEIGHT 1.0, LLM_NON_CUSTOM_QUERY_WEIGHT 0.7, ORIGINAL_QUERY_WEIGHT 0.5, RRF_K_VALUE 50 (MIT portion, outside ee/)."
+            },
+            {
+              "path": "backend/onyx/tools/tool_implementations/search/search_tool.py",
+              "sha256": "df36d6ef74b9fd93bc6f974b59c2b3aff7531aeefc08644ddb1110d2f24e24f4",
+              "inspection": "deduplicate_queries (line 171): case-insensitive deduplication that sums the weights of repeated queries; the weighted fusion of every query's results (line 1060) (MIT portion, outside ee/)."
+            }
+          ],
+          "rust_files": [
+            "src/search.rs",
+            "src/query.rs",
+            "src/jobs.rs",
+            "src/workflows.rs",
+            "../../bench/memory/tools/query_expansion_prompt.txt",
+            "../graphicle-memory/src/retrieval.rs",
+            "../../bench/memory/tools/expand_queries.py"
+          ],
+          "adaptation": "Recall and basic accept caller `query_variants`: repeats of one kind merge and add their weights, as deduplicate_queries does, and each variant's ranking is fused at its weight; the local ONNX dense arm embeds query variants as questions and passage variants as documents (`semantic_q{i}`). The benchmark kit's expand_queries.py writes such variants for recall evaluations through any OpenAI-compatible endpoint: a rephrased question (weight 1.3) and up to three keyword queries (1.0), with prompts adapted from Onyx's semantic-rephrase and keyword prompts (query_expansion_prompt.txt), and a HyDE-style hypothetical answer (0.7). Basic answers no longer write variants themselves: the opt-in `query_expansion` was archived before the open-source release.",
+          "full_application_port": false
+        },
+        {
+          "commit": "b017b8bea660bcd1729f8f9c6996be2de5c8b9a9",
+          "committed_at": "2026-10-05T05:32:51Z",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/onyx-dot-app/onyx/tree/b017b8bea660bcd1729f8f9c6996be2de5c8b9a9",
+          "selected_files": [
+            {
+              "path": "backend/onyx/connectors/slack/connector.py",
+              "sha256": "d491f69a7acc2e6ebd3c8ea61e4aa629c2c922b23a59c4f6c6507bd065d16b78",
+              "inspection": "dbf01b5d makes the channel-pattern check public as validate_channel_regexes (line 477) so that the creation-time capability checks can share it; the connector still runs it on load (lines 1406-1408). Thread and document construction, pagination and attribution are unchanged."
+            },
+            {
+              "path": "backend/onyx/context/search/pipeline.py",
+              "sha256": "5d902dff2ff1766620398a92987c996201b78b05038c6392397daf89e8d1ebfc",
+              "inspection": "2e71e3a3 passes UserAccessFilters (line 16) through _build_index_filters (line 41) and search_pipeline (line 260): the access-control list plus an optional query-time filter by connector-credential pair (cc_pair_access, line 131) that only logs disagreements in shadow mode and replaces the ACL filter in enforce mode, so a change of access no longer waits for the ACL copies stored on indexed chunks to be rewritten. 8ced9bc0 renames interfaces_new to interfaces (line 25)."
+            },
+            {
+              "path": "backend/onyx/context/search/retrieval/search_runner.py",
+              "sha256": "cea8bd614c06ff3e70484aa6a9aadc000d80b23d1548a8f347e59eca41181713",
+              "inspection": "8ced9bc0 removes Vespa: DocumentIndex is imported from onyx.document_index.interfaces (line 15) and the keyword-only branch drops its Vespa note (line 136); retrieval behaves as before."
+            },
+            {
+              "path": "backend/onyx/document_index/factory.py",
+              "sha256": "359b521e3469c8d81b3a1a1546a5d29a1c0dd8e9a1ff76d0231b83d77dd9a67f",
+              "inspection": "8ced9bc0 removes the Vespa index: get_default_document_index (line 36) returns the OpenSearch primary and optional secondary (build_opensearch_document_index, line 18) or a disabled index when DISABLE_VECTOR_DB is set (line 50). f1fc2cdd passes the index setting vector_quantization to OpenSearch (line 32)."
+            },
+            {
+              "path": "backend/onyx/tools/tool_implementations/search/search_tool.py",
+              "sha256": "579e5b0ff147a061d08db62fbc252c19a47e755b2d3588e11a420ae60823631a",
+              "inspection": "2e71e3a3 types acl_filters as UserAccessFilters in _run_search_for_query (line 480) and run (line 716); the query expansion and keyword weighting ported from b2186a2d are unchanged."
+            }
+          ],
+          "rust_files": [
+            "src/memory.rs",
+            "src/connectors.rs",
+            "src/search.rs",
+            "src/query.rs"
+          ],
+          "adaptation": "Nothing to port. On every read Graphicle checks a connector document against its sharing policy, the state of the credential or OAuth account it was synced with, the synced source permissions in provider permission mode and the age of the snapshot (memory::documents, src/memory.rs lines 53-104), and connector_sharing rewrites the ACL of every document of the connector in the same transaction (src/connectors.rs line 329), so it has no stale index-time ACL copy for a query-time pair filter to correct. The dense arm embeds lexical candidates at query time and keeps no vector index to quantize. The other changes rename or retype code whose ported behaviour is unchanged.",
+          "full_application_port": false
+        },
+        {
+          "commit": "2c21a0fdf776f862edb5a389d04534e19328dcee",
+          "committed_at": "2026-10-05T23:54:15Z",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/onyx-dot-app/onyx/tree/2c21a0fdf776f862edb5a389d04534e19328dcee",
+          "selected_files": [
+            {
+              "path": "backend/onyx/tools/tool_implementations/search/search_tool.py",
+              "sha256": "5c43f218176b1c3c5d4d9f434f8ad1a3b2acd821c40c0a82af8d4dbd84b2450f",
+              "inspection": "912ed5f2 (#15512): tool_definition (line 565) returns a typed ToolDefinition instead of a plain dictionary, and NAME becomes the shared INTERNAL_SEARCH_TOOL_NAME constant (line 274). The query variants (semantic_query_rephrase and keyword_query_expansion, lines 626-627) and the keyword weighting ported from b2186a2d are unchanged."
+            }
+          ],
+          "rust_files": [
+            "src/memory.rs",
+            "src/connectors.rs",
+            "src/search.rs",
+            "src/query.rs"
+          ],
+          "adaptation": "Nothing to port. 912ed5f2 only retypes the tool definition the search tool hands to the chat model; the query expansion and keyword weighting ported from b2186a2d are unchanged.",
+          "full_application_port": false
+        }
+      ]
+    },
+    {
+      "repository": "vectorize-io/hindsight",
+      "commit": "680406b3dd9cca2108c7f0e204820a09b4e30906",
+      "archive_sha256": "94ba02b767baede4f2e83e3100bbe560efd158f3fe0e16da55aa57f93fafae2c",
+      "verification": "archive checksum and inspected file bytes reverified",
+      "url": "https://github.com/vectorize-io/hindsight/tree/680406b3dd9cca2108c7f0e204820a09b4e30906",
+      "selected_files": [
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/reflect/structured_doc.py",
+          "sha256": "6aaaf138d8757597cb55dcf67eecb496fd41af534152a68afef143bf62863a19",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/reflect/delta_ops.py",
+          "sha256": "345b5af14aa362ac46ff35815a98e85a76c602318168a5e32251bc6d145f5328",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/reflect/retractions.py",
+          "sha256": "633a84f49aadaf3bd811452be92d1eae0a197d97d0247631dac8a8b5916f11c1",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/consolidation/prompts.py",
+          "sha256": "aea3d86dfbd84e5dbcca279b625714bfdb0734ec3c26f8f883d40e5418c3e0e6",
+          "inspection": "targeted implementation and interfaces, not entire repository"
+        },
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/reflect/tools_schema.py",
+          "sha256": "1e0144205fa79d7136800bb1045a69cf906b37e9751af75983d4e9088307e4fe",
+          "inspection": "Progressive memory/source reading tools and structured response contracts."
+        },
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/reflect/agent.py",
+          "sha256": "2dd3cc01f4b0a3543b8c6fe334e357a3767d1ff17d4cf5a8882b5fe607be575f",
+          "inspection": "Budget and tool-loop control regions; not the entire agent implementation."
+        },
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/search/fusion.py",
+          "sha256": "19ccdfd73e5c9da7c10561c92e4c86af2d6c7b6fed870f41a848fbce1d25dfa4",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/search/reranking.py",
+          "sha256": "5b86bb8eaae28d87595e5ea5e0cdd335a6e96b5967244b148b21e023748accc4",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        },
+        {
+          "path": "hindsight-api-slim/hindsight_api/engine/search/temporal_extraction.py",
+          "sha256": "a2701dbcf2594939bb96ce49ff7753036c4b078db3f47da7c2462228a6cae3aa",
+          "inspection": "Targeted execution-path recheck for the 0.5 comparison; not a claim that the entire file was translated."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/document.rs",
+        "../graphicle-memory/src/lifecycle.rs",
+        "../graphicle-memory/src/semantic.rs"
+      ],
+      "native_service_modules": [
+        "src/workflows.rs",
+        "src/memory.rs",
+        "src/operations.rs",
+        "src/query.rs",
+        "src/graph.rs",
+        "src/answer_review.rs",
+        "src/evidence.rs"
+      ],
+      "integration_scope": "Bounded read/search/answer/abstain, reviewed narratives, retained drafts, document deltas, immutable versions, dependency invalidation and explicit semantic/causal/temporal links. Additional same-model source review checks requested answer parts and reports failure explicitly; it is not a proof. Source headers and byte coordinates survive bounded evidence-window merging; one controller step can gather complementary searches and reads.",
+      "not_ported": "All upstream belief/network engines, prompts, API/SDK compatibility and hosted service behavior.",
+      "license_files": [
+        {
+          "path": "licenses/vectorize-io__hindsight__LICENSE.txt",
+          "sha256": "01fde0bedf83bdc185065d7af524a61690efe576a67f922eaff3a1280c17b63a"
+        }
+      ],
+      "full_application_port": false,
+      "later_revisions": [
+        {
+          "commit": "eb021da3b2501911e4b57c82b3de1123572a200e",
+          "committed_at": "2026-09-29T19:05:35+02:00",
+          "review": "Reviewed 2026-09-28 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/vectorize-io/hindsight/tree/eb021da3b2501911e4b57c82b3de1123572a200e",
+          "selected_files": [
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/search/reranking.py",
+              "sha256": "272b442b8f1ce88539fad9d1fd0bd95f8dbd80cf61a2a291476ef13323d5d52e",
+              "inspection": "apply_combined_scoring: cross-encoder as primary signal with bounded boosts, and the passthrough mapping of RRF order to 1.0..0.1."
+            }
+          ],
+          "rust_files": [
+            "src/query.rs"
+          ],
+          "adaptation": "rerank_order blends the min-max local cross-encoder score with the fused rank mapped to 1.0..0.1 at equal weight (rerank_mode blend, the default; replace keeps cross-encoder-only order). On 120 LongMemEval-S questions it kept knowledge-update, single-session-user and temporal recall at baseline where replace lost, and kept most of the multi-session and preference gain.",
+          "full_application_port": false
+        },
+        {
+          "commit": "eb021da3b2501911e4b57c82b3de1123572a200e",
+          "committed_at": "2026-09-29T19:05:35+02:00",
+          "review": "Reviewed 2026-09-30 after upstream_watch flagged the file; read only, nothing executed.",
+          "url": "https://github.com/vectorize-io/hindsight/tree/eb021da3b2501911e4b57c82b3de1123572a200e",
+          "selected_files": [
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/delta_ops.py",
+              "sha256": "59e54319b2dcbf38606c03e38e8fff684a3d2f9cb05d01f211aca399f5b65f88",
+              "inspection": "request_delta_operations, _correction_prompt, _unreachable_correction_prompt, _is_bad_reference (#4443, #4206, #4829); resolve_section_anchor and resolve_block (#4768)."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/agent.py",
+              "sha256": "7fa5cef5ffc51459f8c7ce62ff3c5086e7c38965c19a30288e66739f4b83bd08",
+              "inspection": "String-encoded document argument of the done tool (#4667); tool-selection diagnostics (#4559); refresh budgets and timeouts (#4618, #4894); page-plus-snippet mental models (#4716)."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/tools_schema.py",
+              "sha256": "e9e12a6d7a46d00615d0336c12fe4a64401d95e0c33156d4fea73486724efe83",
+              "inspection": "search_mental_models returns one page in full plus snippets; read_mental_models reads pages by id (#4716)."
+            }
+          ],
+          "rust_files": [
+            "src/workflows.rs",
+            "src/memory.rs",
+            "src/model.rs",
+            "src/jobs.rs"
+          ],
+          "adaptation": "A refresh whose reply misses the output contract, or names a section or block the document lacks, gets exactly one more request (budget permitting) that quotes each refused operation with its reason and lists the real section ids and the blocks of each section a refused block operation named; past that the proposal is refused with the reasons and the memory is unchanged. Structured replies that send an array or object property as its JSON text are decoded (only to the required type). Not ported: page-plus-snippet mental-model search and read_mental_models (the reflect loop has no mental-model search tool), per-model refresh budgets (budgets are per job), the paused-refresh state (refresh runs only when queued; an identical failed request replays its recorded job instead of calling the model again), presentation aliases for tool results (a prompt change that needs a paid quality comparison first) and forced tool-choice diagnostics (no tool calls are used).",
+          "full_application_port": false
+        },
+        {
+          "commit": "0be6c02b2aafc2b6bdb188ef1842ac507e0cfa2b",
+          "committed_at": "2026-10-01T15:01:22-04:00",
+          "review": "Reviewed 2026-10-02 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/vectorize-io/hindsight/tree/0be6c02b2aafc2b6bdb188ef1842ac507e0cfa2b",
+          "selected_files": [
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/embeddings.py",
+              "sha256": "cd97a6f5bca8f9fb6096866281a0477c849a7d2fcb55ce23939d64f57566bfe9",
+              "inspection": "Embeddings.encode_query and encode_passage (lines 257 and 261) prepend the configured query_prefix or passage_prefix before encoding; the local ONNX embedder takes both prefixes (line 460) and defaults them to \"query: \" and \"passage: \"."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/config.py",
+              "sha256": "44a88b0a106f6b6f8919c23f4b8effb1b114bfc4587d0cf6752b45e73502dab2",
+              "inspection": "embeddings_query_prefix and embeddings_passage_prefix (line 3613) default to empty strings for the general embedders, with separate ONNX defaults (line 1224)."
+            }
+          ],
+          "rust_files": [
+            "src/local_inference.rs",
+            "src/model.rs",
+            "src/jobs.rs",
+            "src/workflows.rs"
+          ],
+          "adaptation": "Optional `query_prefix` and `passage_prefix` fields in a local embedding manifest are prepended to questions and to indexed passages respectively; both default to empty (the bundled MiniLM model was trained without them), are bounded to 512 bytes and are refused on a cross-encoder manifest. The manifest digest is part of the model key, so a prefix change re-keys stored vectors and cached question vectors instead of mixing them.",
+          "full_application_port": false
+        },
+        {
+          "commit": "017b3f5d888d67341e70f43c102cb8155bb9f51e",
+          "committed_at": "2026-10-02T10:47:11+02:00",
+          "review": "Reviewed 2026-10-05 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/vectorize-io/hindsight/tree/017b3f5d888d67341e70f43c102cb8155bb9f51e",
+          "selected_files": [
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/prompt_utils.py",
+              "sha256": "e5dc5901ea90f462a3e725e7a13e08afb49a7d2d34f6fd3475fc44e0f1b4c19f",
+              "inspection": "PROMPT_CONTEXT_MAX_CHARS and truncate_context_for_prompt (lines 8-11 and 31-35): a context longer than 200 characters becomes its first 200 characters plus '...'."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/consolidation/consolidator.py",
+              "sha256": "6048c2c09d012da78ae423def7eb36af7206396e43a20c0bf7e7ec5ccc7379bd",
+              "inspection": "_build_observations_for_llm (line 3058): the context of each source memory in the consolidation prompt is truncated."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/tools.py",
+              "sha256": "e1ef6d5e63bf3f5afd7ce8aee7db939449c5f4c0c6abc75d62952d0b8e790078",
+              "inspection": "_drop_unread_fields (line 81) and tool_expand (line 675): contexts in reflect tool results are truncated."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/search/think_utils.py",
+              "sha256": "7dbc4d7c9f1a5722fd5f5702b195a13229ae262e8a8b7a888dba87786f2f4dde",
+              "inspection": "format_facts_for_prompt (line 65): fact contexts in the think prompt are truncated."
+            },
+            {
+              "path": "hindsight-api-slim/tests/test_prompt_context_truncation.py",
+              "sha256": "becdf6cd7c726d854169f41102e8d373a259ccce31c36b90352ac7664a521e5b",
+              "inspection": "test_truncate_context_for_prompt: cut above the cap, unchanged at it and below it; the same cases are unit tests of src/prompt_context.rs."
+            }
+          ],
+          "rust_files": [
+            "src/prompt_context.rs",
+            "src/search.rs",
+            "src/workflows.rs",
+            "src/evidence.rs",
+            "src/observer.rs",
+            "src/answer_review.rs",
+            "src/lib.rs"
+          ],
+          "adaptation": "Hindsight's per-memory context corresponds to a source's title here: a repository file's title is its whole path and a connector may send up to 1,000 bytes, repeated in every evidence window of that source. Model prompts now show at most 200 characters of a title plus '...' (counted in characters, as Python slices): reader sources (basic, v2, v3, contextual chunks), claim windows (REFLECT), answer review and the observer's session header. Titles that fit are unchanged, so their request digests and caches are too. Source text, quotes, source_context, memory titles (which REFRESH edits as content), citation checks and API output keep the full value.",
+          "full_application_port": false
+        },
+        {
+          "commit": "f7dd3f4fd7420f7beec60c32c965e5e5cf7be066",
+          "committed_at": "2026-10-02T18:52:39+02:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/vectorize-io/hindsight/tree/f7dd3f4fd7420f7beec60c32c965e5e5cf7be066",
+          "selected_files": [
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/agent.py",
+              "sha256": "f4cf8ba984859456b508da6c9de84eebf6af268b4d9504a3ca7bd6e4a5aa9f0b",
+              "inspection": "77de4f7 (type checking) annotates llm_config as AnyLLMProvider (import at line 144; parameters at lines 254, 517, 576, 1642 and 1733); the reflect loop ported from eb021da3 is unchanged."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/delta_ops.py",
+              "sha256": "cdb4cce5126e998a98b942a808f8d07d49303573b04cf67bd03ce316b0b75e77",
+              "inspection": "77de4f7 casts section_id to str for the type checker in _unreachable_correction_prompt (line 428, function at line 404); the correction prompt and the delta operations ported from eb021da3 are unchanged."
+            }
+          ],
+          "rust_files": [
+            "src/workflows.rs",
+            "src/memory.rs",
+            "src/model.rs",
+            "src/jobs.rs"
+          ],
+          "adaptation": "Nothing to port. 77de4f7 only adds type annotations and a cast; the ported refresh correction and delta semantics are unchanged.",
+          "full_application_port": false
+        },
+        {
+          "commit": "b89ce287464fe10790d67ba86bfabe29d8926253",
+          "committed_at": "2026-10-05T16:31:04-04:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/vectorize-io/hindsight/tree/b89ce287464fe10790d67ba86bfabe29d8926253",
+          "selected_files": [
+            {
+              "path": "hindsight-api-slim/hindsight_api/config.py",
+              "sha256": "bc8d823018b43468644cdee13db2d205e296157e82990f8a1d79b64ca06e7463",
+              "inspection": "4f8fb49b (#5261) adds HINDSIGHT_API_LLM_OPENAI_COMPATIBLE_JSON_MODE (line 212), a tri-state override of whether an OpenAI-compatible backend honours json_object (llm_openai_compatible_json_mode, line 3073): unset keeps the provider default, false sends the schema in the prompt only."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/consolidation/consolidator.py",
+              "sha256": "9c210e1e934116579cece89e947bafdd2ae494c62528d49bb39951e8d0e0aeb2",
+              "inspection": "07c288e2 (#5247) stores the number of distinct live sources as the proof_count of a new observation, where it used to write 1 (lines 3406-3408); 9770fe40 (#5245) lets each member of a multi-model chain build its own prompt cache; b8091071 (#4897) merges the current observation's tags in _apply_update_action (line 2752). The observation prompt (_build_observations_for_llm, line 3041) is unchanged."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/embeddings.py",
+              "sha256": "e2ab77582ce84ff18b13ac747b49339f5a9d8f91a6b097bcc74d099bf78e8312",
+              "inspection": "eb93d79b (#5243) counts the input cap with the embedding model's own tokenizer and c0fe05d9 (#5242) makes single-batch calls respect the shared concurrency bound; the query and document prefixes are unchanged."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/memories/pg/link_expansion.py",
+              "sha256": "90b89a48a30b1b972bdb1bf79a562600bd4ab587e993f930165770d6a0815fbc",
+              "inspection": "cc806c4d (#5231) wraps observation expansion in asyncio.wait_for with config.link_expansion_timeout and, on timeout, logs a warning and skips the graph results for observations instead of stalling recall; the expansion query is unchanged."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/agent.py",
+              "sha256": "a4c48c7c754e7d66e14d3666b3f33ca02c638ac578ddd4cc7de1b92d9b3087bf",
+              "inspection": "1904ff7c (#5249) hands a malformed done document back to the model for a retry instead of storing its repr (handler at line 888); 9f576ef7 (#5246) resolves per-run aliases to real ids before an answer is returned (line 1096); 5b50f157 (#5236) retries a forced retrieval step instead of silently skipping it."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/delta_ops.py",
+              "sha256": "63a8357a3314d0296090a8f9b5b99f0c81590616de224c1d46018b364c9ee3b3",
+              "inspection": "567e5679 (#4999): when the first delta reply is refused, request_delta_operations (line 469) replays it in the retry's assistant turn as text (_replayed_reply_text, line 442, used at line 537), serializing a parsed reply as JSON, so a strict request validator no longer rejects the retry; the correction prompt (_unreachable_correction_prompt, line 404) is unchanged."
+            },
+            {
+              "path": "hindsight-api-slim/hindsight_api/engine/reflect/structured_doc.py",
+              "sha256": "3808e05803baac72562d88ccf079de6a8694b6b8c1e8ea0fabf0a6c073d48e3a",
+              "inspection": "1904ff7c (#5249): document_from_sections (line 343) still normalises headings, levels and packed blocks but refuses a block that is not a string or a section that is not an object with DocumentSectionsInvalidError (line 324), where it used to store the Python repr of the object as markdown; split_markdown (line 258) is unchanged in behaviour."
+            }
+          ],
+          "rust_files": [
+            "src/workflows.rs",
+            "src/memory.rs",
+            "src/model.rs",
+            "src/jobs.rs",
+            "src/observer.rs"
+          ],
+          "adaptation": "Nothing to port. A model profile with structured_output false already sends the schema in the instructions and drops response_format, text, tools, responseJsonSchema and format (src/model.rs lines 512-540), which covers #5261. embed_role (src/model.rs line 739) refuses texts over 32,000 characters, more than 32 texts or over the input budget instead of truncating them, so there is no token cap to recount. refresh_correction (src/workflows.rs line 352) quotes the previous operations inside one JSON user input (line 384) instead of replaying a parsed reply. The service keeps no proof counts, multi-model chains, observation tags or agentic reflect tool loop with aliases.",
+          "full_application_port": false
+        }
+      ]
+    },
+    {
+      "repository": "mastra-ai/mastra",
+      "commit": "381c48dbffade8285e4226c1d9443e8ff43d4b8c",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-09-29T11:49:38-07:00) from a read-only git checkout; no archive was downloaded; nothing executed",
+      "url": "https://github.com/mastra-ai/mastra/tree/381c48dbffade8285e4226c1d9443e8ff43d4b8c",
+      "selected_files": [
+        {
+          "path": "packages/memory/src/processors/observational-memory/observer-agent.ts",
+          "sha256": "ba5621af8cccbb99d0208c43c22d4dacf844cb3427fdf78b9db4811381a2e38e",
+          "inspection": "OBSERVER_EXTRACTION_INSTRUCTIONS: statements versus questions and intentions, state changes, temporal anchoring without dates for vague times, split events, precise verbs and distinguishing details of listed items (Apache-2.0; outside ee/)."
+        },
+        {
+          "path": "packages/memory/src/processors/observational-memory/constants.ts",
+          "sha256": "5998eca367808b26474f19f54f064ce188eeb331ab939cf9df044c07f30088e7",
+          "inspection": "Default thresholds (lines 7 and 27): observation.messageTokens 30,000 and reflection.observationTokens 40,000; bufferTokens and bufferActivation configure the asynchronous buffering that is not ported (Apache-2.0; outside ee/)."
+        },
+        {
+          "path": "packages/memory/src/processors/observational-memory/observational-memory.ts",
+          "sha256": "15295fba82c3ad415998ae2f6246afd6a544f47930f7bbbf8d5f239a2de9399e",
+          "inspection": "The threshold checks (lines 1210 and 3031-3035): observe once pending message tokens reach messageTokens, reflect once observation tokens reach observationTokens; both run without an explicit request (Apache-2.0; outside ee/)."
+        }
+      ],
+      "linked_core_modules": [],
+      "native_service_modules": [
+        "src/observer.rs",
+        "src/auto_observe.rs"
+      ],
+      "integration_scope": "Default conversation observer rules refine the original rules with these extraction rules; notes keep the exact-quote requirement. A connector's observe policy queues observer rounds at Mastra's default message threshold, counted in Graphicle tokens over the connector's unobserved sources, with per-round budgets and a round cap per import or sync.",
+      "not_ported": "Mastra's agent framework, memory processors and storage, the reflector, the asynchronous buffering of observations and reflections, shared and ranged token budgets, and its prompts beyond the adapted rules. Content under ee/ directories is under a different license and is excluded.",
+      "license_files": [
+        {
+          "path": "licenses/mastra-ai__mastra__LICENSE.md",
+          "sha256": "f0351b469d1548e547882f01d2486a90f6bd0ff3c89defec841bbf5641265776"
+        }
+      ],
+      "full_application_port": false,
+      "later_revisions": [
+        {
+          "commit": "a86dc424052b8dfbbf7eadb60a9c2acadbc0abc8",
+          "committed_at": "2026-10-01T10:15:01-07:00",
+          "review": "Reviewed 2026-10-05 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/mastra-ai/mastra/tree/a86dc424052b8dfbbf7eadb60a9c2acadbc0abc8",
+          "selected_files": [
+            {
+              "path": "packages/memory/src/tools/om-tools.ts",
+              "sha256": "9ce9732c01a8da5d4b6f9cf880c3362bf978abf6b583e58f9e5c3ad36cd2792c",
+              "inspection": "searchMessagesForResource (lines 316-611): a hit whose excerpt or observation group is already in the current context becomes a one-line reference (lines 413-455); the pool is refilled so fresh excerpts still reach topK (lines 468-505); the chosen hits are presented in time order while rank decides the text budget (lines 516-523); a line marks observation groups hidden between two results of a thread, with the paging call that reads them (lines 552-557)."
+            },
+            {
+              "path": "packages/memory/src/tools/om-search-context.ts",
+              "sha256": "ac4c1651926285b46901940eb5d5591fd30dfd2ba2c09e8ad9c7ec224e4c8696",
+              "inspection": "getVisibleSearchExcerpts and sourceRangeOverlapsContext (lines 10-58): excerpts and source message ranges already visible in the conversation."
+            },
+            {
+              "path": "packages/memory/src/processors/observational-memory/constants.ts",
+              "sha256": "8c60a893877519f615ae2cbf45bcca8cd0af2fa5a56f44f839a59d703222c41e",
+              "inspection": "OBSERVATION_CONTEXT_INSTRUCTIONS (lines 83-93) adds USER STATEMENTS VS ASSISTANT SUGGESTIONS (line 87); the recall guidance sends a proposal the assistant made, such as a schedule or date, to the raw messages (line 205)."
+            }
+          ],
+          "rust_files": [
+            "../graphicle-memory/src/packing.rs",
+            "src/query.rs",
+            "src/api.rs"
+          ],
+          "adaptation": "Opt-in context options (README): `pack_order: \"chronological\"` spends the budget on hits in rank order but presents the chosen excerpts by source date and marks the text left out between two excerpts of one source with its byte range; `shown` (at most 200 source spans the caller holds) answers a hit inside them with a one-line reference reported in `already_shown`, and the cost its excerpt would have had stays with the hits after it; over MCP, `recall_project` `skip_shown` fills `shown` from the spans earlier recalls on the same stdio connection returned (at most 200, newest kept); `reading_guidance: true` adds a header line, in Graphicle wording, on weighing what the user stated against what the assistant proposed. Spans are byte ranges of original sources rather than observation groups and message ranges. Tests: ../graphicle-memory/tests/native_contracts.rs and tests/capture.rs.",
+          "full_application_port": false
+        },
+        {
+          "commit": "056427cda3e9b7c064e55daaa688601807806840",
+          "committed_at": "2026-10-02T23:09:35-07:00",
+          "review": "Reviewed 2026-10-05 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/mastra-ai/mastra/tree/056427cda3e9b7c064e55daaa688601807806840",
+          "selected_files": [
+            {
+              "path": "packages/memory/src/processors/observational-memory/observation-turn/step.ts",
+              "sha256": "4dcfa54efd0c0759299a82751db50b41954977adbec386a47c4e0619961ef1a7",
+              "inspection": "runThresholdObservation (lines 398-594): buffered chunks are activated while the context stays at or above the threshold and chunks remain (lines 439-471), then the unbuffered tail that kept it there is observed synchronously (lines 502-532)."
+            },
+            {
+              "path": "packages/memory/src/processors/observational-memory/observational-memory.ts",
+              "sha256": "fe2656a97058284ba68a3df5d0b22827b593404130ee27f8f53f7eca9f447fd4",
+              "inspection": "activate (lines 3533-3771): takes the live pending token count (lines 3540-3545), prefers it over the persisted one when sizing the activation (lines 3671-3674) and aligns the persisted base with it (lines 3680-3686)."
+            }
+          ],
+          "rust_files": [
+            "src/auto_observe.rs"
+          ],
+          "adaptation": "Nothing to port: automatic observation buffers nothing, each round observes every unobserved source, and the decision after a round re-counts all of them, so a tail that keeps the total at or above the threshold queues the next round at once. The module documentation records this and tests/auto_observe.rs (sources_arriving_during_a_round_are_observed_once_it_ends) pins it.",
+          "full_application_port": false
+        },
+        {
+          "commit": "a793ec23949ee59b4aa850d83f9e1eba365ac5c8",
+          "committed_at": "2026-10-05T15:29:10-07:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/mastra-ai/mastra/tree/a793ec23949ee59b4aa850d83f9e1eba365ac5c8",
+          "selected_files": [
+            {
+              "path": "packages/memory/src/processors/observational-memory/observer-agent.ts",
+              "sha256": "bc84a738e1c940afec102d905396bad6a52e66f5f6e6520f6d44fa22c2daa21d",
+              "inspection": "916842445 (#25051): formatObserverMessage (line 1114) leaves out attachments that core recorded as undownloadable (getUnavailableAttachmentUrls, line 1097; check at line 1256), so one dead attachment URL no longer breaks every later turn of the thread. OBSERVER_EXTRACTION_INSTRUCTIONS (line 48) is unchanged."
+            }
+          ],
+          "rust_files": [
+            "src/observer.rs",
+            "src/auto_observe.rs",
+            "src/capture.rs"
+          ],
+          "adaptation": "Nothing to port. The observer, auto_observe and capture paths format text only and never fetch attachments, so there is no undownloadable URL to skip; the ported extraction instructions are unchanged.",
+          "full_application_port": false
+        },
+        {
+          "commit": "cf0039dbdbcedec1bdda6293fa499990781b7f63",
+          "committed_at": "2026-10-06T04:06:14Z",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/mastra-ai/mastra/tree/cf0039dbdbcedec1bdda6293fa499990781b7f63",
+          "selected_files": [
+            {
+              "path": "packages/memory/src/processors/observational-memory/retry.ts",
+              "sha256": "e4456dcd604167d37b8a6d59d12762126ba7424ed3330499d30a75b49a55f5d8",
+              "inspection": "a879630e (#25058) adds OmIncompleteResponseError (line 55) and assertCompleteModelResponse (line 75): a one-step reply whose finishReason is other or unknown (line 46) throws a retryable error instead of being kept, and a stream that closes with finishReason other before any output now counts as transient (line 43). A missing finish reason, or length, still passes."
+            },
+            {
+              "path": "packages/memory/src/processors/observational-memory/observer-runner.ts",
+              "sha256": "13ab72cb305afe2c3d79c9f258c7b5fc1311f0f5f4a5fb1fa2d362b90b5ffb47",
+              "inspection": "The observer and the multi-thread observer now make one model step (maxSteps: 1, lines 363 and 682) and check the reply with assertCompleteModelResponse (lines 371 and 689) inside withRetry (lines 336 and 657). The agent sets maxRetries: 0 and errorProcessorDefaults: false (lines 180-183), so only withRetry retries, from the original prompt, and no error processor continues from the cut-off reply."
+            },
+            {
+              "path": "packages/memory/src/processors/observational-memory/reflector-runner.ts",
+              "sha256": "3c69fa99c35d7ddb1958f84b4eafd69f4e0ebf5b439ade10ed1fe05592dd69b1",
+              "inspection": "The same for the reflector: maxRetries: 0 and errorProcessorDefaults: false (lines 306-309), one model step (line 462) and assertCompleteModelResponse (line 502) inside withRetry (line 432)."
+            },
+            {
+              "path": "packages/memory/src/processors/observational-memory/temporary-memory.ts",
+              "sha256": "01d9033e9df0af7b3b17640b01700681b4ef5d821a91ff710f111ea053ec2419",
+              "inspection": "createTemporaryOmMemoryContext (line 15) gives each attempt a new, empty thread (newThread, line 26), so with structured extractors a retry never reads back the failed attempt's partial reply."
+            }
+          ],
+          "rust_files": [
+            "src/model.rs",
+            "src/jobs.rs",
+            "tests/it/backends.rs"
+          ],
+          "adaptation": "Nothing to port: Graphicle already behaves this way, and more strictly. generate_with_credential (src/model.rs line 464) keeps a reply only when the provider reports a normal finish: status completed for Responses (line 581), finish_reason stop for chat (line 623), tool_use or end_turn for Anthropic (lines 641 and 655), finishReason STOP for Gemini (line 675), and done without done_reason length for local servers (line 695). Any other reason, a missing one included, is an error and nothing is committed; Mastra rejects only other and unknown. There are no HTTP or continuation retries (line 562): the durable job owns them. finish_job (src/jobs.rs line 969) clears the model-cache entries of the failed job (line 974) and requeues it while attempts remain, and the next attempt builds its request from the job payload again, so a partial reply is never sent back. The test cut_off_replies_are_rejected_and_never_sent_back (tests/it/backends.rs line 149) pins this for Gemini OTHER and missing finish reasons and for chat null and length finishes.",
+          "full_application_port": false
+        }
+      ]
+    },
+    {
+      "repository": "microsoft/Memora",
+      "commit": "dec3f8f2444eace7004fc084abe1be9f3d88270e",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-06-16T21:55:45+05:30) from a read-only shallow clone recorded in research/upstream-2026-09-30/SOURCES.json; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/microsoft/Memora/tree/dec3f8f2444eace7004fc084abe1be9f3d88270e",
+      "selected_files": [
+        {
+          "path": "src/memora/core/memory.py",
+          "sha256": "65c2e79e4cb475169f657960c600026a6d7ee15739df88102a11205ffc244a85",
+          "inspection": "_merge_results_with_rrf and its callers (lines 231-310, 461-471): reciprocal-rank fusion with a weight per ranking, k=60."
+        },
+        {
+          "path": "app/longmemeval/conf/config.yaml",
+          "sha256": "4db2b6a73f11530142a933c1052f87d1973a7f70d901218e550c842894e444c4",
+          "inspection": "LongMemEval retrieval weights primary 2.0 / cue 1.0 / BM25 1.0, floors and top-k (lines 70-92)."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/retrieval.rs"
+      ],
+      "native_service_modules": [
+        "src/query.rs",
+        "../../bench/memory/tools/retrieval_recall.py"
+      ],
+      "integration_scope": "Per-arm weights in reciprocal-rank fusion (`arm_weights`, `rrf_k`). With a dense arm the service counts it at weight 0.5 by default (query::SEMANTIC_WEIGHT). It was 2, chosen on LongMemEval-S dev and confirmed on a disjoint 350-question holdout (qualification/recall-0.2), until weight 0.5 led on the BEAM-100K development units and tied stemmed BM25 alone on 283 held-out BEAM-100K questions; 0.5 is not shown to beat lexical retrieval on held-out data. Independent implementation; no upstream code copied.",
+      "not_ported": "The abstraction and cue index, model-written cue anchors, LLM merge decisions and value histories, episode-first context, the prompted and GRPO-trained policy retrievers and the Memora application.",
+      "license_files": [
+        {
+          "path": "licenses/microsoft__Memora__LICENSE.txt",
+          "sha256": "54f49f6e7954b1488f173619aa17ccbb3fbece090ebaacdbc0d824e523a71292"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "openmemind/memind",
+      "commit": "7536460664228a7b48e41c4ed61f2a75af244b17",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-08-13T16:32:25+08:00) from a read-only shallow clone recorded in research/upstream-2026-09-30/SOURCES.json; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/openmemind/memind/tree/7536460664228a7b48e41c4ed61f2a75af244b17",
+      "selected_files": [
+        {
+          "path": "memind-core/src/main/java/com/openmemind/ai/memory/core/retrieval/scoring/ResultMerger.java",
+          "sha256": "9242256c8dbcbc7b513f8b87402cf63236eda3e8f2e406b05ac20ada876ea68a",
+          "inspection": "Weighted RRF (k=60) of vector, BM25 and temporal channels with rank bonuses (lines 66-160); the strong-signal test, top score at least 0.85 and a gap of at least 0.15 (lines 289-298)."
+        },
+        {
+          "path": "memind-core/src/main/java/com/openmemind/ai/memory/core/retrieval/scoring/ScoringConfig.java",
+          "sha256": "7ff5c71976d5ca916de78aeb46a9a7269cf5c66ce38e2f98666cf7cf59fce354",
+          "inspection": "Channel weights vector 1.5 / BM25 1.0 / temporal 1.10 (lines 137, 158)."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/retrieval.rs"
+      ],
+      "native_service_modules": [
+        "src/query.rs"
+      ],
+      "integration_scope": "Weighted reciprocal-rank fusion (with Memora) and the strong-signal part of the linked core's `evidence_strength` report: evidence is weak when the top lexical score is below 0.85 and leads the next by less than 0.15, or question-term coverage is low. Independent implementation; no upstream code copied.",
+      "not_ported": "The Java application, deep mode's query expansion and its strong-signal skip, the temporal channel, graph second stage and adaptive truncation, and the insight tree.",
+      "license_files": [
+        {
+          "path": "licenses/openmemind__memind__LICENSE.txt",
+          "sha256": "55b07addfcdd7024221ff51b93f72fff6db4b5ceef1ee6571ae58ff234a7a1b5"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "HKUDS/LightRAG",
+      "commit": "453dce83d6d0354a06e46c8d4029a0895c4e054b",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-09-26T16:33:35+08:00) from a read-only shallow clone recorded in research/upstream-2026-09-30/SOURCES.json; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/HKUDS/LightRAG/tree/453dce83d6d0354a06e46c8d4029a0895c4e054b",
+      "selected_files": [
+        {
+          "path": "lightrag/operate.py",
+          "sha256": "176585e3f686574ab98657b666982302ce47d58229baacb529ef601bd6799326",
+          "inspection": "Per-group chunk quotas scaled by group count, with a floor of one (lines 6316-6347)."
+        },
+        {
+          "path": "lightrag/utils.py",
+          "sha256": "8c49d4b0150fdfc3343d85770a46c0c49da5b6c6a81c09eb5ca10a997c8dcdbe",
+          "inspection": "Linear-gradient round-robin selection with leftover polling (lines 6642-6721)."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/retrieval.rs"
+      ],
+      "native_service_modules": [
+        "src/query.rs"
+      ],
+      "integration_scope": "Opt-in `origin_quota {max, min}`: candidate quotas per origin (session or source) fall linearly from max to min over origins ranked by their best candidate, and leftover slots are polled in order. At limit 12 it lowered holdout recall; with limit 24 and focused packing it was part of the best measured combination. Independent implementation; no upstream code copied.",
+      "not_ported": "LLM keyword extraction, knowledge-graph construction, per-level token budgets and the LightRAG application.",
+      "license_files": [
+        {
+          "path": "licenses/HKUDS__LightRAG__LICENSE.txt",
+          "sha256": "0c16924564059e493c86854574660a47ed1dcc2a476ba7b5f949d3f2f73a1984"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "FreedomIntelligence/Tiermem",
+      "commit": "dba57bf2ce91a9920fdebaf5ffb0e6fc029fc398",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-09-25T00:03:32+08:00) from a read-only shallow clone recorded in research/upstream-2026-09-30/SOURCES.json; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/FreedomIntelligence/Tiermem/tree/dba57bf2ce91a9920fdebaf5ffb0e6fc029fc398",
+      "selected_files": [
+        {
+          "path": "src/linked_view/router.py",
+          "sha256": "03d7aaf983e512b864f95429665a0987596a92a458888ff9b859e1a75cb04d07",
+          "inspection": "Heuristic router features: low top score or few hits, long questions, temporal and causal words, score entropy (lines 29-135)."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/retrieval.rs"
+      ],
+      "native_service_modules": [],
+      "integration_scope": "Evidence-strength features in the linked core's `evidence_strength` report: aggregate (counting or listing) questions and weak lexical evidence. Independent implementation; no upstream code copied.",
+      "not_ported": "The two-tier reading path and its routers (the trained Qwen3-0.6B router with its SFT and GRPO training, and the LLM router), linked-view storage and write-back, and the bundled mem0 copy.",
+      "license_files": [
+        {
+          "path": "licenses/FreedomIntelligence__Tiermem__LICENSE.txt",
+          "sha256": "5aef33b8a5d37916bf250da3b596a6c1e3c474a4c99ab43fcf7facb946b4cd0f"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "NORTHTEKDevs/genome",
+      "commit": "ea76cf924b2382499a158b8c7ad8a815913c962f",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-09-03T21:55:32-08:00) from a read-only shallow clone recorded in research/upstream-2026-09-30/SOURCES.json; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/NORTHTEKDevs/genome/tree/ea76cf924b2382499a158b8c7ad8a815913c962f",
+      "selected_files": [
+        {
+          "path": "benchmarks/lme_qa_or.py",
+          "sha256": "c8f694e3ac1e7e99fa96b807c9edb9c2569e54ca529cc8cf451a87ece4aa2ff1",
+          "inspection": "Paired McNemar comparison of retrieval variants (end of file)."
+        },
+        {
+          "path": "genome/memory/rerank.py",
+          "sha256": "c14c9a5f34a93b340ffa4fcf1ef69983c1fa0bb23a7ad979b1a1e26b20eaf72d",
+          "inspection": "Cross-encoder order fused 1:1 with dense order by RRF, k=60 (lines 35-68)."
+        }
+      ],
+      "linked_core_modules": [],
+      "native_service_modules": [
+        "../../bench/memory/tools/retrieval_recall.py",
+        "src/query.rs"
+      ],
+      "integration_scope": "The recall harness's paired comparison: an exact McNemar test on all-sessions recall and a bootstrap confidence interval of the session-recall difference over questions both variants answered; `rerank_mode: rrf` fuses the cross-encoder and fused orders (weights after SmartSearch). The upstream NOTICE is retained verbatim; its product name is not used for any Graphicle feature. Independent implementation; no upstream code copied.",
+      "not_ported": "The memory system, co-mention expansion, valid-time facts, fitness forgetting and its benchmark haystacks.",
+      "license_files": [
+        {
+          "path": "licenses/NORTHTEKDevs__genome__LICENSE.txt",
+          "sha256": "e967f4d0fa373714b72954578222d7af1d72724bb8752c7d46cdb492642f0d5b"
+        },
+        {
+          "path": "licenses/NORTHTEKDevs__genome__NOTICE.txt",
+          "sha256": "c1df9e35f4d31dde47c447ab8462071cd752ed00901314c89c2dba050f89ee96"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "thedotmack/claude-mem",
+      "commit": "9df289bf67aa8ec9f8bc90de587ad0bd8ba73288",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-09-30T03:39:18-07:00) from a read-only shallow clone recorded in research/upstream-2026-09-30/SOURCES.json; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/thedotmack/claude-mem/tree/9df289bf67aa8ec9f8bc90de587ad0bd8ba73288",
+      "selected_files": [
+        {
+          "path": "plugin/hooks/hooks.json",
+          "sha256": "b654d3af5ad7de3239964c8225af5badd38d8f6e0ef25ed687cdfa1fb3c191dc",
+          "inspection": "Claude Code hook set, including re-entry after compaction (lines 17-101)."
+        },
+        {
+          "path": "src/cli/hook-command.ts",
+          "sha256": "2b33bd65ec71dde2615c343c158ead34d6286d9089520cd9fd2043a71381107a",
+          "inspection": "Hooks always exit 0; exit 2 would block the agent (lines 140-188)."
+        },
+        {
+          "path": "src/cli/adapters/claude-code.ts",
+          "sha256": "7ffcd0ce322cdf1e082f1b769b6c79015d25a0b04d62e4e8e471ee1bca80a176",
+          "inspection": "Hook payload fields (lines 12-37)."
+        },
+        {
+          "path": "plugin/hooks/codex-hooks.json",
+          "sha256": "445cf5a8e91b57147da2274b8494fc6c4e9f29d7b9415c4c4ed32b87aa3d7efc",
+          "inspection": "Codex hook set."
+        },
+        {
+          "path": "transcript-watch.example.json",
+          "sha256": "7c421462663d987e18d0dc72a5d3fbd39af1f7920920155299e5e4f2b671a9a3",
+          "inspection": "Codex rollout record schema (lines 11-98)."
+        },
+        {
+          "path": "src/utils/tag-stripping.ts",
+          "sha256": "f7b4bc45391692992f02b798f7c415101485de363ddf9c7299655115441de0b7",
+          "inspection": "`<private>` and injected-context tag stripping (lines 5-22)."
+        },
+        {
+          "path": "src/utils/redaction.ts",
+          "sha256": "33bdf422b0e59277809dd89f1c1caaaf61a0c667d20c785f795405ce309b2704",
+          "inspection": "Secret patterns (lines 24-40)."
+        },
+        {
+          "path": "src/cli/handlers/context.ts",
+          "sha256": "2ccb3052b2b88c27f98ee2d7620202d32a9f2851793404bf401456b6f3d3667b",
+          "inspection": "Session-start `additionalContext` output (lines 40-69)."
+        },
+        {
+          "path": "src/services/context/ContextBudget.ts",
+          "sha256": "11396dc24baf259504fe069b8304b5129c07ef541369b5491be0ee25f2326f33",
+          "inspection": "Context character cap (line 9)."
+        },
+        {
+          "path": "src/servers/mcp-server.ts",
+          "sha256": "9a7acc2705ebe2554d3c0fb30e80f76eb92b45cbbdb62b89903586f8fdc928a9",
+          "inspection": "Index, timeline and detail tools (lines 445-592); observation_add (line 617)."
+        }
+      ],
+      "linked_core_modules": [],
+      "native_service_modules": [
+        "src/capture.rs",
+        "src/cli.rs",
+        "src/agent_setup.rs",
+        "src/api.rs"
+      ],
+      "integration_scope": "Agent-session capture: completed Claude Code and Codex turns become owner-only connector documents under an explicit, recorded policy (private spans dropped, credentials redacted, tool text over 16 KiB elided, reasoning never stored); lifecycle hooks that never block and always exit 0; a session-start context of reviewed memory and recent turns capped at 8,000 characters; `session_timeline` for progressive disclosure. Captured originals are stored instead of model-compressed observations. Independent implementation; no upstream code copied.",
+      "not_ported": "The worker service, model-compressed observations, its database and silent de-duplication, viewer and plugins.",
+      "license_files": [
+        {
+          "path": "licenses/thedotmack__claude-mem__LICENSE.txt",
+          "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+        },
+        {
+          "path": "licenses/thedotmack__claude-mem__NOTICE.txt",
+          "sha256": "35003c303ee484c77872fd45eb5d590ce679d1ae7ac5bb672d33069cca66685b"
+        }
+      ],
+      "full_application_port": false,
+      "later_revisions": [
+        {
+          "commit": "cb53f9d489282164448a5c1bfc624be67bac38e3",
+          "committed_at": "2026-10-04T21:33:44-07:00",
+          "review": "Reviewed 2026-10-05 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/thedotmack/claude-mem/tree/cb53f9d489282164448a5c1bfc624be67bac38e3",
+          "selected_files": [
+            {
+              "path": "plugin/hooks/hooks.json",
+              "sha256": "5cced8bd066041fe5b839b5e3cc8217ffb7b7eef31670578c502534321bc1854",
+              "inspection": "SessionStart (lines 17-40): the worker-start group still matches startup|resume|clear|compact (lines 18-29); the context group now matches only startup|clear|compact (lines 30-40)."
+            },
+            {
+              "path": "src/cli/handlers/context.ts",
+              "sha256": "11de39992bdc4e8f1552875189d295df699b4402cb2f5b2ca0796d7c75a304a7",
+              "inspection": "contextHandler (line 66): a Claude Code start whose sessionSource is resume gets an empty additionalContext, because a fresh timeline would change the restored prompt prefix; this also guards older registrations that still match resume (lines 73-78)."
+            },
+            {
+              "path": "src/cli/adapters/claude-code.ts",
+              "sha256": "0fede192888db459953e451729f71e82dd2d4665009b55879a3bcc69de38ec39",
+              "inspection": "normalizeInput (line 40) passes the hook source startup, resume, clear or compact through as sessionSource (lines 50-56)."
+            }
+          ],
+          "rust_files": [
+            "src/agent_setup.rs",
+            "src/cli.rs"
+          ],
+          "adaptation": "The Claude Code SessionStart hook that `graphicle connect claude-code --hooks` installs matches only startup|clear|compact, and `graphicle hook` returns no context for a Claude Code session start whose payload source is resume, which also covers hooks installed before the change (tests/capture.rs). Codex hooks are unchanged. The worker-start group has no counterpart: Graphicle starts no worker.",
+          "full_application_port": false
+        },
+        {
+          "commit": "faf9a883867e81d90d01dd3d1217638d9bec334b",
+          "committed_at": "2026-10-04T23:30:25-07:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/thedotmack/claude-mem/tree/faf9a883867e81d90d01dd3d1217638d9bec334b",
+          "selected_files": [
+            {
+              "path": "plugin/hooks/codex-hooks.json",
+              "sha256": "e5232c21c0d1e73de9722a8255d559ab43b29a0f81a140097e9f42dfd9de950e",
+              "inspection": "1cb0fec gives the SessionStart, UserPromptSubmit, PreToolUse and PostToolUse commands (lines 9, 21, 34 and 47) the lookup the Stop command (line 59) already had: try the plugin root the hook started from ($_R/plugin, then $_R), use it when both runner scripts are there, and search the plugin cache only otherwise. Not applicable: our hooks run the absolute path of the installed binary, so nothing is discovered at start."
+            },
+            {
+              "path": "src/cli/hook-command.ts",
+              "sha256": "4f373b4053b48ef805d70501ca44025f085acaa66066d1f388613d9bc81c1a24",
+              "inspection": "fe1709c moves isWorkerUnavailableError to shared/worker-utils (re-exported, line 171), resets the worker-unreachable state per hook (line 85) and lets a spooled event nudge land before exit (line 77); dbc0f7f awaits exitGraceful so stdout is flushed and rethrows HookStdoutError for a closed pipe (line 117); fe6b7ab and 536f3d3 map the platform through canonicalIntegrationId (line 83), adding claude for claude-code and Kimi Code. Not applicable: there is no worker or spool; our hook writes one line with writeln, which the newline flushes, and still exits zero when the pipe is closed; claude is already a client name (Client::parse); Kimi Code is not a supported client."
+            },
+            {
+              "path": "src/servers/mcp-server.ts",
+              "sha256": "4b996bd389214e0ab3b66c0b7528ea13ed4aef96697481e5459273e7739af9c5",
+              "inspection": "47a5151 adds work_state_write (line 616) and work_state_read (line 637): a list name and flat fields whose values are strings, numbers, booleans or null, and a read of one list or all, optionally with closed items; ported. c29675b widens search to every project key the checkout reads (withCheckoutProjects); observation_context may omit its query for recent context; corpus calls can stream progress. Not applicable: an MCP connection serves one registered project, recent context is the timeline tool, and there are no corpora."
+            },
+            {
+              "path": "src/services/sqlite/work-state.ts",
+              "sha256": "280ef4f9bf657570f137d108ce226021817ab2150b4f4c0e4b5f5c1ba562fc41",
+              "inspection": "The append-only entry table and its project index (createWorkStateSchema, line 27), appendWorkStateEntry (line 41) and getWorkStateEntries in insertion order for one list or all (line 56)."
+            },
+            {
+              "path": "src/services/context/sections/WorkStateRenderer.ts",
+              "sha256": "9823c72dea6e5cd7b0186df1d0bd1e09318e710b058f3024c70baaeec6cec9f3",
+              "inspection": "foldWorkStateList (line 35) replays entries so the latest value of each key wins, with task entries updating that item in first-seen order; done and dropped close an item or list (lines 15, 53); renderWorkStateList (line 74), updatedAgo (line 65) and fitWorkStateLines (line 128) keep the section within 3,000 characters (line 13) with a count of the lines left out; the usage rule follows at line 17."
+            },
+            {
+              "path": "src/cli/handlers/session-init.ts",
+              "sha256": "9b95ac540a67c5096f21f6d3eb172d162cfb22694b06f02efcf913f432b5ecb9",
+              "inspection": "Before a prompt is stored, a message that is only a protocol payload is skipped for any host (line 152) and a Codex helper prompt for Codex only (line 162); both ported. The later checks (lines 176-201) concern hook sends that carry no submitted text and Qwen continuations; not applicable, because turns are read from transcripts."
+            },
+            {
+              "path": "src/utils/redaction.ts",
+              "sha256": "9b316fad027aa28bcaaee1149071f9934d07dfba43ec59c1897fa204fe7f05ae",
+              "inspection": "c95b934: an unreadable settings file keeps the built-in patterns on (configForUnreadableSettings, line 199; getRedactionConfig, line 213), redactForLog masks log text (line 236) and redactJsonStrings walks structured payloads (line 246); BUILTIN_REDACTION_PATTERNS (line 26) and redactSensitive (line 52) are unchanged. Not needed: our credential redaction cannot be turned off, captured text is not logged, and each work-state value is cleaned on its own."
+            },
+            {
+              "path": "src/utils/tag-stripping.ts",
+              "sha256": "1103228596ce668157f66be978364adaa6372fcac50f583b31ca1510b430c813",
+              "inspection": "ffdff16 adds CODEX_INTERNAL_PROMPT_OPENINGS (line 79) and isCodexInternalPrompt (line 93), ported earlier; isInternalProtocolPayload (line 66), a single task-notification block within 256 KiB, is now ported as well."
+            },
+            {
+              "path": "transcript-watch.example.json",
+              "sha256": "680054be85ed2306705eb4e6220edf9feed330a66990246d0199c701b0675b2e",
+              "inspection": "703ad99 moves the Codex schema to version 0.4 (line 6): the conversation is read from response items, and user messages opening with recommended_plugins or skills_instructions are skipped (lines 27-41); both preambles are now skipped. d924425 adds a DeepSeek Harness schema and watch (lines 116 and 175); not a supported client."
+            }
+          ],
+          "rust_files": [
+            "src/capture.rs",
+            "src/work_state.rs",
+            "src/api.rs",
+            "src/agent_setup.rs",
+            "src/cli.rs"
+          ],
+          "adaptation": "An agent can keep its own to-do lists and working state with work_state_write and work_state_read (`graphicle connect --work-state`, `mcp --work-state`, `serve --mcp-work-state`, CLI `work-state`): entries are appended, replayed so the latest value per key wins, and what is open leads the session-start context until done or dropped, within 3,000 characters. Our additions: every value passes the capture policy, writing needs propose permission, entries are capped per project and are deleted with it. Capture now also skips a message that is only a task-notification block, in either client, and Codex skill and plugin preambles. Not ported: the worker, spool and settings machinery, multi-key checkout search, corpora, and the Kimi Code and DeepSeek Harness clients.",
+          "full_application_port": false
+        },
+        {
+          "commit": "1e716ef2b768915471a05461bb8880a0db28ae1e",
+          "committed_at": "2026-10-05T17:14:17-07:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/thedotmack/claude-mem/tree/1e716ef2b768915471a05461bb8880a0db28ae1e",
+          "selected_files": [
+            {
+              "path": "src/cli/handlers/context.ts",
+              "sha256": "c4a6b4b06745d3a4c0c2cfd7eb25a76926212c2a7765450db2cb2fc9ebc400e9",
+              "inspection": "3724ced (#4433) resolves the prior transcript by the observed host session id: with CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE the request carries that id (lines 112-113; the server render sends session_id and cwd, lines 126-127), the render cache is bypassed (lines 154 and 241) and a cached render is used only when the worker is unavailable (lines 165-169 and 245). The resume guard ported in cb53f9d4 is unchanged."
+            },
+            {
+              "path": "src/services/context/ContextBudget.ts",
+              "sha256": "98e1eefff259892a9495e642dcf1fdb1976eadf841072a505c9e69c2593e509e",
+              "inspection": "CONTEXT_OUTPUT_LIMIT stays at 10,000 characters (line 9); reduceConfig now drops showLastMessage first (lines 54-55) before it reduces observations."
+            },
+            {
+              "path": "src/services/context/sections/WorkStateRenderer.ts",
+              "sha256": "7c8565fdbff7a23cc7fdaff2feb855bb1b0aebf6e5bebe7e1488843a19525b99",
+              "inspection": "38870f1 (#4441) includes lists from adopted projects in recall: lists are keyed by the lower-cased scope_project (or project) plus list name (line 106) and labelled with the project when a list name repeats (line 121)."
+            },
+            {
+              "path": "src/services/sqlite/work-state.ts",
+              "sha256": "a434a2427cc9cbc6efe477ca3716b300f9a1e674c656f7b04f8f7b02624efeb7",
+              "inspection": "38870f1 (#4441) adds scope_project (line 23), the checkout key shared by configured, legacy and parent read aliases."
+            }
+          ],
+          "rust_files": [
+            "src/work_state.rs",
+            "src/capture.rs",
+            "src/agent_setup.rs"
+          ],
+          "adaptation": "Nothing to port. Work-state lists are stored and read per repository_id (am_work_state, src/work_state.rs line 36; entries, line 322; start_section, line 353), so there are no project aliases to merge, and the start context has no last-message section or render cache to bypass.",
+          "full_application_port": false
+        },
+        {
+          "commit": "39aea924eaffffcbde0b35c726d725b0171785df",
+          "committed_at": "2026-10-05T20:59:44-07:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/thedotmack/claude-mem/tree/39aea924eaffffcbde0b35c726d725b0171785df",
+          "selected_files": [
+            {
+              "path": "src/servers/mcp-server.ts",
+              "sha256": "9d738f794ece7be3ec93a72d7444a9a9250cba31970c8e0ff93e423362d1caf3",
+              "inspection": "Two changes since 1e716ef2. e1e1d60 (#4480): when smart_unfold (line 817) cannot find the requested symbol it lists the available ones through formatAvailableSymbols (line 844), keeping methods under their interface owners and including qualified descendants in the hints. 39aea92 (#4524): callWorker (line 94) wraps requestWorker (line 116) in withWorkerRestartOnRefusedConnection, so when the worker has exited (the new opt-in CLAUDE_MEM_IDLE_EXIT_SEC idle exit, a crash or claude-mem stop) it is started once and the call is sent again."
+            },
+            {
+              "path": "src/services/context/sections/WorkStateRenderer.ts",
+              "sha256": "128337d7d8356ab882f38b64ed014ae096dbd7e78e52323e701d7a48853e3494",
+              "inspection": "f14e846 (#4535): foldWorkStateList (line 35) merges list state with object spread (line 40) instead of Object.assign, so a field named __proto__ stays an own data key instead of replacing the prototype; WorkStateRoutes.ts now checks own entries and copies them with spread for the same reason."
+            }
+          ],
+          "rust_files": [
+            "src/work_state.rs",
+            "src/api.rs",
+            "src/cli.rs"
+          ],
+          "adaptation": "Nothing to port. Graphicle has no smart file reader, so there are no smart_unfold symbol hints to give. graphicle mcp (src/cli.rs line 631) answers each request in process against the local store (api::mcp_session, src/api.rs line 1412), so there is no worker that can exit and need restarting. Work-state fields are serde_json maps, which have no prototype: write_fields (src/work_state.rs line 278) keeps __proto__ and constructor as ordinary keys, and fold (line 71) and render (line 205) treat them like any other key. The unit test prototype_named_fields_are_ordinary_keys (line 562) pins this, including the latest value winning and null hiding the key.",
+          "full_application_port": false
+        },
+        {
+          "commit": "448872ae799621a880f30c2709db084a766c234c",
+          "committed_at": "2026-10-05T21:37:32-07:00",
+          "review": "Reviewed 2026-10-06 against the latest default branch; read only, nothing executed.",
+          "url": "https://github.com/thedotmack/claude-mem/tree/448872ae799621a880f30c2709db084a766c234c",
+          "selected_files": [
+            {
+              "path": "src/services/transcripts/processor.ts",
+              "sha256": "36f62c3d6eff0fa46b2f570dd76874c986a26a58583ce93caf8b687e2976d259",
+              "inspection": "2ac9524 (#4541): an observation the worker has not accepted raises TranscriptObservationError (lines 41-42), so its line is kept for the next pass instead of being skipped; tools still waiting for their result are tracked per file (pendingTools, line 83) and dropped when a file is reset or retired (resetFileContext line 131, retireFileContext line 141). 448872a (#4531): with the spool transport (line 69) the standalone watcher writes observations to the durable hook spool that the worker drains (spoolHookEvent, line 13; TranscriptSpoolError, line 56)."
+            },
+            {
+              "path": "src/services/transcripts/watcher.ts",
+              "sha256": "067afaf161b66e02efcb3cf91552e2c87de5b97b17c22f52ee55e3f079b04138",
+              "inspection": "The watcher keeps a byte offset per transcript (line 24) and does not move it past a declined line. A saved checkpoint keeps its offset only while the bytes just before it are unchanged (fingerprintBeforeOffset line 180, keepsCheckpointBytes line 206), so a replaced or truncated transcript is read again from the start."
+            },
+            {
+              "path": "src/services/transcripts/state.ts",
+              "sha256": "97d2c835fcf32de1f48cc5dd8a8638d1ad8d7b89a83cbae3bb5562d9641c996c",
+              "inspection": "The saved watch state now also holds the pending tool inputs (pendingTools, line 23); saveWatchState (line 125) writes it atomically with mode 0600 (line 134) because those inputs can be private."
+            }
+          ],
+          "rust_files": [
+            "src/cli.rs",
+            "src/capture.rs",
+            "tests/it/capture.rs"
+          ],
+          "adaptation": "Nothing to port. Graphicle capture keeps no offsets and no pending state outside the store. Every Stop, PreCompact and SessionEnd hook hands the whole transcript to a detached graphicle sessions import (src/cli.rs line 1069), which parses the file again and stores each completed turn that is not stored yet, once, under <client>:<session>:<turn> (src/capture.rs lines 17-18). A turn still waiting on a tool result is not complete and is read again on the next pass, and a pass that fails leaves its turns for the next one, so nothing depends on a saved position: restarts lose nothing, a replaced file is simply parsed as it now is, and no tool input is written anywhere but the store. graphicle sessions import --since-hours (import_sessions, src/cli.rs line 924) catches up transcripts whose last hook could not reach the store. claude_code_turns_are_captured_once_under_the_policy (tests/it/capture.rs line 208) pins the incomplete-then-complete turn and the once-only import.",
+          "full_application_port": false
+        }
+      ]
+    },
+    {
+      "repository": "CaviraOSS/OpenMemory",
+      "commit": "9ee2c8e1ed42d83eb788afb9ffc3a82b84405da5",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-09-20T17:27:30+05:30) from a read-only shallow clone recorded in research/upstream-2026-09-30/SOURCES.json; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/CaviraOSS/OpenMemory/tree/9ee2c8e1ed42d83eb788afb9ffc3a82b84405da5",
+      "selected_files": [
+        {
+          "path": "src/cli/porter/types.ts",
+          "sha256": "e491599910593bb3043ba1335e26b19f20d89733c500e372ac762009a65176d2",
+          "inspection": "Portable-session representation with detect, discover and parse adapters (lines 18-62)."
+        },
+        {
+          "path": "src/cli/porter/orchestrator.ts",
+          "sha256": "66c68c12403d5af957bb95198c82ebe6cdd156acbf88da788125d7a12dd41fd5",
+          "inspection": "Revision hash that skips unchanged sessions (lines 58-61)."
+        },
+        {
+          "path": "src/cli/porter/adapters/claude_code.ts",
+          "sha256": "5e75165d51dca772e1ef7a6dd52d901c52af7e3f5a7ffb572913ad94da502525",
+          "inspection": "Claude Code transcript location (line 26)."
+        },
+        {
+          "path": "src/cli/porter/adapters/codex.ts",
+          "sha256": "bd24117f1514781e2d09b0837e78e5aab87ef507de802c3afc4b1575bf5b837f",
+          "inspection": "Codex session location (lines 24-26)."
+        },
+        {
+          "path": "src/mcp/schemas/tool_schemas.ts",
+          "sha256": "faf51f8ad25771743f0d9e75e3af1f5151f7207cd7f0e217aa60b713bd55b2ca",
+          "inspection": "remember_decision and update_task_state arguments (lines 73-90)."
+        }
+      ],
+      "linked_core_modules": [],
+      "native_service_modules": [
+        "src/capture.rs",
+        "src/operations.rs",
+        "src/api.rs"
+      ],
+      "integration_scope": "Transcript discovery and per-client parsing, with unchanged turns skipped by content hash; `propose_memory` arguments (decision, preference, procedure, task state or note, with reason, files and an idempotency key). A proposal is always a draft whose quotes are checked against current sources and which needs member review. Independent implementation; no upstream code copied.",
+      "not_ported": "The application, storage, porter CLI and model-marked approval of assets.",
+      "license_files": [
+        {
+          "path": "licenses/CaviraOSS__OpenMemory__LICENSE.txt",
+          "sha256": "f34bece2de63bf21dfea3bf034231beda315c10631f2174b539225746719420c"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "redis/agent-memory-server",
+      "commit": "94192c39e2a4a154f441a5411e3d73c4f54974a6",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-09-15T10:17:00-04:00) from a read-only shallow clone recorded in research/upstream-2026-09-30/SOURCES.json; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/redis/agent-memory-server/tree/94192c39e2a4a154f441a5411e3d73c4f54974a6",
+      "selected_files": [
+        {
+          "path": "V0/agent_memory_server/long_term_memory.py",
+          "sha256": "f809cc2be9c2c9747e5d30af9fbcd0d52a105b528b978ed37ff7136387d6a444",
+          "inspection": "select_ids_for_forgetting by age, inactivity and budget with a pinned exemption (lines 2301-2383); dry run by default (lines 2436-2486)."
+        },
+        {
+          "path": "V0/agent_memory_server/config.py",
+          "sha256": "765e6dc9b81aaf6d3db57205bbc6ec7e0bf1861d91915405b776e806a4054bc2",
+          "inspection": "Periodic forgetting off by default (lines 485-486)."
+        },
+        {
+          "path": "V0/agent_memory_server/mcp.py",
+          "sha256": "d199a5df087cff73a3add5ec603d9e5f5b91214e0fba0aa7364274b6903bcfa3",
+          "inspection": "create_long_term_memories tool (line 296)."
+        },
+        {
+          "path": "V0/agent-memory-client/agent_memory_client/client.py",
+          "sha256": "16b8a75c6baa7a33841509630692465fdcd5e8496d01aa583dfa13b37ec0dcef",
+          "inspection": "Tool schema getters (lines 2097, 2135), resolve_tool_call and resolve_function_call (lines 2423, 2525) and memory_prompt (line 3290)."
+        }
+      ],
+      "linked_core_modules": [],
+      "native_service_modules": [
+        "src/retention.rs",
+        "src/maintenance.rs",
+        "src/api.rs",
+        "../../sdk/python/graphicle_sdk/tools.py",
+        "../../sdk/python/graphicle_sdk/aio.py",
+        "../../sdk/python/graphicle_sdk/memory.py"
+      ],
+      "integration_scope": "Time-based source retention: `retention.preview` lists what a policy would forget with a plan hash; `retention.apply` must echo that hash, skips sources a reviewed memory cites, forgets through certified deletion in batches with one hash-chained receipt each and blocks re-import. Unlike the upstream, every removal is receipted. Nothing runs unless requested. The Python SDK's function-calling helpers follow the upstream client: `Tools` turns the service's own MCP `tools/list` into OpenAI or Anthropic tool definitions and runs a model's tool calls through MCP `tools/call`, `Memory.prompt` builds a cited system prompt from exact excerpts, and `AsyncClient` runs SDK calls in worker threads. Independent implementation; no upstream code copied.",
+      "not_ported": "The server, working memory, vector stores, client SDK and scheduled forgetting.",
+      "license_files": [
+        {
+          "path": "licenses/redis__agent-memory-server__LICENSE.txt",
+          "sha256": "51a26a5dd6cbd17c8887485753b9af0cc7d9c02917d0b49f15990fce7a548295"
+        }
+      ],
+      "full_application_port": false
+    },
+    {
+      "repository": "xiaowu0162/LongMemEval",
+      "commit": "9e0b455f4ef0e2ab8f2e582289761153549043fc",
+      "archive_sha256": null,
+      "verification": "selected file bytes hashed at the named commit (committed 2026-05-11T15:49:24-07:00) from a read-only clone in research/upstream-latest-2026-10-02; design adapted in an independent implementation, no upstream code copied; nothing executed",
+      "url": "https://github.com/xiaowu0162/LongMemEval/tree/9e0b455f4ef0e2ab8f2e582289761153549043fc",
+      "selected_files": [
+        {
+          "path": "src/retrieval/run_retrieval.py",
+          "sha256": "efd7fc5969a904717741fadca3c7dc73611ddbb2aaf3ef33117ebb6943b3e346",
+          "inspection": "process_item_flat_index (lines 202-229): session and turn retrieval keys are built from user-role turns only."
+        },
+        {
+          "path": "src/retrieval/index_expansion_utils.py",
+          "sha256": "d0a4a0907f7a9a2e8f9140dbc50b3f0a5f268d466787a0b40cb0a9bc2a06efe7",
+          "inspection": "resolve_expansion (lines 17-81): user facts extracted from a session or turn join its retrieval key, either merged into the key text (`merge`: fact + ' ' + value), replacing it, or as separate keys resolving to the same id (`separate`)."
+        }
+      ],
+      "linked_core_modules": [
+        "../graphicle-memory/src/retrieval.rs"
+      ],
+      "native_service_modules": [
+        "src/query.rs",
+        "../../bench/memory/tools/retrieval_recall.py",
+        "src/observer.rs",
+        "src/search.rs",
+        "src/workflows.rs",
+        "src/jobs.rs"
+      ],
+      "integration_scope": "Opt-in `speaker` in retrieval.rank: a further BM25 ranking over only the lines a chosen speaker wrote (`true` keeps the user's turns; `{keep: [...]}` names up to 8 roles or participant names), fused by reciprocal rank beside the full-text arm, so evidence in assistant turns still ranks. A transcript line starts a turn at a `role:` label or, when a kept label is not a role, at a capitalised name of up to three words. Opt-in `note_keys` (context, recall and basic answers that read observer notes) keys each source passage with the observer notes whose quoted evidence overlaps it, standing in for LongMemEval's extracted user facts: `\"merge\"` adds the keys to the passage's lexical text (its `merge` resolution, key = value + fact). Independent implementation; no upstream code copied.",
+      "not_ported": "Turn-level keys, the `separate` resolution, keyphrase and session-summary key expansion, model-extracted user facts as a separate write step (observer notes stand in), the time-aware query expansion and the reading pipeline.",
+      "license_files": [
+        {
+          "path": "licenses/xiaowu0162__LongMemEval__LICENSE.txt",
+          "sha256": "d3c4b9aa54759df6ded337978a6f3b55b75615e5e4525c3b82d7e2627d4b9732"
+        }
+      ],
+      "full_application_port": false
+    }
+  ],
+  "independent_native_extensions": {
+    "structural_bindings": {
+      "modules": [
+        "../graphicle-memory/src/bindings.rs",
+        "../graphicle-memory/src/structure.rs"
+      ],
+      "scope": "Explicit imported-call binding, lexical shadowing and JSONC alias configuration in the authorized manifest. Independent Rust implementation informed by comparison with Graphify; not full compiler or upstream application parity."
+    },
+    "atlassian_connections": {
+      "modules": [
+        "src/atlassian.rs",
+        "src/connectors.rs",
+        "src/oauth.rs",
+        "web/settings.js"
+      ],
+      "scope": "Jira/Confluence Cloud protocols, attributed ADF/HTML, source dates, OAuth site selection and diagnostics; explicit copy audiences, not full ACL mirroring."
+    },
+    "release_delivery": {
+      "modules": [
+        "src/releases.rs",
+        "tools/sign_release.py",
+        "../../deploy/Dockerfile",
+        "../../deploy/compose.yaml"
+      ],
+      "scope": "Signed expiring manifests, rollback checks, bounded verified downloads and non-root Linux delivery. Publisher signing and public deployment require external setup."
+    },
+    "paper_retrieval_designs": {
+      "modules": [
+        "../graphicle-memory/src/retrieval.rs",
+        "../graphicle-memory/src/packing.rs",
+        "src/query.rs",
+        "../../bench/memory/tools/retrieval_recall.py"
+      ],
+      "scope": "After the SmartSearch paper (arXiv 2603.15599; no code published): `pack_focus` trimming, `rerank_mode: rrf` and the survival diagnostic. `pack_focus` is a retrieval default; the others are opt-in."
+    },
+    "deletion_receipts": {
+      "modules": [
+        "src/deletion.rs",
+        "src/operations.rs",
+        "src/maintenance.rs",
+        "src/retention.rs",
+        "src/jobs.rs"
+      ],
+      "scope": "Hash-chained receipts for memory deletion, storage pruning, graph retention and source retention, naming removed rows only by one-way hashes; `deletion.verify` re-checks each kind."
+    }
+  },
+  "native_clustering_source": {
+    "source": "https://github.com/graspologic-org/graspologic-native/tree/1.2.5/packages/network_partitions",
+    "tag_sha": "3c98966401effa0cbf766be4315ad956584bbdea",
+    "source_distribution_sha256": "27ea7e01fa44466c0b4cdd678d4561e5d3dc0cb400015683b7ae1386031257a0",
+    "adaptation": "Three explicit borrowed lifetimes added in neighboring_clusters.rs and compact_network.rs for current Rust diagnostics. Algorithms and defaults are unchanged. Application wrapper mirrors mediator RNG and parameter defaults.",
+    "files": {
+      "Cargo.toml": "cc98cc0f00bb70a03cc46dc4418af350553b8af4f3365ac2ea238cb8db0461c3",
+      "LICENSE": "9906940f61b1f0b533fa7d99baf55178b2808fbe113ea51dfbfad8572ccd5f2b",
+      "README.md": "5492abeee74decdf1dd845f32e8c94cbae388f63cd8d4de708568163ea807ac3",
+      "src/clustering.rs": "a6079a2f31f37cb1ddba670f767b8c67049c50f64b84a178766a6f741b181ef7",
+      "src/errors.rs": "344aa2eb157cb461de15e2cc7fba8bdcc74f36d7e496ae501dbb68f11b91fd84",
+      "src/leiden/full_network_clustering.rs": "26756cf40a7cf200f7aa35545cc476ef0eaf1dacb77dde8ba552f8a40674ac44",
+      "src/leiden/full_network_work_queue.rs": "a4eaa2e5d51d121f000e5461f75f0e5fc44bbb075825aded65760f193f171eca",
+      "src/leiden/hierarchical.rs": "6df42076d3f64bb96227820568de09e98e36eeb82f346cc539b5b4241183a0df",
+      "src/leiden/leiden_clustering.rs": "27a5226de6264cdc1d906f27c7b720b56800ca0607e8690d6fe106055cb95d72",
+      "src/leiden/mod.rs": "450c59cf372fc604185add1f2d0bf7e6dcb85e57e817763c7973d430cc5cd0ad",
+      "src/leiden/neighboring_clusters.rs": "d01cc2fe49ba8bf542958bd6f8683d3cde1fc5c42bead5603c7a62b80fdbddbe",
+      "src/leiden/quality_value_increment.rs": "795805f8e0908d9e62531fbc9961764a5318289fb21da7e0c0f406d446c6322e",
+      "src/leiden/subnetwork.rs": "095cd4ed884d00d2b132de3a7ad8149f0b895100d9e2d98c8d63475f30ba1064",
+      "src/lib.rs": "8bd6e097d78c0127a995323ddb82058a0e2322e7fa58be67a8859c0319fa702d",
+      "src/network/compact_network.rs": "64576a61def595859c058269d987fd622d0e078bbd653a4c735dfd0a88ff70ee",
+      "src/network/identifier.rs": "e9a948921a47bf29dd780222202530d7b4ddba89bda8f82b19e75763eeb754af",
+      "src/network/labeled_network.rs": "3d65bdecc81167aac8bb884b1d2d2f9735378cc6730fc8a0d7fa1b2e4cbfdd30",
+      "src/network/mod.rs": "d2d19f5d0f5dbd9e9e350190d9c3431b8da764905c1246a3073176b222ad388e",
+      "src/network/network.rs": "09cfee111d37793533fbaa24fbdec562010302c19bc2c3121859fb22e23b6105",
+      "src/network/network_builder.rs": "b4cfd02bc4aba0809e2b9e76cfa1ce2afd51453be30d1bb9195b21fd354c3f46",
+      "src/network/networks.rs": "b582883e63e7247dade8561a1856f196c1e61c0f1110abd6354c133f24d128d5",
+      "src/network/prelude.rs": "e37de137873472e5a6ac6382f3ab4efbe8b1cb5c892f47be9e2cf8f204f1c6b9",
+      "src/quality.rs": "e8091c618c5523396a3cb024110099909f64206602a365505c27f5581f837d53",
+      "src/random_vector.rs": "b8329b600821c143b4eb17a184db0b62e760bcfc421b8dce47b71a23dc29658f",
+      "src/resolution.rs": "f4c8038b31dbae99cd2ee2806c15408fcec608c7cf525a8bcf9e6e08876e1c6d",
+      "src/safe_vectors.rs": "ee6102fc3cc56952473976a0841d9aa66919cde0f255960328b9d4cccf01bbf0",
+      "tests/broken_org_graph.csv": "8d7a5d9d2e0420a2137216039885e2d6173d1144b2c714cca3ecc0df914c853c",
+      "tests/sbm_network.csv": "fe9e5a26b68b91b91a003e2503097f6e67975615919230f175edf0d207692ba9",
+      "tests/simple_org_graph.csv": "89a237e8dc6f8d90bb53447eeb44dd2b8f67445063fcb9bab07467097bbf3bf2",
+      "tests/test_network.rs": "b6f9adc19e1638b1742b9c2353ce409e5793bca7ce779165ca13623c87f88d4e"
+    },
+    "local_adaptations": {
+      "src/leiden/neighboring_clusters.rs": {
+        "upstream_sha256": "d01cc2fe49ba8bf542958bd6f8683d3cde1fc5c42bead5603c7a62b80fdbddbe",
+        "current_sha256": "d8772d90bd6d66caf6281e30b18fa80145b5fb1fa669b4b27bd7141ef75db0e3",
+        "change": "Explicit elided lifetime annotations only."
+      },
+      "src/network/compact_network.rs": {
+        "upstream_sha256": "64576a61def595859c058269d987fd622d0e078bbd653a4c735dfd0a88ff70ee",
+        "current_sha256": "e2d3026f387146c6d568c8e932b0f72fbb5ff1da73fe9078b23517f5cfdcacf0",
+        "change": "Explicit elided lifetime annotations only."
+      }
+    }
+  },
+  "grammar_notices": "GRAMMAR_NOTICES.json",
+  "dependency_notices": "THIRD_PARTY_LICENSES.html",
+  "dependency_notices_sha256": "68e94b072ea94ecef0debe2b16fceea790a60b907d9a2ab716c02a37fd7a332a",
+  "all_upstream_applications_merged": false,
+  "native_service_runtime": "Rust; SQLite and Tree-sitter native dependencies; Swift Mac launcher; browser HTML/CSS/JavaScript",
+  "python_runtime_required": false,
+  "model_weights_bundled": false,
+  "model_training_performed": false,
+  "comparative_superiority_established": false
+}

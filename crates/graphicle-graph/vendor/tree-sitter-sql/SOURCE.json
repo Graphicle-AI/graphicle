@@ -1,0 +1,13 @@
+{
+  "url": "https://files.pythonhosted.org/packages/e8/5c/3d10387f779f36835486167253682f61d5f4fd8336b7001da1ac7d78f31c/tree_sitter_sql-0.3.11.tar.gz",
+  "sha256": "700b93be2174c3c83d174ec3e10b682f72a4fb451f0076c7ce5012f1d5a76cbc",
+  "files": {
+    "LICENSE": "3b3e4e4252d5d7d1c18e1257005f23242bf0580ad619204fd093c99b8c56748d",
+    "grammar/parser.c": "add99a0bddfd4d210fa60df11046a19eb0a4d3ebf5bcaa065c674b0c9220ef6e",
+    "grammar/scanner.c": "de17b5cffc3c86f56cf6630abb969330c3c839a81ece0b901bdac0ecee93c403",
+    "grammar/tree_sitter/parser.h": "180b893c8734778fd32f372dfbc27bd6ad1cd2221f26150b31256ff6716320d2",
+    "grammar/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+    "grammar/tree_sitter/array.h": "5bdf6ed1a78e3409fd443e085ca967a64c188a5d082aaf7f819bccd53a471c94"
+  },
+  "note": "Native parser dependency. Python's pinned 0.3.11 uses tree-sitter ABI 15; crates.io sequel 0.3.11 ships ABI 14. Retain the exact pinned generated source."
+}

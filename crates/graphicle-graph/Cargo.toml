@@ -1,0 +1,204 @@
+[package]
+name = "graphicle"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+# The executable (src/main.rs) belongs to cli/, the `graphicle-graph` package,
+# so that its parser runtime is pinned without pinning embedders of the library.
+autobins = false
+description = "Graphicle graph engine (code and document knowledge graphs)"
+license = "Apache-2.0"
+# A package carries the port, its notices and licences; the pinned reference
+# assets, migration evidence and development tools stay in the repository.
+include = [
+    "/src/**",
+    "/build.rs",
+    "/README.md",
+    "/LICENSE",
+    "/NOTICE",
+    "/NOTICE.md",
+    "/CONTRIBUTING.md",
+    "/licenses/**",
+]
+
+[features]
+# The default build is lean. `bedrock` (the AWS SDK's Bedrock client) and
+# `transcription` (whisper.cpp, built with CMake) are opt-in:
+# `cargo build --release --features bedrock,transcription`. The qualified
+# build (tools/qualification.py) enables both.
+default = ["chinese", "precise-js", "grammars-extra"]
+transcription = ["dep:whisper-rs"]
+chinese = ["dep:jieba-rs"]
+bedrock = ["dep:aws-config", "dep:aws-sdk-bedrockruntime"]
+postgres = ["dep:pq-sys"]
+# `--precise` JavaScript/TypeScript call resolution (oxc semantic + resolver).
+precise-js = ["dep:oxc_allocator", "dep:oxc_ast", "dep:oxc_parser", "dep:oxc_semantic", "dep:oxc_span", "dep:oxc_resolver"]
+# Long-tail grammars, linked by default. A build without one loads it from a
+# grammar pack at first use (src/grammar_packs.rs, tools/build_grammar_packs.py).
+grammars-extra = ["grammar-verilog", "grammar-ocaml", "grammar-fortran", "grammar-julia", "grammar-objc", "grammar-elixir", "grammar-powershell", "grammar-zig", "grammar-dm", "grammar-commonlisp"]
+grammar-verilog = ["dep:tree-sitter-verilog"]
+grammar-ocaml = ["dep:tree-sitter-ocaml"]
+grammar-fortran = ["dep:tree-sitter-fortran"]
+grammar-julia = ["dep:tree-sitter-julia"]
+grammar-objc = ["dep:tree-sitter-objc"]
+grammar-elixir = ["dep:tree-sitter-elixir"]
+grammar-powershell = ["dep:tree-sitter-powershell"]
+grammar-zig = ["dep:tree-sitter-zig"]
+grammar-dm = ["dep:tree-sitter-dm"]
+grammar-commonlisp = ["dep:tree-sitter-commonlisp"]
+
+[dependencies]
+pq-sys = { version = "=0.7.5", optional = true, features = ["bundled"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+sha1 = "0.10"
+sha2 = "0.10"
+glob = "0.3"
+regex = "1"
+# Fast hashing for lookup-only tables whose iteration never reaches the output.
+rustc-hash = "2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+toml = { version = "0.8", features = ["preserve_order"] }
+roxmltree = "=0.21.1"
+# The runtime's error recovery decides what is extracted from files the
+# grammar rejects. Cargo.lock pins 0.25.10, the core py-tree-sitter 0.25.2
+# bundles (commit da6fe9be) and so Python Graphify's; 0.26 changed how
+# recovery orders candidate reductions. Crates that embed this library and
+# need 0.27 for their own parsing may resolve it (the code builds with both).
+tree-sitter = ">=0.25.10, <0.28"
+tree-sitter-language = "0.1"
+libloading = "0.8"
+tree-sitter-json = "=0.24.8"
+# tree-sitter-python 0.25.0 with the grammar pack's scanner overflow fix
+# (vendor/tree-sitter-python/SOURCE.json; tests/python_grammar.rs).
+tree-sitter-python = { package = "graphicle-tree-sitter-python", path = "vendor/tree-sitter-python" }
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-typescript = "=0.23.2"
+tree-sitter-java = "=0.23.5"
+graphicle-tree-sitter-groovy = { path = "vendor/tree-sitter-groovy" }
+graphicle-tree-sitter-kotlin = { path = "vendor/tree-sitter-kotlin" }
+graphicle-tree-sitter-php = { path = "vendor/tree-sitter-php" }
+tree-sitter-c = "=0.24.2"
+tree-sitter-cpp = "=0.23.4"
+tree-sitter-ruby = "=0.23.1"
+tree-sitter-c-sharp = "=0.23.5"
+tree-sitter-scala = "=0.26.2"
+tree-sitter-swift = "=0.7.3"
+tree-sitter-lua = "=0.5.0"
+yaml-rust2 = "0.10"
+fancy-regex = "0.16"
+base64 = "0.22"
+log = "0.4"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+unicode-normalization = "=0.1.22"
+tempfile = "3"
+rustpython-parser = { version = "0.4", default-features = false, features = ["location", "num-bigint"] }
+tree-sitter-zig = { version = "=1.1.2", optional = true }
+tree-sitter-elixir = { version = "=0.3.5", optional = true }
+tree-sitter-julia = { version = "=0.23.1", optional = true }
+tree-sitter-ocaml = { version = "=0.25.0", optional = true }
+tree-sitter-bash = "=0.25.1"
+tree-sitter-fortran = { version = "=0.6.0", optional = true }
+tree-sitter-verilog = { version = "=1.0.3", optional = true }
+tree-sitter-powershell = { version = "=0.26.4", optional = true }
+tree-sitter-go = "=0.25.0"
+tree-sitter-rust = "=0.24.2"
+tree-sitter-objc = { version = "=3.0.2", optional = true }
+graphicle-tree-sitter-hcl = { path = "vendor/tree-sitter-hcl" }
+graphicle-tree-sitter-sql = { path = "vendor/tree-sitter-sql" }
+graphicle-tree-sitter-pascal = { path = "vendor/tree-sitter-pascal" }
+graphicle-tree-sitter-vb-dotnet = { path = "vendor/tree-sitter-vb-dotnet" }
+graphicle-tree-sitter-solidity = { path = "vendor/tree-sitter-solidity" }
+graphicle-tree-sitter-r = { path = "vendor/tree-sitter-r" }
+graphicle-tree-sitter-erlang = { path = "vendor/tree-sitter-erlang" }
+tree-sitter-dm = { version = "=0.25.1", optional = true }
+tree-sitter-commonlisp = { version = "=0.4.1", optional = true }
+flate2 = { version = "1", default-features = false, features = ["zlib"] }
+lru = "0.18.2"
+hashbrown = { version = "=0.16.1", features = ["default-hasher"] }
+foldhash = "0.2"
+# Used by the executable (cli/, main.rs), which declares them itself; they
+# stay listed here so that the lock files of the crates embedding the
+# library did not change when the executable moved to its own package.
+mimalloc = { version = "0.1", default-features = false }
+libmimalloc-sys = { version = "0.1.49", default-features = false }
+smallvec = "=1.16.1"
+wait-timeout = "0.2"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+calamine = { version = "0.36", features = ["dates"] }
+pdf-extract = "0.12"
+md-5 = "0.10"
+encoding_rs = "0.8"
+network_partitions = { path = "vendor/network_partitions" }
+neo4rs = { version = "=0.9.0-rc.10", features = ["json", "unstable-v1"] }
+redis = { version = "=0.32.7", default-features = false }
+tokio = { version = "1", features = ["rt", "time"] }
+lbfgsb-rs-pure = "=0.1.2"
+tiktoken-rs = "=0.12.0"
+aws-config = { version = "=1.12.0", optional = true }
+# default-features would add `rustls`, the legacy hyper 0.14 / rustls 0.21 client
+# (h2 0.3, rustls-webpki 0.101 advisories); the default client is hyper 1 / rustls 0.23.
+aws-sdk-bedrockruntime = { version = "=1.146.0", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
+httpdate = "1"
+jieba-rs = { version = "=0.11.0", optional = true }
+whisper-rs = { version = "=0.16.0", optional = true }
+html2text = "=0.15.5"
+rand = "0.8"
+rand_xorshift = "0.3"
+notify = { version = "=8.2.0", default-features = false, features = ["macos_fsevent"] }
+# oxc 0.139 is the newest release that builds with rust-version 1.94.
+oxc_allocator = { version = "=0.139.0", optional = true }
+oxc_ast = { version = "=0.139.0", optional = true }
+oxc_parser = { version = "=0.139.0", optional = true }
+oxc_semantic = { version = "=0.139.0", optional = true }
+oxc_span = { version = "=0.139.0", optional = true }
+oxc_resolver = { version = "=11.23.0", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.30", default-features = false, features = ["user", "signal", "process"] }
+
+[workspace]
+# `cargo build` here builds the library and the executable (cli/).
+# The root package is always a member; listing "." here would make cargo
+# ignore `exclude` for every path below the root.
+members = ["cli"]
+default-members = [".", "cli"]
+# The vendored grammars and network_partitions are path dependencies, not
+# workspace members. memory/ is the graphicle-memory crate with its own lock:
+# one lock cannot hold this tree-sitter 0.25.10 pin and its 0.27.
+exclude = ["vendor", "memory"]
+
+# Build footprint: the released executable carries no symbol table or debug
+# information, and development and test builds keep line tables only (file
+# and line in backtraces and panics), so trying Graphicle does not take a
+# large disk.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+debug = false
+
+[profile.dev]
+debug = "line-tables-only"
+
+# Optimized like `release` but quicker to build, for local identity checks
+# during development (output does not depend on the profile); qualified and
+# benchmarked builds use `release`.
+[profile.fastrel]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
+# cargo-dist release builds (dist-workspace.toml, .github/workflows/release.yml).
+[profile.dist]
+inherits = "release"
+lto = "thin"
+
+# publish = false keeps both packages off crates.io; dist releases the
+# `graphicle-graph` executable (cli/).
+# Before the first release set `repository` (the public repo URL) above.
+[package.metadata.dist]
+# Released as the `graphicle-graph` package (cli/Cargo.toml).
+dist = false

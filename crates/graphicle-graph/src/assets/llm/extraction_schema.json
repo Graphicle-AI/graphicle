@@ -1,0 +1,1 @@
+{"type": "object", "properties": {"nodes": {"type": "array", "items": {"type": "object"}}, "edges": {"type": "array", "items": {"type": "object"}}, "hyperedges": {"type": "array", "items": {"type": "object"}}}, "required": ["nodes", "edges"]}

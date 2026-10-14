@@ -1,0 +1,27 @@
+[Unit]
+Description=Graphicle source and memory service
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=graphicle
+Group=graphicle
+StateDirectory=graphicle
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/graphicle
+EnvironmentFile=/etc/graphicle/host.env
+ExecStart=/usr/local/bin/graphicle --data-dir /var/lib/graphicle serve --port 8854 --public-origin ${GRAPHICLE_PUBLIC_ORIGIN}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillMode=mixed
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/graphicle
+
+[Install]
+WantedBy=multi-user.target

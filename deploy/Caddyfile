@@ -1,0 +1,9 @@
+{$GRAPHICLE_DOMAIN} {
+	encode zstd gzip
+	request_body {
+		max_size 32MB
+	}
+	reverse_proxy 127.0.0.1:8854 {
+		header_up Host {$GRAPHICLE_DOMAIN}
+	}
+}

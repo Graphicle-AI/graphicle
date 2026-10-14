@@ -1,0 +1,118 @@
+Graphicle
+Copyright (c) 2026 KarLex AI, Inc.
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository holds Graphicle Core: the graphicle program (crates/graphicle/),
+the graph engine (crates/graphicle-graph/), the memory library
+(crates/graphicle-memory/) and the SDKs (sdk/).
+
+This product includes software adapted from Graphify
+(https://github.com/Graphify-Labs/graphify): release 0.9.88, commit
+a9860f70dc3cc2e9c2d8cb923484cfa0592b9067, and the earlier pinned revisions
+5c7b84792f453582676548185aaec3824d51dfe2 (release 0.9.77),
+20a20d30d8e7eef77675651f0199d87f913bd3e7 and
+0010e25d0d983bc127cef0ee0f7e490bed74e44c. Files adapted from Graphify carry a
+header naming the upstream release and files;
+crates/graphicle-graph/migration/ADAPTED.json lists them.
+
+The NOTICE of Graphify, reproduced as Apache-2.0 section 4(d) requires:
+
+  Graphify
+  Copyright 2026 Safi Shamsi and the Graphify contributors.
+
+  This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+  Portions of this software were contributed under the MIT License prior to the
+  relicensing and remain available under those terms. The original MIT license
+  text is retained in LICENSE-MIT.
+
+Graphify's LICENSE-MIT is retained as
+crates/graphicle-graph/licenses/LICENSE-MIT and as
+crates/graphicle/licenses/Graphify-Labs__graphify__LICENSE-MIT.txt.
+
+The NOTICE of genome by Northtek (FrostByte Digital LLC), reproduced as
+Apache-2.0 section 4(d) requires:
+
+  GENOME
+  Copyright 2026 Northtek (FrostByte Digital LLC)
+
+  This product includes software developed by Northtek (FrostByte Digital LLC).
+
+  Licensed under the Apache License, Version 2.0. See the LICENSE file for details.
+  Contact: info@northtek.io
+
+The NOTICE of Claude-Mem (https://github.com/thedotmack/claude-mem, commit
+9df289bf67aa8ec9f8bc90de587ad0bd8ba73288), whose session-capture and
+work-state designs the graphicle program follows (crates/graphicle/NOTICE.md),
+reproduced as Apache-2.0 section 4(d) requires (also in
+crates/graphicle/licenses/thedotmack__claude-mem__NOTICE.txt):
+
+  Claude-Mem
+  Copyright 2026 Alex Newman
+
+  This product includes software developed for the Claude-Mem project.
+
+  Licensed under the Apache License, Version 2.0.
+
+The tree-sitter grammar for Elixir (https://github.com/elixir-lang/tree-sitter-elixir,
+revision 4b0c7118760af58a2e7081bbc8396e136f820b37), which both programs link,
+carries a NOTICE; its attribution notices, reproduced as Apache-2.0 section 4(d)
+requires (the full NOTICE, with its licence terms, is in
+crates/graphicle/licenses/grammars/ beside the grammar's licence):
+
+  Copyright (c) 2018-2021 Max Brunsfeld (MIT; the generated files in src/)
+  Copyright (c) 2021 Anantha Kumaran (MIT; fragments in test/corpus/)
+  Copyright 2021 The Elixir Team (Apache-2.0; all other files)
+
+The other grammars linked into the graphicle program are listed, with their
+upstream projects, revisions and licence texts, in
+crates/graphicle/GRAMMAR_NOTICES.json and crates/graphicle/licenses/grammars/.
+
+Copyright notices retained from adapted Apache-2.0 source files:
+  Copyright 2024, Zep Software, Inc.
+    (Graphiti; crates/graphicle-memory/src/)
+  Copyright 2008-2015 Nokia Networks
+  Copyright 2016- Robot Framework Foundation
+    (Robot Framework 7.5; crates/graphicle-graph/src/extractors/robot.rs)
+The copyright lines of the other adapted upstreams stay with their licence
+texts in crates/graphicle-graph/licenses/, crates/graphicle-memory/licenses/ and
+crates/graphicle/licenses/.
+
+Vendored third-party code in crates/graphicle-graph/vendor/ (licence texts in
+each crate's LICENSE and in crates/graphicle-graph/licenses/vendor/):
+  network_partitions (graspologic-native 1.2.5), MIT: Copyright (c) Microsoft
+    Corporation; it started from CWTS networkanalysis, MIT: Copyright (c) 2018
+    Centre for Science and Technology Studies (CWTS), Leiden University.
+  tree-sitter-erlang a260cb65, Apache-2.0.
+  tree-sitter-groovy v0.1.2, MIT as declared by its author, Amaan Qureshi; no
+    upstream licence file (see crates/graphicle-graph/NOTICE.md).
+  tree-sitter-hcl 1.2.0, Apache-2.0.
+  tree-sitter-kotlin 1.1.0, MIT: Copyright (c) 2024 Amaan Qureshi.
+  tree-sitter-pascal a55068ee, MIT: Copyright (c) 2018 Benjamin Gray.
+  tree-sitter-php 0.24.1, MIT: Copyright (c) 2017 Josh Vera, GitHub; Copyright (c)
+    2019 Max Brunsfeld, Amaan Qureshi, Christian Frøystad, Caleb White.
+  tree-sitter-python 0.25.0, patched, MIT: Copyright (c) 2016 Max Brunsfeld; the
+    patch comes from tree-sitter-language-pack, MIT, Copyright 2025-2026
+    Kreuzberg, Inc.
+  tree-sitter-r 0e6ef774, MIT: Copyright (c) 2025 tree-sitter-r authors.
+  tree-sitter-solidity 1.2.13, MIT: Copyright (c) 2020 Joran Honig.
+  tree-sitter-sql 0.3.11, MIT: Copyright (c) 2021 Derek Stride.
+  tree-sitter-vb-dotnet 0.3.0, MIT: Copyright (c) 2025 CodeAnt AI; Copyright (c)
+    2026 Repowise contributors.
+The build glue of each vendored grammar crate (its Cargo.toml, build.rs and
+src/lib.rs) is Copyright (c) 2026 KarLex AI, Inc. and is licensed under the same
+terms as the grammar it wraps.
+
+Portions derived from CPython 3.12 remain under the PSF License Version 2
+(crates/graphicle-graph/licenses/PYTHON-LICENSE.txt);
+crates/graphicle-graph/NOTICE.md summarises the changes. Every other adapted
+source, embedded data file, font and grammar is listed, with the location of
+its licence text, in crates/graphicle-graph/NOTICE.md,
+crates/graphicle-memory/NOTICE.md and crates/graphicle/NOTICE.md; the benchmark
+kit's third-party material is listed in bench/THIRD_PARTY.md. Licences of the
+Rust crates linked into a release binary are in
+crates/graphicle-graph/licenses/THIRD_PARTY_LICENSES.html (the graph engine)
+and crates/graphicle/THIRD_PARTY_LICENSES.html (the graphicle program).
+NOTICE.md explains the layout; the release archives carry these files under
+licenses/<crate>/.

@@ -1,0 +1,13 @@
+[package]
+name = "graphicle-tree-sitter-solidity"
+version = "1.2.13"
+edition = "2024"
+license = "MIT"
+publish = false
+description = "Native binding to the exact Solidity grammar in Graphify's pinned tree-sitter-solidity 1.2.13 Python dependency"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1"

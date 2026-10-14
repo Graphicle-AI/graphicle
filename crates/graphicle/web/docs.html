@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en" class="smooth">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0a0a12">
+  <meta name="description" content="Start a local Graphicle workspace, connect an agent over MCP and call the versioned HTTP API.">
+  <title>Graphicle documentation</title>
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M9.7%204.6L20.5%2017.4L3.5%2019.4Z'%20fill='none'%20stroke='%235B7CFF'%20stroke-width='2.5'%20stroke-linejoin='round'/%3E%3Cpath%20d='M11%2014.1L9.7%204.6M11%2014.1L20.5%2017.4M11%2014.1L3.5%2019.4'%20stroke='%235B7CFF'%20stroke-width='1.6'%20stroke-linecap='round'/%3E%3Ccircle%20cx='9.7'%20cy='4.6'%20r='2.5'%20fill='%235B7CFF'/%3E%3Ccircle%20cx='20.5'%20cy='17.4'%20r='2.5'%20fill='%235B7CFF'/%3E%3Ccircle%20cx='3.5'%20cy='19.4'%20r='2.5'%20fill='%235B7CFF'/%3E%3Ccircle%20cx='11'%20cy='14.1'%20r='3.4'%20fill='%23A78BFA'/%3E%3C/svg%3E">
+  <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/workspace.css">
+</head>
+<body class="public">
+  <svg class="sprite" aria-hidden="true" focusable="false">
+    <symbol id="i-mark" viewBox="0 0 24 24"><path d="M9.7 4.6L20.5 17.4L3.5 19.4Z" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linejoin="round"/><path d="M11 14.1L9.7 4.6M11 14.1L20.5 17.4M11 14.1L3.5 19.4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><g fill="currentColor" stroke="none"><circle cx="9.7" cy="4.6" r="2.5"/><circle cx="20.5" cy="17.4" r="2.5"/><circle cx="3.5" cy="19.4" r="2.5"/></g><circle cx="11" cy="14.1" r="3.4" fill="#A78BFA" stroke="none"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#content">Skip to content</a>
+
+  <header class="site-header">
+    <div class="site-header-inner">
+      <a class="brand" href="/product" aria-label="Graphicle product"><span class="mark" aria-hidden="true"><svg class="icon"><use href="#i-mark"/></svg></span><span class="brand-name">Graphicle</span></a>
+      <nav class="site-nav" aria-label="Site">
+        <a class="optional" href="/product">Product</a>
+        <a href="/docs" aria-current="page">Docs</a>
+        <a class="optional" href="/v1/openapi.json">API</a>
+      </nav>
+      <a class="button" href="/">Open workspace</a>
+    </div>
+  </header>
+
+  <main id="content" class="docs-layout">
+    <nav class="docs-toc" aria-label="On this page">
+      <span class="eyebrow">On this page</span>
+      <a href="#start">Start a local workspace</a>
+      <a href="#agents">Connect an agent</a>
+      <a href="#api">Call the versioned API</a>
+      <a href="#sdks">SDKs</a>
+      <a href="#usage">Usage, limits and data ownership</a>
+      <a href="#limits">What the product establishes</a>
+    </nav>
+
+    <article class="docs-content">
+      <header class="docs-intro">
+        <span class="eyebrow">Build with Graphicle</span>
+        <h1>One project. Every interface.</h1>
+        <p class="lead">The browser, CLI, MCP server and SDKs use the same project data and authorization. Original evidence remains separate from draft and reviewed memory.</p>
+      </header>
+
+      <section id="start" aria-labelledby="start-title">
+        <h2 id="start-title"><span class="step">1.</span>Start a local workspace</h2>
+        <p>Install a release (<code>brew install graphicle-ai/tap/graphicle</code>, or a release archive), or build the native CLI from a checkout of the source repository. Use client and server documentation of the same version.</p>
+        <figure class="code-block">
+          <figcaption>Shell</figcaption>
+<pre>python3 crates/graphicle/tools/prepare_parser_sources.py   # once per checkout
+cd crates/graphicle
+cargo build --release --locked
+./target/release/graphicle init
+./target/release/graphicle sync /path/to/project
+./target/release/graphicle serve --open</pre>
+        </figure>
+        <p>The service binds to loopback. For a hosted deployment, use HTTPS through the supplied reverse proxy configuration and give each person or agent its own access key. Public workspace creation is disabled in hosted mode.</p>
+        <p>These steps build Graphicle Core. <code>graphicle --version</code> and the <code>build.info</code> operation report the running edition and its capabilities.</p>
+      </section>
+
+      <section id="agents" aria-labelledby="agents-title">
+        <h2 id="agents-title"><span class="step">2.</span>Connect an agent</h2>
+        <figure class="code-block">
+          <figcaption>Shell</figcaption>
+<pre>graphicle mcp --project PROJECT_ID</pre>
+        </figure>
+        <p>For HTTP MCP use <code>/mcp/WORKSPACE_ID/PROJECT_ID</code>, or <code>/mcp/WORKSPACE_ID</code> for every project of the workspace the key can read, with the <code>X-Workspace-Capability</code> header. Create an agent credential instead of sharing an owner credential. The Agents &amp; API page checks initialization, tool discovery and project access. An external agent still needs its own connection.</p>
+      </section>
+
+      <section id="api" aria-labelledby="api-title">
+        <h2 id="api-title"><span class="step">3.</span>Call the versioned API</h2>
+        <p>Set <code>GRAPHICLE_URL</code>, <code>GRAPHICLE_WORKSPACE</code>, <code>GRAPHICLE_PROJECT</code> and <code>GRAPHICLE_KEY</code> in your environment. Never place a capability in a URL or a frontend bundle.</p>
+        <figure class="code-block">
+          <figcaption>Shell</figcaption>
+<pre>curl --fail-with-body \
+  "$GRAPHICLE_URL/v1/workspaces/$GRAPHICLE_WORKSPACE/repos/$GRAPHICLE_PROJECT/commands" \
+  -H "X-Workspace-Capability: $GRAPHICLE_KEY" \
+  -H "Content-Type: application/json" \
+  --data '{"operation":"context","arguments":{"question":"How does auth work?","max_tokens":3000}}'</pre>
+        </figure>
+        <p>The URL selects the repository. Arguments cannot supply another <code>repository_id</code> or <code>workspace_id</code>. Results and errors are JSON. The <a href="/v1/openapi.json">OpenAPI document</a> describes the transport; MCP <code>tools/list</code> publishes tool argument schemas. The generic command API exposes additional operator and experimental commands; those schemas are not all covered by this OpenAPI document.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">Operation</th><th scope="col">Arguments</th><th scope="col">Result</th></tr></thead>
+            <tbody>
+              <tr><td><code>context</code></td><td>question, max_tokens</td><td>Evidence, reviewed memory, coverage and omissions</td></tr>
+              <tr><td><code>read</code></td><td>source_id or path; optional sha256, snapshot, start_line</td><td>Original source window and integrity metadata</td></tr>
+              <tr><td><code>graph.project</code></td><td>None</td><td>Record the graph for the current source snapshot</td></tr>
+              <tr><td><code>graph.episodes</code></td><td>None</td><td>Recorded episodes and labels</td></tr>
+              <tr><td><code>graph.as_of</code></td><td>as_of, query or node, limit</td><td>Selected code nodes and connections at that episode</td></tr>
+              <tr><td><code>impact.report</code></td><td>base, head, optional changed_files and budget_tokens</td><td>Not part of Graphicle Core, which answers 501.</td></tr>
+              <tr><td><code>memories</code></td><td>include_retired</td><td>Memories with revision, review state and freshness</td></tr>
+              <tr><td><code>workflow.enqueue</code></td><td>kind and explicit call/token budgets</td><td>Job ID; inspect with workflow.status</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="sdks" aria-labelledby="sdks-title">
+        <h2 id="sdks-title">SDKs</h2>
+        <p>Both clients are source packages in the repository; neither is published to a package registry.</p>
+        <figure class="code-block">
+          <figcaption>Shell</figcaption>
+<pre># From the root of a checkout
+# Python: standard library only
+python -m pip install ./sdk/python
+
+# TypeScript / JavaScript: no runtime dependencies, Node 22+
+npm install ./sdk/typescript</pre>
+        </figure>
+        <p>SDKs expose evidence retrieval, source reads and graph history. They do not automatically retry mutations. A timed-out write may have completed; inspect current state before resubmitting.</p>
+      </section>
+
+      <section id="usage" aria-labelledby="usage-title">
+        <h2 id="usage-title">Usage, limits and data ownership</h2>
+        <p>Owner-only <code>GET /v1/workspaces/WORKSPACE_ID/usage</code> returns UTC counters and recorded provider token usage. Set a monthly HTTP request budget with <code>POST /v1/workspaces/WORKSPACE_ID/budget</code> and <code>{"monthly_requests":10000}</code>. Null removes your cap.</p>
+        <p>Limits are enforced atomically across authenticated HTTP routes and MCP tool calls. Failed requests consume the request budget. Sign-in, navigation, usage, export, cancellation and deletion remain available. A 429 includes Retry-After until the next UTC month. Local CLI calls and background work are separate; workflows have their own model budgets. These counters are not a provider invoice or a global token spending cap.</p>
+      </section>
+
+      <section id="limits" aria-labelledby="limits-title">
+        <h2 id="limits-title">What the product does and doesn’t establish</h2>
+        <p>Citations identify recorded sources; a limited search is not a proof that a fact is absent. Static graph edges indicate possible impact, not program correctness. A suggested test is not a passed test. Deletion receipts cover the stores named in the receipt, not external backups or trained weights.</p>
+        <div class="callout">
+          <strong>Licensing</strong>
+          <p>Graphicle Core is open source under the Apache License 2.0; LICENSE, NOTICE and licenses/ ship with every download. A commercial edition for teams is in private preview.</p>
+        </div>
+      </section>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <span>Graphicle API v1 · Graphicle 0.1</span>
+    <nav class="footer-links" aria-label="Footer">
+      <a href="/v1/openapi.json">OpenAPI</a>
+      <a href="/product">Product</a>
+      <a href="/">Return to workspace</a>
+    </nav>
+  </footer>
+</body>
+</html>

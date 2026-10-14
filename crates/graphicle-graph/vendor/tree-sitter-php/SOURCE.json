@@ -1,0 +1,18 @@
+{
+  "url": "https://codeload.github.com/tree-sitter/tree-sitter-php/tar.gz/refs/tags/v0.24.1",
+  "sha256": "3320ba539ea988967a02568dbf41945df0044ecb9fa88ea38daa1116489093db",
+  "files": {
+    "LICENSE": "664764fabf40c0b318e06324a5a12379092a2df25b8cbf2415f71bc0bb352346",
+    "common/scanner.h": "de8eb36bc8f517ab9f3eaf82e3825d7b3e11b62e9471545f4c906100cfce0e07",
+    "php/src/parser.c": "581b6e091cbe64e1cb71208211dff27de08b199b46e1fea3463f69750ce6f421",
+    "php/src/scanner.c": "58c92cafe4ebda509c3ad3864fa6fc0e9877bbac26e17a03d23ea2101c291ad5",
+    "php/src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+    "php/src/tree_sitter/array.h": "5bdf6ed1a78e3409fd443e085ca967a64c188a5d082aaf7f819bccd53a471c94",
+    "php/src/tree_sitter/parser.h": "180b893c8734778fd32f372dfbc27bd6ad1cd2221f26150b31256ff6716320d2",
+    "php_only/src/parser.c": "d347d660217129fde882022066b6c3c6e99cadfea1b1647b1397592146da3ed1",
+    "php_only/src/scanner.c": "7a91ec341bef67f006e508f720edcd70b0d0eb73773584afa87ab7d12be25b14",
+    "php_only/src/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+    "php_only/src/tree_sitter/array.h": "5bdf6ed1a78e3409fd443e085ca967a64c188a5d082aaf7f819bccd53a471c94",
+    "php_only/src/tree_sitter/parser.h": "180b893c8734778fd32f372dfbc27bd6ad1cd2221f26150b31256ff6716320d2"
+  }
+}

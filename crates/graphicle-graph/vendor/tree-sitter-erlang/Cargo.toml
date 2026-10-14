@@ -1,0 +1,13 @@
+[package]
+name = "graphicle-tree-sitter-erlang"
+version = "0.11.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+description = "Native binding to the exact Erlang grammar bundled in Graphify's pinned tree-sitter-language-pack 0.11.0 Python dependency"
+
+[dependencies]
+tree-sitter-language = "0.1"
+
+[build-dependencies]
+cc = "1"

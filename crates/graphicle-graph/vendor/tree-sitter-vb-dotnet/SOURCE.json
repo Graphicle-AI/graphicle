@@ -1,0 +1,12 @@
+{
+  "url": "https://files.pythonhosted.org/packages/04/a1/95f99d291163cab128f86e6303268f50c37856bcf7dc361435f752549a48/tree_sitter_vb_dotnet-0.3.0.tar.gz",
+  "sha256": "6e7178a8cf7c34b8ba07aa3914bef5475f4eafd348cdd393ff3ebfc7cb41ae61",
+  "files": {
+    "grammar/parser.c": "500a1a0f01d0a4f7ee0bcab589c8af0f8ea0e74db22763e30667b7cad9d690c3",
+    "grammar/tree_sitter/parser.h": "180b893c8734778fd32f372dfbc27bd6ad1cd2221f26150b31256ff6716320d2",
+    "grammar/tree_sitter/alloc.h": "b29c1c9fb7cc82f58c84b376df1297d6e2737a1d655fd356db0859e3c29c2fea",
+    "grammar/tree_sitter/array.h": "5bdf6ed1a78e3409fd443e085ca967a64c188a5d082aaf7f819bccd53a471c94",
+    "LICENSE": "b94d0fbc2f7ff9e8e747c8aa01253453eddc0be7ab23f4b403e012aec234783d"
+  },
+  "note": "PyPI tree-sitter-vb-dotnet 0.3.0 (repowise-dev); crates.io tree-sitter-vb-dotnet is a different grammar."
+}

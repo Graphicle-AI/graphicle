@@ -1,0 +1,492 @@
+{
+  "grammar_pack": "tree-sitter-language-pack==1.20.0",
+  "language_definitions_sha256": "c67e5f900f6f4458646e371132892639287e9adbec006e226b4c1821eae65401",
+  "statically_linked_languages": [
+    "python",
+    "javascript",
+    "typescript",
+    "tsx",
+    "rust",
+    "java",
+    "c",
+    "cpp",
+    "ruby",
+    "csharp",
+    "kotlin",
+    "scala",
+    "php",
+    "lua",
+    "swift",
+    "go",
+    "apex",
+    "bash",
+    "blade",
+    "commonlisp",
+    "dart",
+    "elixir",
+    "fortran",
+    "julia",
+    "objc",
+    "ocaml",
+    "pascal",
+    "powershell",
+    "sql",
+    "hcl",
+    "verilog",
+    "zig",
+    "json",
+    "yaml",
+    "toml",
+    "html",
+    "css",
+    "markdown",
+    "xml",
+    "r",
+    "haskell",
+    "make",
+    "cmake",
+    "dockerfile",
+    "vue",
+    "svelte",
+    "astro",
+    "razor",
+    "robot"
+  ],
+  "projects": [
+    {
+      "repository": "https://github.com/DerekStride/tree-sitter-sql",
+      "revision": "b7057b7d4ca94bb45403435f12cc01cee821daa8",
+      "languages": [
+        "sql"
+      ],
+      "license_file": "licenses/grammars/DerekStride__tree-sitter-sql__b7057b7d4ca94bb45403435f12cc01cee821daa8.txt",
+      "license_sha256": "3b3e4e4252d5d7d1c18e1257005f23242bf0580ad619204fd093c99b8c56748d"
+    },
+    {
+      "repository": "https://github.com/EmranMR/tree-sitter-blade",
+      "revision": "b5291d1ba207a8ebb8383b2ecb8a8a6535210a50",
+      "languages": [
+        "blade"
+      ],
+      "license_file": "licenses/grammars/EmranMR__tree-sitter-blade__b5291d1ba207a8ebb8383b2ecb8a8a6535210a50.txt",
+      "license_sha256": "96e0c1803ffb831c7287b1fb7f88567d05e58d37da553e6bb9a9c4a765434ecb"
+    },
+    {
+      "repository": "https://github.com/Himujjal/tree-sitter-svelte",
+      "revision": "60ea1d673a1a3eeeb597e098d9ada9ed0c79ef4b",
+      "languages": [
+        "svelte"
+      ],
+      "license_file": "licenses/grammars/Himujjal__tree-sitter-svelte__60ea1d673a1a3eeeb597e098d9ada9ed0c79ef4b.txt",
+      "license_sha256": "f8eb3961cdcf17e74a36cc28d7180b66a72a260eb7dcb67c67174f2b4f4f7907"
+    },
+    {
+      "repository": "https://github.com/Hubro/tree-sitter-robot",
+      "revision": "8f1a8d8c3875db2cd29865b5a1db7716b4eab4c3",
+      "languages": [
+        "robot"
+      ],
+      "license_file": "licenses/grammars/Hubro__tree-sitter-robot__8f1a8d8c3875db2cd29865b5a1db7716b4eab4c3.txt",
+      "license_sha256": "e01ca99dda7e109ae005bbbcba866e23f2bdc4732557636d8a8e155371398a8f"
+    },
+    {
+      "repository": "https://github.com/Isopod/tree-sitter-pascal",
+      "revision": "042119eca2e18a60e56317fb06ee3ba5c32cb447",
+      "languages": [
+        "pascal"
+      ],
+      "license_file": "licenses/grammars/Isopod__tree-sitter-pascal__042119eca2e18a60e56317fb06ee3ba5c32cb447.txt",
+      "license_sha256": "2e2fcc500eacb15b76c11fd2229aebf0a5b4c8ed476f068447c6dce778a17ac9"
+    },
+    {
+      "repository": "https://github.com/MichaHoffmann/tree-sitter-hcl",
+      "revision": "64ad62785d442eb4d45df3a1764962dafd5bc98b",
+      "languages": [
+        "hcl"
+      ],
+      "license_file": "licenses/grammars/MichaHoffmann__tree-sitter-hcl__64ad62785d442eb4d45df3a1764962dafd5bc98b.txt",
+      "license_sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "repository": "https://github.com/MunifTanjim/tree-sitter-lua",
+      "revision": "4fbec840c34149b7d5fe10097c93a320ee4af053",
+      "languages": [
+        "lua"
+      ],
+      "license_file": "licenses/grammars/MunifTanjim__tree-sitter-lua__4fbec840c34149b7d5fe10097c93a320ee4af053.txt",
+      "license_sha256": "9a32b02e4c917b1ce6b5e79d8ea81e25cefd7f27d89c7235f2afb262c06cf32e"
+    },
+    {
+      "repository": "https://github.com/UserNobody14/tree-sitter-dart",
+      "revision": "be07cf7118d3dba06236a3f19541685a68209934",
+      "languages": [
+        "dart"
+      ],
+      "license_file": "licenses/grammars/UserNobody14__tree-sitter-dart__be07cf7118d3dba06236a3f19541685a68209934.txt",
+      "license_sha256": "d270cb3a4985d75033bd77d875ccebff1d66e32788a3f727891e28d76132dd46"
+    },
+    {
+      "repository": "https://github.com/aheber/tree-sitter-sfapex",
+      "revision": "da568eee10ce4724a40f368b2b7e795dacb4f1ba",
+      "languages": [
+        "apex"
+      ],
+      "license_file": "licenses/grammars/aheber__tree-sitter-sfapex__da568eee10ce4724a40f368b2b7e795dacb4f1ba.txt",
+      "license_sha256": "c3d045abbc0a8dec1b00737c0668f6dbb028d248521b74e79778c726671925ed"
+    },
+    {
+      "repository": "https://github.com/airbus-cert/tree-sitter-powershell",
+      "revision": "e7bd348c49fdfd5c853a146a670965ba516a6239",
+      "languages": [
+        "powershell"
+      ],
+      "license_file": "licenses/grammars/airbus-cert__tree-sitter-powershell__e7bd348c49fdfd5c853a146a670965ba516a6239.txt",
+      "license_sha256": "1fca8454c0d77a73f9922a52d39e1f7c339f5da5d03f2766eff66b859fa19477"
+    },
+    {
+      "repository": "https://github.com/alemuller/tree-sitter-make",
+      "revision": "a4b9187417d6be349ee5fd4b6e77b4172c6827dd",
+      "languages": [
+        "make"
+      ],
+      "license_file": "licenses/grammars/alemuller__tree-sitter-make__a4b9187417d6be349ee5fd4b6e77b4172c6827dd.txt",
+      "license_sha256": "28eecdb75b6de2d9020603531461444bf54db827ee2fb345a8fcf4dbee7c2ad1"
+    },
+    {
+      "repository": "https://github.com/alex-pinkus/tree-sitter-swift",
+      "revision": "00bbb0a2550f8bc0023a2a4992922d51ae045626",
+      "languages": [
+        "swift"
+      ],
+      "license_file": "licenses/grammars/alex-pinkus__tree-sitter-swift__00bbb0a2550f8bc0023a2a4992922d51ae045626.txt",
+      "license_sha256": "3533cec129bb4bba015c0d61d86dd7c3b7e82110e4d2ff7837a01eff5bad5ccc"
+    },
+    {
+      "repository": "https://github.com/camdencheek/tree-sitter-dockerfile",
+      "revision": "971acdd908568b4531b0ba28a445bf0bb720aba5",
+      "languages": [
+        "dockerfile"
+      ],
+      "license_file": "licenses/grammars/camdencheek__tree-sitter-dockerfile__971acdd908568b4531b0ba28a445bf0bb720aba5.txt",
+      "license_sha256": "806b8fcd19c1cdf23e178eb25942acc844a38669e36b2c896c7baf5f8bcecbb4"
+    },
+    {
+      "repository": "https://github.com/elixir-lang/tree-sitter-elixir",
+      "revision": "4b0c7118760af58a2e7081bbc8396e136f820b37",
+      "languages": [
+        "elixir"
+      ],
+      "license_file": "licenses/grammars/elixir-lang__tree-sitter-elixir__4b0c7118760af58a2e7081bbc8396e136f820b37.txt",
+      "license_sha256": "a6cba85bc92e0cff7a450b1d873c0eaa2e9fc96bf472df0247a26bec77bf3ff9",
+      "notice_file": "licenses/grammars/elixir-lang__tree-sitter-elixir__4b0c7118760af58a2e7081bbc8396e136f820b37__NOTICE.txt",
+      "notice_sha256": "119588423fbaa46a6955a044fee5a23338c7de190d8c4651a94c6d0b98ca2cda"
+    },
+    {
+      "repository": "https://github.com/fwcd/tree-sitter-kotlin",
+      "revision": "1852ea17b7f60fb3f9d84e0b1555d56b46b39fb1",
+      "languages": [
+        "kotlin"
+      ],
+      "license_file": "licenses/grammars/fwcd__tree-sitter-kotlin__1852ea17b7f60fb3f9d84e0b1555d56b46b39fb1.txt",
+      "license_sha256": "948495f61768f7de26bcc61113d8cd95f50bbc15adb678c28c941c6c8fcd5903"
+    },
+    {
+      "repository": "https://github.com/maxxnino/tree-sitter-zig",
+      "revision": "a80a6e9be81b33b182ce6305ae4ea28e29211bd5",
+      "languages": [
+        "zig"
+      ],
+      "license_file": "licenses/grammars/maxxnino__tree-sitter-zig__a80a6e9be81b33b182ce6305ae4ea28e29211bd5.txt",
+      "license_sha256": "c3127b97af8992ea5a3d63912e2e4be2d02f927c4c4214ceed4467f462b23c99"
+    },
+    {
+      "repository": "https://github.com/r-lib/tree-sitter-r",
+      "revision": "58a22794466c0fc15b0d3b40531db751593721e8",
+      "languages": [
+        "r"
+      ],
+      "license_file": "licenses/grammars/r-lib__tree-sitter-r__58a22794466c0fc15b0d3b40531db751593721e8.txt",
+      "license_sha256": "de2e49529f03d573bc3fa229dc83acfe22c63a5ad1766b289563edfd45b72dea"
+    },
+    {
+      "repository": "https://github.com/stadelmanma/tree-sitter-fortran",
+      "revision": "7edacd2b21aa80057d9725384a1304a1c758e0f8",
+      "languages": [
+        "fortran"
+      ],
+      "license_file": "licenses/grammars/stadelmanma__tree-sitter-fortran__7edacd2b21aa80057d9725384a1304a1c758e0f8.txt",
+      "license_sha256": "c0fc02a86ae2b179c4729694c523bbf42da674e5136ed8e12e3cb2f26556ea9f"
+    },
+    {
+      "repository": "https://github.com/theHamsta/tree-sitter-commonlisp",
+      "revision": "32323509b3d9fe96607d151c2da2c9009eb13a2f",
+      "languages": [
+        "commonlisp"
+      ],
+      "license_file": "licenses/grammars/theHamsta__tree-sitter-commonlisp__32323509b3d9fe96607d151c2da2c9009eb13a2f.txt",
+      "license_sha256": "00bb7f417416e8233ae465209e72eaa6162d53b061add7d9bed0238552a6fa0c"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-markdown",
+      "revision": "a0a00f817d02412bd92c54d316f164d827b57b5c",
+      "languages": [
+        "markdown"
+      ],
+      "license_file": "licenses/grammars/tree-sitter-grammars__tree-sitter-markdown__a0a00f817d02412bd92c54d316f164d827b57b5c.txt",
+      "license_sha256": "52ec8a1bf8256511e2a92613e0bb41ffefba3897f16fa958d7bb28c466dd4804"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-objc",
+      "revision": "181a81b8f23a2d593e7ab4259981f50122909fda",
+      "languages": [
+        "objc"
+      ],
+      "license_file": "licenses/grammars/tree-sitter-grammars__tree-sitter-objc__181a81b8f23a2d593e7ab4259981f50122909fda.txt",
+      "license_sha256": "099c44248f8cf353123211318680e93465587c005a4b3730ce8cb5334de043d6"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-toml",
+      "revision": "64b56832c2cffe41758f28e05c756a3a98d16f41",
+      "languages": [
+        "toml"
+      ],
+      "license_file": "licenses/grammars/tree-sitter-grammars__tree-sitter-toml__64b56832c2cffe41758f28e05c756a3a98d16f41.txt",
+      "license_sha256": "b727eee929bee836e8102cecf749a795b199f291b58c885bcd81cae727ac5a46"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-vue",
+      "revision": "ce8011a414fdf8091f4e4071752efc376f4afb08",
+      "languages": [
+        "vue"
+      ],
+      "license_file": "licenses/grammars/tree-sitter-grammars__tree-sitter-vue__ce8011a414fdf8091f4e4071752efc376f4afb08.txt",
+      "license_sha256": "91ebb180e4e2e34628c45e405584d0faac6863660b69e8139da96290e58c14dd"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-xml",
+      "revision": "5000ae8f22d11fbe93939b05c1e37cf21117162d",
+      "languages": [
+        "xml"
+      ],
+      "license_file": "licenses/grammars/tree-sitter-grammars__tree-sitter-xml__5000ae8f22d11fbe93939b05c1e37cf21117162d.txt",
+      "license_sha256": "3297073719030b7261afd78b7267931ccc03a27f7a65ca6fc644316180f71bf6"
+    },
+    {
+      "repository": "https://github.com/tree-sitter-grammars/tree-sitter-yaml",
+      "revision": "a1c4812a73ec5e089de8e441fdea3a921e8d5079",
+      "languages": [
+        "yaml"
+      ],
+      "license_file": "licenses/grammars/tree-sitter-grammars__tree-sitter-yaml__a1c4812a73ec5e089de8e441fdea3a921e8d5079.txt",
+      "license_sha256": "2d181298822a124f6d106118dcc69c8d4d26ac668559be29682c452e712b0947"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-bash",
+      "revision": "a06c2e4415e9bc0346c6b86d401879ffb44058f7",
+      "languages": [
+        "bash"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-bash__a06c2e4415e9bc0346c6b86d401879ffb44058f7.txt",
+      "license_sha256": "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-c",
+      "revision": "b780e47fc780ddc8da13afa35a3f4ed5c157823d",
+      "languages": [
+        "c"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-c__b780e47fc780ddc8da13afa35a3f4ed5c157823d.txt",
+      "license_sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-c-sharp",
+      "revision": "9150f7d56bb47f1a809fa23623f1ba1413e93fa9",
+      "languages": [
+        "csharp"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-c-sharp__9150f7d56bb47f1a809fa23623f1ba1413e93fa9.txt",
+      "license_sha256": "778fb7d63b8c1844da315648c02f325c4713a6f4a5d19644fd413421422776d3"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-cpp",
+      "revision": "8b5b49eb196bec7040441bee33b2c9a4838d6967",
+      "languages": [
+        "cpp"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-cpp__8b5b49eb196bec7040441bee33b2c9a4838d6967.txt",
+      "license_sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-css",
+      "revision": "dda5cfc5722c429eaba1c910ca32c2c0c5bb1a3f",
+      "languages": [
+        "css"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-css__dda5cfc5722c429eaba1c910ca32c2c0c5bb1a3f.txt",
+      "license_sha256": "c5cfb43042b6b72045f4ba997834d0a7786d2793d91680868b5815b39f14fc78"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-go",
+      "revision": "2346a3ab1bb3857b48b29d779a1ef9799a248cd7",
+      "languages": [
+        "go"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-go__2346a3ab1bb3857b48b29d779a1ef9799a248cd7.txt",
+      "license_sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-haskell",
+      "revision": "0975ef72fc3c47b530309ca93937d7d143523628",
+      "languages": [
+        "haskell"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-haskell__0975ef72fc3c47b530309ca93937d7d143523628.txt",
+      "license_sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-html",
+      "revision": "73a3947324f6efddf9e17c0ea58d454843590cc0",
+      "languages": [
+        "html"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-html__73a3947324f6efddf9e17c0ea58d454843590cc0.txt",
+      "license_sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-java",
+      "revision": "e10607b45ff745f5f876bfa3e94fbcc6b44bdc11",
+      "languages": [
+        "java"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-java__e10607b45ff745f5f876bfa3e94fbcc6b44bdc11.txt",
+      "license_sha256": "52ed137b039cd9c46409bc22e89938af911c95b157feae2d040b51e6084369a7"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-javascript",
+      "revision": "58404d8cf191d69f2674a8fd507bd5776f46cb11",
+      "languages": [
+        "javascript"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-javascript__58404d8cf191d69f2674a8fd507bd5776f46cb11.txt",
+      "license_sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-json",
+      "revision": "254c42a6476413b776221e03982ac8ae159eeb72",
+      "languages": [
+        "json"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-json__254c42a6476413b776221e03982ac8ae159eeb72.txt",
+      "license_sha256": "2e0110e07abef7c2548b26ec9d6969775617ca539a0dc8dbeeb14d6452c711d1"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-julia",
+      "revision": "e0f9dcd180fdcfcfa8d79a3531e11d99e79321d3",
+      "languages": [
+        "julia"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-julia__e0f9dcd180fdcfcfa8d79a3531e11d99e79321d3.txt",
+      "license_sha256": "74f800107f200f4e28da33e9c3f86230d37d8f4c0a4916f7111e800c395ee3a2"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-ocaml",
+      "revision": "a4ce49a6c17e88e7ca8350cfb666749d9a5c6630",
+      "languages": [
+        "ocaml"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-ocaml__a4ce49a6c17e88e7ca8350cfb666749d9a5c6630.txt",
+      "license_sha256": "f977a20805dd6e275f14bc090a5f8e638401dad4df366841c1060f12c75b74ae"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-php",
+      "revision": "3fda2fb9577166c6399834917f9844f30370beea",
+      "languages": [
+        "php"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-php__3fda2fb9577166c6399834917f9844f30370beea.txt",
+      "license_sha256": "664764fabf40c0b318e06324a5a12379092a2df25b8cbf2415f71bc0bb352346"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-python",
+      "revision": "26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64",
+      "languages": [
+        "python"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-python__26855eabccb19c6abf499fbc5b8dc7cc9ab8bc64.txt",
+      "license_sha256": "d724405ce238a22c0d35769c5a36b386ad5958192efe8bbb304fb2896254575f"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-ruby",
+      "revision": "ad907a69da0c8a4f7a943a7fe012712208da6dee",
+      "languages": [
+        "ruby"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-ruby__ad907a69da0c8a4f7a943a7fe012712208da6dee.txt",
+      "license_sha256": "ee006f02a3d856df282e409be2a86e24a65bb573a98b9c28343771141351bb6b"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-rust",
+      "revision": "77a3747266f4d621d0757825e6b11edcbf991ca5",
+      "languages": [
+        "rust"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-rust__77a3747266f4d621d0757825e6b11edcbf991ca5.txt",
+      "license_sha256": "31d5b6f4243d5c7c6e1c4ebbbb9f6407bd1457a08bcc4f706521710341acba36"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-scala",
+      "revision": "db390f312a54b04b13790e1767bfac32665c17ac",
+      "languages": [
+        "scala"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-scala__db390f312a54b04b13790e1767bfac32665c17ac.txt",
+      "license_sha256": "1f95ed26e1f4074074c9c7083e61c0a9e4c3b9f435745044995f3beb4ed28575"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-typescript",
+      "revision": "75b3874edb2dc714fb1fd77a32013d0f8699989f",
+      "languages": [
+        "typescript",
+        "tsx"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-typescript__75b3874edb2dc714fb1fd77a32013d0f8699989f.txt",
+      "license_sha256": "49bf33cf78ef5897e4e161ce1517df7de1ae5042a65b6bcfd44401e0fc606559"
+    },
+    {
+      "repository": "https://github.com/tree-sitter/tree-sitter-verilog",
+      "revision": "227d277b6a1a5e2bf818d6206935722a7503de08",
+      "languages": [
+        "verilog"
+      ],
+      "license_file": "licenses/grammars/tree-sitter__tree-sitter-verilog__227d277b6a1a5e2bf818d6206935722a7503de08.txt",
+      "license_sha256": "8d2ff8d1e308828099436c43dc8bfbb8b6f368ad2a012ab9802a80ca22b03b53"
+    },
+    {
+      "repository": "https://github.com/tris203/tree-sitter-razor",
+      "revision": "d4664e409caaea12f73c9525484e3cf88b1cf718",
+      "languages": [
+        "razor"
+      ],
+      "license_file": "licenses/grammars/tris203__tree-sitter-razor__d4664e409caaea12f73c9525484e3cf88b1cf718.txt",
+      "license_sha256": "a68922e8cbc9c35818ef424668e8ce844b05b4afeb9fa957dea7a5f23c197ca1"
+    },
+    {
+      "repository": "https://github.com/uyha/tree-sitter-cmake",
+      "revision": "ca627bb5828616b6246aafdc3c3222789e728e37",
+      "languages": [
+        "cmake"
+      ],
+      "license_file": "licenses/grammars/uyha__tree-sitter-cmake__ca627bb5828616b6246aafdc3c3222789e728e37.txt",
+      "license_sha256": "97334c0f9c0962b33cbe03223f584b8ed64c2d14419ce80cc2e945eb8d367d28"
+    },
+    {
+      "repository": "https://github.com/virchau13/tree-sitter-astro",
+      "revision": "213f6e6973d9b456c6e50e86f19f66877e7ef0ee",
+      "languages": [
+        "astro"
+      ],
+      "license_file": "licenses/grammars/virchau13__tree-sitter-astro__213f6e6973d9b456c6e50e86f19f66877e7ef0ee.txt",
+      "license_sha256": "9ec95a90150fa19e2cee78faf49138fc480f6f7a2354006a0ab150c44239447e"
+    }
+  ]
+}

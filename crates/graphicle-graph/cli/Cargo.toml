@@ -1,0 +1,57 @@
+[package]
+name = "graphicle-graph"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+description = "Graphicle graph engine command-line executable (graphicle-graph)"
+license = "Apache-2.0"
+
+# The entry point stays at ../src/main.rs, where the port's file ledger maps
+# Graphify's __main__.py; this package owns the executable so that its parser
+# runtime can be pinned exactly without pinning the library's embedders.
+[[bin]]
+name = "graphicle-graph"
+path = "../src/main.rs"
+# No unit tests here; tests/ runs the executable.
+test = false
+
+[features]
+# The library's defaults: `bedrock` and `transcription` are opt-in.
+default = ["chinese", "precise-js", "grammars-extra"]
+transcription = ["graphicle/transcription"]
+chinese = ["graphicle/chinese"]
+bedrock = ["graphicle/bedrock"]
+postgres = ["graphicle/postgres"]
+precise-js = ["graphicle/precise-js"]
+grammars-extra = ["graphicle/grammars-extra"]
+grammar-verilog = ["graphicle/grammar-verilog"]
+grammar-ocaml = ["graphicle/grammar-ocaml"]
+grammar-fortran = ["graphicle/grammar-fortran"]
+grammar-julia = ["graphicle/grammar-julia"]
+grammar-objc = ["graphicle/grammar-objc"]
+grammar-elixir = ["graphicle/grammar-elixir"]
+grammar-powershell = ["graphicle/grammar-powershell"]
+grammar-zig = ["graphicle/grammar-zig"]
+grammar-dm = ["graphicle/grammar-dm"]
+grammar-commonlisp = ["graphicle/grammar-commonlisp"]
+
+[dependencies]
+graphicle = { path = "..", default-features = false }
+# The executable parses with exactly the tree-sitter core that Python
+# Graphify's py-tree-sitter 0.25.2 bundles (v0.25.10, da6fe9be), so files a
+# grammar rejects recover as upstream's do, and `set_allocator` has the 0.25
+# signature main.rs calls. The library accepts newer runtimes for embedders;
+# tree-sitter links a native library, so one version serves the whole build
+# and this pin also holds without Cargo.lock (`cargo install` without --locked).
+tree-sitter = "=0.25.10"
+mimalloc = { version = "0.1", default-features = false }
+# tree-sitter's C runtime allocates through mimalloc too (set in main.rs).
+libmimalloc-sys = { version = "0.1.49", default-features = false }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
+tempfile = "3"
+
+[package.metadata.dist]
+dist = true

@@ -1,0 +1,111 @@
+{
+  "claude": {
+    "base_url": "https://api.anthropic.com",
+    "default_model": "claude-sonnet-4-6",
+    "env_key": "ANTHROPIC_API_KEY",
+    "pricing": {
+      "input": 3.0,
+      "output": 15.0
+    },
+    "temperature": 0,
+    "max_tokens": 16384,
+    "vision": true
+  },
+  "kimi": {
+    "base_url": "https://api.moonshot.ai/v1",
+    "default_model": "kimi-k2.6",
+    "env_key": "MOONSHOT_API_KEY",
+    "vision": true,
+    "pricing": {
+      "input": 0.74,
+      "output": 4.66
+    },
+    "temperature": null,
+    "max_tokens": 16384
+  },
+  "ollama": {
+    "base_url": "http://localhost:11434/v1",
+    "default_model": "qwen2.5-coder:7b",
+    "env_key": "OLLAMA_API_KEY",
+    "pricing": {
+      "input": 0.0,
+      "output": 0.0
+    },
+    "temperature": 0,
+    "max_tokens": 16384
+  },
+  "gemini": {
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "default_model": "gemini-3-flash-preview",
+    "env_keys": [
+      "GEMINI_API_KEY",
+      "GOOGLE_API_KEY"
+    ],
+    "model_env_key": "GRAPHICLE_GEMINI_MODEL",
+    "pricing": {
+      "input": 0.5,
+      "output": 3.0
+    },
+    "temperature": 0,
+    "reasoning_effort": "low",
+    "max_completion_tokens": 16384,
+    "vision": true
+  },
+  "openai": {
+    "base_url": "https://api.openai.com/v1",
+    "default_model": "gpt-4.1-mini",
+    "env_key": "OPENAI_API_KEY",
+    "model_env_key": "GRAPHICLE_OPENAI_MODEL",
+    "max_tokens": 16384,
+    "pricing": {
+      "input": 0.4,
+      "output": 1.6
+    },
+    "temperature": 0,
+    "vision": true
+  },
+  "deepseek": {
+    "base_url": "https://api.deepseek.com",
+    "default_model": "deepseek-v4-flash",
+    "env_key": "DEEPSEEK_API_KEY",
+    "model_env_key": "GRAPHICLE_DEEPSEEK_MODEL",
+    "pricing": {
+      "input": 0.44,
+      "output": 1.32
+    },
+    "temperature": 0,
+    "max_tokens": 16384
+  },
+  "azure": {
+    "default_model": "gpt-4o",
+    "env_key": "AZURE_OPENAI_API_KEY",
+    "model_env_key": "GRAPHICLE_AZURE_MODEL",
+    "pricing": {
+      "input": 2.5,
+      "output": 10.0
+    },
+    "temperature": 0,
+    "max_tokens": 16384
+  },
+  "bedrock": {
+    "default_model": "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    "model_env_key": "GRAPHICLE_BEDROCK_MODEL",
+    "pricing": {
+      "input": 3.0,
+      "output": 15.0
+    },
+    "temperature": 0,
+    "max_tokens": 16384,
+    "vision": true
+  },
+  "claude-cli": {
+    "default_model": "claude-code-plan",
+    "pricing": {
+      "input": 0.0,
+      "output": 0.0
+    },
+    "temperature": 0,
+    "max_tokens": 16384,
+    "vision": true
+  }
+}

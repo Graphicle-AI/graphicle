@@ -1,0 +1,10 @@
+[package]
+name = "graphicle-tree-sitter-php"
+version = "0.24.1"
+edition = "2024"
+license = "MIT"
+publish = false
+[dependencies]
+tree-sitter-language = "0.1"
+[build-dependencies]
+cc = "1"

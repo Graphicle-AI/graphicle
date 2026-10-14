@@ -1,0 +1,11 @@
+/target/
+/dist/
+/.venv/
+/.pytest_cache/
+__pycache__/
+# The licence texts of the linked grammars and of the crates whose packages
+# carry none are tracked (GRAMMAR_NOTICES.json and licenses/*.json name them,
+# and the release archives ship them); this overrides older ignore rules for
+# these folders.
+!/licenses/grammars/
+!/licenses/upstream-crates/

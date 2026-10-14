@@ -1,0 +1,4028 @@
+{
+ "schema": "graphicle.upstream-test-coverage.v1",
+ "what": "Each of the 402 test files (tests/test_*.py) of Graphify 0.9.88 (commit a9860f70): whether the graph engine's comparison checks run it against the engine, and if not, why. A file is run when at least one of its tests runs and passes in a check, or when the engine fails one of its tests (a known difference). 'checks' names the checks that run it (crates/graphicle-graph/tools/); 'tests_passed' counts its test items that passed in the 14 October run; 'known_differences' lists the tests the engine fails, with the reason; 'tests_not_run' lists the tests of a newly run file that its check leaves out, with the reason.",
+ "runs": {
+  "2026-10-13": "engine-parity-0.9.88.json: the 96 checks on macOS (arm64), all passed",
+  "2026-10-14": "the widened checks on Linux (x86_64), source set 85f2d451, with every upstream test item's outcome recorded; README.md in this folder says how the run was made"
+ },
+ "summary": {
+  "files": 402,
+  "run": 354,
+  "run_by_the_13_october_checks": 279,
+  "first_run_2026_10_14": 75,
+  "named_by_13_october_receipts_but_running_no_test": [
+   "tests/test_install_references.py",
+   "tests/test_js_walk_order.py",
+   "tests/test_llm_null_token_counts.py",
+   "tests/test_ollama.py",
+   "tests/test_pdf_extra_warning.py",
+   "tests/test_pr10_watch_overrides.py",
+   "tests/test_serve_http.py"
+  ],
+  "pass": 350,
+  "with_known_differences": 4,
+  "known_difference_tests": 7,
+  "not_applicable": 20,
+  "not_yet_run": 28
+ },
+ "files": [
+  {
+   "path": "tests/test_affected_cli.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_affected"
+   ],
+   "tests_passed": 19,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_affected_defines.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_affected"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_affected_member_seed.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_affected"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_affected_overrides.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_affected"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_agents_platform.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_alias_folding.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_analyze.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_analyze"
+   ],
+   "tests_passed": 65,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_anthropic_custom_endpoint.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_antigravity_install.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_apm_fallback_version.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_manifest_ingest"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_architecture_doc.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 38,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_astro_extraction.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_astro_import_ids.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_atomic_canvas_export.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "it observes atomic writes by patching Python's `os.replace`, which the engine's writes do not call"
+  },
+  {
+   "path": "tests/test_atomic_version_stamp.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_atomic_writes.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_paths"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_backend_env_isolation.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "Graphify's own test fixture that clears the backend variables (it reads the Python source of `detect_backend`)"
+  },
+  {
+   "path": "tests/test_backend_extras.py",
+   "since_0.9.77": "changed",
+   "status": "not_applicable",
+   "reason": "Python packaging: the pip extra of the claude backend and its install hint"
+  },
+  {
+   "path": "tests/test_benchmark.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_benchmark"
+   ],
+   "tests_passed": 17,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_benchmark_raw_graph.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_benchmark"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_benchmark_real_query.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_benchmark"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_blade_extractor.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_blade"
+   ],
+   "tests_passed": 1,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_build.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build",
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 281,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_build_located_semantic_identity.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_build_merge_dedup_scope.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build",
+    "check_dedup"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_build_merge_hyperedges_and_prune.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_build_merge_shrink_guard.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_builtin_global_type_refs.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_c_include_resolution.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 26,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cache.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cache",
+    "check_extract"
+   ],
+   "tests_passed": 163,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cache_stale_import_target.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_cache"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_callflow_html.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_callflow_html",
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 33,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cargo_introspect.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cargo"
+   ],
+   "tests_passed": 32,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cargo_missing_manifest.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_carried_hyperedge_remap.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_case_sensitive_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_charmap_encoding.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_chunking.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 31,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cjs_module_extension.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_claude_cli_backend.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_llm"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_claude_md.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_cli_broken_pipe.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run",
+   "note": "Starts the command line with `subprocess.Popen`, which the harness does not route to the engine"
+  },
+  {
+   "path": "tests/test_cli_export.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 54,
+   "first_run": "2026-10-14",
+   "known_differences": {
+    "test_cluster_only_warns_when_labeling_flags_are_ignored": "`cluster-only` with saved labels and `--backend` exits 0 without the reference's warning on stderr that the labeling flags are ignored."
+   }
+  },
+  {
+   "path": "tests/test_cli_help.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 0,
+   "first_run": "2026-10-14",
+   "known_differences": {
+    "test_help_lists_prs_provider_and_export_formats": "The engine's `--help` text is its own: it does not list the `prs` command, it names the export formats in one list instead of `export <format>` lines, and it lists the `hook-guard` and `hook-check` internals that the reference hides."
+   }
+  },
+  {
+   "path": "tests/test_cloud_cta.py",
+   "since_0.9.77": "new",
+   "status": "not_applicable",
+   "reason": "Graphify Cloud's call to action, which the port leaves out"
+  },
+  {
+   "path": "tests/test_cluster.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cluster"
+   ],
+   "tests_passed": 15,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cluster_ambiguous_scale.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_cluster"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cluster_exclude_hubs.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cluster"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cobol_extractor.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cobol"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_codebuddy.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_community_hub_labels.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cluster"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_community_labels_skill.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-14",
+   "tests_not_run": {
+    "test_skill_step5_reexports_graph_json_with_curated_labels": "reads Graphify's own skill text; the engine installs its own skill files",
+    "test_core_fragments_step5_reexport_with_curated_labels": "reads Graphify's own skill fragments; the engine installs its own skill files"
+   }
+  },
+  {
+   "path": "tests/test_compact_graph_json.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_cli",
+    "check_export",
+    "check_global_graph",
+    "check_watch"
+   ],
+   "tests_passed": 15,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_confidence.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_corrupt_graph_json.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_cpp_method_declarations.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_cpp_nested_and_cli.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 62,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cpp_objc_cross_file_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_objc"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cpp_preprocess.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_fortran"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cross_extension_reexport_self_cycle.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_analyze",
+    "check_resolution"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cross_language_call_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_cross_repo_external_call_guards.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cross_repo_calls",
+    "check_csharp"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cross_repo_member_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cross_repo_calls"
+   ],
+   "tests_passed": 19,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_cross_repo_shared_types.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cross_repo_types"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_call_site_generic_args.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_csharp_enum_members.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 24,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_field_generic_args.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_csharp_generic_callsites.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_csharp_interface_dispatch.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_csharp_dispatch",
+    "check_interface_dispatch"
+   ],
+   "tests_passed": 30,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_member_calls.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_csharp"
+   ],
+   "tests_passed": 45,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_member_chain_calls.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 24,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_member_nodes.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_csharp_object_creation.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_build",
+    "check_csharp"
+   ],
+   "tests_passed": 32,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_partial_classes.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 50,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_tuple_type_refs.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_csharp_type_resolution.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_csharp"
+   ],
+   "tests_passed": 60,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_var_call_return_type.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_csharp_verbatim_interpolation.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_dart.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_dart"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_dedup.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_dedup"
+   ],
+   "tests_passed": 129,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_dedup_remaps_hyperedges.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_dedup"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_dedup_shrink_refuses_force_write.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_dedup_survivor_richness.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_dedup"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_definition_file_portability.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_detect.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_cli",
+    "check_detect",
+    "check_extract",
+    "check_install"
+   ],
+   "tests_passed": 604,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_devin.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_docx_to_markdown.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_dotnet.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract",
+    "check_razor",
+    "check_sln"
+   ],
+   "tests_passed": 104,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_duplicate_annotation_edges.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ejs_extractor.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 15,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_elixir_defdelegate.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_elixir"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_elixir_import_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_elixir_keyword_def_calls.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_elixir"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_elixir_qualified_calls.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_elixir"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_elixir_unqualified_call_scope.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_erlang_extractor.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_erlang"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_evidence_binding.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_llm"
+   ],
+   "tests_passed": 1,
+   "first_run": "2026-10-14",
+   "tests_not_run": {
+    "test_bind_node_evidence_returns_downgrade_count": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_diagnostics_reports_unverified_node_count": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_document_and_sourceless_nodes_are_never_flagged": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_downgrade_emits_stderr_summary": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_evidence_binding_handles_absolute_source_file": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_evidence_binding_handles_file_slice": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_existing_lower_confidence_is_not_overwritten": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_fabricated_code_symbol_is_downgraded": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_node_attributed_to_undispatched_file_is_left_to_out_of_scope": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_qualified_and_prettified_labels_do_not_false_positive": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_uncheckable_short_label_is_not_flagged": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them",
+    "test_unverified_flag_does_not_fail_validation": "they call none of the helpers that `check_llm` compares with the engine, and it runs only the tests that call them"
+   }
+  },
+  {
+   "path": "tests/test_explain_cli.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_explain_same_file_tie.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_export.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_export",
+    "check_export_html"
+   ],
+   "tests_passed": 76,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_export_control_characters.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 33,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_export_direction.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_global_graph"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_export_idempotent_writes.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-14",
+   "tests_not_run": {
+    "test_write_text_atomic_if_changed_skips_identical": "checks the reference's `write_text_atomic_if_changed` helper, which no check routes to the engine",
+    "test_to_wiki_rerun_does_not_rewrite_unchanged_articles": "`check_wiki` compares the engine's pages with the reference's but leaves the reference's files in place, so a rerun check of file times would test the reference",
+    "test_to_wiki_rerun_sweeps_orphaned_relabelled_article": "`check_wiki` compares the engine's pages with the reference's but leaves the reference's files in place, so a rerun check of file times would test the reference"
+   }
+  },
+  {
+   "path": "tests/test_export_path_length.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export",
+    "check_paths"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_external_stub_endpoints.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_build",
+    "check_watch"
+   ],
+   "tests_passed": 26,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_extract.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_bash",
+    "check_dart",
+    "check_engine",
+    "check_extract",
+    "check_go",
+    "check_json_config",
+    "check_resolution",
+    "check_sql"
+   ],
+   "tests_passed": 1102,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_extract_cache_location.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_extract_cli.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli",
+    "check_extract"
+   ],
+   "tests_passed": 34,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_extract_code_only_cli.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-14",
+   "known_differences": {
+    "test_code_only_succeeds_without_key": "`extract --code-only` with no API key builds the code graph, but the engine does not print the reference's `--code-only: skipping` line.",
+    "test_extract_usage_advertises_code_only": "`extract` with no path prints the engine's error `must specify a path to scan or a --postgres DSN` instead of the reference's usage text, so `--code-only` is not mentioned.",
+    "test_extract_names_skipped_sensitive_files": "The engine's `extract` does not print the reference's line that names the files it skipped as potentially sensitive.",
+    "test_code_only_force_preserves_existing_semantic_layer": "`extract --force --code-only` keeps the existing semantic layer (the test's checks of the graph pass), but the engine does not print the reference's `existing semantic layer preserved` line."
+   }
+  },
+  {
+   "path": "tests/test_extract_path_memo.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_extract_php_closures.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_extraction_spec_ids.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extractor_base"
+   ],
+   "tests_passed": 50,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_extractors_registry.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "Python module layout: `graphify.extract` re-exports the same function objects"
+  },
+  {
+   "path": "tests/test_falkordb_integration.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_file_label_disambiguation.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build",
+    "check_serve"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_file_node_id_spec.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_file_slice.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_file_slice"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_file_truncation_warning.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_forwarding_review_findings.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_gemini_hook.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_global_add_tag_inference.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_global_graph"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_global_graph.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_global_graph"
+   ],
+   "tests_passed": 17,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_go_builtin_call_targets.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_go",
+    "check_rust"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_go_generic_type_params.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_go"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_go_import_repoint.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_go_interface_methods.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_go"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_go_qualified_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_go"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_god_nodes_cli.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_analyze"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_god_nodes_exclude_hubs.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_analyze"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_google_workspace.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_google_workspace"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_grammar_cache_key.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_cache"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_graph_invariance.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_watch"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_graphdb_push_indexes.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_hollow_chunks_arm_shrink_guard.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_home_sandbox.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "Graphify's own test fixture that redirects HOME"
+  },
+  {
+   "path": "tests/test_hook_chain_survives_skip.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_hook_guard.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 96,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_hook_guard_token_match.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 34,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_hook_out_of_project_paths.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 23,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_hook_strict.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_hooks.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_extract",
+    "check_hooks"
+   ],
+   "tests_passed": 171,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_html_script_breakout.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_export_html",
+    "check_tree_html"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_html_theme.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_export_html"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_hyperedge_member_shapes.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_hyperedge_roundtrip.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_hypergraph.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_id_normalization_contract.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run",
+   "note": "Skips as a whole: it needs `hypothesis`, which the pinned reference environment does not install"
+  },
+  {
+   "path": "tests/test_ignore_file_encoding.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_image_vision.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_llm"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_import_extension_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 76,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_import_self_loops.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_imported_export_forwarding.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_incomplete_build_guard.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_incremental.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_incremental_mtime_collision.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_incremental_unscanned_placeholders.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_watch"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_call_arrow_single_param_shadow.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_call_block_scoped_shadow.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_call_catch_binding_shadow.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_call_external_import_shadow.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract",
+    "check_resolution"
+   ],
+   "tests_passed": 24,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_call_for_of_binding_shadow.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_call_function_expression_shadow.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 26,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_call_nested_closure_shadow.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_dispatch.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 56,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_dispatch_assign_return.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_indirect_dispatch_getattr.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_inferred_confidence_rubric.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_symbol_resolution"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_ingest.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_ingest"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_ingest_url_type.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_ingest"
+   ],
+   "tests_passed": 23,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_inherited_field_receivers.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_injection_sentinel_coverage.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_llm"
+   ],
+   "tests_passed": 28,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_install.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_install_hook_identity.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 19,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_install_line_endings.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 17,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_install_references.py",
+   "since_0.9.77": "changed",
+   "status": "not_yet_run",
+   "note": "The one test `check_install` selects from it always skips (every host bundle has shipped)"
+  },
+  {
+   "path": "tests/test_install_roundtrip.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 42,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_install_strings.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_install_upgrade.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_install_version_stamp.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_install_version_warning.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_issue_3405_python_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_issue_3472_source_file_collision.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_java_anonymous_class.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_java_enum_members.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_java_member_calls.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 64,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_java_type_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 15,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_js_callback_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_js_destructured_export.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_js_dynamic_import_affected.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_affected"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_js_dynamic_imports.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 17,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_js_exported_fn_call_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_js_exported_scalar_bindings.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_js_import_resolution.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_analyze",
+    "check_extract"
+   ],
+   "tests_passed": 90,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_js_module_level_anonymous_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_js_this_member_expressions.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_js_walk_order.py",
+   "since_0.9.77": "new",
+   "status": "not_applicable",
+   "reason": "a speed-up inside a private Python function (the reference's `_walk_js_tree` cursor walk, not ported); no extraction runs"
+  },
+  {
+   "path": "tests/test_jsconfig_baseurl.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_json_schema_config.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 28,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_jsx_component_usage_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_kotlin_grammar.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 29,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_kotlin_object_literal.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_label_retry.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_labeling.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_language_override_imports.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 20,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_language_override_lifecycle.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_detect",
+    "check_rcfile"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_language_overrides.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract",
+    "check_rcfile"
+   ],
+   "tests_passed": 168,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_language_resolvers.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "it registers Python functions as resolvers; the engine's registry runs native passes, which `check_resolver_registry` drives with equivalent recorded scenarios"
+  },
+  {
+   "path": "tests/test_languages.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_apex",
+    "check_commonlisp",
+    "check_dm",
+    "check_elixir",
+    "check_engine",
+    "check_extract",
+    "check_fortran",
+    "check_go",
+    "check_julia",
+    "check_markdown",
+    "check_objc",
+    "check_powershell",
+    "check_razor",
+    "check_resolution",
+    "check_robot",
+    "check_sln",
+    "check_verilog",
+    "check_zig"
+   ],
+   "tests_passed": 1758,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_llm_backends.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_extract",
+    "check_llm"
+   ],
+   "tests_passed": 173,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_llm_null_token_counts.py",
+   "since_0.9.77": "new",
+   "status": "not_yet_run",
+   "note": "All 4 tests drive mocked Python provider SDKs, so `check_llm` deselects them; `check_llm_execution` compares the same contract on the engine's own transports"
+  },
+  {
+   "path": "tests/test_llm_parser.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_llm"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_llm_parser_reasoning.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_llm"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_long_path_hashing.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-14",
+   "tests_not_run": {
+    "test_os_path_adds_prefix_on_win32": "it simulates Windows by patching Python's `sys.platform`; the engine uses the platform it runs on"
+   }
+  },
+  {
+   "path": "tests/test_lookup_exit_codes.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_loose_sibling_import_resolution.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_lost_saved_semantic_nodes.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_lua_import.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_lua_method_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_manifest_ingest.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_manifest_ingest"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_manifest_tomli_required.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "Python before 3.11 without tomli"
+  },
+  {
+   "path": "tests/test_markdown_code_spans.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_markdown",
+    "check_markdown_resolution"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_mcp_graph_view_cache.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_mcp_ingest.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract",
+    "check_mcp_ingest"
+   ],
+   "tests_passed": 87,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_merge_chunks_validation.py",
+   "since_0.9.77": "changed",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_merge_graphs_cli.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_minhash.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_minhash"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_multigraph_compat.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "it probes the Python runtime and NetworkX; `check_multigraph` compares the engine's own graph backend probe"
+  },
+  {
+   "path": "tests/test_multigraph_diagnostics.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_diagnostics"
+   ],
+   "tests_passed": 19,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_multilang.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract",
+    "check_go",
+    "check_resolution",
+    "check_rust",
+    "check_sql"
+   ],
+   "tests_passed": 367,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_no_cluster_run_only_keys.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract",
+    "check_watch"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_no_cluster_undeclared_endpoints.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_build",
+    "check_watch"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_no_dedup_flag.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_node_id_canonical.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_non_regular_files.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_non_string_node_ids.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_objc_category_interfaces.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_objc",
+    "check_resolution"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_objc_enum_declarations.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_objc"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_objc_field_table_remap.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_objc_member_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_objc"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_objc_property_ivar_receivers.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_objc"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_obsidian_dangling_member.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_obsidian_filename_cap.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_obsidian_unicode_tags.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_obsidian_vault_migration.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_export"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_ocaml.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_ocaml"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_office_incremental.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_office_limits.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_ollama.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run",
+   "note": "All its tests drive mocked Python provider SDKs, so `check_llm` deselects them"
+  },
+  {
+   "path": "tests/test_ollama_retry_cap.py",
+   "since_0.9.77": "changed",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_openai_custom_endpoint.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_opencode_plugin_refresh.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 35,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_out_dir_evidence.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_oversized_document_slicing.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_owned_type_sources.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_package_json_subpath_imports.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_partial_cache.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cache",
+    "check_cli"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_partial_extraction_warning.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 26,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pascal.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract",
+    "check_pascal",
+    "check_pascal_forms"
+   ],
+   "tests_passed": 74,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pascal_call_scoping.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_pascal"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pascal_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_pascal_resolution",
+    "check_resolution"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_path_cli.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 23,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_paths.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_paths"
+   ],
+   "tests_passed": 49,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pdf_extra_warning.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "it hides the optional pypdf package to test the missing-extra warning; the engine's PDF reader is built in, so the warning cannot occur"
+  },
+  {
+   "path": "tests/test_pdf_slicing.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_file_slice"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pdf_token_estimate.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_pg_introspect.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_pg_introspect"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_phantom_cross_package_call.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_phantom_external_import.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_php_language_construct_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 34,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_php_object_creation.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_php_static_call_resolution.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_php_type_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_php_unparsed_casts.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pin_hash_seed.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "Python's PYTHONHASHSEED, which the interpreter reads when it starts"
+  },
+  {
+   "path": "tests/test_pipeline.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pr10_csharp_overrides.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pr10_resolution_overrides.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 17,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_pr10_watch_overrides.py",
+   "since_0.9.77": "new",
+   "status": "not_yet_run",
+   "note": "Skips as a whole: it needs `watchdog`, which the pinned reference environment does not install"
+  },
+  {
+   "path": "tests/test_provider_registry.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_prs.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_prs"
+   ],
+   "tests_passed": 44,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_prune_sweeps_orphans.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_decorators.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 26,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_forward_ref_file_id.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_import_never_resolves_to_itself.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_import_resolution.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 74,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_inherited_method_calls.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_nested_class_identity.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_parse_memoization.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "a speed-up inside private Python functions"
+  },
+  {
+   "path": "tests/test_python_property_reads.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_reexport_type_binding.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_self_type_ref.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_typed_receiver_calls.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 22,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_python_underscore_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_qualified_annotation_stub_bind.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_query_cli.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_query_induced_edges.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_query_mcp_direction.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_query_names_its_graph.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_query_seed_order.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_query_seeds.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_querylog.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_querylog"
+   ],
+   "tests_passed": 20,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_r_extractor.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_r"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_rationale.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 66,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_read_hook.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 17,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_reflect.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_reflect"
+   ],
+   "tests_passed": 59,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_relation_collapse_precedence.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 74,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_replace_or_append_section.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_report.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_report"
+   ],
+   "tests_passed": 18,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_report_gap_thresholds.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_report"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_resolve_memoization.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_ruby_bare_self_send_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ruby_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract",
+    "check_ruby_resolution"
+   ],
+   "tests_passed": 204,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_rust_anonymous_const.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_rust"
+   ],
+   "tests_passed": 1,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_rust_builtin_type_hubs.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_rust"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_rust_in_file_call_binding.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_rust"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_rust_macro_rules.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_rust"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_rust_self_member_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_rust"
+   ],
+   "tests_passed": 23,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_rust_use_trees.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_rust"
+   ],
+   "tests_passed": 28,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_scala_abstract_methods.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_scala_context_bounds.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 44,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_scala_given_instances.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_scala_self_type.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_scala_top_level_binding.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_scala_type_definition.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 20,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_scip_ingest.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_scip_ingest"
+   ],
+   "tests_passed": 91,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_search_hook.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 16,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_security.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract",
+    "check_security"
+   ],
+   "tests_passed": 172,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_semantic_cache_basename_recovery.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cache"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_semantic_cache_out_root.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cache",
+    "check_extract"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_semantic_cleanup.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_semantic_cleanup"
+   ],
+   "tests_passed": 26,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_semantic_fragment_sanitize.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_llm"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_semantic_id_remap_root.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_build"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_semantic_origin_stamp.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_llm"
+   ],
+   "tests_passed": 1,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_semantic_similarity.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_analyze"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_serve.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 158,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_serve_http.py",
+   "since_0.9.77": "changed",
+   "status": "not_applicable",
+   "reason": "it skips unless the `mcp` and `starlette` packages are installed, and it drives the reference's HTTP app inside Python; `check_native_workflows` drives the engine's HTTP transport"
+  },
+  {
+   "path": "tests/test_settings_merge.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_skill_auto_refresh.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_skill_codex_semantic_merge.py",
+   "since_0.9.77": "new",
+   "status": "not_applicable",
+   "reason": "the text of Graphify's own skill; the engine installs its own skill files"
+  },
+  {
+   "path": "tests/test_skill_part_a_explicit_root.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 1,
+   "first_run": "2026-10-14",
+   "tests_not_run": {
+    "test_split_hosts_are_discovered": "Reads the skill files that Graphify's skill generator (`tools/skillgen`) renders; the engine ships its own skill files.",
+    "test_part_a_passes_an_explicit_root": "Reads the skill files that Graphify's skill generator (`tools/skillgen`) renders; the engine ships its own skill files."
+   }
+  },
+  {
+   "path": "tests/test_skill_persisted_scan_options.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_detect"
+   ],
+   "tests_passed": 36,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_skill_semantic_all_cached.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "the text of Graphify's own skill; the engine installs its own skill files"
+  },
+  {
+   "path": "tests/test_skill_version_warning.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_skillgen.py",
+   "since_0.9.77": "changed",
+   "status": "not_applicable",
+   "reason": "Graphify's skill generator (`tools/skillgen`) and the skill files it writes; the engine ships its own"
+  },
+  {
+   "path": "tests/test_skillgen_input_path_injection.py",
+   "since_0.9.77": "changed",
+   "status": "not_applicable",
+   "reason": "Graphify's skill generator (`tools/skillgen`) and the skill files it writes; the engine ships its own"
+  },
+  {
+   "path": "tests/test_solidity_extractor.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_solidity"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_source_file_encoding.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 83,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_source_key_memoization.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_sourceless_call_targets.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_src_layout_import_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_stale_prune.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cli"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_stat_index_husk.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cache"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_stat_index_multi_root.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cache"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-14",
+   "tests_not_run": {
+    "test_each_root_gets_its_own_stat_index_file_not_the_first_roots": "it changes the output folder between two calls; `check_cache` rebuilds the engine's cache state for each call from the reference's globals, which do not hold the stat index's file path"
+   }
+  },
+  {
+   "path": "tests/test_stat_index_portability.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cache",
+    "check_extract"
+   ],
+   "tests_passed": 13,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_suggest_questions_ambiguous.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_analyze"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_svelte_extraction.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_swift_builtin_noise.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_analyze"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_swift_computed_properties.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_swift_cross_file_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 17,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_swift_import_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_swift_protocol_dispatch.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_interface_dispatch",
+    "check_swift_dispatch"
+   ],
+   "tests_passed": 34,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_swift_protocol_requirements.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_swift_self_type_ref.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_symbol_resolution.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_symbol_resolution"
+   ],
+   "tests_passed": 42,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_terraform.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_serve",
+    "check_terraform"
+   ],
+   "tests_passed": 40,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_terraform_modules.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_terraform"
+   ],
+   "tests_passed": 21,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_trailing_newline_not_a_syntax_error.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_transcribe.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_transcribe"
+   ],
+   "tests_passed": 8,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_tree_html.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_tree_html"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_truncation_full_answer.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_serve"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_ts_abstract_methods.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ts_decorators.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ts_export_type_star.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_ts_generators.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ts_import_require.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ts_import_type_arguments.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ts_inheritance.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ts_namespace.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 6,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ts_new_expression_calls.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 10,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_ts_parse_warning.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 5,
+   "first_run": "2026-10-14"
+  },
+  {
+   "path": "tests/test_ts_receiver_member_calls.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 34,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_type_only_import_cycles.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_analyze",
+    "check_build"
+   ],
+   "tests_passed": 26,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_typescript_enum_members.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-14",
+   "known_differences": {
+    "test_case_only_sibling_members_do_not_duplicate_an_edge": "Two TypeScript enum members whose names differ only in case (`Value`, `value`) share one node id. The reference keeps one `case_of` edge to it; the engine also emits a second one from the later member's line."
+   }
+  },
+  {
+   "path": "tests/test_typescript_module_extensions.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_engine",
+    "check_extract"
+   ],
+   "tests_passed": 14,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_uninstall_purge_safety.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 29,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_uninstall_scope.py",
+   "since_0.9.77": "changed",
+   "status": "not_yet_run"
+  },
+  {
+   "path": "tests/test_uninstall_symlink.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_install"
+   ],
+   "tests_passed": 12,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_unmapped_at_alias_resolution.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_resolution"
+   ],
+   "tests_passed": 9,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_unverified_semantic_shrink.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 11,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_validate.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_validate"
+   ],
+   "tests_passed": 15,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_vbnet_extractor.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_vbnet"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_vue_extraction.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract",
+    "check_resolution"
+   ],
+   "tests_passed": 24,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_walk_python_tree_iterative.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "a speed-up inside private Python functions"
+  },
+  {
+   "path": "tests/test_watch.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_watch"
+   ],
+   "tests_passed": 191,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_watch_identity_cache.py",
+   "since_0.9.77": "new",
+   "status": "run",
+   "checks": [
+    "check_watch"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_watch_manifest_location.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_watch"
+   ],
+   "tests_passed": 7,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_wheel_packaging.py",
+   "since_0.9.77": "unchanged",
+   "status": "not_applicable",
+   "reason": "Python packaging: it builds the wheel"
+  },
+  {
+   "path": "tests/test_wiki.py",
+   "since_0.9.77": "changed",
+   "status": "run",
+   "checks": [
+    "check_wiki"
+   ],
+   "tests_passed": 35,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_wiki_link_filename_parity.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_wiki"
+   ],
+   "tests_passed": 15,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_wiki_truncation_indicator.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_wiki"
+   ],
+   "tests_passed": 3,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_word_count_cache.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_cache"
+   ],
+   "tests_passed": 4,
+   "first_run": "2026-10-13"
+  },
+  {
+   "path": "tests/test_zero_node_no_cache.py",
+   "since_0.9.77": "unchanged",
+   "status": "run",
+   "checks": [
+    "check_extract"
+   ],
+   "tests_passed": 2,
+   "first_run": "2026-10-14",
+   "tests_not_run": {
+    "test_zero_node_result_not_cached_then_self_heals": "Forces a zero-node result by patching the reference's private `_safe_extract_with_xaml_root`; the engine has no Python seam to patch, so its extraction is unchanged."
+   }
+  }
+ ]
+}

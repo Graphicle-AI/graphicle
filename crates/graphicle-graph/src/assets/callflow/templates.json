@@ -1,0 +1,346 @@
+{
+  "CSS": ":root {\n  --bg: #0f172a; --surface: #1e293b; --border: #334155;\n  --text: #e2e8f0; --muted: #94a3b8; --accent: #38bdf8;\n  --warn: #fbbf24; --err: #f87171; --ok: #34d399;\n}\n* { box-sizing: border-box; margin: 0; padding: 0; }\nbody { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); line-height: 1.7; }\n.container { max-width: 1200px; margin: 0 auto; padding: 40px 24px; }\nh1 { font-size: 2.4rem; margin-bottom: 8px; background: linear-gradient(135deg, var(--accent), #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }\nh2 { font-size: 1.7rem; margin: 48px 0 16px; padding-bottom: 8px; border-bottom: 2px solid var(--accent); }\nh3 { font-size: 1.25rem; margin: 32px 0 12px; color: var(--accent); }\nh4 { font-size: 1.05rem; margin: 20px 0 8px; color: var(--warn); }\np { margin: 8px 0; color: var(--muted); }\n.subtitle { color: var(--muted); font-size: 1.1rem; margin-bottom: 32px; }\n.mermaid { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin: 20px 0; overflow-x: auto; position: relative; }\n.mermaid.is-enhanced { padding: 0; overflow: hidden; min-height: 260px; }\n.mermaid-viewport { padding: 54px 24px 24px; overflow: hidden; cursor: grab; touch-action: none; min-height: 260px; }\n.mermaid-viewport.is-dragging { cursor: grabbing; }\n.mermaid-viewport svg { max-width: none !important; height: auto; transform-origin: 0 0; transition: transform 120ms ease; }\n.mermaid-toolbar { position: absolute; top: 10px; right: 10px; z-index: 3; display: flex; align-items: center; gap: 6px; padding: 6px; background: rgba(15,23,42,0.92); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.28); }\n.mermaid-toolbar button, .mermaid-toolbar .zoom-level { height: 28px; min-width: 32px; border: 1px solid var(--border); border-radius: 6px; background: #1e293b; color: var(--text); font: 600 0.78rem system-ui, sans-serif; display: inline-flex; align-items: center; justify-content: center; }\n.mermaid-toolbar button { cursor: pointer; }\n.mermaid-toolbar button:hover { border-color: var(--accent); color: var(--accent); }\n.mermaid-toolbar .zoom-level { min-width: 52px; color: var(--muted); background: transparent; }\n.call-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 0.92rem; }\n.call-table th { background: #1a2744; color: var(--accent); text-align: left; padding: 10px 14px; border: 1px solid var(--border); }\n.call-table td { padding: 8px 14px; border: 1px solid var(--border); vertical-align: top; }\n.call-table tr:nth-child(even) { background: rgba(255,255,255,0.02); }\n.tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.8rem; font-weight: 600; }\n.tag-async { background: #7c3aed33; color: #a78bfa; }\n.tag-class { background: #05966933; color: var(--ok); }\n.tag-func { background: #2563eb33; color: var(--accent); }\n.tag-cmd { background: #d9770633; color: var(--warn); }\n.tag-endpoint { background: #dc262633; color: var(--err); }\n.tag-hook { background: #db277733; color: #f472b6; }\n.card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin: 16px 0; }\n.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; margin: 16px 0; }\n.arrow-chain { font-family: 'Fira Code', monospace; font-size: 0.85rem; color: var(--accent); padding: 10px; background: rgba(56,189,248,0.06); border-radius: 6px; }\ncode { font-family: 'Fira Code', 'Cascadia Code', monospace; background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 3px; font-size: 0.88em; }\nul, ol { margin: 8px 0 8px 24px; color: var(--muted); }\nli { margin: 4px 0; }\na { color: var(--accent); }\nhr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }\n.nav { position: sticky; top: 0; background: var(--bg); z-index: 10; padding: 12px 0; border-bottom: 1px solid var(--border); display: flex; gap: 20px; flex-wrap: wrap; font-size: 0.9rem; }\n.nav a { text-decoration: none; }\n.nav a:hover { text-decoration: underline; }\n@media (max-width: 768px) { .container { padding: 16px; } h1 { font-size: 1.8rem; } }\n",
+  "classes": [
+    "    classDef entry fill:#422006,stroke:#fbbf24,color:#fde68a,stroke-width:1px;",
+    "    classDef api fill:#450a0a,stroke:#f87171,color:#fee2e2,stroke-width:1px;",
+    "    classDef async fill:#2e1065,stroke:#a78bfa,color:#ede9fe,stroke-width:1px;",
+    "    classDef klass fill:#064e3b,stroke:#34d399,color:#d1fae5,stroke-width:1px;",
+    "    classDef ui fill:#831843,stroke:#f472b6,color:#fce7f3,stroke-width:1px;",
+    "    classDef module fill:#172554,stroke:#60a5fa,color:#dbeafe,stroke-width:1px;",
+    "    classDef test fill:#3f3f46,stroke:#a1a1aa,color:#f4f4f5,stroke-width:1px;",
+    "    classDef concept fill:#292524,stroke:#a8a29e,color:#fafaf9,stroke-dasharray:4 3;",
+    "    classDef function fill:#0f172a,stroke:#38bdf8,color:#e0f2fe,stroke-width:1px;"
+  ],
+  "SECTION_ARCHETYPES": [
+    [
+      "extract-pipeline",
+      "提取管线",
+      "Extraction Pipeline",
+      [
+        "ast",
+        "calls",
+        "extract",
+        "extractor",
+        "go",
+        "imports",
+        "java",
+        "javascript",
+        "language",
+        "multilang",
+        "parser",
+        "python",
+        "rust",
+        "sitter",
+        "tree",
+        "typescript"
+      ]
+    ],
+    [
+      "build-graph",
+      "图谱构建",
+      "Graph Build",
+      [
+        "build",
+        "confidence",
+        "dedup",
+        "edge",
+        "graph",
+        "hyperedge",
+        "json",
+        "merge",
+        "node",
+        "normalize",
+        "schema"
+      ]
+    ],
+    [
+      "analysis-clustering",
+      "分析聚类",
+      "Analysis & Clustering",
+      [
+        "analyze",
+        "benchmark",
+        "cluster",
+        "cohesion",
+        "community",
+        "explain",
+        "god",
+        "leiden",
+        "path",
+        "query",
+        "question",
+        "surprise"
+      ]
+    ],
+    [
+      "outputs-docs",
+      "输出文档",
+      "Outputs & Docs",
+      [
+        "callflow",
+        "canvas",
+        "documentation",
+        "export",
+        "graphml",
+        "html",
+        "mermaid",
+        "obsidian",
+        "report",
+        "svg",
+        "tree",
+        "wiki"
+      ]
+    ],
+    [
+      "cli-skills",
+      "CLI 与技能安装",
+      "CLI & Skill Installers",
+      [
+        "agent",
+        "aider",
+        "claude",
+        "codex",
+        "command",
+        "copilot",
+        "hook",
+        "install",
+        "kiro",
+        "main",
+        "opencode",
+        "skill",
+        "uninstall",
+        "vscode"
+      ]
+    ],
+    [
+      "ingest-cache-update",
+      "摄取与增量更新",
+      "Ingestion & Updates",
+      [
+        "audio",
+        "cache",
+        "download",
+        "fetch",
+        "google",
+        "html",
+        "incremental",
+        "ingest",
+        "manifest",
+        "markdown",
+        "transcribe",
+        "update",
+        "url",
+        "video",
+        "watch"
+      ]
+    ],
+    [
+      "serve-api",
+      "服务 API",
+      "Serving API",
+      [
+        "api",
+        "delete",
+        "endpoint",
+        "enrich",
+        "handle",
+        "request",
+        "response",
+        "router",
+        "search",
+        "serve",
+        "upload"
+      ]
+    ],
+    [
+      "security-global",
+      "安全与全局图",
+      "Security & Global Graph",
+      [
+        "clone",
+        "global",
+        "path",
+        "prefix",
+        "prune",
+        "repo",
+        "safe",
+        "security",
+        "ssrf",
+        "traversal",
+        "xss"
+      ]
+    ],
+    [
+      "tests-fixtures",
+      "测试与样例",
+      "Tests & Fixtures",
+      [
+        "assert",
+        "fixture",
+        "fixtures",
+        "mock",
+        "pytest",
+        "sample",
+        "test",
+        "tests"
+      ]
+    ]
+  ],
+  "closing": "</div><!-- .container -->\n\n<script>\n(function () {\n  const mermaidConfig = {\n    startOnLoad: false,\n    theme: 'dark',\n    securityLevel: 'loose',\n    flowchart: { htmlLabels: true, useMaxWidth: true },\n    themeVariables: {\n      primaryColor: '#1e293b',\n      primaryTextColor: '#e2e8f0',\n      primaryBorderColor: '#38bdf8',\n      secondaryColor: '#0f172a',\n      tertiaryColor: '#334155',\n      lineColor: '#64748b',\n      textColor: '#e2e8f0',\n    }\n  };\n\n  mermaid.initialize(mermaidConfig);\n\n  function clamp(value, min, max) {\n    return Math.min(max, Math.max(min, value));\n  }\n\n  function enhanceMermaidDiagrams() {\n    document.querySelectorAll('.mermaid').forEach((container) => {\n      if (container.dataset.zoomReady === 'true') return;\n      const svg = container.querySelector('svg');\n      if (!svg) return;\n\n      container.dataset.zoomReady = 'true';\n      container.classList.add('is-enhanced');\n\n      const viewport = document.createElement('div');\n      viewport.className = 'mermaid-viewport';\n      svg.parentNode.insertBefore(viewport, svg);\n      viewport.appendChild(svg);\n\n      const toolbar = document.createElement('div');\n      toolbar.className = 'mermaid-toolbar';\n      toolbar.innerHTML = [\n        '<button type=\"button\" data-action=\"zoom-out\" title=\"Zoom out\">-</button>',\n        '<span class=\"zoom-level\" data-role=\"level\">100%</span>',\n        '<button type=\"button\" data-action=\"zoom-in\" title=\"Zoom in\">+</button>',\n        '<button type=\"button\" data-action=\"fit\" title=\"Fit width\">Fit</button>',\n        '<button type=\"button\" data-action=\"reset\" title=\"Reset view\">Reset</button>'\n      ].join('');\n      container.insertBefore(toolbar, viewport);\n\n      const state = { scale: 1, x: 0, y: 0, dragging: false, startX: 0, startY: 0, originX: 0, originY: 0 };\n      const level = toolbar.querySelector('[data-role=\"level\"]');\n\n      function applyTransform() {\n        svg.style.transform = `translate(${state.x}px, ${state.y}px) scale(${state.scale})`;\n        level.textContent = `${Math.round(state.scale * 100)}%`;\n      }\n\n      function zoomBy(delta) {\n        state.scale = clamp(state.scale + delta, 0.25, 3);\n        applyTransform();\n      }\n\n      function reset() {\n        state.scale = 1;\n        state.x = 0;\n        state.y = 0;\n        applyTransform();\n      }\n\n      function fitWidth() {\n        const rawWidth = svg.viewBox && svg.viewBox.baseVal && svg.viewBox.baseVal.width\n          ? svg.viewBox.baseVal.width\n          : svg.getBoundingClientRect().width / state.scale;\n        if (!rawWidth) {\n          reset();\n          return;\n        }\n        state.scale = clamp((viewport.clientWidth - 48) / rawWidth, 0.25, 1.4);\n        state.x = 0;\n        state.y = 0;\n        applyTransform();\n      }\n\n      toolbar.addEventListener('click', (event) => {\n        const button = event.target.closest('button[data-action]');\n        if (!button) return;\n        const action = button.dataset.action;\n        if (action === 'zoom-in') zoomBy(0.15);\n        if (action === 'zoom-out') zoomBy(-0.15);\n        if (action === 'fit') fitWidth();\n        if (action === 'reset') reset();\n      });\n\n      viewport.addEventListener('wheel', (event) => {\n        if (!event.ctrlKey && !event.metaKey) return;\n        event.preventDefault();\n        zoomBy(event.deltaY < 0 ? 0.1 : -0.1);\n      }, { passive: false });\n\n      viewport.addEventListener('pointerdown', (event) => {\n        if (event.button !== 0) return;\n        state.dragging = true;\n        state.startX = event.clientX;\n        state.startY = event.clientY;\n        state.originX = state.x;\n        state.originY = state.y;\n        viewport.classList.add('is-dragging');\n        viewport.setPointerCapture(event.pointerId);\n      });\n\n      viewport.addEventListener('pointermove', (event) => {\n        if (!state.dragging) return;\n        state.x = state.originX + event.clientX - state.startX;\n        state.y = state.originY + event.clientY - state.startY;\n        applyTransform();\n      });\n\n      function endDrag(event) {\n        if (!state.dragging) return;\n        state.dragging = false;\n        viewport.classList.remove('is-dragging');\n        if (viewport.hasPointerCapture(event.pointerId)) {\n          viewport.releasePointerCapture(event.pointerId);\n        }\n      }\n\n      viewport.addEventListener('pointerup', endDrag);\n      viewport.addEventListener('pointercancel', endDrag);\n      applyTransform();\n    });\n  }\n\n  function renderMermaid() {\n    const result = mermaid.run\n      ? mermaid.run({ querySelector: '.mermaid' })\n      : Promise.resolve();\n    Promise.resolve(result)\n      .then(enhanceMermaidDiagrams)\n      .catch((error) => {\n        console.error('Mermaid render failed:', error);\n        enhanceMermaidDiagrams();\n      });\n  }\n\n  if (document.readyState === 'loading') {\n    document.addEventListener('DOMContentLoaded', renderMermaid);\n  } else {\n    renderMermaid();\n  }\n})();\n</script>\n\n</body>\n</html>",
+  "templates": {
+    "mermaid_init:625": [
+      "%%{init: ",
+      0,
+      "}%%\nflowchart ",
+      1
+    ],
+    "generate_call_table_rows:1277": [
+      "<tr>\n  <td>",
+      0,
+      "</td>\n  <td><code>",
+      1,
+      "</code><br><small style=\"color:var(--muted)\">",
+      2,
+      "</small></td>\n  <td>",
+      3,
+      "</td>\n  <td>",
+      4,
+      "</td>\n  <td>",
+      5,
+      "</td>\n  <td>",
+      6,
+      "</td>\n</tr>"
+    ],
+    "generate_header:1379": [
+      "<h1>",
+      0,
+      "</h1>\n<p class=\"subtitle\">",
+      1,
+      "</p>\n\n",
+      2,
+      "\n"
+    ],
+    "generate_overview_cards:1436": [
+      "<div class=\"grid\">\n  <div class=\"card\">\n    <h4>",
+      0,
+      "</h4>\n    <table style=\"width:100%;font-size:0.85rem;\">\n      ",
+      1,
+      "\n      ",
+      2,
+      "\n    </table>\n  </div>\n  <div class=\"card\">\n    <h4>",
+      3,
+      "</h4>\n    <div class=\"arrow-chain\">",
+      4,
+      "</div>\n  </div>\n</div>"
+    ],
+    "generate_section_cards:1521": [
+      "<div class=\"grid\">\n  <div class=\"card\">\n    <h4>",
+      0,
+      "</h4>\n    <table style=\"width:100%;font-size:0.85rem;\">\n      <tr><th>File</th><th>",
+      1,
+      "</th></tr>\n      ",
+      2,
+      "\n    </table>\n  </div>\n  <div class=\"card\">\n    <h4>",
+      3,
+      "</h4>\n    <p>",
+      4,
+      "</p>\n  </div>\n</div>"
+    ],
+    "_report_highlights:1600": [
+      "<div class=\"card\">\n    <h4>",
+      0,
+      "</h4>\n    <ul>\n",
+      1,
+      "\n    </ul>\n  </div>"
+    ],
+    "write_callflow_html:1702": [
+      "<!DOCTYPE html>\n<html lang=\"",
+      0,
+      "\">\n<head>\n<meta charset=\"UTF-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n<title>",
+      1,
+      "</title>\n<script src=\"https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js\"></script>\n<style>\n",
+      2,
+      "\n</style>\n</head>\n<body>\n<div class=\"container\">\n"
+    ],
+    "write_callflow_html:1722": [
+      "<!-- ====== Architecture Overview ====== -->\n<h2 id=\"overview\">1. ",
+      0,
+      "</h2>\n\n<div class=\"mermaid\">\n"
+    ],
+    "write_callflow_html:1804": [
+      "<h2 id=\"stats\">Project Statistics</h2>\n\n<div class=\"grid\">\n  <div class=\"card\">\n    <h4>Graph</h4>\n    <table style=\"width:100%;font-size:0.85rem;\">\n      <tr><td>Nodes</td><td>",
+      0,
+      "</td></tr>\n      <tr><td>Edges</td><td>",
+      1,
+      "</td></tr>\n      <tr><td>Hyperedges</td><td>",
+      2,
+      "</td></tr>\n      <tr><td>Communities</td><td>",
+      3,
+      "</td></tr>\n      <tr><td>Documented Sections</td><td>",
+      4,
+      "</td></tr>\n    </table>\n  </div>\n  <div class=\"card\">\n    <h4>Edge Confidence</h4>\n    <table style=\"width:100%;font-size:0.85rem;\">\n      <tr><td>EXTRACTED</td><td>",
+      5,
+      "</td></tr>\n      <tr><td>INFERRED</td><td>",
+      6,
+      "</td></tr>\n      <tr><td>AMBIGUOUS</td><td>",
+      7,
+      "</td></tr>\n    </table>\n  </div>\n</div>\n"
+    ],
+    "write_callflow_html:1829": [
+      "<div style=\"text-align:center; padding:40px 0; color: var(--muted); font-size:0.9rem;\">\n  <p>",
+      0,
+      " — Architecture Documentation</p>\n  <p>Generated: ",
+      1,
+      " · Graphicle callflow-html</p>\n</div>\n"
+    ],
+    "write_callflow_html:1733": [
+      "<div class=\"grid\">\n  ",
+      0,
+      "\n</div>"
+    ],
+    "write_callflow_html:1756": [
+      "<!-- ====== ",
+      0,
+      ". ",
+      1,
+      " ====== -->\n<h2 id=\"",
+      2,
+      "\">",
+      3,
+      ". ",
+      4,
+      "</h2>\n",
+      5,
+      "\n\n<div class=\"mermaid\">\n",
+      6,
+      "\n</div>\n\n<h3>",
+      7,
+      "</h3>\n<table class=\"call-table\">\n<tr>\n  <th style=\"width:5%\">",
+      8,
+      "</th>\n  <th style=\"width:28%\">",
+      9,
+      "</th>\n  <th style=\"width:10%\">",
+      10,
+      "</th>\n  <th style=\"width:17%\">",
+      11,
+      "</th>\n  <th style=\"width:20%\">",
+      12,
+      "</th>\n  <th style=\"width:20%\">",
+      13,
+      "</th>\n</tr>\n",
+      14,
+      "\n</table>\n\n",
+      15,
+      "\n<hr>\n"
+    ],
+    "write_callflow_html:1791": [
+      "  <div class=\"card\">\n    <h4>",
+      0,
+      "</h4>\n    <p><code>",
+      1,
+      "</code> — ",
+      2,
+      " participants</p>\n    <ul>"
+    ]
+  }
+}

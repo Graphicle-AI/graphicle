@@ -1,0 +1,13 @@
+graphicle-graph prs — graph-aware PR dashboard.
+
+Fast terminal overview of open PRs with CI/review state, worktree mapping,
+and optional graph-impact analysis (which communities a PR touches) and
+Opus-powered triage ranking.
+
+Usage:
+  graphicle-graph prs                   # dashboard of all open PRs
+  graphicle-graph prs <number>          # deep dive on one PR
+  graphicle-graph prs --triage          # Opus ranks your review queue
+  graphicle-graph prs --worktrees       # show worktree → branch → PR mapping
+  graphicle-graph prs --conflicts       # PRs sharing graph communities (merge-order risk)
+  graphicle-graph prs --base <branch>   # filter to PRs targeting this base (default: v8)

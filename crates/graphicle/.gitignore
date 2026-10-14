@@ -1,0 +1,31 @@
+/target/
+/dist/
+/test-artifacts/
+/.models/
+/.playwright-cli/
+/.qualification-venv/
+/qualification/**/store/
+/qualification/**/models.json
+/qualification/**/arguments.json
+/qualification/**/context-arguments.json
+/qualification/candidate-*/
+/qualification/**/mem0/
+/qualification/**/embedding-model/
+**/__pycache__/
+/.pytest_cache/
+
+/qualification/**/graphicle
+/qualification/0.4/graphicle-candidate
+/qualification/0.4/datasets/*cleaned.json
+/qualification/0.4/longmemeval-s-screen/cases/*/sources/
+
+/.vendor/
+# The Python environment of the engine's comparison suite
+# (../graphicle-graph/tools/comparison-requirements.txt).
+/.comparison-venv/
+# The licence texts of the linked grammars and of the crates whose packages
+# carry none are tracked (GRAMMAR_NOTICES.json and licenses/*.json name them,
+# and the release archives ship them); this overrides older ignore rules for
+# these folders.
+!/licenses/grammars/
+!/licenses/upstream-crates/

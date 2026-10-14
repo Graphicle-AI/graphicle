@@ -1,0 +1,54 @@
+# Formula/graphicle.rb of the graphicle-ai/homebrew-tap repository:
+#   brew install graphicle-ai/tap/graphicle
+# Written by packaging/homebrew/fill_formula.py from graphicle.rb.in in
+# https://github.com/graphicle-ai/graphicle; edit the template, not the tap.
+class Graphicle < Formula
+  desc "Persistent source-backed memory and code knowledge graphs for your work"
+  homepage "https://github.com/graphicle-ai/graphicle"
+  version "@VERSION@"
+  license "Apache-2.0"
+
+  on_macos do
+    on_arm do
+      url "https://github.com/graphicle-ai/graphicle/releases/download/v@VERSION@/graphicle-@VERSION@-aarch64-apple-darwin.tar.gz"
+      sha256 "@SHA256:aarch64-apple-darwin@"
+    end
+    on_intel do
+      url "https://github.com/graphicle-ai/graphicle/releases/download/v@VERSION@/graphicle-@VERSION@-x86_64-apple-darwin.tar.gz"
+      sha256 "@SHA256:x86_64-apple-darwin@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/graphicle-ai/graphicle/releases/download/v@VERSION@/graphicle-@VERSION@-aarch64-unknown-linux-gnu.tar.gz"
+      sha256 "@SHA256:aarch64-unknown-linux-gnu@"
+    end
+    on_intel do
+      url "https://github.com/graphicle-ai/graphicle/releases/download/v@VERSION@/graphicle-@VERSION@-x86_64-unknown-linux-gnu.tar.gz"
+      sha256 "@SHA256:x86_64-unknown-linux-gnu@"
+    end
+  end
+
+  def install
+    bin.install "graphicle", "graphicle-graph"
+    # LICENSE, NOTICE, README.md and CHANGELOG.md are installed with the
+    # formula's metadata.
+    prefix.install Dir["NOTICE.md", "licenses"]
+  end
+
+  def caveats
+    <<~EOS
+      After an upgrade, run graphicle doctor --fix: it repairs agent entries
+      that still start the previous version.
+
+      Next: cd your-repo && graphicle setup
+    EOS
+  end
+
+  test do
+    assert_match "graphicle #{version}", shell_output("#{bin}/graphicle --version")
+    assert_match "graphicle-graph #{version}", shell_output("#{bin}/graphicle-graph --version")
+    assert_match "graphicle-graph #{version}", shell_output("#{bin}/graphicle graph --version")
+  end
+end
