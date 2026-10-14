@@ -96,6 +96,10 @@ fn bounded(text: String) -> Result<String> {
             "No readable text was extracted; OCR may be required",
         ));
     }
+    // A converter emits a NUL for a glyph with no Unicode mapping; the store refuses text with one.
+    if text.contains('\0') {
+        return Err(Error::bad("Extracted text contains a NUL character"));
+    }
     Ok(text)
 }
 pub fn xml_text(bytes: &[u8]) -> Result<String> {
@@ -710,5 +714,16 @@ impl Store {
             if graphicle_memory::text::sha256(&bytes)!=hash{return Err(Error::bad("Original document integrity check failed"));}
             Ok(json!({"name":row.get::<_,String>(1)?,"parser":row.get::<_,String>(2)?,"sha256":hash,"base64":STANDARD.encode(bytes)}))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extracted_text_with_a_nul_is_refused() {
+        let error = bounded("before\u{0}after".to_string()).unwrap_err();
+        assert!(error.message.contains("NUL"), "{error:?}");
     }
 }
