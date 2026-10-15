@@ -45,12 +45,12 @@ lists every case.
 
 The code-graph engine is a Rust port of Graphify, which is
 licensed under Apache-2.0. Its source files say so in their headers, and
-`NOTICE` carries the upstream attribution. It is kept in step with Graphify's
-releases: comparison checks run Graphify's own tests against the engine and
-compare its results with Graphify's, with the same reviewed upstream fixes on
-both sides ([the parity checks](benchmarks.md#parity-with-graphify): the
-release the engine follows, what they cover, their results, their limits and
-the known differences).
+`NOTICE` carries the upstream attribution. It follows Graphify 0.9.91, and
+later Graphify releases are ported in later versions. Comparison checks run
+Graphify's own tests against the engine and compare its results with
+Graphify's, with the same reviewed upstream fixes on both sides ([the parity
+checks](benchmarks.md#parity-with-graphify): what they cover, their results,
+their limits and the known differences).
 A pre-release build of the engine, which then followed Graphify 0.9.77, ran
 faster than Graphify 0.9.77 in our measurements
 ([benchmarks.md](benchmarks.md#speed-against-graphify-0977)). It also has
