@@ -20,6 +20,18 @@ impl Fixture {
         let root = dir.path().canonicalize().unwrap();
         Self { _dir: dir, root }
     }
+    /// On Windows the root without the verbatim prefix, as the command line
+    /// resolves it; elsewhere [`Fixture::new`]'s.
+    fn plain() -> Self {
+        let fx = Self::new();
+        match fx.root.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => Self {
+                root: plain.into(),
+                ..fx
+            },
+            _ => fx,
+        }
+    }
     fn write(&self, rel: &str, text: &str) -> PathBuf {
         let path = self.root.join(rel);
         if let Some(parent) = path.parent() {
@@ -417,7 +429,7 @@ fn external_module_call_survives_cache() {
 /// A changed caller shares an external stub with an unchanged caller.
 #[test]
 fn external_calls_survive_real_incremental_context() {
-    let fx = Fixture::new();
+    let fx = Fixture::plain();
     fx.write(
         "ext_a.py",
         "import requests\n\ndef fetch_a():\n    return requests.get('/a')\n",

@@ -6,6 +6,7 @@
 //! A PR scratch project shares its folder project's `stable_id`s, nested
 //! projects never export the same package twice, and the Python host's
 //! workspace-source links are no longer read.
+use graphicle_runtime::platform::CanonicalExt;
 use graphicle_runtime::{
     agent_setup, capture, folders, graph_projection, jobs, local, memory,
     store::{Store, s},
@@ -29,7 +30,7 @@ impl Fixture {
         let dir = TempDir::new().unwrap();
         let store = Store::open(dir.path().join("store")).unwrap();
         let session = local::session(&store, true).unwrap();
-        let root = dir.path().canonicalize().unwrap().join("work");
+        let root = dir.path().canonical().unwrap().join("work");
         std::fs::create_dir_all(&root).unwrap();
         Self {
             _dir: dir,
@@ -449,6 +450,9 @@ fn inside_a_folder_every_command_and_hook_acts_on_its_project() {
                 work_state: false,
                 graph: false,
                 allow_learning: false,
+                // The whole server, whose entries name no tool set.
+                tools: Some(graphicle_runtime::api::ToolSet::All),
+                guards: false,
                 cwd,
             },
         )
@@ -465,7 +469,7 @@ fn inside_a_folder_every_command_and_hook_acts_on_its_project() {
         args,
         json!([
             "--data-dir",
-            f.store.directory.canonicalize().unwrap(),
+            f.store.directory.canonical().unwrap(),
             "mcp",
             "--project",
             "."
@@ -1351,7 +1355,7 @@ fn connect_codex_adds_an_entry_named_for_the_project() {
             "--data-dir".to_string(),
             f.store
                 .directory
-                .canonicalize()
+                .canonical()
                 .unwrap()
                 .to_string_lossy()
                 .into_owned(),

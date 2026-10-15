@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/fortran.py, graphify/llm.py
 //! Native bounded subprocess execution for upstream command integrations.
 use std::{
@@ -97,6 +97,7 @@ pub fn capture_with_input(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::*;
     #[test]
     #[cfg(unix)]

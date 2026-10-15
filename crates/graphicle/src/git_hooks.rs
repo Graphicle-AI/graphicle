@@ -11,6 +11,7 @@
 //! `core.hooksPath` elsewhere (a hooks folder kept in the repository, such
 //! as Husky's, or one shared by every repository) is left alone, and setup
 //! prints the line to add there instead.
+use crate::platform::CanonicalExt;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
@@ -38,9 +39,10 @@ pub struct Repository {
 
 /// `git -C folder <args>`'s output, trimmed, when it succeeds with one line.
 fn git(folder: &Path, args: &[&str]) -> Option<String> {
+    // Git refuses Windows' verbatim `\\?\` paths.
     let output = std::process::Command::new("git")
         .arg("-C")
-        .arg(folder)
+        .arg(crate::platform::simplified(folder.to_path_buf()))
         .args(args)
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -55,7 +57,7 @@ fn git(folder: &Path, args: &[&str]) -> Option<String> {
 /// A path `git` printed, resolved against `folder` and made canonical.
 fn resolved(folder: &Path, printed: &str) -> PathBuf {
     let path = folder.join(printed);
-    path.canonicalize().unwrap_or(path)
+    path.canonical().unwrap_or(path)
 }
 
 /// The repository containing `folder` (`None` outside one, or without
@@ -103,8 +105,26 @@ pub fn block(
         Ok(text.into_owned())
     };
     let folder_text = text(folder)?;
+    // Git for Windows' sh reads `C:/...` paths, and its `pwd -P` prints
+    // `/c/...`: there the root is written as Git prints it and compared with
+    // `git rev-parse --show-toplevel` directly.
+    #[cfg(windows)]
+    let (shell, root_text, toplevel) = (
+        |path: &Path| -> Result<String> { Ok(text(path)?.replace('\\', "/")) },
+        match git(root, &["rev-parse", "--show-toplevel"]) {
+            Some(printed) => printed,
+            None => text(root)?.replace('\\', "/"),
+        },
+        "t=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0",
+    );
+    #[cfg(not(windows))]
+    let (shell, root_text, toplevel) = (
+        text,
+        text(root)?,
+        "t=$(git rev-parse --show-toplevel 2>/dev/null) && t=$(cd \"$t\" && pwd -P) || exit 0",
+    );
     let data = match data_dir {
-        Some(directory) => format!(" --data-dir {}", quote(&text(directory)?)),
+        Some(directory) => format!(" --data-dir {}", quote(&shell(directory)?)),
         None => String::new(),
     };
     Ok(format!(
@@ -113,7 +133,7 @@ pub fn block(
 (
   d=$(git rev-parse --git-dir 2>/dev/null) || exit 0
   [ -d \"$d/rebase-merge\" ] || [ -d \"$d/rebase-apply\" ] && exit 0
-  t=$(git rev-parse --show-toplevel 2>/dev/null) && t=$(cd \"$t\" && pwd -P) || exit 0
+  {toplevel}
   [ \"$t\" = {root} ] || exit 0
   graphicle={program}
   [ -x \"$graphicle\" ] || graphicle=$(command -v graphicle 2>/dev/null) || exit 0
@@ -121,9 +141,9 @@ pub fn block(
   \"$graphicle\"{data} sync {folder} --quiet </dev/null >/dev/null 2>&1 &
 )
 {END}",
-        root = quote(&text(root)?),
-        program = quote(&text(program)?),
-        folder = quote(&folder_text),
+        root = quote(&root_text),
+        program = quote(&shell(program)?),
+        folder = quote(&shell(folder)?),
     ))
 }
 
@@ -288,6 +308,39 @@ pub fn empty(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_blocks_use_the_root_git_prints() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonical().unwrap();
+        let _ = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .status();
+        let block = block(
+            &root,
+            &root,
+            Path::new(r"C:\Program Files\Graphicle\graphicle.exe"),
+            Some(Path::new(r"D:\Profile\AppData\Local\Graphicle")),
+        )
+        .unwrap();
+        assert!(
+            block.contains("  t=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0\n"),
+            "{block}"
+        );
+        let compare = block
+            .lines()
+            .find(|line| line.contains("[ \"$t\" ="))
+            .unwrap();
+        assert!(
+            !compare.contains('\\') && compare.contains(':'),
+            "{compare}"
+        );
+        assert!(block.contains("graphicle='C:/Program Files/Graphicle/graphicle.exe'"));
+        assert!(block.contains("--data-dir 'D:/Profile/AppData/Local/Graphicle' sync '"));
+    }
 
     fn sample() -> String {
         block(

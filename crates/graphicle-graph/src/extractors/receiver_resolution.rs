@@ -14,7 +14,7 @@ use super::{
     receiver_bindings::{self as rb, Evidence, FileFacts, Receiver, TypeRef},
     resolution::{is_type_like_definition, s},
     resolution_facts,
-    resolution_types::go_import_path_for_file,
+    resolution_types::GoModules,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{Value, json};
@@ -219,6 +219,7 @@ impl Index {
             *v = dedup(std::mem::take(v));
         }
         let files: BTreeSet<String> = idx.owner_file.values().cloned().collect();
+        let mut go_modules = GoModules::new(root);
         for sf in files {
             if Lang::of(Path::new(&sf)) == Some(Lang::Python)
                 && let Some(parsed) = resolution_facts::parse_python_tree(&root.join(&sf))
@@ -272,7 +273,7 @@ impl Index {
                 }
             }
             if Lang::of(Path::new(&sf)) == Some(Lang::Go)
-                && let Some(pkg) = go_import_path_for_file(Path::new(&sf), root)
+                && let Some(pkg) = go_modules.import_path(Path::new(&sf)).map(str::to_owned)
             {
                 idx.go_package.insert(sf, pkg);
             }
@@ -889,8 +890,16 @@ pub fn resolve(
     let mut facts_cache: BTreeMap<String, Option<FileFacts>> = BTreeMap::new();
     let mut wanted: BTreeSet<String> = by_file.keys().cloned().collect();
     for p in paths {
-        if matches!(Lang::of(p), Some(Lang::Js | Lang::Go)) {
-            wanted.insert(p.to_string_lossy().into_owned());
+        let lang = Lang::of(p);
+        if matches!(lang, Some(Lang::Js | Lang::Go)) {
+            // Keyed as node `source_file` spells the path, so `owner_file`
+            // matches it: on Windows the Go extractor spells it with `/`
+            // (`path_string`), the JS one as given.
+            if cfg!(windows) && lang == Some(Lang::Go) {
+                wanted.insert(crate::fsutil::path_string(p));
+            } else {
+                wanted.insert(p.to_string_lossy().into_owned());
+            }
         }
     }
     // Per-file facts depend only on the file's own tree, so gather them in
@@ -1415,9 +1424,14 @@ func main() {
             "package pkg\n\nfunc (c *Conn) Retry() int { return c.Send() }\n",
         );
         let on = run(root, &[a, b], true);
+        // Since Graphify 0.9.89 the parity Go member-call pass types `c` by
+        // the method's own receiver declaration and binds `c.Send()` (the
+        // package's `Conn` is one node, #3399); the opt-in pass must not
+        // duplicate it.
+        assert_eq!(count_calls(&on, "pkg_conn_retry", "pkg_conn_send"), 1);
         let c = calls(&on);
         assert!(
-            has(&c, "pkg_conn_retry", "pkg_conn_send", "self_method"),
+            !has(&c, "pkg_conn_retry", "pkg_conn_send", "self_method"),
             "{c:?}"
         );
     }

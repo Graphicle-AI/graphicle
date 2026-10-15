@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Native assistant hook guards and session/query stamps.
 use serde_json::{Map, Value, json};
@@ -42,6 +42,318 @@ fn nudge_for_out_with(nudge: String, out_dir: &str) -> String {
         return nudge;
     };
     d["hookSpecificOutput"]["additionalContext"] = Value::String(context);
+    format!("{d}\n")
+}
+/// Graph nodes a hint lists at most (0.9.89, #4368).
+const HINT_MAX_NODES: usize = 5;
+/// A bigger graph.json gets the plain nudge: the label scan must stay fast
+/// enough for a per-call hook.
+const HINT_GRAPH_MAX_BYTES: u64 = 24 * 1024 * 1024;
+/// Declaration keywords a pattern like `def load_config` carries; never the target.
+const HINT_KEYWORDS: &[&str] = &[
+    "def",
+    "class",
+    "function",
+    "func",
+    "const",
+    "let",
+    "var",
+    "import",
+    "export",
+    "async",
+    "return",
+    "struct",
+    "interface",
+    "type",
+    "enum",
+    "impl",
+    "pub",
+];
+/// grep/rg/ag/ack options whose value is the next argument, never the pattern.
+const HINT_VALUE_FLAGS: &[&str] = &[
+    "-t",
+    "-T",
+    "-g",
+    "--type",
+    "--type-not",
+    "--glob",
+    "--iglob",
+    "-A",
+    "-B",
+    "-C",
+    "-m",
+    "--max-count",
+    "-j",
+    "--threads",
+    "-f",
+    "--file",
+    "--include",
+    "--exclude",
+    "--exclude-dir",
+    "--max-depth",
+    "-d",
+    "-D",
+    "--color",
+    "--colour",
+];
+const SEARCH_COMMANDS: &[&str] = &[
+    "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
+];
+static HINT_TERM: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"[A-Za-z_][A-Za-z0-9_]{2,}").unwrap());
+static HINT_ESCAPE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\\[^\n]").unwrap());
+static HINT_SAFE_ARG: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[\w.\-() ]+$").unwrap());
+static HINT_UNSAFE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"[\x00-\x1f\x7f`]").unwrap());
+static HINT_LINE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"^L(\d+)").unwrap());
+/// Identifier-like words in a search pattern (regex escapes and declaration
+/// keywords dropped), at most three.
+pub fn pattern_terms(pattern: &str) -> Vec<String> {
+    let text = HINT_ESCAPE.replace_all(pattern, " ");
+    HINT_TERM
+        .find_iter(&text)
+        .map(|m| m.as_str())
+        .filter(|w| !HINT_KEYWORDS.contains(&w.to_lowercase().as_str()))
+        .take(3)
+        .map(str::to_owned)
+        .collect()
+}
+/// The read target as a root-relative POSIX path, the form graph.json stores.
+pub fn rel_to_root(file_path: &str, root: &Path) -> Option<String> {
+    if file_path.is_empty() {
+        return None;
+    }
+    let p = std::path::PathBuf::from(file_path.replace('\\', "/"));
+    let p = if p.is_absolute() { p } else { root.join(p) };
+    let resolved = crate::extractors::resolution::resolved(&p);
+    let relative = resolved.strip_prefix(root).ok()?;
+    Some(
+        relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+    .map(|s| if s.is_empty() { ".".into() } else { s })
+}
+/// Words the agent searched for: the Grep `pattern`, or the pattern argument
+/// of a shell content search. Empty when there is nothing to go on.
+pub fn search_hint_terms(t: &Map<String, Value>) -> Vec<String> {
+    let text = |key: &str| match t.get(key) {
+        Some(v) if crate::build::truthy(v) => v
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| crate::python_compat::string(v)),
+        _ => String::new(),
+    };
+    let cmd = text("command");
+    if cmd.is_empty() {
+        return pattern_terms(&text("pattern"));
+    }
+    let Ok(tokens) = crate::detect_types::shell_split(&cmd) else {
+        return vec![];
+    };
+    for (i, tok) in tokens.iter().enumerate() {
+        let normalized = tok.replace('\\', "/");
+        let name = normalized.rsplit('/').next().unwrap_or("").to_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        // Content searches only: find/fd match file names, and a search fed
+        // by a pipe filters that output, not the code.
+        if !SEARCH_COMMANDS.contains(&name)
+            || name == "find"
+            || name == "fd"
+            || (i > 0 && tokens[i - 1] == "|")
+        {
+            continue;
+        }
+        let mut rest = tokens[i + 1..].iter();
+        while let Some(arg) = rest.next() {
+            if arg == "-e" || arg == "--regexp" {
+                return pattern_terms(rest.next().map_or("", String::as_str));
+            }
+            if HINT_VALUE_FLAGS.contains(&arg.as_str()) {
+                rest.next();
+                continue;
+            }
+            if arg.starts_with('-') {
+                continue;
+            }
+            // The first positional argument is the pattern.
+            return pattern_terms(arg);
+        }
+        return vec![];
+    }
+    vec![]
+}
+/// A graph field as one inert line: graph.json is repository content, so no
+/// newline, control character or backtick may reach the model-facing hint.
+fn hint_text(value: &Value, cap: usize) -> String {
+    let raw = value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| crate::python_compat::string(value));
+    let text = HINT_UNSAFE.replace_all(&raw, " ");
+    let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if text.chars().count() <= cap {
+        text
+    } else {
+        text.chars().take(cap - 1).collect::<String>() + "\u{2026}"
+    }
+}
+/// `n.get(key) or default`.
+fn or_default<'a>(node: &'a Map<String, Value>, key: &str, default: &'a Value) -> &'a Value {
+    node.get(key)
+        .filter(|v| crate::build::truthy(v))
+        .unwrap_or(default)
+}
+/// (command, node lines) for a nudge: nodes whose label matches the searched
+/// terms, or the symbols in the file being read. Empty for an oversized or
+/// unreadable graph, or no match.
+fn graph_hint(terms: &[String], rel_file: Option<&str>) -> Option<(String, Vec<String>)> {
+    let path = out().join("graph.json");
+    if fs::metadata(&path).ok()?.len() > HINT_GRAPH_MAX_BYTES {
+        return Some((String::new(), vec![]));
+    }
+    let graph: Value = serde_json::from_slice(&fs::read(&path).ok()?).ok()?;
+    let nodes: Vec<&Map<String, Value>> = match graph.as_object()?.get("nodes") {
+        Some(Value::Array(items)) => items.iter().filter_map(Value::as_object).collect(),
+        _ => vec![],
+    };
+    let empty = json!("");
+    let key = |n: &Map<String, Value>| {
+        let label = or_default(n, "label", &empty);
+        let label = label
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| crate::python_compat::string(label))
+            .to_lowercase();
+        let label = label.strip_suffix("()").unwrap_or(&label);
+        label.trim_start_matches('.').to_owned()
+    };
+    let line_of = |n: &Map<String, Value>| -> u64 {
+        let loc = or_default(n, "source_location", &empty);
+        let loc = loc
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| crate::python_compat::string(loc));
+        HINT_LINE
+            .captures(&loc)
+            .and_then(|c| c[1].parse().ok())
+            .unwrap_or(0)
+    };
+    let program = crate::cli::program();
+    let mut command = String::new();
+    let picked: Vec<&Map<String, Value>> = if let Some(rel_file) = rel_file {
+        let base = rel_file.rsplit('/').next().unwrap_or(rel_file);
+        let mut picked: Vec<_> = nodes
+            .iter()
+            .copied()
+            .filter(|n| {
+                n.get("source_file").and_then(Value::as_str) == Some(rel_file)
+                    && n.get("label").and_then(Value::as_str) != Some(base)
+            })
+            .collect();
+        picked.sort_by_cached_key(|n| line_of(n));
+        picked.truncate(HINT_MAX_NODES);
+        if !picked.is_empty() && HINT_SAFE_ARG.is_match(base) {
+            command = format!("{program} explain \"{base}\"");
+        }
+        picked
+    } else {
+        let lowered: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+        // Exact label matches first, then labels containing a term; shorter
+        // labels first. Short terms only match exactly.
+        let mut ranked: Vec<(u8, usize, &Map<String, Value>)> = nodes
+            .iter()
+            .copied()
+            .filter_map(|n| {
+                let k = key(n);
+                let exact = lowered.contains(&k);
+                (exact
+                    || lowered
+                        .iter()
+                        .any(|term| term.chars().count() >= 5 && k.contains(term.as_str())))
+                .then(|| (u8::from(!exact), k.chars().count(), n))
+            })
+            .collect();
+        ranked.sort_by_key(|(rank, len, _)| (*rank, *len));
+        let picked: Vec<_> = ranked
+            .iter()
+            .take(HINT_MAX_NODES)
+            .map(|(_, _, n)| *n)
+            .collect();
+        if let Some((0, _, first)) = ranked.first() {
+            // An exact match's label is a search term plus "." or "()": safe to quote.
+            let label = first.get("label").map_or(Value::Null, Clone::clone);
+            command = format!(
+                "{program} explain \"{}\"",
+                label
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| crate::python_compat::string(&label))
+            );
+        } else if !picked.is_empty() {
+            command = format!("{program} query \"{}\"", terms.join(" "));
+        }
+        picked
+    };
+    let unknown = json!("?");
+    let lines = picked
+        .iter()
+        .map(|n| {
+            let loc = hint_text(or_default(n, "source_location", &empty), 20);
+            let src = hint_text(or_default(n, "source_file", &unknown), 120);
+            let label = hint_text(or_default(n, "label", &empty), 80);
+            if loc.is_empty() {
+                format!("- {label} ({src})")
+            } else {
+                format!("- {label} ({src} {loc})")
+            }
+        })
+        .collect();
+    Some((command, lines))
+}
+/// Appends the call-specific command and the matching graph nodes to a nudge
+/// or deny (0.9.89, #4368). Any failure returns the nudge unchanged: a hint
+/// must never cost the nudge.
+pub fn with_hint(nudge: String, terms: &[String], rel_file: Option<&str>) -> String {
+    if terms.is_empty() && rel_file.is_none() {
+        return nudge;
+    }
+    let Some((command, lines)) = graph_hint(terms, rel_file) else {
+        return nudge;
+    };
+    if command.is_empty() && lines.is_empty() {
+        return nudge;
+    }
+    let Ok(mut d) = serde_json::from_str::<Value>(&nudge) else {
+        return nudge;
+    };
+    let Some(out) = d
+        .get_mut("hookSpecificOutput")
+        .and_then(Value::as_object_mut)
+    else {
+        return nudge;
+    };
+    let key = if out.contains_key("permissionDecisionReason") {
+        "permissionDecisionReason"
+    } else {
+        "additionalContext"
+    };
+    let Some(text) = out.get(key).and_then(Value::as_str) else {
+        return nudge;
+    };
+    let mut text = text.to_owned();
+    if !command.is_empty() {
+        text.push_str(&format!("\nStart with: `{command}`"));
+    }
+    if !lines.is_empty() {
+        text.push_str("\nWhat the graph already has for this call:\n");
+        text.push_str(&lines.join("\n"));
+    }
+    out.insert(key.into(), Value::String(text));
     format!("{d}\n")
 }
 pub fn strict(flag: bool) -> bool {
@@ -383,7 +695,11 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
             && graph.is_file()
             && nudge_allowed(d)
         {
-            return nudge_for_out(emit("_SEARCH_NUDGE"));
+            return with_hint(
+                nudge_for_out(emit("_SEARCH_NUDGE")),
+                &search_hint_terms(t),
+                None,
+            );
         }
         return String::new();
     }
@@ -450,10 +766,12 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
         && target_indexed(&vals[0], &root)
         && mark_denied(&payload_text(d, "session_id"))
     {
-        return emit("_READ_DENY");
+        let rel = rel_to_root(&vals[0], &root);
+        return with_hint(emit("_READ_DENY"), &[], rel.as_deref());
     }
     if nudge_allowed(d) {
-        nudge_for_out(emit("_READ_NUDGE"))
+        let rel = rel_to_root(&vals[0], &root);
+        with_hint(nudge_for_out(emit("_READ_NUDGE")), &[], rel.as_deref())
     } else {
         String::new()
     }

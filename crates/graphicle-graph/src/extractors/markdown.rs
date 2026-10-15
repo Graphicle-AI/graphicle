@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/markdown.py
 //! Port of graphify/extractors/markdown.py at the pinned Graphify commit.
 use super::{base::file_stem, markdown_data};
@@ -197,7 +197,7 @@ pub fn vault_lookup(target: &str, root: &Path) -> crate::Result<Option<PathBuf>>
 
 fn normpath(path: &Path) -> PathBuf {
     let mut normalized = Vec::<String>::new();
-    for part in path_syntax::posix_parts(&path.to_string_lossy()) {
+    for part in path_syntax::posix_parts(&fsutil::path_string(path)) {
         if part == ".." {
             if normalized
                 .last()

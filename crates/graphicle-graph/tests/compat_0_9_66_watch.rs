@@ -4,7 +4,17 @@
 //! process start in the Rust port (the same shape as upstream's module
 //! constant, which the Python tests monkeypatch).
 use graphicle::watch::root_marker_value_for;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// `canonicalize` in the engine's plain spelling: on Windows without the
+/// verbatim prefix (`\\?\C:\x` is `C:\x`); elsewhere `canonicalize` itself.
+fn canonical(path: &Path) -> PathBuf {
+    let path = path.canonicalize().unwrap();
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => plain.into(),
+        _ => path,
+    }
+}
 
 #[test]
 fn root_marker_is_resolved_when_the_output_folder_is_shared_and_absolute() {
@@ -17,14 +27,14 @@ fn root_marker_is_resolved_when_the_output_folder_is_shared_and_absolute() {
     let saved = root_marker_value_for(Path::new("."), shared_out.to_str().unwrap()).unwrap();
     assert_eq!(
         saved,
-        cwd.canonicalize().unwrap().to_string_lossy(),
+        canonical(&cwd).to_string_lossy(),
         ".graphicle_root must be resolved when GRAPHICLE_OUT is absolute"
     );
 
     let relative = corpus.strip_prefix(&cwd).unwrap_or(&corpus);
     let saved = root_marker_value_for(relative, shared_out.to_str().unwrap()).unwrap();
     assert!(Path::new(&saved).is_absolute(), "{saved}");
-    assert_eq!(saved, corpus.canonicalize().unwrap().to_string_lossy());
+    assert_eq!(saved, canonical(&corpus).to_string_lossy());
 }
 
 #[test]

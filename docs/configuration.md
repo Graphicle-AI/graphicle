@@ -158,6 +158,19 @@ original sources the same way. Three options are on by default in both:
 - `pack_focus: true`: each excerpt centres on the paragraphs that match the
   question.
 
+Excerpts of test files come after the other excerpts unless the question
+names a test file or a test identifier (`tests/...`, `test_x`, `x_test.py`,
+`conftest.py`, `TestX`): `include_tests` is `"auto"` by default, `false`
+always puts them after and `true` keeps 0.1.0's order. A test file is one in
+a `test`, `tests` or `testing` folder, or a `test_*`, `*_test.py`,
+`*_tests.py` or `conftest.py` file; other languages' test names
+(`x_test.go`, `x.spec.ts`, `__tests__/`) are not moved. Only the order
+changes: the budget goes to the excerpts in rank order first, so the packet
+holds the same excerpts as with `true`. The packet's `test_files` says what
+applied. Over MCP, the essentials set (what setup gives Claude Code) uses
+this default; `--tools all`, `graph` and `memory` answer `recall_project` in
+0.1.0's order.
+
 Each packet lists the defaults it applied in `retrieval_defaults`. To change an
 option for one call, send the request through `graphicle call`. Setting an
 option to `false` turns it off:

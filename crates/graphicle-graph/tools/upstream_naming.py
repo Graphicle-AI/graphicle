@@ -65,6 +65,8 @@ TABLES = {
             ('assert _HOOK_MARKER in', 'assert "# graphicle-hook-start" in', 2),
             ('count(_HOOK_MARKER)', 'count("# graphicle-hook-start")', 1),
             ('assert _CHECKOUT_MARKER in', 'assert "# graphicle-checkout-hook-start" in', 1),
+            # 0.9.91 (#2418): the post-merge hook.
+            ('assert _MERGE_HOOK_MARKER in', 'assert "# graphicle-merge-hook-start" in', 1),
             ('merge=graphify', 'merge=graphicle', 4),
             ('merge.graphify.driver', 'merge.graphicle.driver', 3),
             ('.graphifyrc', '.graphiclerc', 12),

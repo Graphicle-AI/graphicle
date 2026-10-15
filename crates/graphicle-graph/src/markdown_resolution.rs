@@ -1,7 +1,16 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/markdown_resolution.py
 //! Port of graphify/markdown_resolution.py; emits only uniquely supported references.
-use crate::{extractors::base::LANGUAGE_BUILTIN_GLOBALS, python_compat};
+//!
+//! The pass reads the edges and the per-file raw calls in whichever form
+//! assembly holds them ([`Rec`], [`PerFile`]), so neither list converts for
+//! it; the JSON forms give what they always gave.
+use crate::{
+    extract::per_file::PerFile,
+    extractors::base::LANGUAGE_BUILTIN_GLOBALS,
+    python_compat,
+    resolver_registry::{Rec, append_edges, at, edge_record},
+};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 
@@ -137,12 +146,25 @@ pub fn evidence(
     found
 }
 pub fn markdown_raw_calls(per_file: &[Value]) -> Vec<&Value> {
+    markdown_raw_calls_any(per_file)
+}
+/// The Markdown mentions among the raw calls, in result order, from the
+/// per-file results in either form. A call that is no object has no
+/// `language` and is skipped.
+pub fn markdown_raw_calls_any<P: PerFile>(per_file: &[P]) -> Vec<&P::R> {
     per_file
         .iter()
-        .filter_map(|result| result.get("raw_calls").and_then(Value::as_array))
+        .filter_map(PerFile::raw_calls)
         .flatten()
-        .filter(|call| call.is_object() && call["language"].as_str() == Some("markdown"))
+        .filter(|call| at(*call, "language").as_str() == Some("markdown"))
         .collect()
+}
+/// [`text`] of a raw-call record.
+fn rtext<R: Rec>(record: &R, field: &str) -> String {
+    record
+        .rec_get(field)
+        .map(python_compat::string)
+        .unwrap_or_default()
 }
 fn resolve_chain(labels: &Labels, names: &[String], parents: &Parents) -> Option<String> {
     let mut candidates = labels.get(names.last()?).cloned().unwrap_or_default();
@@ -171,7 +193,16 @@ pub fn resolve_markdown_mentions(
     all_nodes: &[Value],
     all_edges: &mut Vec<Value>,
 ) {
-    let mentions = markdown_raw_calls(per_file);
+    resolve_markdown_mentions_any(per_file, all_nodes, all_edges);
+}
+/// [`resolve_markdown_mentions`] over the per-file results and the edges in
+/// either form.
+pub fn resolve_markdown_mentions_any<P: PerFile, E: Rec>(
+    per_file: &[P],
+    all_nodes: &[Value],
+    all_edges: &mut Vec<E>,
+) {
+    let mentions = markdown_raw_calls_any(per_file);
     if mentions.is_empty() {
         return;
     }
@@ -201,11 +232,11 @@ pub fn resolve_markdown_mentions(
     let source_files = by_file.keys().cloned().collect();
     let mut parents = Parents::new();
     for edge in all_edges.iter() {
-        if CONTAINMENT_RELATIONS.contains(&edge["relation"].as_str().unwrap_or("")) {
+        if CONTAINMENT_RELATIONS.contains(&at(edge, "relation").as_str().unwrap_or("")) {
             parents
-                .entry(python_compat::string(&edge["target"]))
+                .entry(python_compat::string(at(edge, "target")))
                 .or_default()
-                .insert(python_compat::string(&edge["source"]));
+                .insert(python_compat::string(at(edge, "source")));
         }
     }
     let nodes_by_id: HashMap<String, &Value> = all_nodes
@@ -215,33 +246,35 @@ pub fn resolve_markdown_mentions(
         .collect();
     let mut existing: HashSet<(String, String)> = all_edges
         .iter()
-        .filter(|edge| edge["relation"].as_str() == Some("references"))
+        .filter(|edge| at(*edge, "relation").as_str() == Some("references"))
         .map(|edge| {
             (
-                python_compat::string(&edge["source"]),
-                python_compat::string(&edge["target"]),
+                python_compat::string(at(edge, "source")),
+                python_compat::string(at(edge, "target")),
             )
         })
         .collect();
+    // New edges are appended after the pass; the loop reads none of them.
+    let mut added: Vec<E> = vec![];
     for call in mentions {
-        let caller = text(call, "caller_nid");
-        let callee = text(call, "callee")
+        let caller = rtext(call, "caller_nid");
+        let callee = rtext(call, "callee")
             .trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c))
             .to_owned();
         if caller.is_empty() || callee.is_empty() || !nodes_by_id.contains_key(&caller) {
             continue;
         }
-        let mut names: Vec<String> = call["qualifiers"]
+        let mut names: Vec<String> = at(call, "qualifiers")
             .as_array()
             .into_iter()
             .flatten()
             .map(python_compat::string)
             .collect();
         names.push(callee.clone());
-        let (target, confidence, score) = if truthy(&call["path"]) {
+        let (target, confidence, score) = if truthy(at(call, "path")) {
             let Some(file) = match_cited_file(
-                &text(call, "path"),
-                &posix(&text(call, "source_file")),
+                &rtext(call, "path"),
+                &posix(&rtext(call, "source_file")),
                 &source_files,
             ) else {
                 continue;
@@ -278,8 +311,9 @@ pub fn resolve_markdown_mentions(
         if target == caller || !existing.insert((caller.clone(), target.clone())) {
             continue;
         }
-        all_edges.push(json!({"source":caller,"target":target,"relation":"references",
-            "context":call.get("context").unwrap_or(&json!("")),"confidence":confidence,"confidence_score":score,
-            "source_file":call.get("source_file").unwrap_or(&json!("")),"source_location":call.get("source_location"),"weight":1.0}));
+        added.push(edge_record(json!({"source":caller,"target":target,"relation":"references",
+            "context":call.rec_get("context").unwrap_or(&json!("")),"confidence":confidence,"confidence_score":score,
+            "source_file":call.rec_get("source_file").unwrap_or(&json!("")),"source_location":call.rec_get("source_location"),"weight":1.0})));
     }
+    append_edges(all_edges, added);
 }

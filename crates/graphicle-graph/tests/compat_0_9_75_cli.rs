@@ -1,6 +1,19 @@
 // Parity tests for Graphify 0.9.75 CLI and cache fixes (Apache-2.0; see NOTICE.md).
 use serde_json::{Value, json};
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+/// `canonicalize` in the engine's plain spelling: on Windows without the
+/// verbatim prefix (`\\?\C:\x` is `C:\x`); elsewhere `canonicalize` itself.
+fn canonical(path: &Path) -> PathBuf {
+    let path = path.canonicalize().unwrap();
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => plain.into(),
+        _ => path,
+    }
+}
 
 fn run(args: &[&str]) -> graphicle::cli::Output {
     graphicle::cli::run(&args.iter().map(|s| s.to_string()).collect::<Vec<_>>())
@@ -372,7 +385,7 @@ struct ShrinkCorpus {
 /// README path and the corpus and returns `(cached README nodes, saved nodes)`.
 fn shrink_corpus(nodes: impl Fn(&str, &Path) -> (Vec<Value>, Vec<Value>)) -> ShrinkCorpus {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = canonical(dir.path());
     let corpus = root.join("corpus");
     fs::create_dir_all(&corpus).unwrap();
     let readme = corpus.join("README.md");

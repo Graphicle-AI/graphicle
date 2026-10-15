@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/watch.py
 //! Path identities for incremental updates, including relocated graph roots.
 use crate::{build, detect_ignore::absolute_lexical, extractors::resolution::resolved};
@@ -15,6 +15,11 @@ pub fn text(v: &Value, key: &str) -> String {
 }
 pub fn items(v: &Value, key: &str) -> Vec<Value> {
     v[key].as_array().cloned().unwrap_or_default()
+}
+/// The array under `key`, borrowed (empty when absent or not an array): what
+/// [`items`] copies, for readers that only look.
+pub fn items_ref<'a>(v: &'a Value, key: &str) -> &'a [Value] {
+    v[key].as_array().map_or(&[], Vec::as_slice)
 }
 pub fn norm(source: &str, root: Option<&Path>) -> String {
     build::norm_path(source, root)
@@ -141,7 +146,7 @@ impl StoredSourcePaths {
         if let Some(prefix) = prefix.filter(|s| s != ".") {
             result.legacy_watch_relative =
                 !["nodes", "links", "edges", "hyperedges"].iter().any(|b| {
-                    items(existing, b).iter().any(|item| {
+                    items_ref(existing, b).iter().any(|item| {
                         let sf = norm(&text(item, "source_file"), None);
                         !sf.is_empty()
                             && !Path::new(&sf).is_absolute()
@@ -226,8 +231,8 @@ impl StoredSourcePaths {
 fn anchors(existing: &Value, root: &Path, sample: usize) -> bool {
     let mut checked = 0;
     for bucket in ["nodes", "links", "edges", "hyperedges"] {
-        for item in items(existing, bucket) {
-            let n = norm(&text(&item, "source_file"), None);
+        for item in items_ref(existing, bucket) {
+            let n = norm(&text(item, "source_file"), None);
             if n.is_empty() || crate::paths::is_absolute_any_platform(Some(&n)) {
                 continue;
             }

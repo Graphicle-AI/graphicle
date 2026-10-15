@@ -6,6 +6,7 @@
 //! process becomes the engine, so standard input and output, signals and the
 //! exit status are the engine's own. `graphicle graph` alone prints the
 //! engine's help; the engine's JSON Lines mode is `graphicle graph --jsonl`.
+use crate::platform::CanonicalExt;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -213,7 +214,7 @@ pub fn project_with_graph(
     let covers = match file {
         None => true,
         Some(file) => {
-            let file = file.canonicalize().unwrap_or_else(|_| file.to_path_buf());
+            let file = file.canonical().unwrap_or_else(|_| file.to_path_buf());
             file.strip_prefix(&found.folder).ok().is_some_and(|relative| {
                 let relative = relative.to_string_lossy().replace('\\', "/");
                 db.query_row(
@@ -254,7 +255,7 @@ pub fn locate(program: Option<&Path>, path: Option<&OsStr>) -> Option<PathBuf> {
     let mut folders: Vec<PathBuf> = vec![];
     if let Some(program) = program {
         folders.extend(program.parent().map(Path::to_path_buf));
-        if let Ok(resolved) = program.canonicalize() {
+        if let Ok(resolved) = program.canonical() {
             folders.extend(resolved.parent().map(Path::to_path_buf));
         }
     }
@@ -348,6 +349,9 @@ pub fn status(args: &[OsString]) -> i32 {
 }
 
 fn started(command: &mut Command) -> i32 {
+    // Windows: Ctrl+C reaches the engine, which shares the console; this
+    // process waits for it to end instead of returning first.
+    let _interrupts = crate::platform::IgnoreInterrupts::new();
     match command.status() {
         // A signal ended the engine: report it as a failure.
         Ok(status) => status.code().unwrap_or(1),
@@ -442,10 +446,7 @@ mod tests {
         std::fs::create_dir_all(&links).unwrap();
         std::os::unix::fs::symlink(cellar.join("graphicle"), links.join("graphicle")).unwrap();
         let found = locate(Some(&links.join("graphicle")), None).unwrap();
-        assert_eq!(
-            found.canonicalize().unwrap(),
-            engine.canonicalize().unwrap()
-        );
+        assert_eq!(found.canonical().unwrap(), engine.canonical().unwrap());
     }
 
     #[cfg(unix)]

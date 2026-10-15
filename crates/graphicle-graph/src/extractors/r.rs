@@ -1,11 +1,15 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/r.py
 //! Port of graphify/extractors/r.py (Graphify 0.9.69, #3715): functions,
 //! R6/Reference/ggproto/S4 classes and methods, `library`/`require` packages
 //! and `source()` imports. Calls bind lexically; calls into `source()`d
 //! files resolve across the corpus through [`resolve_r_sourced_calls`].
 use super::base::{file_stem, make_id, read_text};
-use crate::{fsutil, io_compat, path_syntax, python_compat};
+use crate::{
+    extract::per_file::PerFile,
+    fsutil, io_compat, path_syntax, python_compat,
+    resolver_registry::{Rec, append_edges, at, edge_record},
+};
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -538,6 +542,16 @@ pub fn extract_r(path: &Path) -> Value {
 
 /// Bind R calls only through an explicit `source()` of the defining file.
 pub fn resolve_r_sourced_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
+    resolve_r_sourced_calls_any(per, nodes, edges);
+}
+/// [`resolve_r_sourced_calls`] over the per-file results and the edges in
+/// either form. New edges are appended after the loop, which reads none of
+/// them.
+pub fn resolve_r_sourced_calls_any<P: PerFile, E: Rec>(
+    per: &[P],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+) {
     let text = |v: &Value| python_compat::string(v);
     let is_file = |n: &Value| {
         crate::build::truthy(&n["source_file"])
@@ -567,13 +581,16 @@ pub fn resolve_r_sourced_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<V
             .map(|i| file_source_by_id[*i].1.clone())
     };
     let mut sourced: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for edge in edges.iter().filter(|e| e["relation"] == "imports_from") {
-        if !edge["target"].is_string() {
+    for edge in edges
+        .iter()
+        .filter(|e| at(*e, "relation") == "imports_from")
+    {
+        if !at(edge, "target").is_string() {
             continue;
         }
-        if let Some(target) = source_of(&edge["target"]) {
+        if let Some(target) = source_of(at(edge, "target")) {
             sourced
-                .entry(edge["source"].to_string())
+                .entry(at(edge, "source").to_string())
                 .or_default()
                 .insert(target);
         }
@@ -596,22 +613,20 @@ pub fn resolve_r_sourced_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<V
     }
     let mut existing = edges
         .iter()
-        .filter(|e| e["relation"] == "calls")
-        .map(|e| (e["source"].clone(), e["target"].clone()))
+        .filter(|e| at(*e, "relation") == "calls")
+        .map(|e| (at(e, "source").clone(), at(e, "target").clone()))
         .collect::<HashSet<_>>();
-    for call in per
-        .iter()
-        .flat_map(|r| r["raw_calls"].as_array().into_iter().flatten())
-    {
-        if call["language"] != "r" {
+    let mut added: Vec<E> = vec![];
+    for call in per.iter().flat_map(|r| r.raw_calls().into_iter().flatten()) {
+        if at(call, "language") != "r" {
             continue;
         }
-        let caller = call["caller_nid"].clone();
-        let source_file = call.get("source_file").map(text).unwrap_or_default();
+        let caller = at(call, "caller_nid").clone();
+        let source_file = call.rec_get("source_file").map(text).unwrap_or_default();
         let Some(caller_file) = file_id_by_source.get(&source_file) else {
             continue;
         };
-        let callee = call.get("callee").map(text).unwrap_or_default();
+        let callee = call.rec_get("callee").map(text).unwrap_or_default();
         let mut candidates = vec![];
         for source in sourced.get(&caller_file.to_string()).into_iter().flatten() {
             candidates.extend(
@@ -629,6 +644,7 @@ pub fn resolve_r_sourced_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<V
         if !existing.insert((caller.clone(), target.clone())) {
             continue;
         }
-        edges.push(json!({"source":caller,"target":target,"relation":"calls","context":"sourced_call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":call.get("source_file").cloned().unwrap_or(json!("")),"source_location":call["source_location"],"weight":1.0}));
+        added.push(edge_record(json!({"source":caller,"target":target,"relation":"calls","context":"sourced_call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":call.rec_get("source_file").cloned().unwrap_or(json!("")),"source_location":at(call, "source_location"),"weight":1.0})));
     }
+    append_edges(edges, added);
 }

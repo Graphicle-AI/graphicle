@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! Backend configuration and environment precedence from graphify/llm.py.
 use crate::{Result, build::Diagnostics, dedup_strings::whitespace, python_compat::repr_string};
@@ -560,12 +560,25 @@ impl Configuration {
             .unwrap_or(0.0)
     }
 }
+/// A variable from `env`. Windows variable names are case-insensitive, so a
+/// missing exact name falls back to any spelling (`Path` for `PATH`).
+fn env_value<'a>(env: &'a Environment, key: &str) -> &'a str {
+    #[cfg(windows)]
+    if !env.contains_key(key)
+        && let Some(value) = env
+            .iter()
+            .find_map(|(k, v)| k.eq_ignore_ascii_case(key).then_some(v))
+    {
+        return value;
+    }
+    get(env, key)
+}
 pub fn executable(name: &str, env: &Environment) -> Option<PathBuf> {
     if name.contains(std::path::MAIN_SEPARATOR) {
         let p = PathBuf::from(name);
         return p.is_file().then_some(p);
     }
-    let path = get(env, "PATH");
+    let path = env_value(env, "PATH");
     for directory in std::env::split_paths(path) {
         let p = directory.join(name);
         if p.is_file() {
@@ -582,7 +595,7 @@ pub fn executable(name: &str, env: &Environment) -> Option<PathBuf> {
             return Some(p);
         }
         #[cfg(windows)]
-        for ext in get(env, "PATHEXT").split(';') {
+        for ext in env_value(env, "PATHEXT").split(';') {
             let candidate = directory.join(format!("{name}{ext}"));
             if candidate.is_file() {
                 return Some(candidate);
@@ -597,4 +610,22 @@ pub fn claude_command(env: &Environment) -> Option<PathBuf> {
         return Some(p);
     }
     executable("claude", env)
+}
+
+#[cfg(all(test, windows))]
+mod windows_path_tests {
+    use super::{Environment, executable};
+
+    #[test]
+    fn path_and_pathext_are_found_in_any_case() {
+        let system = std::path::Path::new(&std::env::var("SystemRoot").unwrap()).join("System32");
+        let env: Environment = [
+            ("Path".to_string(), system.to_string_lossy().into_owned()),
+            ("PathExt".to_string(), ".COM;.EXE".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let found = executable("cmd", &env).unwrap();
+        assert!(found.starts_with(&system), "{}", found.display());
+    }
 }

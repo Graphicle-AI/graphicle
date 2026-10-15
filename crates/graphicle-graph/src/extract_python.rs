@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Corpus-wide Python absolute-import ambiguity guard (upstream #3729).
 //!
@@ -9,12 +9,14 @@
 //! imports stay dangling instead of binding to whichever file a resolver
 //! happens to probe first.
 use crate::{
+    extract::per_file::PerFile,
     extractors::{
         base::make_id,
         engine_config::probe_python_module_candidate,
         resolution::{resolved, s},
         resolution_facts::AmbiguousModules,
     },
+    resolver_registry::{Rec, rs},
     unicode15::{IDENTIFIER_CONTINUE, IDENTIFIER_START},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -207,10 +209,10 @@ fn loose_sibling(edge: &Value, module: &str, files: &ModuleFiles, root: &Path) -
 /// namespace-package markers, point ambiguous imports at a node-less id so
 /// the graph builder drops them, and flag raw calls whose receiver or callee
 /// is bound by an ambiguous import (`_ambiguous_python_import`).
-pub fn suppress_ambiguous_imports(
+pub fn suppress_ambiguous_imports<P: PerFile>(
     edges: &mut Vec<Value>,
     nodes: &[Value],
-    per: &mut [Value],
+    per: &mut [P],
     ambiguous: &AmbiguousModules,
     files: &ModuleFiles,
     root: &Path,
@@ -305,16 +307,11 @@ pub fn suppress_ambiguous_imports(
         return;
     }
     for record in per.iter_mut() {
-        for call in record
-            .get_mut("raw_calls")
-            .and_then(Value::as_array_mut)
-            .into_iter()
-            .flatten()
-        {
-            let source_file = s(call, "source_file");
+        for call in record.raw_calls_mut().into_iter().flatten() {
+            let source_file = rs(call, "source_file");
             // `str(raw_call.get(key, ""))`: a missing key reads as "".
             let text = |key: &str| {
-                call.get(key)
+                call.rec_get(key)
                     .map(crate::python_compat::string)
                     .unwrap_or_default()
             };
@@ -325,7 +322,7 @@ pub fn suppress_ambiguous_imports(
                     names.contains(&text("callee")) || names.contains(root_name)
                 });
             if flagged {
-                call["_ambiguous_python_import"] = json!(true);
+                call.rec_set("_ambiguous_python_import", Value::Bool(true));
             }
         }
     }

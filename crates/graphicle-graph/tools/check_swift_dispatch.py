@@ -4,12 +4,15 @@ import copy
 import dataclasses
 import random
 from parity import Native, upstream_tests
+import dispatch_oracle
 import graphify.swift_dispatch as reference
 import graphify.extract as extraction
 import graphify.resolver_registry as registry
 
 native=Native("swift_dispatch")
 original=reference.resolve_swift_protocol_dispatch
+# The gate calls the pinned mechanism with implementers in arrival order (dispatch_oracle).
+reference.resolve_interface_dispatch=dispatch_oracle.mechanism().resolve_interface_dispatch
 counts={"resolve":0}
 def resolve(per_file,nodes,edges):
     counts["resolve"]+=1
@@ -36,6 +39,6 @@ try:
         resolve([None,{},{"source_file":rng.choice(files)}],nodes,edges)
         resolve([],nodes,edges)
 finally:native.close()
-native.receipt("graphify/swift_dispatch.py",["src/swift_dispatch.rs"],checked=counts,upstream_tests=tests,
-    comparisons="Single conformer/member guards, extension conformance, protocol-extension defaults, builtin protocol stubs, cross-language isolation, relation-scoped deduplication and unchanged call edges.",
+native.receipt("graphify/swift_dispatch.py",["src/swift_dispatch.rs"],checked=counts,upstream_tests=tests,implementer_order=dispatch_oracle.ORDER_NOTE,
+    comparisons="Fan-out to every gated conformer with tiered confidence (#3800, #4396), single-owner member guards, extension conformance, protocol-extension defaults, builtin protocol stubs, cross-language isolation, relation-scoped deduplication and unchanged call edges.",
     test_scope="Original parser/extract.py builds fixture inputs; its registered Swift dispatch callback is replaced by the native Rust implementation.")

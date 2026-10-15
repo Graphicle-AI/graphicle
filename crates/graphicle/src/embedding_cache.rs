@@ -12,6 +12,7 @@
 //! never matches an old entry. Remote providers are assumed to serve fixed
 //! weights for a model name. Share one file only within one trust domain: a
 //! hit reveals that the same text was embedded before.
+use crate::platform::CanonicalExt;
 use crate::{Error, Result};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params, types::ValueRef};
 use std::path::Path;
@@ -51,7 +52,7 @@ impl Cache {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."))
-            .canonicalize()?;
+            .canonical()?;
         let path = parent.join(name);
         // SQLite inherits the database mode when it creates WAL/SHM files.
         // Restrict the main file before SQLite can write, and repair existing
@@ -291,7 +292,7 @@ mod tests {
         // the shared WAL index under that connection.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.sqlite");
-        let shm = dir.path().canonicalize().unwrap().join("cache.sqlite-shm");
+        let shm = dir.path().canonical().unwrap().join("cache.sqlite-shm");
         let first = Cache::open(&path, "m").unwrap();
         first.put([("a", [1.0].as_slice())]).unwrap();
         assert!(read_locked_elsewhere(&shm, 128));

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/vbnet.py
 //! Port of graphify/extractors/vbnet.py (Graphify 0.9.69, #3717): namespaces,
 //! classes/modules/interfaces/structures/enums, members, `Handles` clauses and
@@ -6,7 +6,12 @@
 //! Calls on another file's part of a partial type resolve through
 //! [`resolve_vbnet_partial_calls`].
 use super::base::{file_stem, make_id, read_text};
-use crate::{dedup_strings::casefold, fsutil, io_compat, path_syntax, python_compat};
+use crate::{
+    dedup_strings::casefold,
+    extract::per_file::PerFile,
+    fsutil, io_compat, path_syntax, python_compat,
+    resolver_registry::{Rec, append_edges, at, edge_record},
+};
 use serde_json::{Map, Value, json};
 use std::{
     collections::{HashMap, HashSet},
@@ -521,6 +526,16 @@ pub fn extract_vbnet(path: &Path) -> Value {
 /// Bind calls to the one same-named, arity-compatible method of the same
 /// (possibly partial) owner type anywhere in the corpus.
 pub fn resolve_vbnet_partial_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
+    resolve_vbnet_partial_calls_any(per, nodes, edges);
+}
+/// [`resolve_vbnet_partial_calls`] over the per-file results and the edges
+/// in either form. New edges are appended after the loop, which reads none
+/// of them.
+pub fn resolve_vbnet_partial_calls_any<P: PerFile, E: Rec>(
+    per: &[P],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+) {
     let mut methods: HashMap<(String, String, i64), Vec<Value>> = HashMap::new();
     for node in nodes {
         let metadata = &node["metadata"];
@@ -545,33 +560,32 @@ pub fn resolve_vbnet_partial_calls(per: &[Value], nodes: &[Value], edges: &mut V
     }
     let mut existing = edges
         .iter()
-        .filter(|e| e["relation"] == "calls")
-        .map(|e| (e["source"].clone(), e["target"].clone()))
+        .filter(|e| at(*e, "relation") == "calls")
+        .map(|e| (at(e, "source").clone(), at(e, "target").clone()))
         .collect::<HashSet<_>>();
-    for call in per
-        .iter()
-        .flat_map(|r| r["raw_calls"].as_array().into_iter().flatten())
-    {
-        if call["language"] != "vbnet" || !crate::build::truthy(&call["owner"]) {
+    let mut added: Vec<E> = vec![];
+    for call in per.iter().flat_map(|r| r.raw_calls().into_iter().flatten()) {
+        if at(call, "language") != "vbnet" || !crate::build::truthy(at(call, "owner")) {
             continue;
         }
         let key = (
-            casefold(&python_compat::string(&call["owner"])),
+            casefold(&python_compat::string(at(call, "owner"))),
             casefold(
                 &call
-                    .get("callee")
+                    .rec_get("callee")
                     .map(python_compat::string)
                     .unwrap_or_default(),
             ),
-            call.get("arity").and_then(Value::as_i64).unwrap_or(-1),
+            call.rec_get("arity").and_then(Value::as_i64).unwrap_or(-1),
         );
-        let caller = call["caller_nid"].clone();
+        let caller = at(call, "caller_nid").clone();
         let Some([target]) = methods.get(&key).map(Vec::as_slice) else {
             continue;
         };
         if *target == caller || !existing.insert((caller.clone(), target.clone())) {
             continue;
         }
-        edges.push(json!({"source":caller,"target":target,"relation":"calls","context":"partial_type_call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":call.get("source_file").cloned().unwrap_or(json!("")),"source_location":call["source_location"],"weight":1.0}));
+        added.push(edge_record(json!({"source":caller,"target":target,"relation":"calls","context":"partial_type_call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":call.rec_get("source_file").cloned().unwrap_or(json!("")),"source_location":at(call, "source_location"),"weight":1.0})));
     }
+    append_edges(edges, added);
 }

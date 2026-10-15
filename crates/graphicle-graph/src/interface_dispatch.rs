@@ -1,19 +1,37 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/interface_dispatch.py
-//! Single-implementer interface dispatch, shared by the C# and Swift passes.
+//! Interface dispatch to every implementer, shared by the C# and Swift passes.
 //!
 //! A call through an injected dependency lands on the interface's member, so
-//! the implementation sits unreachable from the call site. When an interface
-//! has exactly one implementer, each uniquely named member is linked to the
-//! implementer's same-named member. `suffixes` is the language gate: both ends
-//! must be declared in a file with one of these extensions.
+//! the implementation sits unreachable from the call site. Each uniquely named
+//! member of an interface is linked to the same-named member of every
+//! implementer that owns exactly one member of that name (#3800); an
+//! implementer that overloads the name is skipped on its own. `suffixes` is
+//! the language gate: the interface and each implementer must be declared in a
+//! file with one of these extensions, and implementers that fail it do not
+//! count toward the confidence (#4396).
+//!
+//! The pass reads the edges and the per-file results in whichever form
+//! assembly holds them ([`Rec`], [`PerFile`]).
 use crate::{
     Result,
+    extract::per_file::PerFile,
     python_compat::{ScalarKey, scalar_key, string},
+    resolver_registry::{Rec, append_edges, at, edge_record},
 };
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 pub const DISPATCH_RELATION: &str = "dispatches_to";
+/// INFERRED confidence for a dispatch edge, given how many gated implementers
+/// exist: 0.85 for one (the target is forced), 0.75 for two, and a 0.65 floor
+/// from three on, the extraction rubric's own tiers.
+pub fn dispatch_confidence(implementer_count: usize) -> f64 {
+    match implementer_count {
+        1 => 0.85,
+        2 => 0.75,
+        _ => 0.65,
+    }
+}
 fn key(value: &Value) -> Result<ScalarKey> {
     scalar_key(value).ok_or_else(|| "unhashable identifier".into())
 }
@@ -23,7 +41,11 @@ fn text(node: &Value, field: &str) -> String {
 /// Whether `node` is declared in a file with one of `suffixes`, by its
 /// effective suffix, so a `.graphiclerc` language declaration counts (#2961).
 pub fn declared_in(node: Option<&Value>, suffixes: &[&str]) -> bool {
-    node.and_then(|n| n.get("source_file"))
+    declared_at(node.and_then(|n| n.get("source_file")), suffixes)
+}
+/// [`declared_in`] for the `source_file` value itself.
+fn declared_at(source_file: Option<&Value>, suffixes: &[&str]) -> bool {
+    source_file
         .filter(|v| crate::build_normalize::truthy(v))
         .is_some_and(|v| suffixes.contains(&crate::rcfile::effective_suffix(string(v)).as_str()))
 }
@@ -50,11 +72,36 @@ pub fn resolve_interface_dispatch(
     edges: &mut Vec<Value>,
     suffixes: &[&str],
 ) -> Result<()> {
+    resolve_interface_dispatch_any(per_file, nodes, edges, suffixes)
+}
+/// [`resolve_interface_dispatch`] over the per-file results and the edges in
+/// either form. New edges are appended once after the pass, which reads none
+/// of them; when it stops at an error it adds none, as Python 0.9.91 extends
+/// the edge list only at the end.
+pub fn resolve_interface_dispatch_any<P: PerFile, E: Rec>(
+    per_file: &[P],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+    suffixes: &[&str],
+) -> Result<()> {
+    let mut added = vec![];
+    dispatch_edges(per_file, nodes, edges, suffixes, &mut added)?;
+    append_edges(edges, added);
+    Ok(())
+}
+/// The pass over `edges`, collecting its new edges in `added`.
+fn dispatch_edges<P: PerFile, E: Rec>(
+    per_file: &[P],
+    nodes: &[Value],
+    edges: &[E],
+    suffixes: &[&str],
+    added: &mut Vec<E>,
+) -> Result<()> {
+    // A result that is no object has no `source_file`.
     let present = per_file
         .iter()
-        .filter(|v| v.is_object())
-        .chain(nodes)
-        .any(|n| declared_in(Some(n), suffixes));
+        .any(|r| declared_at(r.key("source_file"), suffixes))
+        || nodes.iter().any(|n| declared_in(Some(n), suffixes));
     if !present {
         return Ok(());
     }
@@ -65,8 +112,8 @@ pub fn resolve_interface_dispatch(
     let mut implementers: Vec<(ScalarKey, Vec<Value>)> = vec![];
     let mut methods: BTreeMap<ScalarKey, Vec<(String, Vec<Value>)>> = BTreeMap::new();
     for edge in edges.iter() {
-        if edge["relation"] == "implements" {
-            let target = key(&edge["target"])?;
+        if at(edge, "relation") == "implements" {
+            let target = key(at(edge, "target"))?;
             let index = implementers
                 .iter()
                 .position(|(id, _)| id == &target)
@@ -74,10 +121,10 @@ pub fn resolve_interface_dispatch(
                     implementers.push((target, vec![]));
                     implementers.len() - 1
                 });
-            insert_unique(&mut implementers[index].1, &edge["source"])?;
-        } else if edge["relation"] == "method" {
-            let owner = key(&edge["source"])?;
-            let method = key(&edge["target"])?;
+            insert_unique(&mut implementers[index].1, at(edge, "source"))?;
+        } else if at(edge, "relation") == "method" {
+            let owner = key(at(edge, "source"))?;
+            let method = key(at(edge, "target"))?;
             let Some(node) = by_id
                 .get(&method)
                 .filter(|n| declared_in(Some(n), suffixes))
@@ -96,50 +143,65 @@ pub fn resolve_interface_dispatch(
                     names.push((name, vec![]));
                     names.len() - 1
                 });
-            insert_unique(&mut names[index].1, &edge["target"])?;
+            insert_unique(&mut names[index].1, at(edge, "target"))?;
         }
     }
     let mut pairs: BTreeSet<_> = edges
         .iter()
-        .filter(|e| e["relation"] == DISPATCH_RELATION)
-        .map(|e| Ok((key(&e["source"])?, key(&e["target"])?)))
+        .filter(|e| at(*e, "relation") == DISPATCH_RELATION)
+        .map(|e| Ok((key(at(e, "source"))?, key(at(e, "target"))?)))
         .collect::<Result<_>>()?;
     for (interface, impls) in implementers {
-        if impls.len() != 1 {
-            continue;
-        }
-        let implementation = key(&impls[0])?;
-        let (Some(interface_node), Some(impl_node)) =
-            (by_id.get(&interface), by_id.get(&implementation))
-        else {
+        let Some(interface_node) = by_id.get(&interface) else {
             continue;
         };
-        if !declared_in(Some(interface_node), suffixes) || !declared_in(Some(impl_node), suffixes) {
+        if !declared_in(Some(interface_node), suffixes) {
             continue;
         }
-        let Some(declared_names) = methods.get(&interface) else {
+        let Some(declared_names) = methods.get(&interface).filter(|names| !names.is_empty()) else {
             continue;
         };
-        for (name, declared) in declared_names {
-            if declared.len() != 1 {
-                continue;
-            }
-            let Some(candidates) = methods
+        // Gate first, then count: a sourceless stub or a cross-language name
+        // collision never gets an edge, so it must not lower the confidence of
+        // the implementers that do (#4396).
+        let mut gated = vec![];
+        for implementation in &impls {
+            let implementation = key(implementation)?;
+            if let Some(impl_node) = by_id
                 .get(&implementation)
-                .and_then(|names| names.iter().find(|(n, _)| n == name))
-                .map(|(_, v)| v)
-                .filter(|v| v.len() == 1)
-            else {
-                continue;
-            };
-            let source = &declared[0];
-            let target = &candidates[0];
-            let pair = (key(source)?, key(target)?);
-            if pair.0 == pair.1 || !pairs.insert(pair) {
-                continue;
+                .filter(|n| declared_in(Some(n), suffixes))
+            {
+                gated.push((implementation, *impl_node));
             }
-            edges.push(json!({"source":source,"target":target,"relation":DISPATCH_RELATION,"context":"call","confidence":"INFERRED","confidence_score":0.85,
-                "source_file":text(impl_node,"source_file"),"source_location":impl_node["source_location"],"weight":1.0}));
+        }
+        if gated.is_empty() {
+            continue;
+        }
+        let score = dispatch_confidence(gated.len());
+        for (implementation, impl_node) in gated {
+            for (name, declared) in declared_names {
+                if declared.len() != 1 {
+                    continue;
+                }
+                // Ambiguity is per implementer: one implementer overloading a
+                // name does not disqualify its siblings.
+                let Some(candidates) = methods
+                    .get(&implementation)
+                    .and_then(|names| names.iter().find(|(n, _)| n == name))
+                    .map(|(_, v)| v)
+                    .filter(|v| v.len() == 1)
+                else {
+                    continue;
+                };
+                let source = &declared[0];
+                let target = &candidates[0];
+                let pair = (key(source)?, key(target)?);
+                if pair.0 == pair.1 || !pairs.insert(pair) {
+                    continue;
+                }
+                added.push(edge_record(json!({"source":source,"target":target,"relation":DISPATCH_RELATION,"context":"call","confidence":"INFERRED","confidence_score":score,
+                    "source_file":text(impl_node,"source_file"),"source_location":impl_node["source_location"],"weight":1.0})));
+            }
         }
     }
     Ok(())

@@ -16,10 +16,10 @@ PROJECT = ROOT.parents[1]
 # research folder).
 DOWNLOAD = Path(os.environ.get("GRAPHICLE_UPSTREAM_DOWNLOAD")
                 or PROJECT / "research/memory-runtime-integration-2026-09-22/upstream")
-SOURCE = DOWNLOAD / "Graphify-Labs__graphify-0.9.88"
-ARCHIVE = DOWNLOAD / "Graphify-Labs__graphify-a9860f70dc3c.tar.gz"
-COMMIT = "a9860f70dc3cc2e9c2d8cb923484cfa0592b9067"
-VERSION = "0.9.88"
+SOURCE = DOWNLOAD / "Graphify-Labs__graphify-0.9.91"
+ARCHIVE = DOWNLOAD / "Graphify-Labs__graphify-10130e79ed9c.tar.gz"
+COMMIT = "10130e79ed9caf8f60d998073e097531eaa1a395"
+VERSION = "0.9.91"
 
 
 def category(path):

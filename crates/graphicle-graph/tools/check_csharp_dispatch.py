@@ -4,6 +4,7 @@ import copy
 import dataclasses
 import random
 from parity import Native, upstream_tests
+import dispatch_oracle
 import graphify.csharp_dispatch as reference
 import graphify.interface_dispatch as mechanism
 import graphify.extract as extraction
@@ -11,6 +12,8 @@ import graphify.resolver_registry as registry
 
 native=Native("csharp_dispatch")
 original=reference.resolve_csharp_interface_dispatch
+# The gate calls the pinned mechanism with implementers in arrival order (dispatch_oracle).
+reference.resolve_interface_dispatch=dispatch_oracle.mechanism().resolve_interface_dispatch
 original_label=reference._method_label
 counts={"resolve":0,"method_label":0,"is_csharp":0}
 def resolve(per_file,nodes,edges):
@@ -49,6 +52,6 @@ try:
         resolve([],nodes,edges)
         for node in nodes:label(node);is_csharp(node)
 finally:native.close()
-native.receipt("graphify/csharp_dispatch.py",["src/csharp_dispatch.rs"],checked=counts,upstream_tests=tests,
-    comparisons="Single implementer/member guards, duplicate method edges, exact case and signature labels, language isolation, relation-scoped deduplication, source locations and unchanged call edges.",
+native.receipt("graphify/csharp_dispatch.py",["src/csharp_dispatch.rs"],checked=counts,upstream_tests=tests,implementer_order=dispatch_oracle.ORDER_NOTE,
+    comparisons="Fan-out to every gated implementer with tiered confidence (#3800, #4396), single-owner member guards, duplicate method edges, exact case and signature labels, language isolation, relation-scoped deduplication, source locations and unchanged call edges.",
     test_scope="Original parser/extract.py builds fixture inputs; its registered C# dispatch callback is replaced by the native Rust implementation. A native LanguageResolver factory is available for the eventual native extractor registry.")

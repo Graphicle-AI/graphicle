@@ -1542,18 +1542,20 @@ fn php_static_calls_bind_to_the_scope_class() {
         e("app_child", "app_child_go", "method", "app.php"),
         e("app_child", "helper_helper", "inherits", "app.php"),
     ];
+    // Scoped calls (`X::m()`) carry `php_scoped` since Graphify 0.9.89.
+    let scoped = || json!({"php_scoped": true});
     let raw = vec![
         call(
             "app_child_run",
             "FORMAT",
             "\\App\\Helper",
             "app.php",
-            json!({}),
+            scoped(),
         ),
-        call("app_child_run", "go", "static", "app.php", json!({})),
-        call("app_child_go", "format", "parent", "app.php", json!({})),
-        call("app_child_go", "x", "$obj", "app.php", json!({})),
-        call("app_child_go", "y", "Missing", "app.php", json!({})),
+        call("app_child_run", "go", "static", "app.php", scoped()),
+        call("app_child_go", "format", "parent", "app.php", scoped()),
+        call("app_child_go", "x", "$obj", "app.php", scoped()),
+        call("app_child_go", "y", "Missing", "app.php", scoped()),
     ];
     let mut all_nodes = nodes.clone();
     let mut all_edges = edges.clone();

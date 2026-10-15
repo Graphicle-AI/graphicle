@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py
 //! Incremental replacement, deletion pruning and loss accounting for graph builds.
 use crate::{
@@ -303,6 +303,80 @@ impl Default for MergeOptions {
 fn isolated(graph: &Graph, i: usize) -> bool {
     graph.out_edges(i).is_empty() && graph.in_edges(i).is_empty()
 }
+/// Ids of the source-less `nodes` that no edge of `edges` touches (#4399).
+fn isolated_sourceless(nodes: &[Value], edges: &[Value]) -> BTreeSet<python_compat::ScalarKey> {
+    let mut candidates: BTreeSet<_> = nodes
+        .iter()
+        .filter(|n| n.is_object() && !n.get("source_file").is_some_and(truthy))
+        .filter_map(|n| scalar_key(n.get("id").unwrap_or(&Value::Null)))
+        .collect();
+    if candidates.is_empty() {
+        return candidates;
+    }
+    for edge in edges.iter().filter(|e| e.is_object()) {
+        for end in ["source", "target"] {
+            if let Some(key) = scalar_key(edge.get(end).unwrap_or(&Value::Null)) {
+                candidates.remove(&key);
+            }
+        }
+    }
+    candidates
+}
+/// Removes the source-less nodes a merge left without an edge (upstream
+/// `_sweep_orphans`, #4247/#4399) and returns their ids. Spared: nodes already
+/// isolated in the stored graph or emitted without an edge by the fresh chunks
+/// (`spare`), and hyperedge members (referenced from the graph attributes, so
+/// degree 0 does not mean they connect nothing). Only machine-minted
+/// placeholders (code stubs and external import stubs) go when re-extraction
+/// strands them; another source-less node goes only when this prune isolated
+/// it (`pruned_before` holds the ones isolated before the prune).
+fn sweep_orphans(
+    graph: &mut Graph,
+    spare: &BTreeSet<python_compat::ScalarKey>,
+    pruned_before: Option<&BTreeSet<python_compat::ScalarKey>>,
+) -> Result<Vec<Value>> {
+    let he_members: BTreeSet<_> = graph
+        .attributes
+        .get("hyperedges")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|he| he.is_object())
+        .flat_map(|he| {
+            he.get("nodes")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(scalar_key)
+        .collect();
+    let orphaned = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .filter(|(i, n)| {
+            let attrs = &n.attributes;
+            if attrs.get("source_file").is_some_and(truthy) || !isolated(graph, *i) {
+                return false;
+            }
+            let key = scalar_key(&n.id);
+            if key
+                .as_ref()
+                .is_some_and(|k| spare.contains(k) || he_members.contains(k))
+            {
+                return false;
+            }
+            let external_stub = attrs.get("external") == Some(&Value::Bool(true))
+                && attrs.get("type").and_then(Value::as_str) == Some("external");
+            attrs.get("file_type").and_then(Value::as_str) == Some("code")
+                || external_stub
+                || pruned_before.is_some_and(|before| !key.is_some_and(|k| before.contains(&k)))
+        })
+        .map(|(_, n)| n.id.clone())
+        .collect::<Vec<_>>();
+    graph.remove_nodes_from(&orphaned)?;
+    Ok(orphaned)
+}
 pub fn build_merge(
     chunks: &[Value],
     options: &MergeOptions,
@@ -339,14 +413,24 @@ pub fn build_merge_owned(
     let new_sources = ast.union(&sem).cloned().collect::<BTreeSet<_>>();
     let disk_nodes = existing.nodes;
     let disk_n = disk_nodes.len();
-    // Only saved nodes a prune removes may excuse a smaller graph (#3774).
-    let disk_ids = (!options.prune_sources.is_empty()).then(|| {
-        disk_nodes
-            .iter()
-            .filter(|n| n.is_object() && !n["id"].is_null())
-            .filter_map(|n| scalar_key(&n["id"]))
-            .collect::<BTreeSet<_>>()
-    });
+    // Only saved nodes a prune or the orphan sweep removes may excuse a
+    // smaller graph (#3774).
+    let disk_ids = disk_nodes
+        .iter()
+        .filter(|n| n.is_object() && !n["id"].is_null())
+        .filter_map(|n| scalar_key(&n["id"]))
+        .collect::<BTreeSet<_>>();
+    // Source-less nodes already isolated in the stored graph (#4399), taken
+    // before the re-extracted sources' old edges go, so a placeholder this run
+    // strands is not mistaken for a pre-existing isolate; and those the fresh
+    // chunks emit without an edge, which a from-scratch build would keep.
+    let mut spare_isolated = isolated_sourceless(&disk_nodes, &existing.edges);
+    for chunk in &chunks {
+        spare_isolated.extend(isolated_sourceless(
+            chunk["nodes"].as_array().map_or(&[][..], Vec::as_slice),
+            chunk["edges"].as_array().map_or(&[][..], Vec::as_slice),
+        ));
+    }
     let fresh_nodes = || {
         chunks
             .iter()
@@ -483,28 +567,15 @@ pub fn build_merge_owned(
             }
         }
         graph.remove_edges_from(&edges);
-        let orphaned = graph
-            .nodes
-            .iter()
-            .enumerate()
-            .filter(|(i, n)| {
-                !n.attributes.get("source_file").is_some_and(truthy)
-                    && isolated(&graph, *i)
-                    && !scalar_key(&n.id).is_some_and(|k| isolated_before.contains(&k))
-            })
-            .map(|(_, n)| n.id.clone())
-            .collect::<Vec<_>>();
+        let orphaned = sweep_orphans(&mut graph, &spare_isolated, Some(&isolated_before))?;
         n_nodes += orphaned.len();
-        graph.remove_nodes_from(&orphaned)?;
         // A stub minted in this run and then orphaned was never in graph.json,
         // so it cannot excuse a dedup shrink; the message below still counts it.
-        let saved = disk_ids.as_ref().map_or(0, |ids| {
-            remove
-                .iter()
-                .chain(&orphaned)
-                .filter(|id| scalar_key(id).is_some_and(|k| ids.contains(&k)))
-                .count()
-        });
+        let saved = remove
+            .iter()
+            .chain(&orphaned)
+            .filter(|id| scalar_key(id).is_some_and(|k| disk_ids.contains(&k)))
+            .count();
         graph.attributes[build::PRUNED_NODE_COUNT] = json!(saved);
         let n_files = prune.matched.len();
         if n_nodes > 0 {
@@ -535,6 +606,23 @@ pub fn build_merge_owned(
             } else {
                 messages.stderr.push(format!("[graphicle] {} source file(s) deleted or excluded since last run — no matching nodes or edges in graph, already clean.",options.prune_sources.len()));
             }
+        }
+    } else {
+        // Re-extraction strands placeholders too, e.g. per-file stubs
+        // re-pointed at a shared node (#4247) or a type whose last reference
+        // was edited away (#4399).
+        let swept = sweep_orphans(&mut graph, &spare_isolated, None)?;
+        if !swept.is_empty() {
+            // The same #3774 excuse as the prune path: only saved nodes count.
+            let saved = swept
+                .iter()
+                .filter(|id| scalar_key(id).is_some_and(|k| disk_ids.contains(&k)))
+                .count();
+            graph.attributes[build::PRUNED_NODE_COUNT] = json!(saved);
+            messages.stderr.push(format!(
+                "[graphicle] Removed {} source-less node(s) left with no edges by re-extraction.",
+                swept.len()
+            ));
         }
     }
     if let Some(disk_nodes) = &disk_copy {

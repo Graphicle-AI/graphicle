@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/exporters/html.py
 //! Interactive graph view. Browser HTML/JS/CSS remains in its native format;
 //! graph assembly, aggregation, annotation and output are implemented in Rust.
@@ -10,6 +10,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::Write as _,
     path::Path,
 };
 pub const MAX_NODES_FOR_VIZ: i64 = 5000;
@@ -74,16 +75,74 @@ pub fn html_styles() -> &'static str {
 pub fn hyperedge_script(json: &str) -> String {
     include_str!("../assets/export_html/hyperedges.html.template").replace("{{HYPEREDGES}}", json)
 }
+const SCRIPT_TEMPLATE: &str = include_str!("../assets/export_html/script.html.template");
+const SCRIPT_KEYS: [&str; 3] = ["{{NODES}}", "{{EDGES}}", "{{LEGEND}}"];
+const DOCUMENT_TEMPLATE: &str = include_str!("../assets/export_html/document.html.template");
+const DOCUMENT_KEYS: [&str; 5] = [
+    "{{TITLE}}",
+    "{{STATS}}",
+    "{{STYLES}}",
+    "{{SCRIPT}}",
+    "{{HYPEREDGE_SCRIPT}}",
+];
 pub fn html_script(nodes: &str, edges: &str, legend: &str) -> String {
     // Single pass keeps placeholder-looking source strings literal.
     render(
-        include_str!("../assets/export_html/script.html.template"),
+        SCRIPT_TEMPLATE,
         &[
-            ("{{NODES}}", nodes),
-            ("{{EDGES}}", edges),
-            ("{{LEGEND}}", legend),
+            (SCRIPT_KEYS[0], nodes),
+            (SCRIPT_KEYS[1], edges),
+            (SCRIPT_KEYS[2], legend),
         ],
     )
+}
+/// [`render`] written to `out`: `write(out, i)` writes the value of
+/// `keys[i]` wherever [`render`] would substitute it, so a value is never
+/// held as a string of its own.
+fn render_to<W: std::io::Write>(
+    out: &mut W,
+    template: &str,
+    keys: &[&str],
+    write: &mut dyn FnMut(&mut W, usize) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut rest = template;
+    loop {
+        let next = keys
+            .iter()
+            .enumerate()
+            .filter_map(|(i, key)| rest.find(key).map(|at| (at, i)))
+            .min_by_key(|(at, _)| *at);
+        let Some((at, i)) = next else {
+            out.write_all(rest.as_bytes())?;
+            return Ok(());
+        };
+        out.write_all(&rest.as_bytes()[..at])?;
+        write(out, i)?;
+        rest = &rest[at + keys[i].len()..];
+    }
+}
+/// [`js_safe`] of `value`, written to `out`: the JSON is escaped as it is
+/// written instead of being built and copied as a string.
+fn write_js_safe<W: std::io::Write>(out: &mut W, value: &Value) -> std::io::Result<()> {
+    crate::python_json::write(&mut ScriptSafe(out), value, None, true)
+}
+/// A writer that escapes every `<` as `\u003c` ([`js_safe`]): the JSON it
+/// receives is ASCII (`ensure_ascii`), so escaping bytes escapes characters.
+struct ScriptSafe<W>(W);
+impl<W: std::io::Write> std::io::Write for ScriptSafe<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut rest = buf;
+        while let Some(at) = rest.iter().position(|b| *b == b'<') {
+            self.0.write_all(&rest[..at])?;
+            self.0.write_all(b"\\u003c")?;
+            rest = &rest[at + 1..];
+        }
+        self.0.write_all(rest)?;
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
 }
 fn render(template: &str, values: &[(&str, &str)]) -> String {
     let mut out = String::new();
@@ -384,9 +443,10 @@ pub fn to_html(
         let n=options.member_counts.get(cid).map(|v|json!(*v as i64)).unwrap_or(json!(count));
         json!({"cid":cid,"color":COMMUNITY_COLORS[cid.rem_euclid(10) as usize],"label":escape(&security::sanitize_label(&community_name(Some(*cid),labels))),"count":n})
     }).collect::<Vec<_>>();
-    let nodes = js_safe(&json!(vis_nodes))?;
-    let edges = js_safe(&json!(vis_edges))?;
-    let legends = js_safe(&json!(legend))?;
+    // The lists move into their documents (`json!` would copy them).
+    let nodes = Value::Array(vis_nodes);
+    let edges = Value::Array(vis_edges);
+    let legends = Value::Array(legend);
     let hypers = js_safe(graph.attributes.get("hyperedges").unwrap_or(&json!([])))?;
     let title = escape(&security::sanitize_label(&json!(html_document_title(
         &output.to_string_lossy()
@@ -397,19 +457,33 @@ pub fn to_html(
         graph.edge_count(),
         communities.len()
     );
-    let script = html_script(&nodes, &edges, &legends);
     let hyper_script = hyperedge_script(&hypers);
-    let page = render(
-        include_str!("../assets/export_html/document.html.template"),
-        &[
-            ("{{TITLE}}", &title),
-            ("{{STATS}}", &stats),
-            ("{{STYLES}}", html_styles()),
-            ("{{SCRIPT}}", &script),
-            ("{{HYPEREDGE_SCRIPT}}", &hyper_script),
-        ],
-    );
-    paths::write_text_atomic(output, &page).map_err(crate::Error::from)?;
+    // The page `render` assembles from the document and script templates
+    // (`html_script`), streamed into the file: neither the node and edge JSON
+    // nor the page is held as a string.
+    paths::atomic_replace_with(
+        output,
+        |file| {
+            let mut out = std::io::BufWriter::with_capacity(1 << 16, file);
+            render_to(
+                &mut out,
+                DOCUMENT_TEMPLATE,
+                &DOCUMENT_KEYS,
+                &mut |out, key| match key {
+                    0 => out.write_all(title.as_bytes()),
+                    1 => out.write_all(stats.as_bytes()),
+                    2 => out.write_all(html_styles().as_bytes()),
+                    3 => render_to(out, SCRIPT_TEMPLATE, &SCRIPT_KEYS, &mut |out, key| {
+                        write_js_safe(out, [&nodes, &edges, &legends][key])
+                    }),
+                    _ => out.write_all(hyper_script.as_bytes()),
+                },
+            )?;
+            std::io::Write::flush(&mut out)
+        },
+        &paths::SystemReplace,
+    )
+    .map_err(crate::Error::from)?;
     Ok(true)
 }
 pub fn dispatch(r: &Value) -> Result<Value> {
@@ -454,6 +528,67 @@ pub fn dispatch(r: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::html_document_title;
+
+    /// The page streamed into the file equals the page `render` assembled
+    /// from `js_safe` strings: placeholders found in order, a repeated one
+    /// written each time, values (even placeholder-looking ones) never
+    /// re-scanned, every `<` of the JSON escaped.
+    #[test]
+    fn streamed_page_matches_rendered_page() {
+        use super::*;
+        let nodes = json!([{"id": "a<b", "label": "x</script><!--", "size": 10.5,
+                            "title": "{{EDGES}} \u{e9}\u{1f600}", "n": [1, 2.50, null]}]);
+        let edges = json!([{"from": "a<b", "to": "{{NODES}}", "dashes": false}]);
+        let legend = json!([]);
+        for (document, script) in [
+            (DOCUMENT_TEMPLATE, SCRIPT_TEMPLATE),
+            (
+                "<{{SCRIPT}}|{{TITLE}}{{STATS}}{{SCRIPT}}{{STYLES}}{{HYPEREDGE_SCRIPT}}{{X}}",
+                "{{LEGEND}}{{NODES}}-{{EDGES}}{{NODES}}{{",
+            ),
+        ] {
+            let values = [
+                super::js_safe(&nodes).unwrap(),
+                super::js_safe(&edges).unwrap(),
+                super::js_safe(&legend).unwrap(),
+            ];
+            let rendered_script = render(
+                script,
+                &[
+                    (SCRIPT_KEYS[0], &values[0]),
+                    (SCRIPT_KEYS[1], &values[1]),
+                    (SCRIPT_KEYS[2], &values[2]),
+                ],
+            );
+            let expected = render(
+                document,
+                &[
+                    ("{{TITLE}}", "T{{STATS}}"),
+                    ("{{STATS}}", "S"),
+                    ("{{STYLES}}", html_styles()),
+                    ("{{SCRIPT}}", &rendered_script),
+                    ("{{HYPEREDGE_SCRIPT}}", "H"),
+                ],
+            );
+            let mut out = Vec::new();
+            render_to(
+                &mut out,
+                document,
+                &DOCUMENT_KEYS,
+                &mut |out, key| match key {
+                    0 => out.write_all(b"T{{STATS}}"),
+                    1 => out.write_all(b"S"),
+                    2 => out.write_all(html_styles().as_bytes()),
+                    3 => render_to(out, script, &SCRIPT_KEYS, &mut |out, key| {
+                        write_js_safe(out, [&nodes, &edges, &legend][key])
+                    }),
+                    _ => out.write_all(b"H"),
+                },
+            )
+            .unwrap();
+            assert_eq!(String::from_utf8(out).unwrap(), expected);
+        }
+    }
 
     /// The title keeps the output folder and what follows it. The
     /// configuration folder (`~/.graphicle-graph`) is not an output folder,

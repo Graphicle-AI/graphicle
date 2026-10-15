@@ -6,6 +6,7 @@
 //! repository, with a cleared environment. Piped output keeps the JSON it
 //! had; `GRAPHICLE_OUTPUT=text` stands in for a terminal.
 use axum::{Json, Router, routing::post};
+use graphicle_runtime::platform::CanonicalExt;
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader},
@@ -31,7 +32,7 @@ struct Sandbox {
 impl Sandbox {
     fn new() -> Self {
         let dir = TempDir::new().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dir.path().canonical().unwrap();
         for folder in [
             "home/.cursor",
             "home/.codex",
@@ -42,6 +43,9 @@ impl Sandbox {
         ] {
             std::fs::create_dir_all(root.join(folder)).unwrap();
         }
+        // Claude Desktop's folder on Windows (`%APPDATA%\Claude`).
+        #[cfg(windows)]
+        std::fs::create_dir_all(root.join("home").join(r"AppData\Roaming\Claude")).unwrap();
         let repo = root.join("repo");
         std::fs::write(repo.join("src/auth.py"), AUTH).unwrap();
         std::fs::write(repo.join("src/app.py"), APP).unwrap();
@@ -61,11 +65,8 @@ impl Sandbox {
             ],
         ] {
             let mut git = Command::new("git");
-            git.args(&args)
-                .current_dir(&repo)
-                .env_clear()
-                .env("PATH", PATH)
-                .env("HOME", sandbox.home())
+            git.args(&args).current_dir(&repo);
+            crate::child_env::isolate(&mut git, &sandbox.home(), &[], PATH)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
@@ -94,10 +95,8 @@ impl Sandbox {
             .current_dir(cwd)
             .arg("--data-dir")
             .arg(self.data())
-            .args(args)
-            .env_clear()
-            .env("PATH", PATH)
-            .env("HOME", &home)
+            .args(args);
+        crate::child_env::isolate(&mut command, &home, &[], PATH)
             .env("XDG_CONFIG_HOME", home.join(".config"))
             .env("XDG_DATA_HOME", home.join(".local/share"))
             .env("XDG_CACHE_HOME", home.join(".cache"))
@@ -347,7 +346,7 @@ fn status_keeps_its_json_when_piped_and_reads_well_on_a_terminal() {
     assert_eq!(forced["repository"]["id"], id.as_str());
     // A Cursor entry for this project, as `connect` writes it.
     let exe = Path::new(env!("CARGO_BIN_EXE_graphicle"))
-        .canonicalize()
+        .canonical()
         .unwrap();
     std::fs::write(
         sandbox.home().join(".cursor/mcp.json"),
@@ -392,7 +391,7 @@ fn status_keeps_its_json_when_piped_and_reads_well_on_a_terminal() {
 fn doctor_finds_a_client_entry_whose_program_is_gone_and_fix_rewrites_it() {
     let sandbox = Sandbox::new();
     let exe = Path::new(env!("CARGO_BIN_EXE_graphicle"))
-        .canonicalize()
+        .canonical()
         .unwrap();
     // Claude Code's project entry, valid (written before the sync, so the
     // repair's re-sync finds nothing changed).

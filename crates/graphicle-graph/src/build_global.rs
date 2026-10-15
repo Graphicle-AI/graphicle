@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py, graphify/global_graph.py
 //! build.py global-store dependencies. The rest of build.py remains on the migration ledger.
 use crate::{
@@ -57,7 +57,9 @@ pub fn prefix_graph_for_global(graph: &Graph, tag: &str, offset: i64) -> Result<
             .and_then(|s| s.split_once("::"))
             .map(|(_, s)| s)
             .ok_or("Prefixed node identifier must contain ::")?;
-        node.attributes.entry("local_id").or_insert(json!(local));
+        if !node.attributes.contains_key("local_id") {
+            node.attributes.insert("local_id".into(), json!(local));
+        }
         if offset != 0
             && let Some(cid) = node
                 .attributes
@@ -92,7 +94,7 @@ pub fn prefix_graph_for_global(graph: &Graph, tag: &str, offset: i64) -> Result<
             (
                 out.nodes[*u].id.clone(),
                 out.nodes[*v].id.clone(),
-                e.key.clone(),
+                e.key.to_value(),
                 e.attributes.clone(),
             )
         })
@@ -151,6 +153,9 @@ pub fn distinct_repo_tags(paths: &[String]) -> Vec<String> {
     let dirs = paths
         .iter()
         .map(|p| {
+            // Windows: `\` separates as well (`Path(p).parent.parent`).
+            #[cfg(windows)]
+            let p = &path_syntax::windows_posix(p);
             let mut parts = path_syntax::posix_parts(p);
             for _ in 0..2 {
                 if !path_syntax::posix_name(&parts).is_empty() {

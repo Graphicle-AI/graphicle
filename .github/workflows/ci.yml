@@ -4,6 +4,8 @@
 # program) and crates/graphicle-memory (the memory library). Each is
 # formatted, linted and tested on macOS (Apple silicon) and Linux (x86-64), in
 # its own job: the three build folders together would not fit a runner's disk.
+# The windows job builds, lints and tests each crate on Windows (x86-64,
+# preview); that job says which crates' tests gate.
 name: ci
 
 on:
@@ -91,6 +93,83 @@ jobs:
       - name: Tests
         working-directory: ${{ matrix.dir }}
         run: cargo test --locked --all-targets ${{ matrix.features }}
+
+  windows:
+    # Windows (preview): each crate in its own job, so each has its own target
+    # folder (one shared folder breaks graphicle-memory's test build), with the
+    # default features. Building and Clippy gate. The tests gate only for a
+    # crate whose entry sets gate_tests: true; for the others a failure is
+    # reported as a warning. Set it crate by crate once its tests pass on
+    # Windows. Formatting is checked once, by the core job.
+    name: ${{ matrix.crate }} (windows-2022)
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - crate: graphicle
+            dir: crates/graphicle
+            gate_tests: false
+          - crate: graphicle-graph
+            dir: crates/graphicle-graph
+            gate_tests: false
+          - crate: graphicle-memory
+            dir: crates/graphicle-memory
+            gate_tests: false
+    defaults:
+      run:
+        shell: bash
+    steps:
+      # Long paths for deep fixtures. Line endings need no setting: the
+      # repository's .gitattributes checks text files out with LF on every
+      # system, so this job sees what a clone with Git's defaults gets.
+      - name: Git settings
+        run: git config --global core.longpaths true
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy
+          rustup default "$RUST_TOOLCHAIN"
+      # Python 3.14 unpacks the parser sources itself (compression.zstd).
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - name: Packaging checks
+        if: matrix.crate == 'graphicle-graph'
+        run: python packaging/test_release_build.py
+      - name: Cache parser sources
+        if: matrix.crate != 'graphicle-graph'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .tslp-root
+          key: parser-sources-${{ runner.os }}-${{ hashFiles('crates/graphicle/tools/prepare_parser_sources.py', 'crates/graphicle/.cargo/config.toml', 'crates/graphicle-memory/.cargo/config.toml') }}
+      - name: Prepare parser sources (verifies a restored folder)
+        if: matrix.crate != 'graphicle-graph'
+        run: python crates/graphicle/tools/prepare_parser_sources.py
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: ${{ matrix.dir }}
+          key: windows-${{ matrix.crate }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build
+        working-directory: ${{ matrix.dir }}
+        run: cargo build --locked --all-targets
+      - name: Clippy
+        working-directory: ${{ matrix.dir }}
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests
+        id: tests
+        continue-on-error: ${{ !matrix.gate_tests }}
+        working-directory: ${{ matrix.dir }}
+        run: cargo test --locked --all-targets --no-fail-fast
+      - name: Report failing tests (not gating)
+        if: steps.tests.outcome == 'failure' && !matrix.gate_tests
+        env:
+          CRATE: ${{ matrix.crate }}
+        run: echo "::warning title=Windows tests::$CRATE has failing tests on Windows (not gating yet); see the Tests step"
 
   licences:
     runs-on: ubuntu-latest

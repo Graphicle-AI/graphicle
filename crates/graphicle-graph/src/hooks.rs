@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/hooks.py
 //! Native Git hook installation, detached rebuilds, and merge-driver setup.
 pub use crate::hooks_runtime::{changed_files, dispatch, launch, run_worker, unquote_git_path};
@@ -14,6 +14,36 @@ pub const HOOK_MARKER: &str = "# graphicle-hook-start";
 pub const HOOK_END: &str = "# graphicle-hook-end";
 pub const CHECKOUT_MARKER: &str = "# graphicle-checkout-hook-start";
 pub const CHECKOUT_END: &str = "# graphicle-checkout-hook-end";
+pub const MERGE_HOOK_MARKER: &str = "# graphicle-merge-hook-start";
+pub const MERGE_HOOK_END: &str = "# graphicle-merge-hook-end";
+/// The three hooks `hook install` writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HookKind {
+    /// post-commit: rebuild the files the commit changed.
+    Commit,
+    /// post-checkout: an unscoped rebuild after a branch switch.
+    Checkout,
+    /// post-merge (0.9.89, #2418): an unscoped rebuild after a merge, so a
+    /// symbol the graph.json merge driver's union resurrected is dropped.
+    Merge,
+}
+impl HookKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            HookKind::Commit => "post-commit",
+            HookKind::Checkout => "post-checkout",
+            HookKind::Merge => "post-merge",
+        }
+    }
+    fn markers(self) -> (&'static str, &'static str) {
+        match self {
+            HookKind::Commit => (HOOK_MARKER, HOOK_END),
+            HookKind::Checkout => (CHECKOUT_MARKER, CHECKOUT_END),
+            HookKind::Merge => (MERGE_HOOK_MARKER, MERGE_HOOK_END),
+        }
+    }
+}
+const HOOK_KINDS: [HookKind; 3] = [HookKind::Commit, HookKind::Checkout, HookKind::Merge];
 /// `_load_graphifyrc`: `<root>/.graphiclerc`, parsed by [`crate::rcfile`]
 /// (Graphify 0.9.87, #2961). Kept as the hooks-side name; returns
 /// `viz_node_limit` (used here) beside any other option the file sets, and a
@@ -28,6 +58,8 @@ pub fn git_root(path: &Path) -> Option<PathBuf> {
         .map(Path::to_path_buf)
 }
 pub fn reject_windows_path(value: &str, source: &str) -> Result<()> {
+    #[cfg(windows)]
+    let _ = (value, source);
     #[cfg(not(windows))]
     if value.contains('\\')
         || regex::Regex::new(r"^[A-Za-z]:[\\/]")
@@ -331,30 +363,35 @@ pub fn merge_driver_status(root: &Path) -> String {
     .into()
 }
 pub fn script(checkout: bool, pinned: &str, viz: Option<i64>) -> String {
-    script_for(checkout, pinned, viz, crate::cli::program())
-}
-/// [`script`] naming the executable `program`.
-fn script_for(checkout: bool, pinned: &str, viz: Option<i64>, program: &str) -> String {
-    let (marker, end) = if checkout {
-        (CHECKOUT_MARKER, CHECKOUT_END)
+    let kind = if checkout {
+        HookKind::Checkout
     } else {
-        (HOOK_MARKER, HOOK_END)
+        HookKind::Commit
     };
+    script_for(kind, pinned, viz, crate::cli::program())
+}
+/// The hook block of `kind`.
+pub fn hook_script(kind: HookKind, pinned: &str, viz: Option<i64>) -> String {
+    script_for(kind, pinned, viz, crate::cli::program())
+}
+/// [`hook_script`] naming the executable `program`.
+fn script_for(kind: HookKind, pinned: &str, viz: Option<i64>, program: &str) -> String {
+    let (marker, end) = kind.markers();
     let export = viz
         .map(|n| {
             format!("export GRAPHICLE_VIZ_NODE_LIMIT=\"${{GRAPHICLE_VIZ_NODE_LIMIT:-{n}}}\"\n")
         })
         .unwrap_or_default();
-    let event = if checkout {
-        "[ \"${3:-0}\" = \"1\" ] || exit 0\n[ -d \"${GRAPHICLE_OUT:-.graphicle}\" ] || exit 0\n"
-    } else {
-        ""
+    // A branch checkout and a completed merge rebuild only a graph that was
+    // built before; post-checkout also skips file checkouts.
+    let event = match kind {
+        HookKind::Commit => "",
+        HookKind::Checkout => {
+            "[ \"${3:-0}\" = \"1\" ] || exit 0\n[ -d \"${GRAPHICLE_OUT:-.graphicle}\" ] || exit 0\n"
+        }
+        HookKind::Merge => "[ -d \"${GRAPHICLE_OUT:-.graphicle}\" ] || exit 0\n",
     };
-    let mode = if checkout {
-        "post-checkout"
-    } else {
-        "post-commit"
-    };
+    let mode = kind.name();
     format!(
         r#"{marker}
 # Rebuild the knowledge graph using the {program} executable.
@@ -394,24 +431,20 @@ pub fn install(path: &Path) -> Result<String> {
     let cfg = load_rc(&root)?;
     let pinned = pinned_executable();
     let viz = cfg["viz_node_limit"].as_i64();
-    let commit = install_hook(
-        &dir,
-        "post-commit",
-        &script(false, &pinned, viz),
-        HOOK_MARKER,
-        HOOK_END,
-    )?;
-    let checkout = install_hook(
-        &dir,
-        "post-checkout",
-        &script(true, &pinned, viz),
-        CHECKOUT_MARKER,
-        CHECKOUT_END,
-    )?;
+    let mut output = String::new();
+    for kind in HOOK_KINDS {
+        let (marker, end) = kind.markers();
+        let message = install_hook(
+            &dir,
+            kind.name(),
+            &hook_script(kind, &pinned, viz),
+            marker,
+            end,
+        )?;
+        output.push_str(&format!("{}: {message}\n", kind.name()));
+    }
     let merge = register_merge_driver(&root, Some(&pinned))?;
-    Ok(format!(
-        "post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
-    ))
+    Ok(format!("{output}merge driver: {merge}"))
 }
 pub fn uninstall(path: &Path) -> Result<String> {
     let root = git_root(path).ok_or_else(|| {
@@ -421,12 +454,14 @@ pub fn uninstall(path: &Path) -> Result<String> {
         )
     })?;
     let dir = user_hooks_dir(&hooks_dir(&root)?);
-    let commit = uninstall_hook(&dir, "post-commit", HOOK_MARKER, HOOK_END)?;
-    let checkout = uninstall_hook(&dir, "post-checkout", CHECKOUT_MARKER, CHECKOUT_END)?;
+    let mut output = String::new();
+    for kind in HOOK_KINDS {
+        let (marker, end) = kind.markers();
+        let message = uninstall_hook(&dir, kind.name(), marker, end)?;
+        output.push_str(&format!("{}: {message}\n", kind.name()));
+    }
     let merge = unregister_merge_driver(&root)?;
-    Ok(format!(
-        "post-commit: {commit}\npost-checkout: {checkout}\nmerge driver: {merge}"
-    ))
+    Ok(format!("{output}merge driver: {merge}"))
 }
 /// `_comparable_block` (0.9.73, #3771): the graphicle block in `text` with its
 /// per-install values blanked out, or `None` when the block has no end marker
@@ -452,8 +487,9 @@ pub fn status(path: &Path) -> Result<String> {
     let dir = user_hooks_dir(&hooks_dir(&root)?);
     let cfg = load_rc(&root).unwrap_or(json!({}));
     let limit = cfg["viz_node_limit"].as_i64();
-    let check = |name: &str, marker: &str, end: &str, checkout: bool| {
-        let p = dir.join(name);
+    let check = |kind: HookKind| {
+        let (marker, end) = kind.markers();
+        let p = dir.join(kind.name());
         if !p.exists() {
             return "not installed".into();
         }
@@ -480,7 +516,7 @@ pub fn status(path: &Path) -> Result<String> {
         // embedding this command line is current when nothing else differs.
         let installed = comparable_block(&text, marker, end);
         let current = comparable_block(
-            &script_for(checkout, "", None, crate::cli::PROGRAM),
+            &script_for(kind, "", None, crate::cli::PROGRAM),
             marker,
             end,
         );
@@ -494,12 +530,11 @@ pub fn status(path: &Path) -> Result<String> {
         }
         "installed".into()
     };
-    let mut output = format!(
-        "post-commit: {}\npost-checkout: {}\nmerge driver: {}",
-        check("post-commit", HOOK_MARKER, HOOK_END, false),
-        check("post-checkout", CHECKOUT_MARKER, CHECKOUT_END, true),
-        merge_driver_status(&root)
-    );
+    let mut output = String::new();
+    for kind in HOOK_KINDS {
+        output.push_str(&format!("{}: {}\n", kind.name(), check(kind)));
+    }
+    output.push_str(&format!("merge driver: {}", merge_driver_status(&root)));
     if let Some(limit) = limit {
         output.push_str(&format!("\nviz node limit: {limit}"));
     }

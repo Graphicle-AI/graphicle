@@ -1,7 +1,7 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/detect.py
 //! Classification, credential filtering, interpreter resolution and noise rules.
-use crate::{Result, detect_documents, fsutil, manifest_ingest, path_syntax};
+use crate::{Result, detect_documents, manifest_ingest, path_syntax};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -127,9 +127,31 @@ pub fn is_graphable_source(path: &Path) -> bool {
     classify_file(path) == Some(FileType::Code)
         && !contains("_SECRET_PRONE_DATA_EXTS", &suffix(path))
 }
+/// The folder names above `path`. Windows: from the path's components, so a
+/// `\\`-separated path names its folders (Graphify's `Path.parts`).
+fn parent_names(path: &Path) -> Vec<String> {
+    #[cfg(windows)]
+    {
+        path.parent()
+            .map(|p| {
+                p.components()
+                    .filter_map(|c| match c {
+                        std::path::Component::Normal(s) => Some(s.to_string_lossy().into_owned()),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+    #[cfg(not(windows))]
+    {
+        let mut parts = path_syntax::posix_parts(&crate::fsutil::path_string(path));
+        parts.pop();
+        parts
+    }
+}
 pub fn is_sensitive(path: &Path) -> bool {
-    let parts = path_syntax::posix_parts(&fsutil::path_string(path));
-    let parents = &parts[..parts.len().saturating_sub(1)];
+    let parents = parent_names(path);
     if parents
         .iter()
         .any(|p| contains("_CREDENTIAL_STORE_DIRS", &p.to_lowercase()))
@@ -563,4 +585,16 @@ pub fn is_noise_dir(part: &str, parent: Option<&Path>) -> bool {
                 p.file_name()
                     .is_some_and(|n| n.to_string_lossy().starts_with('.'))
             }))
+}
+
+#[cfg(all(test, windows))]
+mod windows_sensitive_tests {
+    use std::path::Path;
+
+    #[test]
+    fn credential_folders_match_backslash_paths() {
+        assert!(super::is_sensitive(Path::new(r"C:\repo\.aws\notes.txt")));
+        assert!(super::is_sensitive(Path::new(r"C:\repo\.SSH\notes.txt")));
+        assert!(!super::is_sensitive(Path::new(r"C:\repo\docs\notes.txt")));
+    }
 }

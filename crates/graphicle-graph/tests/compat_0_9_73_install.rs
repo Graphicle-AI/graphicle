@@ -7,12 +7,24 @@
 //! Upstream also names the link target in its console lines (`_shown_path`);
 //! the native installer reports through returned messages and does not print
 //! per-file registration lines, so only the file-system contract is mirrored.
-#![cfg(unix)]
 use graphicle::install;
 use serde_json::{Value, json};
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::Path;
+
+/// Link `link` to `target`. Windows: a file symlink needs Developer Mode or
+/// the privilege; `false` there skips the case.
+fn symlink(target: &Path, link: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(target, link).unwrap();
+        true
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(target, link).is_ok()
+    }
+}
 
 fn options(home: &Path, project_dir: &Path, project: bool) -> Value {
     json!({
@@ -68,7 +80,9 @@ fn test_uninstall_empties_symlink_target_and_keeps_link() {
         fs::write(&target, section(marker)).unwrap();
         let link = project.join(rel);
         fs::create_dir_all(link.parent().unwrap()).unwrap();
-        symlink(&target, &link).unwrap();
+        if !symlink(&target, &link) {
+            return;
+        }
 
         uninstall(&project, platform, via_uninstall);
 
@@ -117,7 +131,9 @@ fn test_install_claude_md_writes_through_the_symlink_target() {
             fs::write(&rules, "# my rules\n").unwrap();
         }
         let link = home.join(".claude").join("CLAUDE.md");
-        symlink(&rules, &link).unwrap();
+        if !symlink(&rules, &link) {
+            return;
+        }
 
         let request = json!({
             "action": "install",
@@ -148,7 +164,9 @@ fn test_uninstall_claude_md_edits_the_symlink_target() {
     let rules = tmp.path().join("rules.md");
     fs::write(&rules, "# my rules\n\n# graphicle\n- skill line\n").unwrap();
     let link = tmp.path().join(".claude").join("CLAUDE.md");
-    symlink(&rules, &link).unwrap();
+    if !symlink(&rules, &link) {
+        return;
+    }
 
     let home = tmp.path().join("home");
     fs::create_dir_all(&home).unwrap();

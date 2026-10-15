@@ -18,7 +18,7 @@ graphicle doctor --json   # the same checks as JSON, for scripts
 | Data folder | Graphicle can write to it, and no newer Graphicle has used it |
 | Project | This folder is set up and synced, nothing changed since, and its code graph is built |
 | Agents | Each agent's entry is valid and starts a program that exists; its settings file is valid JSON; the entries setup added are still there; no agent is left connected to a data folder that is gone |
-| Hooks | The session capture hooks (each event), Claude Code's graph guard hooks and the three Git hooks are in place |
+| Hooks | The session capture hooks (each event), Claude Code's graph guard hooks (when `--guards` added them) and the three Git hooks are in place |
 | Instructions | The Graphicle section is in `AGENTS.md` or `CLAUDE.md` |
 | Model | A model is set for `ask`, and the environment variable that holds its key is set. Doctor never prints the key |
 | Port | Port 8854, which the app uses, is free or used by Graphicle |

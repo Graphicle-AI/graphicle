@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/ingest.py
 //! Port of graphify/ingest.py: attributed URL capture and query-result persistence.
 use crate::{
@@ -569,8 +569,28 @@ impl Runtime {
         );
         Ok((content, format!("arxiv_{}.md", id.replace('.', "_"))))
     }
+    /// Save a sequential capture without replacing an existing directory entry
+    /// (#4393): a taken name, even a dangling symlink, moves the capture to
+    /// `<stem>_<n><suffix>`. Selection and writing are separate; concurrent
+    /// captures are not atomic.
     pub fn download_binary(&self, url: &str, suffix: &str, target: &Path) -> Result<PathBuf> {
-        let path = target.join(safe_filename(url, suffix));
+        let filename = safe_filename(url, suffix);
+        let stem = Path::new(&filename)
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut path = target.join(&filename);
+        let mut counter = 1usize;
+        loop {
+            match std::fs::symlink_metadata(&path) {
+                Ok(_) => {
+                    path = target.join(format!("{stem}_{counter}{suffix}"));
+                    counter += 1;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+                Err(e) => return Err(format!("OSError: {e}").into()),
+            }
+        }
         let bytes = self.fetcher.fetch(url, security::MAX_FETCH_BYTES)?;
         std::fs::write(&path, bytes).map_err(|e| format!("OSError: {e}"))?;
         Ok(path)

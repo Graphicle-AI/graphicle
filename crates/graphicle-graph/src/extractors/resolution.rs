@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py, graphify/extractors/resolution.py
 //! Corpus symbol resolution and collision handling from the pinned application.
 
@@ -15,6 +15,7 @@ pub use super::resolution_facts::{PYTHON_STDLIB_MODULE_NAMES, is_python_stdlib_m
 use super::{
     base::{file_stem, make_id},
     models::*,
+    resolution_facts::{PassFacts, UseRef},
     resolution_paths::resolve_cached,
 };
 use crate::Result;
@@ -56,7 +57,7 @@ pub fn source_key(source: &str, root: &Path) -> String {
     }
     resolved(Path::new(source))
         .strip_prefix(root)
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(crate::fsutil::rel_string)
         .unwrap_or_else(|_| source.into())
 }
 /// [`source_key`] remembered per source string for one pass: the records of a
@@ -109,10 +110,10 @@ pub fn js_source_path(source: &str, root: &Path) -> Option<PathBuf> {
         }))
     }
 }
-pub fn disambiguate_colliding_node_ids(
+pub fn disambiguate_colliding_node_ids<R: crate::resolver_registry::Rec>(
     nodes: &mut [Value],
     edges: &mut [Value],
-    raw: &mut [Value],
+    raw: &mut [R],
     root: &Path,
 ) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -209,34 +210,153 @@ pub fn disambiguate_colliding_node_ids(
     }
     for r in raw {
         let key = (
-            s(r, "caller_nid").to_string(),
-            source_keys.key(s(r, "source_file")),
+            crate::resolver_registry::rs(r, "caller_nid").to_string(),
+            source_keys.key(crate::resolver_registry::rs(r, "source_file")),
         );
         if let Some(id) = remap.get(&key) {
-            r["caller_nid"] = json!(id);
+            r.rec_set_str("caller_nid", id);
         }
     }
 }
-type Key = (PathBuf, String);
-/// Every symbol table here is lookup-only (no iteration reaches the output),
-/// so hashing replaces component-wise path ordering.
+/// A resolved path of one resolution pass, as two numbers the pass's
+/// [`Resolver`] hands out: `entry` names its exact spelling and `class` the
+/// paths equal to it component-wise. Keys compare, hash and order by `class`
+/// alone, exactly as the `PathBuf`s they replace compare, and each key keeps
+/// the spelling it was made from, as a `PathBuf` key does.
+#[derive(Clone, Copy, Debug)]
+struct P {
+    class: u32,
+    entry: u32,
+}
+impl PartialEq for P {
+    fn eq(&self, other: &Self) -> bool {
+        self.class == other.class
+    }
+}
+impl Eq for P {}
+impl std::hash::Hash for P {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.class, state);
+    }
+}
+impl PartialOrd for P {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl Ord for P {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.class.cmp(&other.class)
+    }
+}
+/// A symbol: a resolved path and an interned name. The tables are lookup-only
+/// (no iteration order reaches the output), so the numbers can stand in for
+/// the path and the string.
+type Key = (P, u32);
 type Origins = FxHashMap<Key, Key>;
-type Symbols = FxHashMap<Key, String>;
-type Stars = FxHashMap<PathBuf, Vec<PathBuf>>;
-/// Memoised [`resolved`] for the paths one resolution pass keeps revisiting;
-/// avoids the global realpath cache lock on every fact.
-#[derive(Default)]
-struct Resolver(FxHashMap<PathBuf, PathBuf>);
-impl Resolver {
-    fn get(&mut self, p: &Path) -> PathBuf {
-        if let Some(r) = self.0.get(p) {
-            return r.clone();
+type Symbols = FxHashMap<Key, Sym>;
+type Stars = FxHashMap<P, Vec<P>>;
+/// The node a symbol names, by its number among the pass's fresh nodes
+/// ([`Nodes`]) or its index in the context nodes, so the tables hold no copy
+/// of the id.
+#[derive(Clone, Copy)]
+enum Sym {
+    Node(u32),
+    Context(u32),
+}
+/// The pass's fresh nodes: the ones it was given and the ones it appends,
+/// numbered in that order. The appended ones are kept apart until the pass
+/// ends and then moved over in one exactly sized step, as its edges are.
+#[derive(Clone, Copy)]
+struct Nodes<'n> {
+    base: &'n [Value],
+    added: &'n [Value],
+}
+impl<'n> Nodes<'n> {
+    fn id(&self, i: u32) -> &'n str {
+        let i = i as usize;
+        match i.checked_sub(self.base.len()) {
+            Some(j) => s(&self.added[j], "id"),
+            None => s(&self.base[i], "id"),
         }
-        let r = resolved(p);
-        self.0.insert(p.to_path_buf(), r.clone());
+    }
+    fn iter(self) -> impl Iterator<Item = &'n Value> {
+        self.base.iter().chain(self.added)
+    }
+}
+fn sym_id<'v>(sym: Sym, nodes: Nodes<'v>, context: &'v [Value]) -> &'v str {
+    match sym {
+        Sym::Node(i) => nodes.id(i),
+        Sym::Context(i) => s(&context[i as usize], "id"),
+    }
+}
+/// The names of one pass's symbol keys, each stored once.
+#[derive(Default)]
+struct Names(FxHashMap<Box<str>, u32>);
+impl Names {
+    fn id(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.0.get(name) {
+            return id;
+        }
+        let id = self.0.len() as u32;
+        self.0.insert(name.into(), id);
+        id
+    }
+    /// The name's number, if any key was made with it.
+    fn get(&self, name: &str) -> Option<u32> {
+        self.0.get(name).copied()
+    }
+}
+/// Memoised [`resolved`] for the paths one resolution pass keeps revisiting;
+/// avoids the global realpath cache lock on every fact. It numbers the
+/// resolved paths so keys copy no path, and lives only as long as its pass.
+#[derive(Default)]
+struct Resolver {
+    /// Input path (compared component-wise) to its resolved path.
+    inputs: FxHashMap<PathBuf, P>,
+    /// Resolved spelling (compared byte-wise) to its entry.
+    entries: FxHashMap<std::ffi::OsString, u32>,
+    /// Resolved spelling of each entry.
+    paths: Vec<PathBuf>,
+    /// Class of each entry, and the classes by component-wise path.
+    class_of: Vec<u32>,
+    classes: FxHashMap<PathBuf, u32>,
+}
+impl Resolver {
+    fn get(&mut self, p: &Path) -> P {
+        if let Some(r) = self.inputs.get(p) {
+            return *r;
+        }
+        let r = self.intern(resolved(p));
+        self.inputs.insert(p.to_path_buf(), r);
         r
     }
-    fn source(&mut self, source: &str, root: &Path) -> Option<PathBuf> {
+    fn intern(&mut self, r: PathBuf) -> P {
+        if let Some(&entry) = self.entries.get(r.as_os_str()) {
+            return P {
+                class: self.class_of[entry as usize],
+                entry,
+            };
+        }
+        let entry = self.paths.len() as u32;
+        let next = self.classes.len() as u32;
+        let class = match self.classes.get(&r) {
+            Some(&class) => class,
+            None => {
+                self.classes.insert(r.clone(), next);
+                next
+            }
+        };
+        self.class_of.push(class);
+        self.entries.insert(r.clone().into_os_string(), entry);
+        self.paths.push(r);
+        P { class, entry }
+    }
+    /// The spelling `p` was resolved to.
+    fn path(&self, p: P) -> &Path {
+        &self.paths[p.entry as usize]
+    }
+    fn source(&mut self, source: &str, root: &Path) -> Option<P> {
         if source.is_empty() {
             return None;
         }
@@ -248,118 +368,190 @@ impl Resolver {
         })
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn symbol_node(
     path: &Path,
     name: &str,
     line: i64,
     symbols: &mut Symbols,
-    nodes: &mut Vec<Value>,
+    names: &mut Names,
+    nodes: &[Value],
+    added: &mut Vec<Value>,
     resolver: &mut Resolver,
-) -> String {
-    let key = (resolver.get(path), name.to_string());
-    if let Some(id) = symbols.get(&key) {
-        return id.clone();
+) -> Sym {
+    let key = (resolver.get(path), names.id(name));
+    if let Some(sym) = symbols.get(&key) {
+        return *sym;
     }
     let id = make_id([file_stem(path).as_str(), name]);
-    symbols.insert(key, id.clone());
-    nodes.push(json!({"id":id,"label":name,"file_type":"code","source_file":path,"source_location":format!("L{line}")}));
-    id
+    let sym = Sym::Node((nodes.len() + added.len()) as u32);
+    symbols.insert(key, sym);
+    added.push(json!({"id":id,"label":name,"file_type":"code","source_file":path,"source_location":format!("L{line}")}));
+    sym
 }
 /// `(source, target, relation, context, emitting file)` of an edge, the
 /// identity the pinned application checks before appending a resolved edge.
-/// The emitting file (resolved, `None` without one) keeps two files whose ids
-/// collide until disambiguation from deduplicating each other's edge (#4143).
-/// Packed length-prefixed into one buffer so a corpus-sized set costs one
-/// allocation per edge.
-type EdgeKey = Vec<u8>;
-fn edge_keys(edges: &[Value], rs: &mut Resolver, root: &Path) -> FxHashSet<EdgeKey> {
-    let mut keys = FxHashSet::with_capacity_and_hasher(edges.len(), Default::default());
-    keys.extend(edges.iter().map(|e| edge_key(e, rs, root)));
-    keys
-}
-fn pack_key(
-    source: &str,
-    target: &str,
-    relation: &str,
-    context: &str,
-    file: Option<&Path>,
-) -> EdgeKey {
-    let parts = [source, target, relation, context];
-    let file = file.map(|f| f.as_os_str().as_encoded_bytes());
-    let mut key = Vec::with_capacity(
-        parts.iter().map(|p| p.len() + 4).sum::<usize>() + 5 + file.map_or(0, <[u8]>::len),
-    );
-    for part in parts {
-        key.extend_from_slice(&(part.len() as u32).to_le_bytes());
-        key.extend_from_slice(part.as_bytes());
+/// The emitting file (its resolved spelling, `None` without one) keeps two
+/// files whose ids collide until disambiguation from deduplicating each
+/// other's edge (#4143).
+type Ident<'a> = (&'a str, &'a str, &'a str, &'a str, Option<u32>);
+/// 32 bits suffice: identities that share a hash are told apart by
+/// comparing the edges themselves.
+fn ident_hash(k: &Ident<'_>) -> u32 {
+    use std::hash::Hasher;
+    let mut h = rustc_hash::FxHasher::default();
+    for part in [k.0, k.1, k.2, k.3] {
+        h.write_usize(part.len());
+        h.write(part.as_bytes());
     }
-    match file {
-        Some(bytes) => {
-            key.push(1);
-            key.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-            key.extend_from_slice(bytes);
-        }
-        None => key.push(0),
-    }
-    key
+    h.write_u64(k.4.map_or(0, |f| u64::from(f) + 1));
+    let h = h.finish();
+    (h ^ (h >> 32)) as u32
 }
-fn edge_key(e: &Value, rs: &mut Resolver, root: &Path) -> EdgeKey {
-    let file = rs.source(s(e, "source_file"), root);
-    pack_key(
+fn ident<'e>(e: &'e Value, rs: &mut Resolver, root: &Path) -> Ident<'e> {
+    let file = rs.source(s(e, "source_file"), root).map(|p| p.entry);
+    (
         s(e, "source"),
         s(e, "target"),
         s(e, "relation"),
         s(e, "context"),
-        file.as_deref(),
+        file,
     )
 }
-#[allow(clippy::too_many_arguments)]
-fn add_edge(
-    edges: &mut Vec<Value>,
-    keys: &mut FxHashSet<EdgeKey>,
-    rs: &mut Resolver,
-    root: &Path,
-    src: &str,
-    target: &str,
-    relation: &str,
-    context: ImportEvidence<'_>,
-) {
-    let ImportEvidence {
-        context,
-        line,
-        path,
-        target_file,
-        alias,
-        type_only,
-    } = context;
+/// The pass's edges: the ones it was given and the ones it appends, numbered
+/// in that order.
+#[derive(Clone, Copy)]
+struct Edges<'e> {
+    base: &'e [Value],
+    added: &'e [Value],
+}
+impl<'e> Edges<'e> {
+    fn len(&self) -> usize {
+        self.base.len() + self.added.len()
+    }
+    fn get(&self, i: u32) -> &'e Value {
+        let i = i as usize;
+        match i.checked_sub(self.base.len()) {
+            Some(j) => &self.added[j],
+            None => &self.base[i],
+        }
+    }
+}
+/// The set of edge identities, held as the number of the first edge with each
+/// identity: the edges themselves spell the strings, so the set copies none.
+/// An identity is never removed, and an edge is only changed in place before
+/// [`EdgeSet::index`] numbers them all again.
+#[derive(Default)]
+struct EdgeSet {
+    /// Identity hash to the first edge with it.
+    first: FxHashMap<u32, u32>,
+    /// Further edges whose identities share a hash with another's.
+    more: FxHashMap<u32, Vec<u32>>,
+}
+impl EdgeSet {
+    fn index(&mut self, edges: Edges<'_>, rs: &mut Resolver, root: &Path) {
+        self.first.clear();
+        self.more.clear();
+        self.first.reserve(edges.len());
+        for i in 0..edges.len() as u32 {
+            let k = ident(edges.get(i), rs, root);
+            self.insert(edges, rs, root, &k, i);
+        }
+    }
+    /// Records edge `i` under identity `k`, unless an edge already has it.
+    fn insert(
+        &mut self,
+        edges: Edges<'_>,
+        rs: &mut Resolver,
+        root: &Path,
+        k: &Ident<'_>,
+        i: u32,
+    ) -> bool {
+        let hash = ident_hash(k);
+        match self.first.entry(hash) {
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(i);
+                return true;
+            }
+            std::collections::hash_map::Entry::Occupied(o) => {
+                if ident(edges.get(*o.get()), rs, root) == *k {
+                    return false;
+                }
+            }
+        }
+        let more = self.more.entry(hash).or_default();
+        if more.iter().any(|&j| ident(edges.get(j), rs, root) == *k) {
+            return false;
+        }
+        more.push(i);
+        true
+    }
+}
+/// The edges a pass appends, kept apart from the ones it was given until the
+/// pass ends, then moved over in one exactly sized step.
+#[derive(Default)]
+struct NewEdges {
+    keys: EdgeSet,
+    added: Vec<Value>,
+}
+impl NewEdges {
+    #[allow(clippy::too_many_arguments)]
+    fn add(
+        &mut self,
+        base: &[Value],
+        rs: &mut Resolver,
+        root: &Path,
+        src: &str,
+        target: &str,
+        relation: &str,
+        context: ImportEvidence<'_>,
+    ) {
+        let ImportEvidence {
+            context,
+            line,
+            path,
+            target_file,
+            alias,
+            type_only,
+        } = context;
 
-    let file = rs.source(&path.to_string_lossy(), root);
-    if !keys.insert(pack_key(src, target, relation, context, file.as_deref())) {
-        return;
+        let file = rs.source(&path.to_string_lossy(), root).map(|p| p.entry);
+        let edges = Edges {
+            base,
+            added: &self.added,
+        };
+        let i = edges.len() as u32;
+        if !self
+            .keys
+            .insert(edges, rs, root, &(src, target, relation, context, file), i)
+        {
+            return;
+        }
+        // Sized exactly (plus the `_origin` slot `finish` adds) so the map never
+        // doubles past its contents; same key order as the `json!` literal.
+        let extra = usize::from(target_file.is_some())
+            + usize::from(alias.is_some())
+            + usize::from(type_only);
+        let mut e = Map::with_capacity(9 + extra);
+        e.insert("source".into(), json!(src));
+        e.insert("target".into(), json!(target));
+        e.insert("relation".into(), json!(relation));
+        e.insert("context".into(), json!(context));
+        e.insert("confidence".into(), json!("EXTRACTED"));
+        e.insert("source_file".into(), json!(path));
+        e.insert("source_location".into(), json!(format!("L{line}")));
+        e.insert("weight".into(), json!(1.0));
+        if let Some(p) = target_file {
+            e.insert("target_file".into(), json!(p));
+        }
+        if let Some(a) = alias {
+            e.insert("local_alias".into(), json!(a));
+        }
+        if type_only {
+            e.insert("type_only".into(), json!(true));
+        }
+        self.added.push(Value::Object(e));
     }
-    // Sized exactly (plus the `_origin` slot `finish` adds) so the map never
-    // doubles past its contents; same key order as the `json!` literal.
-    let extra =
-        usize::from(target_file.is_some()) + usize::from(alias.is_some()) + usize::from(type_only);
-    let mut e = Map::with_capacity(9 + extra);
-    e.insert("source".into(), json!(src));
-    e.insert("target".into(), json!(target));
-    e.insert("relation".into(), json!(relation));
-    e.insert("context".into(), json!(context));
-    e.insert("confidence".into(), json!("EXTRACTED"));
-    e.insert("source_file".into(), json!(path));
-    e.insert("source_location".into(), json!(format!("L{line}")));
-    e.insert("weight".into(), json!(1.0));
-    if let Some(p) = target_file {
-        e.insert("target_file".into(), json!(p));
-    }
-    if let Some(a) = alias {
-        e.insert("local_alias".into(), json!(a));
-    }
-    if type_only {
-        e.insert("type_only".into(), json!(true));
-    }
-    edges.push(Value::Object(e));
 }
 fn origin(
     key: &Key,
@@ -369,14 +561,14 @@ fn origin(
     members: &FxHashSet<Key>,
     seen: &mut FxHashSet<Key>,
 ) -> Key {
-    if !seen.insert(key.clone()) {
-        return key.clone();
+    if !seen.insert(*key) {
+        return *key;
     }
     if let Some(next) = named.get(key) {
         return origin(next, named, stars, symbols, members, seen);
     }
     for p in stars.get(&key.0).into_iter().flatten() {
-        let k = (p.clone(), key.1.clone());
+        let k = (*p, key.1);
         if symbols.contains_key(&k) && !members.contains(&k) {
             return k;
         }
@@ -385,7 +577,7 @@ fn origin(
             return k;
         }
     }
-    key.clone()
+    *key
 }
 fn candidates(
     key: &Key,
@@ -397,25 +589,25 @@ fn candidates(
         return (BTreeSet::new(), true);
     }
     let mut seen = seen.clone();
-    seen.insert(key.clone());
+    seen.insert(*key);
     let mut out = BTreeSet::new();
     let mut cyclic = false;
     if let Some(origins) = exports.get(key) {
         for o in origins {
             if o == key {
-                out.insert(o.clone());
+                out.insert(*o);
             } else {
                 let (branch, c) = candidates(o, exports, stars, &seen);
                 cyclic |= c;
                 if branch.is_empty() && !c {
-                    out.insert(o.clone());
+                    out.insert(*o);
                 }
                 out.extend(branch);
             }
         }
     } else {
         for p in stars.get(&key.0).into_iter().flatten() {
-            let (branch, c) = candidates(&(p.clone(), key.1.clone()), exports, stars, &seen);
+            let (branch, c) = candidates(&(*p, key.1), exports, stars, &seen);
             out.extend(branch);
             cyclic |= c;
         }
@@ -430,22 +622,49 @@ pub fn apply_symbol_resolution_facts(
     facts: &SymbolResolutionFacts,
     context_nodes: &[Value],
 ) {
+    let facts = PassFacts::new(Vec::new(), facts.clone());
+    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes);
+}
+/// [`apply_symbol_resolution_facts`] consuming the facts, so each kind is
+/// freed as soon as its last pass ends.
+fn apply_pass_facts(
+    paths: &[PathBuf],
+    nodes: &mut Vec<Value>,
+    edges: &mut Vec<Value>,
+    root: &Path,
+    mut facts: PassFacts,
+    context_nodes: &[Value],
+) {
+    let span = crate::profile::span("assemble.symbol_resolution.index");
     let mut rs = Resolver::default();
-    let mut keys = edge_keys(edges, &mut rs, root);
-    let path_map = paths
-        .iter()
-        .map(|p| (rs.get(p), p.clone()))
-        .collect::<FxHashMap<_, _>>();
-    let file_ids = paths
-        .iter()
-        .map(|p| (rs.get(p), make_id([p.to_string_lossy().as_ref()])))
-        .collect::<FxHashMap<_, _>>();
+    let mut new = NewEdges::default();
+    new.keys.index(
+        Edges {
+            base: edges,
+            added: &[],
+        },
+        &mut rs,
+        root,
+    );
+    // Last spelling in `paths` per resolved path, as collecting into a map does.
+    let mut path_map: FxHashMap<P, usize> = FxHashMap::default();
+    let mut file_ids: FxHashMap<P, String> = FxHashMap::default();
+    for (i, p) in paths.iter().enumerate() {
+        let r = rs.get(p);
+        path_map.insert(r, i);
+        file_ids.insert(r, make_id([p.to_string_lossy().as_ref()]));
+    }
     // `reexport_file_target`: a re-export whose target file is missing gets a
     // portable `unresolved_reexport` id salted with its root-relative path
     // instead of an id minted from the checkout's absolute path (#4257).
-    let reexport_target = |target: &Path, rs: &mut Resolver| -> (String, PathBuf) {
-        let resolved = rs.get(target);
-        let stored = path_map.get(&resolved).cloned().unwrap_or(resolved.clone());
+    let reexport_target = |target: P, rs: &mut Resolver| -> (String, PathBuf) {
+        let target = rs.path(target).to_path_buf();
+        let r = rs.get(&target);
+        let resolved = rs.path(r);
+        let stored = path_map
+            .get(&r)
+            .map(|&i| paths[i].clone())
+            .unwrap_or_else(|| resolved.to_path_buf());
         if !resolved.is_file()
             && let Ok(relative) = resolved.strip_prefix(root)
         {
@@ -462,6 +681,7 @@ pub fn apply_symbol_resolution_facts(
         }
         (make_id([stored.to_string_lossy().as_ref()]), stored)
     };
+    let mut names = Names::default();
     let mut symbols = Symbols::default();
     let mut members = FxHashSet::default();
     // Unchanged files handed over by an incremental rebuild still own the
@@ -474,7 +694,7 @@ pub fn apply_symbol_resolution_facts(
             .filter(|id| !id.is_empty())
             .collect::<FxHashSet<_>>();
         let fresh_paths = paths.iter().map(|p| rs.get(p)).collect::<FxHashSet<_>>();
-        for n in context_nodes {
+        for (i, n) in context_nodes.iter().enumerate() {
             let id = s(n, "id");
             if id.is_empty() || fresh_ids.contains(id) {
                 continue;
@@ -490,19 +710,19 @@ pub fn apply_symbol_resolution_facts(
             if label.is_empty() {
                 continue;
             }
-            let key = (path, label.to_string());
+            let key = (path, names.id(label));
             if raw.starts_with('.') {
                 if symbols.contains_key(&key) {
                     continue;
                 }
-                members.insert(key.clone());
+                members.insert(key);
             } else {
                 members.remove(&key);
             }
-            symbols.insert(key, id.into());
+            symbols.insert(key, Sym::Context(i as u32));
         }
     }
-    for n in nodes.iter() {
+    for (i, n) in nodes.iter().enumerate() {
         let Some(path) = rs.source(s(n, "source_file"), root) else {
             continue;
         };
@@ -511,37 +731,56 @@ pub fn apply_symbol_resolution_facts(
         if label.is_empty() || s(n, "id").is_empty() {
             continue;
         }
-        let key = (path, label.to_string());
+        let key = (path, names.id(label));
         if raw.starts_with('.') {
             if symbols.contains_key(&key) {
                 continue;
             }
-            members.insert(key.clone());
+            members.insert(key);
         } else {
             members.remove(&key);
         }
-        symbols.insert(key, s(n, "id").into());
+        symbols.insert(key, Sym::Node(i as u32));
     }
-    for d in &facts.declarations {
-        symbol_node(&d.file_path, &d.name, d.line, &mut symbols, nodes, &mut rs);
+    drop(span);
+    let span = crate::profile::span("assemble.symbol_resolution.declarations");
+    let mut added_nodes = Vec::new();
+    for d in facts.declarations() {
+        symbol_node(
+            d.file_path,
+            d.name,
+            d.line,
+            &mut symbols,
+            &mut names,
+            nodes,
+            &mut added_nodes,
+            &mut rs,
+        );
     }
+    facts.free_declarations();
     let mut aliases: Origins = FxHashMap::default();
-    for i in &facts.imports {
+    for i in facts.imports() {
         aliases.insert(
-            (rs.get(&i.file_path), i.local_name.clone()),
-            (rs.get(&i.target_path), i.imported_name.clone()),
+            (rs.get(i.file_path), names.id(i.local_name)),
+            (rs.get(i.target_path), names.id(i.imported_name)),
         );
     }
     loop {
         let mut changed = false;
-        for a in &facts.aliases {
-            let path = rs.get(&a.file_path);
-            let key = (path.clone(), a.alias.clone());
-            if aliases.contains_key(&key) {
+        for a in facts.aliases() {
+            let path = rs.get(a.file_path);
+            if names
+                .get(a.alias)
+                .is_some_and(|alias| aliases.contains_key(&(path, alias)))
+            {
                 continue;
             }
-            if let Some(o) = aliases.get(&(path, a.target_name.clone())).cloned() {
-                aliases.insert(key, o);
+            let o = names
+                .get(a.target_name)
+                .and_then(|target| aliases.get(&(path, target)))
+                .copied();
+            if let Some(o) = o {
+                aliases.insert((path, names.id(a.alias)), o);
                 changed = true;
             }
         }
@@ -549,18 +788,20 @@ pub fn apply_symbol_resolution_facts(
             break;
         }
     }
+    facts.free_aliases();
+    drop(span);
+    let span = crate::profile::span("assemble.symbol_resolution.exports");
     let mut named = Origins::default();
     let mut exports: FxHashMap<Key, BTreeSet<Key>> = FxHashMap::default();
     let mut stars = Stars::default();
-    for star in &facts.star_exports {
-        let p = rs.get(&star.file_path);
-        let t = rs.get(&star.target_path);
-        stars.entry(p.clone()).or_default().push(t.clone());
+    for star in facts.star_exports() {
+        let p = rs.get(star.file_path);
+        let t = rs.get(star.target_path);
+        stars.entry(p).or_default().push(t);
         if let Some(source) = file_ids.get(&p) {
-            let (target_id, target) = reexport_target(&t, &mut rs);
-            add_edge(
+            let (target_id, target) = reexport_target(t, &mut rs);
+            new.add(
                 edges,
-                &mut keys,
                 &mut rs,
                 root,
                 source,
@@ -569,7 +810,7 @@ pub fn apply_symbol_resolution_facts(
                 ImportEvidence {
                     context: "export",
                     line: star.line,
-                    path: &star.file_path,
+                    path: star.file_path,
                     target_file: Some(&target),
                     alias: None,
                     type_only: star.type_only,
@@ -577,41 +818,49 @@ pub fn apply_symbol_resolution_facts(
             );
         }
     }
-    for n in &facts.namespace_exports {
-        let p = rs.get(&n.file_path);
-        let t = rs.get(&n.target_path);
-        let id = symbol_node(
-            &n.file_path,
-            &n.exported_name,
+    facts.free_star_exports();
+    for n in facts.namespace_exports() {
+        let p = rs.get(n.file_path);
+        let t = rs.get(n.target_path);
+        let sym = symbol_node(
+            n.file_path,
+            n.exported_name,
             n.line,
             &mut symbols,
+            &mut names,
             nodes,
+            &mut added_nodes,
             &mut rs,
         );
-        let key = (p.clone(), n.exported_name.clone());
-        named.insert(key.clone(), key);
+        let key = (p, names.id(n.exported_name));
+        named.insert(key, key);
         if let Some(source) = file_ids.get(&p) {
-            add_edge(
+            new.add(
                 edges,
-                &mut keys,
                 &mut rs,
                 root,
                 source,
-                &id,
+                sym_id(
+                    sym,
+                    Nodes {
+                        base: nodes,
+                        added: &added_nodes,
+                    },
+                    context_nodes,
+                ),
                 "contains",
                 ImportEvidence {
                     context: "namespace_export",
                     line: n.line,
-                    path: &n.file_path,
+                    path: n.file_path,
                     target_file: None,
                     alias: None,
                     type_only: false,
                 },
             );
-            let (target_id, target) = reexport_target(&t, &mut rs);
-            add_edge(
+            let (target_id, target) = reexport_target(t, &mut rs);
+            new.add(
                 edges,
-                &mut keys,
                 &mut rs,
                 root,
                 source,
@@ -620,7 +869,7 @@ pub fn apply_symbol_resolution_facts(
                 ImportEvidence {
                     context: "export",
                     line: n.line,
-                    path: &n.file_path,
+                    path: n.file_path,
                     target_file: Some(&target),
                     alias: None,
                     type_only: n.type_only,
@@ -628,35 +877,37 @@ pub fn apply_symbol_resolution_facts(
             );
         }
     }
-    for e in &facts.exports {
-        let p = rs.get(&e.file_path);
-        let key = (p.clone(), e.exported_name.clone());
-        let o = if let (Some(tp), Some(tn)) = (&e.target_path, &e.target_name) {
-            Some((rs.get(tp), tn.clone()))
-        } else if let Some(local) = &e.local_name {
-            let lk = (p.clone(), local.clone());
-            aliases
-                .get(&lk)
-                .cloned()
-                .or_else(|| symbols.contains_key(&lk).then_some(lk))
+    facts.free_namespace_exports();
+    for e in facts.exports() {
+        let p = rs.get(e.file_path);
+        let key = (p, names.id(e.exported_name));
+        let o = if let (Some(tp), Some(tn)) = (e.target_path, e.target_name) {
+            Some((rs.get(tp), names.id(tn)))
+        } else if let Some(local) = e.local_name {
+            names.get(local).and_then(|local| {
+                let lk = (p, local);
+                aliases
+                    .get(&lk)
+                    .copied()
+                    .or_else(|| symbols.contains_key(&lk).then_some(lk))
+            })
         } else {
             None
         };
         let Some(o) = o else {
-            if let Some(local) = &e.local_name {
-                exports.entry(key).or_default().insert((p, local.clone()));
+            if let Some(local) = e.local_name {
+                exports.entry(key).or_default().insert((p, names.id(local)));
             }
             continue;
         };
-        exports.entry(key.clone()).or_default().insert(o.clone());
-        named.insert(key, o.clone());
+        exports.entry(key).or_default().insert(o);
+        named.insert(key, o);
         if o.0 != p
             && let Some(source) = file_ids.get(&p)
         {
-            let (target_id, target) = reexport_target(&o.0, &mut rs);
-            add_edge(
+            let (target_id, target) = reexport_target(o.0, &mut rs);
+            new.add(
                 edges,
-                &mut keys,
                 &mut rs,
                 root,
                 source,
@@ -665,7 +916,7 @@ pub fn apply_symbol_resolution_facts(
                 ImportEvidence {
                     context: "export",
                     line: e.line,
-                    path: &e.file_path,
+                    path: e.file_path,
                     target_file: Some(&target),
                     alias: None,
                     type_only: e.type_only,
@@ -673,9 +924,15 @@ pub fn apply_symbol_resolution_facts(
             );
         }
     }
-    let owned = nodes.iter().map(|n| s(n, "id")).collect::<FxHashSet<_>>();
+    let all = Nodes {
+        base: nodes,
+        added: &added_nodes,
+    };
+    let owned = all.iter().map(|n| s(n, "id")).collect::<FxHashSet<_>>();
+    drop(span);
+    let span = crate::profile::span("assemble.symbol_resolution.retarget");
     let mut retargeted = false;
-    for edge in edges.iter_mut() {
+    for edge in edges.iter_mut().chain(new.added.iter_mut()) {
         if s(edge, "relation") != "re_exports" || owned.contains(s(edge, "target")) {
             continue;
         }
@@ -687,61 +944,73 @@ pub fn apply_symbol_resolution_facts(
             continue;
         }
         let path = PathBuf::from(target_file);
-        for e in &facts.exports {
-            let (Some(tp), Some(tn)) = (&e.target_path, &e.target_name) else {
+        for e in facts.exports() {
+            let (Some(tp), Some(tn)) = (e.target_path, e.target_name) else {
                 continue;
             };
-            if rs.get(&e.file_path) != source
+            if rs.get(e.file_path) != source
                 || format!("L{}", e.line) != s(edge, "source_location")
                 || rs.get(tp) != rs.get(&path)
-                || make_id([file_stem(&path).as_str(), tn.as_str()]) != s(edge, "target")
+                || make_id([file_stem(&path).as_str(), tn]) != s(edge, "target")
             {
                 continue;
             }
             let (cs, _) = candidates(
-                &(rs.get(tp), tn.clone()),
+                &(rs.get(tp), names.id(tn)),
                 &exports,
                 &stars,
                 &FxHashSet::default(),
             );
             if cs.len() == 1 {
                 let key = cs.iter().next().unwrap();
-                if let Some(id) = symbols.get(key).filter(|id| owned.contains(id.as_str())) {
+                if let Some(id) = symbols
+                    .get(key)
+                    .map(|sym| sym_id(*sym, all, context_nodes))
+                    .filter(|id| owned.contains(id))
+                {
                     edge["target"] = json!(id);
-                    edge["target_file"] = json!(path_map.get(&key.0).unwrap_or(&key.0));
+                    edge["target_file"] = match path_map.get(&key.0) {
+                        Some(&i) => json!(paths[i]),
+                        None => json!(rs.path(key.0)),
+                    };
                     retargeted = true;
                 }
             }
             break;
         }
     }
+    facts.free_exports();
+    drop(exports);
+    drop(path_map);
     // Retargeting above changed edge identities in place.
     if retargeted {
-        keys = edge_keys(edges, &mut rs, root);
+        let NewEdges { keys, added } = &mut new;
+        keys.index(Edges { base: edges, added }, &mut rs, root);
     }
-    for i in &facts.imports {
-        if let Some(source) = file_ids.get(&rs.get(&i.file_path)) {
+    drop(span);
+    let span = crate::profile::span("assemble.symbol_resolution.imports");
+    for i in facts.imports() {
+        if let Some(source) = file_ids.get(&rs.get(i.file_path)) {
             let o = origin(
-                &(rs.get(&i.target_path), i.imported_name.clone()),
+                &(rs.get(i.target_path), names.id(i.imported_name)),
                 &named,
                 &stars,
                 &symbols,
                 &members,
                 &mut FxHashSet::default(),
             );
-            if let Some(target) = symbols.get(&o) {
-                add_edge(
+            if let Some(sym) = symbols.get(&o) {
+                new.add(
                     edges,
-                    &mut keys,
                     &mut rs,
                     root,
                     source,
-                    target,
+                    sym_id(*sym, all, context_nodes),
                     "imports",
                     ImportEvidence {
                         context: "import",
                         line: i.line,
-                        path: &i.file_path,
+                        path: i.file_path,
                         target_file: None,
                         alias: None,
                         type_only: false,
@@ -750,10 +1019,13 @@ pub fn apply_symbol_resolution_facts(
             }
         }
     }
+    facts.free_imports();
     // #3777: a provisional AST `imports_from` edge whose package id collided
     // with a same-named sibling module file (`from nettacker import logger`
     // linking `nettacker.py`) is retracted when the submodule edge replaces it.
-    let mut provisional: FxHashMap<(PathBuf, String), Vec<usize>> = FxHashMap::default();
+    // Only edges the pass was given qualify: it appends none of that kind
+    // before this point.
+    let mut provisional: FxHashMap<(P, u32), Vec<usize>> = FxHashMap::default();
     for (i, e) in edges.iter().enumerate() {
         if s(e, "relation") == "imports_from"
             && s(e, "context") == "import"
@@ -761,32 +1033,34 @@ pub fn apply_symbol_resolution_facts(
         {
             let loc = s(e, "source_location");
             if !loc.is_empty() {
-                provisional.entry((src, loc.into())).or_default().push(i);
+                provisional.entry((src, names.id(loc))).or_default().push(i);
             }
         }
     }
     let mut retracted = FxHashSet::default();
-    for (from, to, line, local) in &facts.module_imports {
+    for (from, to, line, local) in facts.module_imports() {
         if let (Ok(from_rel), Ok(to_rel)) = (from.strip_prefix(root), to.strip_prefix(root)) {
             let src = make_id([file_stem(from_rel).as_str()]);
             let tgt = make_id([file_stem(to_rel).as_str()]);
             let candidates = module_collision_ids(from, to, root);
-            let matched = provisional
-                .get(&(rs.get(from), format!("L{line}")))
+            let from_key = rs.get(from);
+            let matched = names
+                .get(&format!("L{line}"))
+                .and_then(|loc| provisional.get(&(from_key, loc)))
                 .into_iter()
                 .flatten()
                 .copied()
                 .find(|i| !retracted.contains(i) && candidates.contains(s(&edges[*i], "target")));
             // The retracted edge's identity stays known: upstream discards a
-            // four-part key that matches none of its five-part keys.
+            // four-part key that matches none of its five-part keys. The edge
+            // itself is removed once the pass ends, so its number stays valid.
             if let Some(i) = matched {
                 retracted.insert(i);
             }
             let alias = (Some(local.as_str()) != to.file_stem().and_then(|s| s.to_str()))
                 .then_some(local.as_str());
-            add_edge(
+            new.add(
                 edges,
-                &mut keys,
                 &mut rs,
                 root,
                 &src,
@@ -803,18 +1077,15 @@ pub fn apply_symbol_resolution_facts(
             );
         }
     }
-    if !retracted.is_empty() {
-        let mut i = 0;
-        edges.retain(|_| {
-            i += 1;
-            !retracted.contains(&(i - 1))
-        });
-    }
-    for u in &facts.uses {
-        let p = rs.get(&u.file_path);
-        let key = (p.clone(), u.local_name.clone());
-        let target = aliases
-            .get(&key)
+    facts.free_module_imports();
+    drop(provisional);
+    drop(span);
+    let span = crate::profile::span("assemble.symbol_resolution.uses");
+    let mut apply_use = |u: UseRef<'_>| {
+        let p = rs.get(u.file_path);
+        let key = names.get(u.local_name).map(|name| (p, name));
+        let target = key
+            .and_then(|key| aliases.get(&key))
             .and_then(|o| {
                 symbols.get(&origin(
                     o,
@@ -826,43 +1097,66 @@ pub fn apply_symbol_resolution_facts(
                 ))
             })
             .or_else(|| {
-                if matches!(u.relation.as_str(), "inherits" | "implements") {
-                    symbols.get(&key)
+                if matches!(u.relation, "inherits" | "implements") {
+                    key.and_then(|key| symbols.get(&key))
                 } else {
                     None
                 }
             });
-        let Some(target) = target else { continue };
-        let mut source = u.source_id.as_str();
-        if matches!(
-            u.relation.as_str(),
-            "inherits" | "implements" | "references"
-        ) && !owned.contains(source)
+        let Some(target) = target else { return };
+        let target = sym_id(*target, all, context_nodes);
+        let mut source = u.source_id;
+        if matches!(u.relation, "inherits" | "implements" | "references") && !owned.contains(source)
         {
-            continue;
+            return;
         }
         if u.relation == "calls" && !owned.contains(source) {
-            let Some(id) = file_ids.get(&p) else { continue };
+            let Some(id) = file_ids.get(&p) else { return };
             source = id;
         }
-        add_edge(
+        new.add(
             edges,
-            &mut keys,
             &mut rs,
             root,
             source,
             target,
-            &u.relation,
+            u.relation,
             ImportEvidence {
-                context: &u.context,
+                context: u.context,
                 line: u.line,
-                path: &u.file_path,
+                path: u.file_path,
                 target_file: None,
                 alias: None,
                 type_only: false,
             },
         );
+    };
+    for u in facts.js_uses() {
+        apply_use(u);
     }
+    // Consumed one by one, so each use is freed once it is applied.
+    for u in facts.take_rest_uses() {
+        apply_use(UseRef::from(&u));
+    }
+    drop(facts);
+    drop(owned);
+    drop(span);
+    let span = crate::profile::span("assemble.symbol_resolution.append");
+    let NewEdges { keys, mut added } = new;
+    drop(keys);
+    drop((rs, names, symbols, members, aliases, named, stars, file_ids));
+    if !retracted.is_empty() {
+        let mut i = 0;
+        edges.retain(|_| {
+            i += 1;
+            !retracted.contains(&(i - 1))
+        });
+    }
+    edges.reserve_exact(added.len());
+    edges.append(&mut added);
+    nodes.reserve_exact(added_nodes.len());
+    nodes.append(&mut added_nodes);
+    drop(span);
 }
 /// Node ids a provisional `imports_from` edge for `from pkg import sub` may
 /// carry when the package name collided with a module file (#3777). The
@@ -903,10 +1197,17 @@ pub fn augment_symbol_resolution_edges(
     ambiguous: &super::resolution_facts::AmbiguousModules,
     context_nodes: &[Value],
 ) {
-    let mut facts = SymbolResolutionFacts::default();
-    super::resolution_facts::collect_js(paths, &mut facts);
-    super::resolution_facts::collect_python(paths, root, &mut facts, ambiguous);
-    apply_symbol_resolution_facts(paths, nodes, edges, root, &facts, context_nodes);
+    // The JS/TS facts stay in the compact per-file form the files' passes
+    // derived them in; only Python's are collected whole.
+    let span = crate::profile::span("assemble.symbol_resolution.collect_js");
+    let js = super::resolution_facts::collect_js_files(paths);
+    drop(span);
+    let span = crate::profile::span("assemble.symbol_resolution.collect_python");
+    let mut python = SymbolResolutionFacts::default();
+    super::resolution_facts::collect_python(paths, root, &mut python, ambiguous);
+    drop(span);
+    let facts = PassFacts::new(js, python);
+    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes);
 }
 fn ambiguous_modules(r: &Value) -> super::resolution_facts::AmbiguousModules {
     r["ambiguous_python_modules"]
@@ -1018,14 +1319,8 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         }
         "apply_facts" => {
             let facts = serde_json::from_value(r["facts"].clone()).map_err(crate::Error::from)?;
-            apply_symbol_resolution_facts(
-                &paths,
-                &mut nodes,
-                &mut edges,
-                root,
-                &facts,
-                context_nodes,
-            );
+            let facts = PassFacts::new(Vec::new(), facts);
+            apply_pass_facts(&paths, &mut nodes, &mut edges, root, facts, context_nodes);
             json!({"nodes":nodes,"edges":edges})
         }
         "facts" => {
@@ -1058,4 +1353,137 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         }
         _ => return Err(format!("Unknown resolution action: {action}").into()),
     })
+}
+#[cfg(test)]
+mod pass_facts_tests {
+    use super::*;
+
+    /// The pass reads the JS/TS files' compact facts exactly as it reads the
+    /// same facts collected whole, and the edge-identity set keeps the first
+    /// edge of each identity.
+    #[test]
+    fn compact_js_facts_resolve_as_whole_facts() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = resolved(temp.path());
+        let write = |name: &str, text: &str| {
+            let p = root.join(name);
+            std::fs::write(&p, text).unwrap();
+            p
+        };
+        let paths = vec![
+            write(
+                "a.ts",
+                "export class Base {}\n\
+                 export interface Shape { area(): number }\n\
+                 export function helper(x: number): number { return x }\n\
+                 export const alias = helper;\n\
+                 export default Base;\n",
+            ),
+            write(
+                "b.ts",
+                "import { Base, helper, Shape } from './a';\n\
+                 import Def from './a';\n\
+                 export * from './a';\n\
+                 export * as ns from './a';\n\
+                 export { helper as h } from './a';\n\
+                 const local = helper;\n\
+                 export { local };\n\
+                 export class Child extends Base implements Shape {\n\
+                   field: Base;\n\
+                   run(p: Base, q: Array<Shape>): Base { return p }\n\
+                 }\n\
+                 export function main() { helper(1); local(2); Def(); }\n",
+            ),
+            write(
+                "c.ts",
+                "import { h, ns, Child } from './b';\n\
+                 export function go() { h(3); Child(); }\n",
+            ),
+        ];
+        let node = |id: &str, label: &str, path: &Path| {
+            json!({"id": id, "label": label, "file_type": "code",
+                   "source_file": path, "source_location": "L1"})
+        };
+        // The ids the extractor gives the class and its method.
+        let child = make_id([file_stem(&paths[1]).as_str(), "Child"]);
+        let run = make_id([child.as_str(), "run"]);
+        let base = make_id([file_stem(&paths[0]).as_str(), "Base"]);
+        let file = make_id([paths[1].to_string_lossy().as_ref()]);
+        let nodes = vec![
+            node(&file, "b.ts", &paths[1]),
+            node(&child, "Child", &paths[1]),
+            node(&run, ".run()", &paths[1]),
+        ];
+        // An edge the pass would add again is kept once.
+        let edges = vec![json!({
+            "source": child, "target": base, "relation": "inherits",
+            "context": "type", "source_file": paths[1],
+        })];
+
+        let (mut compact_nodes, mut compact_edges) = (nodes.clone(), edges.clone());
+        let facts = PassFacts::new(
+            super::super::resolution_facts::collect_js_files(&paths),
+            SymbolResolutionFacts::default(),
+        );
+        apply_pass_facts(
+            &paths,
+            &mut compact_nodes,
+            &mut compact_edges,
+            &root,
+            facts,
+            &[],
+        );
+
+        let mut whole = SymbolResolutionFacts::default();
+        super::super::resolution_facts::collect_js(&paths, &mut whole);
+        assert!(!whole.uses.is_empty() && !whole.exports.is_empty());
+        let (mut whole_nodes, mut whole_edges) = (nodes, edges);
+        apply_symbol_resolution_facts(
+            &paths,
+            &mut whole_nodes,
+            &mut whole_edges,
+            &root,
+            &whole,
+            &[],
+        );
+
+        assert_eq!(compact_nodes, whole_nodes);
+        assert_eq!(compact_edges, whole_edges);
+        let relations = compact_edges
+            .iter()
+            .map(|e| s(e, "relation"))
+            .collect::<BTreeSet<_>>();
+        for relation in [
+            "calls",
+            "contains",
+            "imports",
+            "implements",
+            "inherits",
+            "re_exports",
+            "references",
+        ] {
+            assert!(relations.contains(relation), "no {relation} edge");
+        }
+        let inherits = compact_edges
+            .iter()
+            .filter(|e| s(e, "relation") == "inherits")
+            .count();
+        assert_eq!(inherits, 1, "{compact_edges:#?}");
+        let references = compact_edges
+            .iter()
+            .filter(|e| s(e, "relation") == "references")
+            .map(|e| (s(e, "source"), s(e, "context")))
+            .collect::<BTreeSet<_>>();
+        for (source, context) in [
+            (child.as_str(), "field"),
+            (run.as_str(), "parameter_type"),
+            (run.as_str(), "return_type"),
+            (run.as_str(), "generic_arg"),
+        ] {
+            assert!(
+                references.contains(&(source, context)),
+                "no {context} reference from {source}: {references:?}"
+            );
+        }
+    }
 }

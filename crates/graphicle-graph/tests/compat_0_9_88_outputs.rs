@@ -15,6 +15,17 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Message text for comparison: on Windows the verbatim prefix and the
+/// separator kind are ignored (the message joins `.opencode/...` onto a
+/// resolved folder); elsewhere the text itself.
+fn seps(text: &str) -> String {
+    if cfg!(windows) {
+        text.replace(r"\\?\", "").replace('\\', "/")
+    } else {
+        text.to_string()
+    }
+}
+
 fn graph(directed: bool, nodes: Vec<Value>, links: Vec<Value>) -> Graph {
     let data = json!({"directed": directed, "multigraph": false, "graph": {},
                       "nodes": nodes, "links": links});
@@ -1217,7 +1228,8 @@ fn a_v1_plugin_is_rewritten_once() {
     assert_eq!(read(&config), json!({"model": "some/model"}));
     let resolved = fs::canonicalize(&plugin).unwrap();
     assert_eq!(messages.len(), 1, "{messages:?}");
-    assert!(messages[0].starts_with(&format!("graphicle: refreshed {}", resolved.display())));
+    let expected = format!("graphicle: refreshed {}", resolved.display());
+    assert!(seps(&messages[0]).starts_with(&seps(&expected)));
     assert!(messages[0].contains("GRAPHICLE_NO_AUTO_REFRESH=1"));
     assert!(
         refresh(&project, &home, true).is_empty(),
@@ -1243,11 +1255,15 @@ fn a_stale_entry_beside_a_current_plugin_is_dropped() {
     assert_eq!(read(&config), json!({"model": "some/model"}));
     let resolved = fs::canonicalize(&config).unwrap();
     assert_eq!(
-        messages,
-        [format!(
+        messages
+            .iter()
+            .map(String::as_str)
+            .map(seps)
+            .collect::<Vec<_>>(),
+        [seps(&format!(
             "graphicle: removed the stale graphicle entry from {}; set GRAPHICLE_NO_AUTO_REFRESH=1 to disable",
             resolved.display()
-        )]
+        ))]
     );
     assert!(refresh(&project, &home, true).is_empty());
 }

@@ -3,12 +3,14 @@
 import copy
 import random
 from parity import Native, upstream_tests
+import dispatch_oracle
 import graphify.interface_dispatch as reference
 import graphify.csharp_dispatch as csharp
 import graphify.swift_dispatch as swift
 
 native=Native("interface_dispatch")
-original=reference.resolve_interface_dispatch
+# Expected results: the pinned mechanism with implementers in arrival order (dispatch_oracle).
+original=dispatch_oracle.mechanism().resolve_interface_dispatch
 original_label=reference.method_label
 original_declared=reference.declared_in
 counts={"resolve":0,"method_label":0,"declared_in":0}
@@ -55,5 +57,6 @@ try:
         declared(None,suffixes);declared({},suffixes)
 finally:native.close()
 native.receipt("graphify/interface_dispatch.py",["src/interface_dispatch.rs"],checked=counts,upstream_tests=tests,
-    comparisons="Language gates (including empty and catch-all suffix sets), single implementer/member guards, method-label cuts, sourceless and cross-language ends, relation-scoped deduplication and unchanged call edges.",
+    implementer_order=dispatch_oracle.ORDER_NOTE,
+    comparisons="Language gates (including empty and catch-all suffix sets), fan-out to every gated implementer with tiered confidence, single-owner member guards, method-label cuts, sourceless and cross-language ends, relation-scoped deduplication and unchanged call edges.",
     test_scope="The C# and Swift wrappers call the native Rust mechanism while the original parser/extract.py builds fixture inputs for both upstream dispatch test files.")

@@ -40,7 +40,7 @@ graphicle setup
 Windows: no native build yet; under WSL2 the Linux install should work (not yet tested). Native Windows support is planned.</sub>
 
 `graphicle setup` indexes the repository, builds its code graph and connects the coding agents it finds. It also turns on session
-capture, points Claude Code's searches to the code graph first, adds a short section to `AGENTS.md` and installs Git hooks that keep the project current. It lists every file it changes and
+capture, adds a two-line section to `AGENTS.md` (unless Claude Code is the only agent) and installs Git hooks that keep the project current. It lists every file it changes and
 backs each one up first; `graphicle disconnect` undoes it all.
 
 Then ask your agent to *"use graphicle to find where failed requests are retried"*, or ask from the terminal:
@@ -89,7 +89,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 ## Why Graphicle
 
 - **Native and fast.** One Rust program. On Kubernetes (31k files), the 0.1.0 engine ran a code-only extract in 3 min 18 s, against 26 min 38 s for Graphify 0.9.88, and built the same graph (one exploratory run each, one Linux host, the same 16 CPUs, 8 workers).
-- **Context, not re-reading.** Your agent asks Graphicle and gets the relevant code, docs and decisions as cited excerpts, within a token budget.
+- **Cited context, within a budget you set.** Your agent asks Graphicle and gets the relevant code, docs and decisions as cited excerpts, within a token budget you set. We do not claim it saves tokens: in a pre-registered test on 100 SWE-bench Verified tasks, Claude Code (Opus 5.5) found the right files as often with Graphicle's 0.1.0 setup as without it (95 of 100 each), never called Graphicle's tools and used 16% more tokens. Unfamiliar code, long sessions and memory across sessions are not tested yet.
 - **Answers you can check.** Every excerpt names its file and lines. Memories an agent proposes wait for your approval.
 - **One program, not a stack.** The code graph, the memory, one MCP server, the web app and the command line come in one install, with one SQLite file. No Python, Docker or database server.
 - **Local and private.** No account and no telemetry. Nothing leaves your machine unless you ask.

@@ -2754,7 +2754,8 @@ mod tests {
 
     fn corpus(files: &[(&str, &str)]) -> (tempfile::TempDir, PathBuf, Vec<PathBuf>) {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        // Plain on Windows (no `\\?\`): the root `extract` resolves and passes.
+        let root = crate::fsutil::plain(&dir.path().canonicalize().unwrap());
         let paths = files
             .iter()
             .map(|(name, body)| {

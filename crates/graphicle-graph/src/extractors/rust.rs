@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/rust.py
 //! Rust source extraction with trait members and conservative impl ownership.
 use super::base::{file_stem, is_language_builtin, make_id, read_text};
@@ -206,6 +206,19 @@ pub fn use_module(argument: &str) -> String {
         .trim_end_matches('*')
         .trim_end_matches(':');
     trim(clean.split("::").last().unwrap_or("")).to_string()
+}
+/// The name a `use` imports, as written, for the corpus rewire (#4439): the
+/// id folds its case. Only for a path rooted in this crate (`crate`, `self`,
+/// `super`): `serde::Serialize` or `std::fs::File` is never the corpus's own
+/// `Serialize` or `File`.
+pub fn use_name(written: &str, path: &str) -> Option<String> {
+    let head = path
+        .trim_start_matches([':', ' '])
+        .split("::")
+        .next()
+        .unwrap_or("");
+    matches!(trim(head), "crate" | "self" | "super")
+        .then(|| trim(written.split(" as ").next().unwrap_or("")).to_string())
 }
 /// `_rust_use_bindings`: each binding of a `use` tree as the argument of the
 /// plain `use` that binds the same name, with its line: `a::{b, c as d,
@@ -746,7 +759,8 @@ impl<'tree> Extractor<'_, 'tree> {
             }
             "use_declaration" => {
                 if let Some(argument) = node.child_by_field_name("argument") {
-                    let name = use_module(&read_text(argument, self.source));
+                    let written = read_text(argument, self.source);
+                    let name = use_module(&written);
                     let grouped = matches!(argument.kind(), "use_list" | "scoped_use_list");
                     if !name.is_empty() {
                         self.edge(
@@ -756,6 +770,9 @@ impl<'tree> Extractor<'_, 'tree> {
                             line,
                             Some("import"),
                         );
+                        if let Some(used) = use_name(&name, &written) {
+                            self.edges.last_mut().unwrap()["_rust_use_name"] = json!(used);
+                        }
                         if grouped {
                             // Call evidence as before; resolution drops it later.
                             self.edges.last_mut().unwrap()["_rust_use_group"] = json!(true);
@@ -774,6 +791,9 @@ impl<'tree> Extractor<'_, 'tree> {
                                     line,
                                     Some("import"),
                                 );
+                                if let Some(used) = use_name(&name, &binding) {
+                                    self.edges.last_mut().unwrap()["_rust_use_name"] = json!(used);
+                                }
                                 self.edges.last_mut().unwrap()["_rust_use_binding"] = json!(true);
                             }
                         }

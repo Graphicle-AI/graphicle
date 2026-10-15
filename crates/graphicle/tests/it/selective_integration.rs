@@ -119,3 +119,114 @@ fn the_dense_arm_counts_half_unless_weights_are_given() {
     );
     assert_eq!(first(None, json!({})), (json!("file:entry.rs"), json!({})));
 }
+
+/// `include_tests`: `false` moves test files behind the other files, `"auto"`
+/// (the default) does so unless the question names a test file or a test
+/// identifier, and `true` keeps the fused order. The packet's `test_files`
+/// reports what applied; the move keeps every window.
+#[test]
+fn test_files_follow_the_code_unless_the_question_names_tests() {
+    let document = |path: &str, content: &str| {
+        json!({"id":format!("file:{path}"),"path":path,"title":path,
+            "content":content,"sha256":text::sha256(content.as_bytes()),
+            "source_kind":"repository_file","recorded_at":null})
+    };
+    let snap = Snapshot {
+        repository: json!({"id":"test-files","name":"Test files"}),
+        documents: vec![
+            document(
+                "tests/test_parser.py",
+                "from parser import parse_header\n\n\
+                 def test_parse_header_splits_a_raw_header():\n    \
+                 # parse_header splits a raw header at its colon\n    \
+                 raw = 'a:b'\n    \
+                 assert parse_header(raw) == raw.split(':')\n    \
+                 assert parse_header('raw:header') == ['raw', 'header']\n",
+            ),
+            document(
+                "parser.py",
+                "def parse_header(value):\n    return value.split(':')\n",
+            ),
+        ],
+        memories: vec![],
+        graph: json!({"edges":[]}),
+        state: "fixture-v1".into(),
+    };
+    let files = |question: &str, include_tests: Option<Value>| {
+        let mut args =
+            json!({"question":question,"max_tokens":2000,"limit":4,"expand_context":false});
+        if let Some(value) = include_tests {
+            args["include_tests"] = value;
+        }
+        let packet = query::context(&snap, &args, json!({})).unwrap();
+        let ids: Vec<String> = packet["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|window| window["id"].as_str().unwrap().to_string())
+            .collect();
+        (ids, packet["test_files"].clone())
+    };
+    let sorted = |mut ids: Vec<String>| {
+        ids.sort();
+        ids
+    };
+    let question = "how does parse_header split a raw header";
+    let (fused, report) = files(question, Some(json!(true)));
+    assert_eq!(report, json!({"include_tests":true,"defaulted":false}));
+    assert_eq!(
+        fused.first().map(String::as_str),
+        Some("file:tests/test_parser.py"),
+        "the fixture ranks the test first: {fused:?}"
+    );
+    let (moved, report) = files(question, Some(json!(false)));
+    assert_eq!(
+        moved,
+        ["file:parser.py", "file:tests/test_parser.py"],
+        "{report}"
+    );
+    assert_eq!(
+        report,
+        json!({"include_tests":false,"defaulted":false,"moved":1})
+    );
+    assert_eq!(sorted(moved.clone()), sorted(fused.clone()));
+    let (auto, report) = files(question, Some(json!("auto")));
+    assert_eq!(auto, moved);
+    assert_eq!(report["question_names_tests"], false, "{report}");
+    // Left out, include_tests is "auto".
+    let (default, report) = files(question, None);
+    assert_eq!(default, moved);
+    assert_eq!(
+        report,
+        json!({"include_tests":"auto","defaulted":true,"question_names_tests":false,"moved":1})
+    );
+    // The word alone does not name tests, so the move applies.
+    let worded = "which tests check that parse_header splits a raw header";
+    let (code_first, report) = files(worded, None);
+    assert_eq!(report["question_names_tests"], false, "{report}");
+    assert_eq!(
+        code_first.first().map(String::as_str),
+        Some("file:parser.py"),
+        "{code_first:?}"
+    );
+    // A question that names a test keeps the tests where the ranking put
+    // them.
+    let asked = "what does test_parse_header_splits_a_raw_header check";
+    let (kept, report) = files(asked, None);
+    assert_eq!(report["question_names_tests"], true, "{report}");
+    assert!(report.get("moved").is_none(), "{report}");
+    assert_eq!(kept, files(asked, Some(json!(true))).0);
+    assert_eq!(
+        kept.first().map(String::as_str),
+        Some("file:tests/test_parser.py"),
+        "{kept:?}"
+    );
+    assert!(
+        query::context(
+            &snap,
+            &json!({"question":question,"include_tests":"sometimes"}),
+            json!({})
+        )
+        .is_err()
+    );
+}

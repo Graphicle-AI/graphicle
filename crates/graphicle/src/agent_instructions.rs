@@ -3,6 +3,13 @@
 //! between HTML comment markers that Markdown does not show. Its heading is
 //! `## Graphicle`, never the graph engine's `## graphicle` marker, so the
 //! engine's `graphicle graph <platform> uninstall` leaves it alone.
+//!
+//! The section is two lines under its heading: agents read the whole file
+//! with every request, and the tools' own descriptions say the rest. Claude
+//! Code alone does not need it (the server's instructions say when to call),
+//! so setup adds none when it is the only agent connected. `setup --tools
+//! all` writes 0.1.0's section instead ([`section_0_1_0`]), whichever agents
+//! are connected.
 
 /// The first line of the section.
 pub const START: &str =
@@ -10,8 +17,23 @@ pub const START: &str =
 /// The last line of the section.
 pub const END: &str = "<!-- graphicle:end -->";
 
-/// The section, markers included, without a final newline.
+/// The section, markers included, without a final newline: the heading and
+/// two lines, on when to call the tools that every connection publishes and
+/// what to run without them.
 pub fn section() -> String {
+    [
+        START,
+        "## Graphicle",
+        "When you do not yet know where the code for a task is, who calls it or why it was written that way, ask the `graphicle` MCP server before searching files by hand: `query_graph` or `recall_project` with the question, then `get_node` and `get_neighbors` for one symbol; answers cite file and lines.",
+        "Without the server, run `graphicle context \"<question>\"` in a terminal.",
+        END,
+    ]
+    .join("\n")
+}
+
+/// 0.1.0's section, markers included, without a final newline: what
+/// `graphicle setup --tools all` writes, with the whole server's tools.
+pub fn section_0_1_0() -> String {
     [
         START,
         "## Graphicle",
@@ -91,7 +113,11 @@ pub struct Upserted {
 /// with `switch`, in the place of Graphify's `## graphify` section; else
 /// added at the end after a blank line.
 pub fn upsert(text: &str, switch: bool) -> Upserted {
-    let section = section();
+    upsert_section(text, switch, &section())
+}
+
+/// [`upsert`] with the given section (such as [`section_0_1_0`]).
+pub fn upsert_section(text: &str, switch: bool, section: &str) -> Upserted {
     let mut lines: Vec<&str> = text.split('\n').collect();
     let new: Vec<&str> = section.split('\n').collect();
     if let Some((start, end)) = find(&lines) {
@@ -127,7 +153,7 @@ pub fn upsert(text: &str, switch: bool) -> Upserted {
     } else {
         out.clear();
     }
-    out.push_str(&section);
+    out.push_str(section);
     out.push('\n');
     Upserted {
         text: Some(out),
@@ -244,6 +270,24 @@ mod tests {
         assert_eq!(read.lines().count(), text.lines().count());
         assert!(read.ends_with("## Style\nTabs.\n") && !read.contains("Graphicle"));
         assert_eq!(for_sync("# Plain\n"), "# Plain\n");
+    }
+
+    #[test]
+    fn the_section_is_a_heading_and_two_lines_naming_the_essential_tools() {
+        let section = section();
+        let lines: Vec<&str> = section.lines().collect();
+        assert_eq!(lines, [START, "## Graphicle", lines[2], lines[3], END]);
+        // The tools it names are in every connection, the essentials too.
+        let named: Vec<&str> = regex::Regex::new(r"`([a-z_]+)`")
+            .unwrap()
+            .captures_iter(&section)
+            .map(|found| found.get(1).unwrap().as_str())
+            .filter(|name| *name != "graphicle")
+            .collect();
+        assert!(!named.is_empty(), "{section}");
+        for name in named {
+            assert!(crate::api::ESSENTIAL_TOOLS.contains(&name), "{name}");
+        }
     }
 
     #[test]

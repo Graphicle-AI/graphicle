@@ -572,7 +572,7 @@ fn answers_count_document_links_and_follow_them_only_when_asked() {
         &f.key,
         &repo,
         &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall_project",
-            "arguments":{"question":question,"graph_retrieval":false}}}),
+            "arguments":{"question":question,"graph_retrieval":false,"structured":true}}}),
     )
     .unwrap();
     assert_eq!(reply["result"]["isError"], false, "{reply}");
@@ -2175,7 +2175,8 @@ async fn basic_answers_and_mcp_recall_take_the_switch() {
         )
         .unwrap()
     };
-    let recall = |arguments: Value| {
+    let recall = |mut arguments: Value| {
+        arguments["structured"] = json!(true);
         let reply = call(arguments);
         assert_eq!(reply["result"]["isError"], false, "{reply}");
         reply["result"]["structuredContent"].clone()

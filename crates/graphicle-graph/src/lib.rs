@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__init__.py, graphify/__main__.py
 //! Graphicle graph engine: code and document knowledge graphs. It ports a
 //! pinned Graphify release (see NOTICE.md); migration coverage is explicit.
@@ -159,10 +159,13 @@ mod transcribe_native;
 pub mod tree_html;
 mod unicode15;
 pub mod validate;
+pub mod vtab;
 pub mod watch;
 mod watch_paths;
 mod watch_reconcile;
 pub mod wiki;
+#[cfg(windows)]
+mod win;
 
 #[cfg(test)]
 mod hardening_tests;
@@ -182,8 +185,8 @@ pub use wiki::to_wiki;
 /// This package's version: `--version`, the MCP server version and the
 /// stamp beside installed skills.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const UPSTREAM_COMMIT: &str = "a9860f70dc3cc2e9c2d8cb923484cfa0592b9067";
-pub const UPSTREAM_VERSION: &str = "0.9.88";
+pub const UPSTREAM_COMMIT: &str = "10130e79ed9caf8f60d998073e097531eaa1a395";
+pub const UPSTREAM_VERSION: &str = "0.9.91";
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn dispatch(request: &Value) -> Result<Value> {
@@ -734,6 +737,18 @@ fn dispatch_inner(request: &Value) -> Result<Value> {
                     &previous,
                 )?,
             ))
+        }
+        Some("cluster.label_still_applies") => {
+            // previous: {node id: community} before re-clustering (#2298).
+            let previous: std::collections::BTreeMap<String, i64> =
+                serde_json::from_value(request["previous"].clone()).map_err(crate::Error::from)?;
+            Ok(json!(cluster::label_still_applies(
+                request["cid"].as_i64().ok_or("Expected cid")?,
+                request["members"].as_array().ok_or("Expected members")?,
+                &previous,
+                request["saved_sig"].as_str(),
+                request["current_sig"].as_str(),
+            )))
         }
         Some(operation) if operation.starts_with("analyze.") => analyze::dispatch(request),
         Some(operation) if operation.starts_with("reflect.") => reflect::dispatch(request),

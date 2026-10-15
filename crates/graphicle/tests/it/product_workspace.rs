@@ -3,6 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use graphicle_runtime::platform::CanonicalExt;
 use graphicle_runtime::{
     api::{App, router},
     model,
@@ -350,7 +351,7 @@ async fn the_store_folder_is_shown_to_the_owner_only() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
         seen["local_mcp"]["data_dir"],
-        json!(f.store.directory.canonicalize().unwrap()),
+        json!(f.store.directory.canonical().unwrap()),
         "{seen}"
     );
     for role in ["reader", "agent"] {

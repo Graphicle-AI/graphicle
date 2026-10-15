@@ -607,7 +607,7 @@ fn stale_recorded_merge_root_falls_back_to_the_current_checkout() {
     .unwrap();
     assert_eq!(
         crate::build_normalize::infer_merge_root(&out.join("graph.json"), ".graphicle"),
-        Some(dir.path().canonicalize().unwrap())
+        Some(crate::fsutil::plain(&dir.path().canonicalize().unwrap()))
     );
 }
 

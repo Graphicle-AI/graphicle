@@ -1,7 +1,8 @@
 //! One-command MCP connection, preserving unrelated client configuration.
 //! Every file it changes is backed up once, left alone when nothing would
 //! change, and recorded for `graphicle disconnect` ([`crate::agent_files`]).
-use crate::{Error, Result, agent_files, codex_config, local, store::Store};
+use crate::platform::CanonicalExt;
+use crate::{Error, Result, agent_files, api::ToolSet, codex_config, local, store::Store};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -18,17 +19,37 @@ pub struct Connect<'a> {
     pub replace: bool,
     pub hooks: bool,
     pub work_state: bool,
-    /// `--graph`: set the client up for the code
-    /// graph too. The entry lets the agent propose memory (`--graph` implies
-    /// `--allow-learning`), and Claude Code
-    /// gets guard hooks that point searches and source reads in a synced
-    /// folder to the server's graph and recall tools.
+    /// `--graph`: set the client up for the code graph too, as setup does.
+    /// An entry that serves the whole server (or its memory half) lets the
+    /// agent propose memory (`--graph` implies `--allow-learning` there);
+    /// the essentials stay five tools.
     pub graph: bool,
-    /// `--allow-learning`: the entry publishes the memory-proposal tools.
+    /// `--allow-learning`: the entry publishes the memory-proposal tools
+    /// (with the essentials, `propose_memory`).
     pub allow_learning: bool,
+    /// `--tools`: the tools the entry publishes; `None` is the client's
+    /// default ([`default_tools`]).
+    pub tools: Option<ToolSet>,
+    /// `--guards`: Claude Code gets guard hooks that point searches and
+    /// source reads in a synced folder to the server's graph and recall
+    /// tools. Off unless asked for.
+    pub guards: bool,
     /// The folder `connect` runs in: it decides the project, and the
     /// project-scope clients' files are written there.
     pub cwd: &'a Path,
+}
+
+/// The tools a client's entry publishes unless `--tools` says otherwise:
+/// Claude Code, which shows every request the names of the tools and the
+/// server's instructions and loads a tool only when the agent searches for
+/// it, gets the five essential tools ([`ToolSet::Essentials`]); the other
+/// clients get the whole server, as in 0.1.0.
+pub fn default_tools(client: &str) -> ToolSet {
+    if client == "claude-code" {
+        ToolSet::Essentials
+    } else {
+        ToolSet::All
+    }
 }
 
 /// How `connect` treats an entry of the same name that differs.
@@ -40,15 +61,27 @@ pub struct Connect<'a> {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Policy {
     pub refresh_ours: bool,
+    /// Setup and `connect` without a client: Claude Code's guard hooks of
+    /// this store, which 0.1.0's setup installed by default, are removed
+    /// when `--guards` is not asked for, so a second run leaves what the
+    /// first one would have.
+    pub drop_guards: bool,
 }
 
 /// The connection `setup` and `connect` without a client make for `client`
 /// in `folder`, built in this one place. Capture hooks go to the clients
 /// that have them (Claude Code, Codex) when `capture` is set. The entry
 /// runs the one MCP server, set up for the code graph as `connect --graph`
-/// does: the agent may propose memory drafts, which a member
-/// reviews, and Claude Code gets the guard hooks.
-pub fn default_connection<'a>(client: &'a str, folder: &'a Path, capture: bool) -> Connect<'a> {
+/// does: `tools` (else the client's default, [`default_tools`]), where the
+/// whole server lets the agent propose memory drafts, which a member
+/// reviews; Claude Code gets the guard hooks with `guards`.
+pub fn default_connection<'a>(
+    client: &'a str,
+    folder: &'a Path,
+    capture: bool,
+    guards: bool,
+    tools: Option<ToolSet>,
+) -> Connect<'a> {
     Connect {
         client,
         config_path: None,
@@ -59,8 +92,59 @@ pub fn default_connection<'a>(client: &'a str, folder: &'a Path, capture: bool) 
         work_state: false,
         graph: true,
         allow_learning: false,
+        tools,
+        guards,
         cwd: folder,
     }
+}
+
+/// An entry's arguments without `--tools <set>` and `--allow-learning`.
+fn without_tool_set(args: &Value) -> Option<Vec<&str>> {
+    let mut out = Vec::new();
+    let mut set = false;
+    for arg in args.as_array()? {
+        let arg = arg.as_str()?;
+        if std::mem::take(&mut set) {
+            continue;
+        }
+        match arg {
+            "--tools" => set = true,
+            "--allow-learning" => {}
+            _ => out.push(arg),
+        }
+    }
+    Some(out)
+}
+
+/// Whether the entry `old` is the entry `asked` but for its tool set
+/// (`--tools`, `--allow-learning`): the same command, server, store and
+/// project, and no other field.
+fn same_but_tool_set(old: &Value, asked: &Value) -> bool {
+    let fields = |entry: &Value| {
+        entry.as_object().map(|object| {
+            object
+                .iter()
+                .filter(|(key, _)| key.as_str() != "args")
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<Vec<_>>()
+        })
+    };
+    fields(old).is_some()
+        && fields(old) == fields(asked)
+        && without_tool_set(&old["args"]).is_some()
+        && without_tool_set(&old["args"]) == without_tool_set(&asked["args"])
+}
+
+/// The tool set an entry's arguments name: `--tools <set>`, else the whole
+/// server.
+fn entry_tools(entry: &Value) -> ToolSet {
+    entry["args"]
+        .as_array()
+        .and_then(|args| {
+            let at = args.iter().position(|arg| arg == "--tools")?;
+            ToolSet::parse(args.get(at + 1)?.as_str()?).ok()
+        })
+        .unwrap_or(ToolSet::All)
 }
 
 /// Whether `client` takes session-capture hooks.
@@ -105,7 +189,7 @@ fn command_name(program: &Path, executable: &Path) -> PathBuf {
             .map(|folder| folder.join(&name))
             .find(|candidate| candidate.is_file())
     });
-    match on_path.and_then(|found| found.canonicalize().ok()) {
+    match on_path.and_then(|found| found.canonical().ok()) {
         Some(found) if found == executable => PathBuf::from("graphicle"),
         _ => program.to_path_buf(),
     }
@@ -117,11 +201,11 @@ fn command_name(program: &Path, executable: &Path) -> PathBuf {
 /// keeps while it removes the versioned folder the link pointed into; else
 /// its canonical path.
 pub fn stable_program() -> Result<PathBuf> {
-    let executable = std::env::current_exe()?.canonicalize()?;
+    let executable = std::env::current_exe()?.canonical()?;
     if let (Some(name), Some(path)) = (executable.file_name(), std::env::var_os("PATH")) {
         for folder in std::env::split_paths(&path).filter(|folder| folder.is_absolute()) {
             let candidate = folder.join(name);
-            if candidate.canonicalize().ok().as_ref() == Some(&executable) {
+            if candidate.canonical().ok().as_ref() == Some(&executable) {
                 return Ok(candidate);
             }
         }
@@ -210,12 +294,12 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
         Some(options.cwd),
         session.project.as_deref(),
     )?;
-    let executable = std::env::current_exe()?.canonicalize()?;
+    let executable = std::env::current_exe()?.canonical()?;
     // What the entry and hooks run: a path that survives an upgrade.
     let program = stable_program()?;
-    let directory = store.directory.canonicalize()?;
+    let directory = store.directory.canonical()?;
     let mut arguments: Vec<String> = Vec::new();
-    if local::default_data_dir().canonicalize().ok().as_deref() != Some(directory.as_path()) {
+    if local::default_data_dir().canonical().ok().as_deref() != Some(directory.as_path()) {
         arguments.extend([
             "--data-dir".into(),
             directory.to_string_lossy().into_owned(),
@@ -237,11 +321,21 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
         ".".into()
     };
     arguments.extend(["--project".into(), named]);
-    let learning = options.allow_learning || options.graph;
-    // The same entry with `--allow-learning`, which setup's entries carry:
-    // a Graphicle entry of this store that differs from the one asked for
-    // only by it keeps it (below), so `connect <client>` after setup
-    // changes nothing.
+    // The tools the entry publishes: `--tools`, else the client's default.
+    // The whole server's entry names no set, as 0.1.0's entries did.
+    let tools = options.tools.unwrap_or_else(|| default_tools(client));
+    if tools != ToolSet::All {
+        arguments.extend(["--tools".into(), tools.name().into()]);
+    }
+    // `--graph` lets the agent propose memory where the set has room for the
+    // proposal tools (the whole server, the memory half); the essentials
+    // stay five tools unless `--allow-learning` asks for `propose_memory`.
+    let learning = options.allow_learning
+        || (options.graph && matches!(tools, ToolSet::All | ToolSet::Memory));
+    // The same entry with `--allow-learning`, which setup's entries of the
+    // whole server carry: a Graphicle entry of this store that differs from
+    // the one asked for only by it keeps it (below), so `connect <client>`
+    // after setup changes nothing.
     let mut learned_arguments = arguments.clone();
     learned_arguments.push("--allow-learning".into());
     if learning {
@@ -288,8 +382,15 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
     // that one serves another project (`entry_for_project`).
     let named_for_project = options.name.is_none() && !project_scope(client);
     let access = |learning: bool| {
-        let mut access = String::from("read-only source, code-graph and reviewed memory tools");
-        if learning {
+        let mut access = String::from(match tools {
+            ToolSet::Essentials => {
+                "five read-only tools: query_graph, get_node and get_neighbors on the code graph, recall_project and read_project_source (--tools all publishes every tool)"
+            }
+            ToolSet::Graph => "read-only code-graph tools",
+            ToolSet::Memory => "read-only source and reviewed memory tools",
+            ToolSet::All => "read-only source, code-graph and reviewed memory tools",
+        });
+        if learning && tools != ToolSet::Graph {
             access.push_str(", plus memory drafts a member reviews");
         }
         if options.work_state {
@@ -301,7 +402,7 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
         "resolves":if follows_folder {"from the folder the client starts in"} else {"named in the entry"}});
     // Where this connection's changes are recorded, and the folder they
     // belong to.
-    let folder = options.cwd.canonicalize()?;
+    let folder = options.cwd.canonical()?;
     let replace_hooks = options.replace || policy.refresh_ours;
     if client == "codex" {
         // `--replace` applies only to Graphicle's own hooks here.
@@ -368,7 +469,7 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
         } else {
             None
         };
-        let mut result = json!({"connected":true,"client":client,"entry":entry,"project":chosen,"access":access(learning || learning_kept)});
+        let mut result = json!({"connected":true,"client":client,"entry":entry,"project":chosen,"access":access(learning || learning_kept),"tools":tools.name()});
         let existed = config.as_deref().is_some_and(Path::exists);
         if unchanged {
             result["unchanged"] = json!(true);
@@ -376,7 +477,7 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
             if let Some(config) = &config {
                 agent_files::backup_in(&directory, config)?;
             }
-            match std::process::Command::new("codex")
+            match crate::platform::command("codex")
                 .args(["mcp", "add", &entry, "--"])
                 .arg(&command)
                 .args(&arguments)
@@ -429,14 +530,13 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
             result["hooks"] =
                 write_hooks(plan, &directory, &folder, &project.id)?["capture"].take();
         }
-        if options.graph {
+        if options.guards {
             result["graph"] = json!({"guard_hooks":"not available for codex: its hooks cannot add context before a tool call"});
         }
         return Ok(result);
     }
-    let user = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| Error::bad("Home directory unavailable"))?;
+    let user =
+        crate::platform::home_dir().ok_or_else(|| Error::bad("Home directory unavailable"))?;
     let destination = if let Some(path) = options.config_path {
         path.to_path_buf()
     } else {
@@ -446,7 +546,15 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
                 {
                     user.join("Library/Application Support/Claude/claude_desktop_config.json")
                 }
-                #[cfg(not(target_os = "macos"))]
+                #[cfg(windows)]
+                {
+                    crate::agent_detect::Environment::current()
+                        .claude_desktop_config()
+                        .unwrap_or_else(|| {
+                            user.join(r"AppData\Roaming\Claude\claude_desktop_config.json")
+                        })
+                }
+                #[cfg(all(not(target_os = "macos"), not(windows)))]
                 {
                     user.join(".config/Claude/claude_desktop_config.json")
                 }
@@ -512,10 +620,32 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
     let old = document[group].get(&entry).cloned();
     // Setup's entry, with `--allow-learning`, kept as it is.
     let learning_kept = !learning && old.as_ref() == Some(&learned);
-    let server = if learning_kept {
-        learned.clone()
+    // `connect <client>` without `--tools` or `--allow-learning` keeps an
+    // entry of this store that differs only by its tool set: a 0.1.0
+    // setup's, or `setup --tools all`'s, which run the whole server.
+    let set_kept = !learning_kept
+        && !policy.refresh_ours
+        && options.tools.is_none()
+        && !options.allow_learning
+        && old
+            .as_ref()
+            .is_some_and(|old| same_but_tool_set(old, &server));
+    let tools = if set_kept {
+        old.as_ref().map_or(tools, entry_tools)
     } else {
-        server.clone()
+        tools
+    };
+    let learning_kept = learning_kept
+        || (set_kept
+            && old.as_ref().is_some_and(|old| {
+                old["args"]
+                    .as_array()
+                    .is_some_and(|args| args.iter().any(|arg| arg == "--allow-learning"))
+            }));
+    let server = match &old {
+        Some(old) if set_kept => old.clone(),
+        _ if learning_kept => learned.clone(),
+        _ => server.clone(),
     };
     let unchanged = old.as_ref() == Some(&server);
     let replacing = old.is_some() && !unchanged;
@@ -529,16 +659,25 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
     }
     // Hook conflicts are found before anything is written. Claude Code's
     // capture and guard hooks share one file and one plan.
-    let guards = options.graph && client == "claude-code";
-    let hook_plan = if options.hooks || guards {
-        Some(plan_hooks(
+    let guards = options.guards && client == "claude-code";
+    let drop_guards = policy.drop_guards
+        && client == "claude-code"
+        && !guards
+        && read_config(&hook_file(client, options.cwd)?, "hook")
+            .is_ok_and(|(document, _)| holds_guard_hooks(&document, client, &directory));
+    let hook_plan = if options.hooks || guards || drop_guards {
+        let mut plan = plan_hooks(
             client,
             &program,
             &directory,
             replace_hooks,
             options.cwd,
             &hook_specs(client, options.hooks, guards),
-        )?)
+        )?;
+        if drop_guards {
+            plan.drop_guards(&directory);
+        }
+        Some(plan)
     } else {
         None
     };
@@ -546,7 +685,7 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
         && document[group]
             .get("graphicle")
             .is_some_and(|earlier| agent_files::entry_uses_store(earlier, &directory));
-    let mut result = json!({"connected":true,"client":client,"configuration":destination,"entry":entry,"project":chosen,"access":access(learning || learning_kept),"next":"Restart or reload your client to enable Graphicle"});
+    let mut result = json!({"connected":true,"client":client,"configuration":destination,"entry":entry,"project":chosen,"access":access(learning || learning_kept),"tools":tools.name(),"next":"Restart or reload your client to enable Graphicle"});
     if unchanged {
         result["unchanged"] = json!(true);
     } else {
@@ -590,10 +729,10 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
         if options.hooks {
             result["hooks"] = written["capture"].take();
         }
-        if guards {
+        if guards || drop_guards {
             result["graph"] = json!({"guard_hooks":written["guard"].take()});
         }
-    } else if options.graph {
+    } else if options.guards {
         result["graph"] = json!({"guard_hooks":format!("not available for {client}: only Claude Code's hooks can add context before a tool call")});
     }
     Ok(result)
@@ -663,8 +802,109 @@ fn read_config(destination: &Path, what: &str) -> Result<(Value, Option<String>)
 
 /// POSIX shell quoting: hook commands run through `sh -c`, and the default
 /// macOS data folder ("Application Support") contains a space.
+#[cfg(not(windows))]
 fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// Windows: a path double-quoted with `/` separators, which cmd and Git
+/// Bash read alike (a Windows path cannot hold `"`). Codex's hooks use it:
+/// its documentation names no shell, and on Windows Codex hands the command
+/// to the system's command interpreter (cmd).
+#[cfg(windows)]
+fn quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "/"))
+}
+
+/// The start of a hook command, `<program> --data-dir <store> hook <client> `,
+/// quoted for the shell `client` runs its hooks with.
+#[cfg(not(windows))]
+fn hook_prefix(client: &str, program: &Path, directory: &Path) -> String {
+    format!(
+        "{} --data-dir {} hook {client} ",
+        quote(&program.to_string_lossy()),
+        quote(&directory.to_string_lossy())
+    )
+}
+
+/// Windows: Claude Code runs a hook command through Git Bash when Git for
+/// Windows is installed and through PowerShell otherwise (its hooks
+/// reference, "shell form"). The program is written as [`claude_program`]
+/// spells it and the data folder single-quoted, which both shells take
+/// literally. Codex's hooks keep [`quote`]'s form.
+#[cfg(windows)]
+fn hook_prefix(client: &str, program: &Path, directory: &Path) -> String {
+    let (spelled, directory) = (program.to_string_lossy(), directory.to_string_lossy());
+    if client == "claude-code" {
+        let on_path = || {
+            std::env::current_exe()
+                .ok()
+                .and_then(|executable| executable.canonical().ok())
+                .is_some_and(|executable| {
+                    command_name(program, &executable).as_os_str() == "graphicle"
+                })
+        };
+        format!(
+            "{} --data-dir {} hook {client} ",
+            claude_program(&spelled, on_path),
+            single_quoted(&directory)
+        )
+    } else {
+        format!(
+            "{} --data-dir {} hook {client} ",
+            quote(&spelled),
+            quote(&directory)
+        )
+    }
+}
+
+/// The program of a Claude Code hook on Windows: the path bare when it
+/// needs no quoting in either shell ([`bare_or_quoted`]); else the name
+/// `graphicle` when that name on `PATH` is this program (`on_path`), since
+/// PowerShell takes a leading quoted string as a value, not a command (a
+/// profile folder with a space); else the path double-quoted, the form Git
+/// Bash runs.
+#[cfg(any(windows, test))]
+fn claude_program(program: &str, on_path: impl FnOnce() -> bool) -> String {
+    let spelled = bare_or_quoted(program);
+    if spelled.starts_with('"') && on_path() {
+        "graphicle".to_string()
+    } else {
+        spelled
+    }
+}
+
+/// `value` with `/` separators, bare when every character means itself to
+/// Git Bash and PowerShell alike (ASCII letters, digits and `/:._+-`, after
+/// a drive letter), else double-quoted ([`quote`]).
+#[cfg(any(windows, test))]
+fn bare_or_quoted(value: &str) -> String {
+    let slashed = value.replace('\\', "/");
+    let drive = slashed.len() > 3
+        && slashed.as_bytes()[0].is_ascii_alphabetic()
+        && slashed.get(1..3) == Some(":/");
+    let plain = slashed
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"/:._+-".contains(&b));
+    if drive && plain {
+        slashed
+    } else {
+        format!("\"{slashed}\"")
+    }
+}
+
+/// `value` with `/` separators in single quotes, which Git Bash and
+/// PowerShell both take literally; double-quoted ([`quote`]) when it holds
+/// a quote character either shell ends a single-quoted string at
+/// (PowerShell also ends one at a typographic single quote).
+#[cfg(any(windows, test))]
+fn single_quoted(value: &str) -> String {
+    let slashed = value.replace('\\', "/");
+    if slashed.contains(['\'', '\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}']) {
+        format!("\"{slashed}\"")
+    } else {
+        format!("'{slashed}'")
+    }
 }
 
 /// One Graphicle hook a client runs: `graphicle --data-dir <store> hook
@@ -676,7 +916,7 @@ struct HookSpec {
     argument: &'static str,
     timeout: u64,
     matcher: Option<&'static str>,
-    /// A guard hook of `connect --graph`, else a capture hook
+    /// A guard hook of `--guards`, else a capture hook
     /// of `connect --hooks`.
     guard: bool,
 }
@@ -714,7 +954,7 @@ const CODEX_CAPTURE: [HookSpec; 3] = [
     capture("SessionEnd", "session-end", 3),
 ];
 
-/// Claude Code's guard hooks of `connect --graph`: before
+/// Claude Code's guard hooks of `setup --guards` and `connect --guards`: before
 /// a search (Bash, Grep) or a source read (Read, Glob), `graphicle hook
 /// claude-code guard-search|guard-read` points the agent to the server's
 /// graph and recall tools when the folder is a Graphicle project with a code
@@ -761,7 +1001,7 @@ fn hook_file(client: &str, cwd: &Path) -> Result<PathBuf> {
         "codex" => {
             let home = std::env::var_os("CODEX_HOME")
                 .map(PathBuf::from)
-                .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
+                .or_else(|| crate::platform::home_dir().map(|h| h.join(".codex")))
                 .ok_or_else(|| Error::bad("Home directory unavailable"))?;
             Ok(home.join("hooks.json"))
         }
@@ -781,6 +1021,22 @@ struct HookPlan {
     /// `(spec, installed)` for each hook of the plan: installed now, or
     /// already there unchanged.
     outcomes: Vec<(HookSpec, bool)>,
+    /// The guard hooks of this store the plan takes out ([`HookPlan::drop_guards`]).
+    removed: Vec<&'static str>,
+}
+
+impl HookPlan {
+    /// Take Claude Code's guard hooks that open the data folder `directory`
+    /// out of the plan's file, with the groups and events that held only
+    /// them; every other hook stays.
+    fn drop_guards(&mut self, directory: &Path) {
+        let client = self.client.clone();
+        if remove_matching(&mut self.document, directory, &|handler| {
+            is_guard_hook(handler, &client)
+        }) {
+            self.removed = GUARD_ARGUMENTS.to_vec();
+        }
+    }
 }
 
 /// Merge Graphicle's hooks `specs` into the client's hooks file, keeping
@@ -802,11 +1058,7 @@ fn plan_hooks(
     let Some(table) = document["hooks"].as_object_mut() else {
         return Err(Error::bad("Existing hooks configuration is not an object"));
     };
-    let prefix = format!(
-        "{} --data-dir {} hook {client} ",
-        quote(&program.to_string_lossy()),
-        quote(&directory.to_string_lossy())
-    );
+    let prefix = hook_prefix(client, program, directory);
     let mut outcomes = Vec::new();
     for spec in specs {
         let mut handler = json!({"type":"command","command":format!("{prefix}{}", spec.argument),"timeout":spec.timeout});
@@ -864,6 +1116,7 @@ fn plan_hooks(
         document,
         original,
         outcomes,
+        removed: Vec::new(),
     })
 }
 
@@ -886,9 +1139,9 @@ pub fn refresh_hooks(store: &Store, client: &str, cwd: &Path) -> Result<Value> {
         Some(cwd),
         session.project.as_deref(),
     )?;
-    let directory = store.directory.canonicalize()?;
+    let directory = store.directory.canonical()?;
     // The hooks the file has of this store: the capture hooks, and Claude
-    // Code's guard hooks (setup, `connect --graph`); the capture hooks when
+    // Code's guard hooks (`--guards`); the capture hooks when
     // it has neither.
     let (capture, guards) = match read_config(&hook_file(client, cwd)?, "hook") {
         Ok((document, _)) => (
@@ -906,7 +1159,7 @@ pub fn refresh_hooks(store: &Store, client: &str, cwd: &Path) -> Result<Value> {
         cwd,
         &hook_specs(client, capture, guards),
     )?;
-    let mut written = write_hooks(plan, &directory, &cwd.canonicalize()?, &project.id)?;
+    let mut written = write_hooks(plan, &directory, &cwd.canonical()?, &project.id)?;
     let mut reply = written["capture"].take();
     if guards {
         reply["guard"] = written["guard"].take();
@@ -919,7 +1172,7 @@ pub fn refresh_hooks(store: &Store, client: &str, cwd: &Path) -> Result<Value> {
 /// `project`.
 fn write_hooks(plan: HookPlan, directory: &Path, folder: &Path, project: &str) -> Result<Value> {
     let existed = plan.destination.exists();
-    if plan.outcomes.iter().any(|(_, installed)| *installed) {
+    if plan.outcomes.iter().any(|(_, installed)| *installed) || !plan.removed.is_empty() {
         if let Some(parent) = plan.destination.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -966,6 +1219,7 @@ fn write_hooks(plan: HookPlan, directory: &Path, folder: &Path, project: &str) -
             "capture":"completed turns after each answer; reviewed memory at session start; private spans dropped, credentials redacted",
             "next":next},
         "guard": {"configuration":plan.destination,"installed":listed(true, true),"unchanged":listed(true, false),
+            "removed":plan.removed,
             "nudge":"before a search or a source read in a folder whose Graphicle project has a code graph, the agent is pointed to query_graph, get_node, get_neighbors and recall_project; elsewhere the graph engine's own guard answers",
             "next":next},
     }))
@@ -974,7 +1228,7 @@ fn write_hooks(plan: HookPlan, directory: &Path, folder: &Path, project: &str) -
 /// The arguments of the capture hooks `connect --hooks` installs.
 const HOOK_ARGUMENTS: [&str; 4] = ["session-start", "stop", "pre-compact", "session-end"];
 
-/// The arguments of the guard hooks `connect --graph` (and setup) installs
+/// The arguments of the guard hooks `--guards` (setup, `connect`) installs
 /// for Claude Code.
 pub const GUARD_ARGUMENTS: [&str; 2] = ["guard-search", "guard-read"];
 
@@ -1036,6 +1290,15 @@ pub fn holds_guard_hooks(document: &Value, client: &str, data: &Path) -> bool {
 /// `hooks` object that held only them; other data folders' hooks stay.
 /// Returns whether any was there.
 pub fn remove_hooks(document: &mut Value, client: &str, data: &Path) -> bool {
+    remove_matching(document, data, &|handler| {
+        is_capture_hook(handler, client) || is_guard_hook(handler, client)
+    })
+}
+
+/// Remove the hook handlers `ours` accepts that open the data folder `data`
+/// from a hooks document, with the groups, events and `hooks` object that
+/// held only them. Returns whether any was there.
+fn remove_matching(document: &mut Value, data: &Path, ours: &dyn Fn(&Value) -> bool) -> bool {
     let Some(table) = document.get_mut("hooks").and_then(Value::as_object_mut) else {
         return false;
     };
@@ -1052,7 +1315,7 @@ pub fn remove_hooks(document: &mut Value, client: &str, data: &Path) -> bool {
             };
             let before = handlers.len();
             handlers.retain(|handler| {
-                !((is_capture_hook(handler, client) || is_guard_hook(handler, client))
+                !(ours(handler)
                     && handler["command"]
                         .as_str()
                         .is_some_and(|command| hook_uses_store(command, data)))
@@ -1147,7 +1410,7 @@ pub fn other_stores(document: &Value, group: &str, data: &Path) -> Vec<(String, 
         .collect()
 }
 
-/// What a guard hook of `connect --graph` answers.
+/// What a guard hook of `--guards` answers.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Guard {
     /// Point the agent to the server's tools: print this hook output.
@@ -1366,10 +1629,10 @@ pub fn guard(directory: &Path, kind: &str, payload: &Value) -> Guard {
             // A target is a path, or a Glob pattern, relative to the folder
             // the client works in unless absolute; `.` and `..` are resolved
             // before it is compared with the project's folder.
-            let base = folder.canonicalize().unwrap_or_else(|_| folder.clone());
+            let base = folder.canonical().unwrap_or_else(|_| folder.clone());
             let inside = |target: &str| {
                 let path = base.join(target);
-                path.canonicalize()
+                path.canonical()
                     .unwrap_or_else(|_| lexical(&path))
                     .starts_with(&root)
             };
@@ -1429,6 +1692,135 @@ fn lexical(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_paths_are_double_quoted_with_slashes() {
+        let quoted = quote(r"C:\Program Files\Graphicle\graphicle.exe");
+        assert_eq!(quoted, "\"C:/Program Files/Graphicle/graphicle.exe\"");
+        assert_eq!(
+            crate::terminal::words(&format!("{quoted} --data-dir \"C:/a b\" hook codex start")),
+            [
+                "C:/Program Files/Graphicle/graphicle.exe",
+                "--data-dir",
+                "C:/a b",
+                "hook",
+                "codex",
+                "start"
+            ]
+        );
+    }
+
+    /// The Windows hook spellings (`hook_prefix` there) on any host: a plain
+    /// program path is bare and the data folder single-quoted, so Git Bash
+    /// and PowerShell both run the command; anything else falls back to
+    /// double quotes. The readback parser takes every form back.
+    #[test]
+    fn windows_hook_spellings_read_back() {
+        assert_eq!(
+            bare_or_quoted(r"C:\Profile\me\AppData\Local\Programs\Graphicle\bin\graphicle.exe"),
+            "C:/Profile/me/AppData/Local/Programs/Graphicle/bin/graphicle.exe"
+        );
+        for needs_quotes in [
+            r"C:\Profile\Jo Smith\graphicle.exe",
+            r"C:\Profile\O'Brien\graphicle.exe",
+            "C:\\Profile\\Jos\u{e9}\\graphicle.exe",
+            r"C:\a$b\graphicle.exe",
+            r"C:\a&b\graphicle.exe",
+            r"\\server\share\graphicle.exe",
+            "graphicle.exe",
+        ] {
+            let quoted = bare_or_quoted(needs_quotes);
+            assert_eq!(quoted, format!("\"{}\"", needs_quotes.replace('\\', "/")));
+        }
+        assert_eq!(
+            single_quoted(r"C:\Profile\Jo Smith\AppData\Local\Graphicle"),
+            "'C:/Profile/Jo Smith/AppData/Local/Graphicle'"
+        );
+        assert_eq!(
+            single_quoted(r"C:\Profile\O'Brien\AppData"),
+            "\"C:/Profile/O'Brien/AppData\""
+        );
+        assert_eq!(
+            single_quoted("C:\\Profile\\O\u{2019}Brien"),
+            "\"C:/Profile/O\u{2019}Brien\""
+        );
+        for (program, store) in [
+            (r"C:\bin\graphicle.exe", r"C:\Profile\Jo Smith\Graphicle"),
+            (
+                r"C:\Program Files\graphicle.exe",
+                r"C:\Profile\O'Brien\Graphicle",
+            ),
+        ] {
+            let command = format!(
+                "{} --data-dir {} hook claude-code stop",
+                bare_or_quoted(program),
+                single_quoted(store)
+            );
+            assert_eq!(
+                crate::terminal::words(&command),
+                [
+                    program.replace('\\', "/").as_str(),
+                    "--data-dir",
+                    store.replace('\\', "/").as_str(),
+                    "hook",
+                    "claude-code",
+                    "stop"
+                ],
+                "{command}"
+            );
+        }
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unix_hook_prefix_is_posix_quoted() {
+        assert_eq!(
+            hook_prefix(
+                "claude-code",
+                Path::new("/opt/bin/graphicle"),
+                Path::new("/home/a/Application Support/Graphicle")
+            ),
+            "'/opt/bin/graphicle' --data-dir '/home/a/Application Support/Graphicle' hook claude-code "
+        );
+    }
+
+    #[test]
+    fn claude_code_hook_program_runs_in_both_windows_shells() {
+        assert_eq!(
+            claude_program(r"C:\bin\graphicle.exe", || true),
+            "C:/bin/graphicle.exe"
+        );
+        assert_eq!(
+            claude_program(r"D:\Profiles\Jo Smith\bin\graphicle.exe", || true),
+            "graphicle"
+        );
+        assert_eq!(
+            claude_program(r"D:\Profiles\Jo Smith\bin\graphicle.exe", || false),
+            "\"D:/Profiles/Jo Smith/bin/graphicle.exe\""
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_hook_prefix_suits_each_clients_shell() {
+        assert_eq!(
+            hook_prefix(
+                "claude-code",
+                Path::new(r"C:\bin\graphicle.exe"),
+                Path::new(r"D:\Profile\AppData\Local\Graphicle")
+            ),
+            "C:/bin/graphicle.exe --data-dir 'D:/Profile/AppData/Local/Graphicle' hook claude-code "
+        );
+        assert_eq!(
+            hook_prefix(
+                "codex",
+                Path::new(r"C:\bin\graphicle.exe"),
+                Path::new(r"D:\Profile\AppData\Local\Graphicle")
+            ),
+            "\"C:/bin/graphicle.exe\" --data-dir \"D:/Profile/AppData/Local/Graphicle\" hook codex "
+        );
+    }
+
     #[test]
     fn removing_capture_hooks_keeps_every_other_hook() {
         let d = Path::new("/d");
@@ -1454,7 +1846,7 @@ mod tests {
         // Nor another data folder's.
         let mut other = json!({"hooks":{"Stop":[{"hooks":[ours("stop")]}]}});
         assert!(!remove_hooks(&mut other, "claude-code", Path::new("/e")));
-        // The guard hooks of setup and `connect --graph` go too, another
+        // The guard hooks of `--guards` go too, another
         // tool's PreToolUse hook stays.
         let mut guarded = original.clone();
         guarded["hooks"]["PreToolUse"] = json!([

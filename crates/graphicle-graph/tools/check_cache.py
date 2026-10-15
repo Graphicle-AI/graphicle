@@ -103,6 +103,15 @@ try:
             a={'nodes':[{'id':'keep','source_file':str(file)},{'id':'drop','source_file':str(outside)}],'edges':[{'source':source,'target':target,'source_file':str(file)}]};b=copy.deepcopy(a)
             want=oracle.scope_semantic_result(a,root,[file]);got=fns['scope_semantic_result'](b,root,[file]);comparisons+=1
             if a!=b or want!=got:native.fail(expected=a,actual=b,expected_drop=clean(want),actual_drop=clean(got))
+        # 0.9.91 (#2276): an edge attributed to an out-of-scope file stays when both
+        # endpoint ids are kept nodes; one to a dropped, unknown or unhashable id
+        # does not. Hyperedges keep the plain scope rule.
+        for source,target in [('keep','keep2'),('keep2','keep'),('keep','drop'),('drop','keep'),('keep','missing'),('keep',[]),('keep',None)]:
+            a={'nodes':[{'id':'keep','source_file':str(file)},{'id':'keep2','source_file':'src/f.py'},{'id':'drop','source_file':str(outside)}],
+               'edges':[{'source':source,'target':target,'source_file':str(outside)},{'source':'keep','target':'keep2','source_file':'../other.py'}],
+               'hyperedges':[{'id':'h','nodes':['keep','keep2'],'source_file':str(outside)}]};b=copy.deepcopy(a)
+            want=oracle.scope_semantic_result(a,root,[file]);got=fns['scope_semantic_result'](b,root,[file]);comparisons+=1
+            if a!=b or want!=got:native.fail(expected=a,actual=b,expected_drop=clean(want),actual_drop=clean(got))
         for i in range(400):
             text=rng.choice(['','---\nx: y\n---\nbody','----\nnot metadata\n---','--- \r\nx: y\r\n---\t\r\nbody','\ufffd','a\x1f','---\n---\n'])
             compare('_body_content',{'content':text.encode()+bytes(rng.choices([32,65,255],k=rng.randrange(4)))})

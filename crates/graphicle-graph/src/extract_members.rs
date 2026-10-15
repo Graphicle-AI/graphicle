@@ -1,8 +1,9 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Cross-file receiver binding for the application extraction pipeline.
 use crate::{
     build::truthy,
+    extract::per_file::PerFile,
     extract_merge::{family, label_key, rewire_unique_stub_edges},
     extractors::{
         base::{is_language_builtin, make_id},
@@ -10,11 +11,14 @@ use crate::{
         resolution::{is_type_like_definition, s},
     },
     python_compat::string,
+    resolver_registry::{Rec, rs},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{Value, json};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
+use std::rc::Rc;
 type Index = BTreeMap<String, Vec<String>>;
 type Fields = BTreeMap<String, BTreeMap<String, String>>;
 fn key(s: &str, lang: &str) -> String {
@@ -37,7 +41,7 @@ fn java_key(s: &str) -> String {
 fn upper(s: &str) -> bool {
     s.chars().next().is_some_and(char::is_uppercase)
 }
-pub fn park(node: Option<&mut Value>, callee: &str, receiver: &str, lang: &str, raw: &Value) {
+pub fn park<R: Rec>(node: Option<&mut Value>, callee: &str, receiver: &str, lang: &str, raw: &R) {
     let Some(n) = node else { return };
     if callee.is_empty() || receiver.is_empty() {
         return;
@@ -60,50 +64,159 @@ pub fn park(node: Option<&mut Value>, callee: &str, receiver: &str, lang: &str, 
         return;
     }
     let mut v = json!({"callee":callee,"receiver_type":receiver,"lang":lang});
-    if !s(raw, "source_location").is_empty() {
-        v["line"] = raw["source_location"].clone();
+    if !rs(raw, "source_location").is_empty() {
+        v["line"] = raw
+            .rec_get("source_location")
+            .cloned()
+            .unwrap_or(Value::Null);
     }
     calls.push(v);
 }
+/// Calls to park on their callers' metadata: (caller, callee, receiver type,
+/// raw call), in a resolver's loop order.
+type Parked<'a, R> = Vec<(String, String, String, &'a R)>;
 /// Apply the parks a resolver collected, in its loop order: nothing a
 /// resolver reads changes when a call is parked on its caller's metadata.
-fn apply_parks(nodes: &mut [Value], parked: Vec<(String, String, String, &Value)>, lang: &str) {
+/// The caller is the last node with its id, as the reference's
+/// `node_by_id` map has it; the index is built once, not searched per park.
+fn apply_parks<R: Rec>(nodes: &mut [Value], parked: Parked<'_, R>, lang: &str) {
+    if parked.is_empty() {
+        return;
+    }
+    let wanted = parked
+        .iter()
+        .map(|(caller, ..)| caller.as_str())
+        .collect::<FxHashSet<_>>();
+    let mut index: FxHashMap<String, usize> = FxHashMap::default();
+    for (i, n) in nodes.iter().enumerate() {
+        if wanted.contains(s(n, "id")) {
+            index.insert(s(n, "id").to_string(), i);
+        }
+    }
+    drop(wanted);
     for (caller, callee, ty, raw) in parked {
-        park(
-            nodes.iter_mut().find(|n| s(n, "id") == caller),
-            &callee,
-            &ty,
-            lang,
-            raw,
-        );
+        let node = index.get(&caller).map(|&i| &mut nodes[i]);
+        park(node, &callee, &ty, lang, raw);
     }
 }
-/// Emitted (caller, target) pairs; membership only, so hashed.
-type Seen = rustc_hash::FxHashSet<(String, String)>;
-fn emit(
-    edges: &mut Vec<Value>,
+/// Emitted (caller, target) pairs; membership only, so hashed. Each distinct
+/// id text is numbered once and a pair is two integers, not two string
+/// copies: the table starts with every edge (Kubernetes: 1.6 million pairs,
+/// about 300 MB as strings). Equal texts get equal numbers, so every answer
+/// is the one the strings would give. The id texts are owned (`Box<str>`) by
+/// default; a resolver whose ids all borrow from the records, nodes and
+/// edges it reads keys them by `&str` instead and copies no text at all.
+struct Seen<K = Box<str>> {
+    ids: FxHashMap<K, u32>,
+    pairs: FxHashSet<(u32, u32)>,
+}
+/// An id text as a [`Seen`] key: an owned copy, or the borrowed text itself.
+trait SeenKey<'a>: std::borrow::Borrow<str> + std::hash::Hash + Eq {
+    fn make(text: &'a str) -> Self;
+}
+impl<'a> SeenKey<'a> for Box<str> {
+    fn make(text: &'a str) -> Self {
+        text.into()
+    }
+}
+impl<'a> SeenKey<'a> for &'a str {
+    fn make(text: &'a str) -> Self {
+        text
+    }
+}
+impl<K> Default for Seen<K> {
+    fn default() -> Self {
+        Self {
+            ids: FxHashMap::default(),
+            pairs: FxHashSet::default(),
+        }
+    }
+}
+impl<K: std::borrow::Borrow<str> + std::hash::Hash + Eq> Seen<K> {
+    fn id<'a>(&mut self, text: &'a str) -> u32
+    where
+        K: SeenKey<'a>,
+    {
+        if let Some(&id) = self.ids.get(text) {
+            return id;
+        }
+        let id = u32::try_from(self.ids.len()).expect("fewer than 2^32 distinct ids");
+        self.ids.insert(K::make(text), id);
+        id
+    }
+    /// Adds the pair; `true` when it was not there before.
+    fn insert<'a>(&mut self, source: &'a str, target: &'a str) -> bool
+    where
+        K: SeenKey<'a>,
+    {
+        let pair = (self.id(source), self.id(target));
+        self.pairs.insert(pair)
+    }
+    fn contains(&self, source: &str, target: &str) -> bool {
+        match (self.ids.get(source), self.ids.get(target)) {
+            (Some(&source), Some(&target)) => self.pairs.contains(&(source, target)),
+            _ => false,
+        }
+    }
+}
+/// Collects a call edge into `added`. The resolvers append `added` to the
+/// edge list once their tables are gone, growing it by exactly that many
+/// edges: one push at a time would double the whole list for a few calls.
+fn emit<R: Rec>(
+    added: &mut Vec<Value>,
     seen: &mut Seen,
-    raw: &Value,
+    raw: &R,
     target: &str,
     relation: &str,
     exact: bool,
 ) {
-    let caller = s(raw, "caller_nid");
-    if target.is_empty() || target == caller || !seen.insert((caller.into(), target.into())) {
+    emit_with(added, seen, raw, target, relation, exact);
+}
+/// [`emit`] over a [`Seen`] keyed by any id text type (borrowed ids copy no
+/// text).
+fn emit_with<'a, R: Rec, K: SeenKey<'a>>(
+    added: &mut Vec<Value>,
+    seen: &mut Seen<K>,
+    raw: &'a R,
+    target: &'a str,
+    relation: &str,
+    exact: bool,
+) {
+    let caller = rs(raw, "caller_nid");
+    if target.is_empty() || target == caller || !seen.insert(caller, target) {
         return;
     }
-    edges.push(json!({"source":caller,"target":target,"relation":relation,"context":"call","confidence":if exact{"EXTRACTED"}else{"INFERRED"},"confidence_score":if exact{1.0}else{0.85},"source_file":s(raw,"source_file"),"source_location":raw.get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
+    added.push(json!({"source":caller,"target":target,"relation":relation,"context":"call","confidence":if exact{"EXTRACTED"}else{"INFERRED"},"confidence_score":if exact{1.0}else{0.85},"source_file":rs(raw,"source_file"),"source_location":raw.rec_get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
 }
-fn raw_calls(per: &[Value]) -> impl Iterator<Item = &Value> {
-    per.iter()
-        .flat_map(|r| r["raw_calls"].as_array().into_iter().flatten())
+/// Append the edges a resolver collected (JSON objects from its `json!`
+/// literals) to the edge list in its own form, growing it by exactly that
+/// many: a record keeps the literal's key order and number texts.
+fn append<E: Rec>(edges: &mut Vec<E>, added: Vec<Value>) {
+    edges.reserve_exact(added.len());
+    edges.extend(added.into_iter().map(|edge| match edge {
+        Value::Object(map) => E::from_object(map),
+        _ => unreachable!("an edge literal is an object"),
+    }));
 }
-fn pairs(edges: &[Value], calls_only: bool) -> Seen {
-    edges
+/// `record[key]` (`Null` when absent), on a raw call or edge of either form.
+fn at<'a, R: Rec>(record: &'a R, key: &str) -> &'a Value {
+    record.rec_get(key).unwrap_or(&NULL)
+}
+static NULL: Value = Value::Null;
+/// Every raw call record of the per-file results (in either form), in file
+/// order.
+fn raw_calls_of<P: PerFile>(per: &[P]) -> impl Iterator<Item = &P::R> {
+    per.iter().flat_map(|r| r.raw_calls().into_iter().flatten())
+}
+fn pairs<'a, K: SeenKey<'a>, E: Rec>(edges: &'a [E], calls_only: bool) -> Seen<K> {
+    let mut seen = Seen::default();
+    for e in edges
         .iter()
-        .filter(|e| !calls_only || s(e, "relation") == "calls")
-        .map(|e| (s(e, "source").into(), s(e, "target").into()))
-        .collect()
+        .filter(|e| !calls_only || rs(*e, "relation") == "calls")
+    {
+        seen.insert(rs(e, "source"), rs(e, "target"));
+    }
+    seen
 }
 fn inherited_field(fields: &Fields, bases: &Index, owner: &str, field: &str) -> Option<String> {
     let mut q = VecDeque::from([owner.to_string()]);
@@ -124,8 +237,8 @@ fn inherited_field(fields: &Fields, bases: &Index, owner: &str, field: &str) -> 
 /// node carrying that label, disambiguated by source file, then basename. An
 /// entry that stays ambiguous binds nothing; a name two tables disagree on
 /// is dropped.
-pub fn bind_field_table_values(
-    per: &[Value],
+pub fn bind_field_table_values<P: PerFile>(
+    per: &[P],
     nodes: &[Value],
     lang: &str,
 ) -> BTreeMap<String, BTreeMap<String, Value>> {
@@ -138,7 +251,7 @@ pub fn bind_field_table_values(
     let mut out: BTreeMap<String, BTreeMap<String, Value>> = BTreeMap::new();
     for entry in per
         .iter()
-        .flat_map(|r| r["member_field_tables"].as_array().into_iter().flatten())
+        .flat_map(|r| r.at("member_field_tables").as_array().into_iter().flatten())
     {
         if s(entry, "lang") != lang || s(entry, "class_label").is_empty() {
             continue;
@@ -178,7 +291,7 @@ pub fn bind_field_table_values(
     out
 }
 /// [`bind_field_table_values`] for tables of type names.
-pub fn bind_field_tables(per: &[Value], nodes: &[Value], lang: &str) -> Fields {
+pub fn bind_field_tables<P: PerFile>(per: &[P], nodes: &[Value], lang: &str) -> Fields {
     let mut labels: BTreeMap<&str, Vec<&Value>> = BTreeMap::new();
     for n in nodes {
         if !s(n, "source_file").is_empty() && !s(n, "label").is_empty() {
@@ -188,7 +301,7 @@ pub fn bind_field_tables(per: &[Value], nodes: &[Value], lang: &str) -> Fields {
     let mut out = Fields::new();
     for entry in per
         .iter()
-        .flat_map(|r| r["member_field_tables"].as_array().into_iter().flatten())
+        .flat_map(|r| r.at("member_field_tables").as_array().into_iter().flatten())
     {
         if s(entry, "lang") != lang || s(entry, "class_label").is_empty() {
             continue;
@@ -228,7 +341,12 @@ pub fn bind_field_tables(per: &[Value], nodes: &[Value], lang: &str) -> Fields {
     }
     out
 }
-pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
+pub fn resolve_members<P: PerFile, E: Rec>(
+    lang: &str,
+    per: &[P],
+    nodes: &mut [Value],
+    edges: &mut Vec<E>,
+) {
     match lang {
         "python" => return python_members(per, nodes, edges),
         "csharp" => return csharp_members(per, nodes, edges),
@@ -236,6 +354,29 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
         "php" => return php_members(per, nodes, edges),
         _ => {}
     }
+    let Some((added, parked)) = typed_member_edges(lang, per, nodes, edges) else {
+        return;
+    };
+    // Every table borrowed the nodes and edges and is gone: grow by exactly
+    // the new edges, then park (nothing above reads a node's metadata list
+    // of unresolved calls, so the parks apply now, in the same order).
+    append(edges, added);
+    apply_parks(nodes, parked, lang);
+}
+/// The call edges and parks of [`resolve_members`] for Swift, TypeScript,
+/// C++ and Objective-C, in raw-call order; `None` when a Swift or TypeScript
+/// corpus has no receiver type table at all.
+///
+/// Every id in its tables borrows from the nodes and edges it reads (only the
+/// `key()` texts are built), and each file's receiver table is the per-file
+/// JSON object itself: the ordered tables order `&str` exactly as they
+/// ordered `String`, and the others are only looked up.
+fn typed_member_edges<'p, P: PerFile, E: Rec>(
+    lang: &str,
+    per: &'p [P],
+    nodes: &[Value],
+    edges: &[E],
+) -> Option<(Vec<Value>, Parked<'p, P::R>)> {
     let table_key = match lang {
         "swift" => "swift_type_table",
         "typescript" => "ts_type_table",
@@ -243,104 +384,132 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
         "objc" => "objc_type_table",
         _ => "",
     };
-    let mut tables: Fields = BTreeMap::new();
-    let mut factories = BTreeMap::new();
+    // A file's receiver -> type table: its string entries (a later table of
+    // the same path replaces an earlier one).
+    let mut tables: FxHashMap<&str, &serde_json::Map<String, Value>> = FxHashMap::default();
+    let mut factories: BTreeMap<&str, &Value> = BTreeMap::new();
     for r in per {
-        if let Some(t) = r[table_key]["table"].as_object() {
-            let path = s(&r[table_key], "path");
+        let entry = r.at(table_key);
+        if let Some(t) = entry["table"].as_object() {
+            let path = s(entry, "path");
             if !path.is_empty() {
-                tables.insert(
-                    path.into(),
-                    t.iter()
-                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.into())))
-                        .collect(),
-                );
-                if r[table_key]["factory"].is_object() {
-                    factories.insert(path.to_string(), r[table_key]["factory"].clone());
+                tables.insert(path, t);
+                if entry["factory"].is_object() {
+                    factories.insert(path, &entry["factory"]);
                 }
             }
         }
     }
-    if matches!(lang, "swift" | "typescript") && tables.is_empty() {
-        return;
+    // TS class fields live on class nodes (`_ts_fields`, `_ts_static_fields`).
+    // One id can carry several nodes (`class UsecaseVisitor` and `const
+    // usecaseVisitor` fold together), so the fields of every node with that
+    // id are gathered; the first type given for a name wins.
+    let mut ts_fields: FxHashMap<(String, bool), BTreeMap<String, String>> = FxHashMap::default();
+    if lang == "typescript" {
+        for n in nodes.iter() {
+            for (is_static, attr) in [(false, "_ts_fields"), (true, "_ts_static_fields")] {
+                for (name, ty) in n.get(attr).and_then(Value::as_object).into_iter().flatten() {
+                    let Some(ty) = ty.as_str() else { continue };
+                    ts_fields
+                        .entry((s(n, "id").to_string(), is_static))
+                        .or_default()
+                        .entry(name.clone())
+                        .or_insert_with(|| ty.to_string());
+                }
+            }
+        }
     }
-    // The nodes as they were on entry, by id (the last of equal ids): only
-    // parking below changes a node, and parks are applied after the loop
-    // that reads this, so it borrows instead of copying every node.
-    let nodes_ro: &[Value] = nodes;
-    let snapshot = nodes_ro
+    if lang == "swift" && tables.is_empty()
+        || lang == "typescript" && tables.is_empty() && ts_fields.is_empty()
+    {
+        return None;
+    }
+    // The nodes as they were on entry, by id (the last of equal ids).
+    let snapshot = nodes
         .iter()
         .map(|n| (s(n, "id"), n))
-        .collect::<rustc_hash::FxHashMap<_, _>>();
+        .collect::<FxHashMap<_, _>>();
     let contained = edges
         .iter()
-        .filter(|e| s(e, "relation") == "contains")
-        .map(|e| s(e, "target"))
-        .collect::<BTreeSet<_>>();
-    let mut defs: Index = BTreeMap::new();
-    for n in nodes.iter() {
-        if !s(n, "source_file").is_empty()
+        .filter(|e| rs(*e, "relation") == "contains")
+        .map(|e| rs(e, "target"))
+        .collect::<FxHashSet<_>>();
+    let mut defs: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for n in nodes {
+        // Only the JS/TS interop family declares a type a TS receiver can
+        // hold (SFC script blocks included).
+        let declared = if lang == "typescript" {
+            family(s(n, "source_file")) == Some("jsts")
+        } else {
+            !s(n, "source_file").is_empty()
+        };
+        if declared
             && contained.contains(s(n, "id"))
             && is_type_like_definition(n)
             && !(lang == "objc" && s(n, "label").starts_with('<') && s(n, "label").ends_with('>'))
         {
             defs.entry(key(s(n, "label"), lang))
                 .or_default()
-                .push(s(n, "id").into());
+                .push(s(n, "id"));
         }
     }
-    let mut methods: BTreeMap<(String, String), String> = BTreeMap::new();
-    let mut enclosing = BTreeMap::new();
+    drop(contained);
+    let mut methods: BTreeMap<(&str, String), &str> = BTreeMap::new();
+    let mut enclosing: BTreeMap<&str, &str> = BTreeMap::new();
+    // TS: the class of each method (the last `method` edge names it).
+    let mut class_of_method: FxHashMap<&str, &str> = FxHashMap::default();
+    if lang == "typescript" {
+        for e in edges.iter().filter(|e| rs(*e, "relation") == "method") {
+            if at(e, "source").is_string() && at(e, "target").is_string() {
+                class_of_method.insert(rs(e, "target"), rs(e, "source"));
+            }
+        }
+    }
     let mut bases: Index = BTreeMap::new();
-    let mut file_of = BTreeMap::new();
-    let mut imports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut file_of: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut imports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for rel in if lang == "cpp" {
         vec!["defines", "method"]
     } else {
         vec!["method"]
     } {
-        for e in edges.iter().filter(|e| s(e, "relation") == rel) {
-            if let Some(n) = snapshot.get(s(e, "target")) {
-                enclosing
-                    .entry(s(e, "target").to_string())
-                    .or_insert(s(e, "source").to_string());
-                methods.insert(
-                    (s(e, "source").to_string(), key(s(n, "label"), lang)),
-                    s(e, "target").to_string(),
-                );
+        for e in edges.iter().filter(|e| rs(*e, "relation") == rel) {
+            if let Some(n) = snapshot.get(rs(e, "target")) {
+                enclosing.entry(rs(e, "target")).or_insert(rs(e, "source"));
+                methods.insert((rs(e, "source"), key(s(n, "label"), lang)), rs(e, "target"));
             }
         }
     }
-    for e in edges.iter() {
-        match s(e, "relation") {
+    for e in edges {
+        match rs(e, "relation") {
             "inherits" => {
                 bases
-                    .entry(s(e, "source").into())
+                    .entry(rs(e, "source").into())
                     .or_default()
-                    .push(s(e, "target").into());
+                    .push(rs(e, "target").into());
             }
             "contains" => {
-                file_of.insert(s(e, "target").to_string(), s(e, "source").to_string());
+                file_of.insert(rs(e, "target"), rs(e, "source"));
             }
             "imports" | "imports_from" => {
                 imports
-                    .entry(s(e, "source").into())
+                    .entry(rs(e, "source"))
                     .or_default()
-                    .insert(s(e, "target").into());
+                    .insert(rs(e, "target"));
             }
             _ => {}
         }
     }
-    for (method, owner) in &enclosing {
-        if let Some(file) = file_of.get(owner).cloned() {
-            file_of.entry(method.clone()).or_insert(file);
+    for (&method, &owner) in &enclosing {
+        if let Some(&file) = file_of.get(owner) {
+            file_of.entry(method).or_insert(file);
         }
     }
     let mut fields = Fields::new();
     if lang == "objc" {
         let mut conflicts = BTreeSet::new();
         for r in per {
-            if let Some(ts) = r["objc_field_types"]["tables"].as_object() {
+            if let Some(ts) = r.at("objc_field_types")["tables"].as_object() {
                 for (cls, fs) in ts {
                     for (f, t) in fs.as_object().into_iter().flatten() {
                         let Some(t) = t.as_str() else { continue };
@@ -359,17 +528,20 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
             }
         }
     }
+    // Swift receivers typed by a factory's plain return type, where the
+    // file's own table has no type for them (path, receiver) -> type.
+    let mut factory_types: BTreeMap<(&str, &str), &str> = BTreeMap::new();
     if lang == "swift" {
-        let mut returns: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for e in edges.iter() {
-            if s(e, "relation") == "references"
-                && s(e, "context") == "return_type"
-                && e["metadata"]["swift_plain_return"] == true
+        let mut returns: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+        for e in edges {
+            if rs(e, "relation") == "references"
+                && rs(e, "context") == "return_type"
+                && at(e, "metadata")["swift_plain_return"] == true
             {
                 returns
-                    .entry(s(e, "source").into())
+                    .entry(rs(e, "source"))
                     .or_default()
-                    .insert(s(e, "target").into());
+                    .insert(rs(e, "target"));
             }
         }
         for (path, pending) in factories {
@@ -387,13 +559,13 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
                 let Some(ds) = defs.get(&key(ty, lang)).filter(|d| d.len() == 1) else {
                     continue;
                 };
-                let Some(ms) = methods.get(&(ds[0].clone(), key(method, lang))) else {
+                let Some(ms) = methods.get(&(ds[0], key(method, lang))) else {
                     continue;
                 };
                 let Some(rs) = returns.get(ms).filter(|d| d.len() == 1) else {
                     continue;
                 };
-                let Some(n) = snapshot.get(rs.iter().next().unwrap().as_str()) else {
+                let Some(n) = snapshot.get(*rs.iter().next().unwrap()) else {
                     continue;
                 };
                 let label = s(n, "label");
@@ -403,37 +575,126 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
                 {
                     continue;
                 }
-                tables
-                    .entry(path.clone())
-                    .or_default()
-                    .entry(receiver.clone())
-                    .or_insert(label.into());
+                let typed = tables
+                    .get(path)
+                    .and_then(|t| t.get(receiver))
+                    .is_some_and(Value::is_string);
+                if !typed {
+                    factory_types
+                        .entry((path, receiver.as_str()))
+                        .or_insert(label);
+                }
             }
         }
     }
+    // TS `class B extends A`: a field A declares is B's too. Bases are
+    // matched by their node, else by the one class of that label carrying
+    // fields.
+    let mut field_classes: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    if lang == "typescript" {
+        for n in nodes {
+            let has = |attr: &str| n.get(attr).is_some_and(truthy);
+            if has("_ts_fields") || has("_ts_static_fields") {
+                let entry = field_classes.entry(key(s(n, "label"), lang)).or_default();
+                if !entry.contains(&s(n, "id")) {
+                    entry.push(s(n, "id"));
+                }
+            }
+        }
+    }
+    let field_type = |class: &str, field: &str, is_static: bool| -> Option<(String, String)> {
+        #[allow(clippy::too_many_arguments)]
+        fn walk(
+            class: &str,
+            field: &str,
+            is_static: bool,
+            depth: usize,
+            ts_fields: &FxHashMap<(String, bool), BTreeMap<String, String>>,
+            bases: &Index,
+            field_classes: &BTreeMap<String, Vec<&str>>,
+            snapshot: &FxHashMap<&str, &Value>,
+        ) -> Option<(String, String)> {
+            if let Some(found) = ts_fields
+                .get(&(class.to_string(), is_static))
+                .and_then(|f| f.get(field))
+                .filter(|t| !t.is_empty())
+            {
+                return Some((found.clone(), class.to_string()));
+            }
+            if depth >= 8 {
+                return None;
+            }
+            for base in bases.get(class).into_iter().flatten() {
+                let base_nid = if ts_fields.contains_key(&(base.clone(), is_static)) {
+                    Some(base.as_str())
+                } else {
+                    let label = snapshot.get(base.as_str()).map_or("", |n| s(n, "label"));
+                    field_classes
+                        .get(&key(label, "typescript"))
+                        .filter(|same| same.len() == 1)
+                        .map(|same| same[0])
+                };
+                if let Some(base_nid) = base_nid
+                    && let Some(hit) = walk(
+                        base_nid,
+                        field,
+                        is_static,
+                        depth + 1,
+                        ts_fields,
+                        bases,
+                        field_classes,
+                        snapshot,
+                    )
+                {
+                    return Some(hit);
+                }
+            }
+            None
+        }
+        walk(
+            class,
+            field,
+            is_static,
+            0,
+            &ts_fields,
+            &bases,
+            &field_classes,
+            &snapshot,
+        )
+    };
+    let table_type = |file: &str, receiver: &str| -> String {
+        tables
+            .get(file)
+            .and_then(|t| t.get(receiver))
+            .and_then(Value::as_str)
+            .or_else(|| factory_types.get(&(file, receiver)).copied())
+            .unwrap_or_default()
+            .to_string()
+    };
     // (caller, callee, type, raw call) to park, in loop order.
     let mut parked = Vec::new();
-    let type_lookup = |name: &str| -> Option<String> {
+    let type_lookup = |name: &str| {
         if name.is_empty() {
             return None;
         }
         defs.get(&key(name, lang))
             .filter(|d| d.len() == 1)
-            .map(|d| d[0].clone())
+            .map(|d| d[0])
     };
-    let mut seen = pairs(edges, false);
-    for raw in raw_calls(per) {
-        if raw["is_member_call"] != true {
+    let mut seen: Seen<&str> = pairs(edges, false);
+    let mut added = vec![];
+    for raw in raw_calls_of(per) {
+        if at(raw, "is_member_call") != true {
             continue;
         }
-        if matches!(lang, "cpp" | "objc") && s(raw, "lang") != lang {
+        if matches!(lang, "cpp" | "objc") && rs(raw, "lang") != lang {
             continue;
         }
         let (receiver, callee, caller, file) = (
-            s(raw, "receiver"),
-            s(raw, "callee"),
-            s(raw, "caller_nid"),
-            s(raw, "source_file"),
+            rs(raw, "receiver"),
+            rs(raw, "callee"),
+            rs(raw, "caller_nid"),
+            rs(raw, "source_file"),
         );
         if receiver.is_empty() || callee.is_empty() || caller.is_empty() {
             continue;
@@ -441,23 +702,40 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
         let mut exact = upper(receiver);
         let mut ty = String::new();
         let mut direct = None;
-        if lang == "cpp" && receiver == "this" {
-            direct = enclosing.get(caller).cloned();
+        // TS: the class whose field typed the receiver; the origin gate reads
+        // that class's file (`class Child extends Base` need not import what
+        // `Base` holds).
+        let mut declaring: Option<String> = None;
+        let this_owner =
+            (lang == "typescript" && !upper(receiver) && truthy(at(raw, "ts_this_field")))
+                .then(|| class_of_method.get(caller).copied())
+                .flatten();
+        if let Some(owner) = this_owner {
+            // `this.x` in a method of a known class reads that class's fields,
+            // then its bases': never the file's table.
+            if let Some((found, class)) =
+                field_type(owner, receiver, truthy(at(raw, "ts_static_this")))
+            {
+                ty = found;
+                declaring = Some(class);
+            }
+        } else if lang == "cpp" && receiver == "this" {
+            direct = enclosing.get(caller).copied();
             exact = true;
             if direct.is_none() {
                 continue;
             }
-        } else if lang == "objc" && s(raw, "receiver_kind") == "self_field" {
+        } else if lang == "objc" && rs(raw, "receiver_kind") == "self_field" {
             ty = inherited_field(
                 &fields,
                 &bases,
-                enclosing.get(caller).map(String::as_str).unwrap_or(""),
+                enclosing.get(caller).copied().unwrap_or(""),
                 receiver,
             )
             .unwrap_or_default();
             exact = false;
         } else if lang == "objc" && matches!(receiver, "self" | "super") {
-            direct = enclosing.get(caller).cloned();
+            direct = enclosing.get(caller).copied();
             exact = true;
             if direct.is_none() {
                 continue;
@@ -465,16 +743,12 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
         } else if upper(receiver) {
             ty = receiver.into();
         } else {
-            ty = tables
-                .get(file)
-                .and_then(|t| t.get(receiver))
-                .cloned()
-                .unwrap_or_default();
+            ty = table_type(file, receiver);
             if ty.is_empty() && lang == "objc" {
                 ty = inherited_field(
                     &fields,
                     &bases,
-                    enclosing.get(caller).map(String::as_str).unwrap_or(""),
+                    enclosing.get(caller).copied().unwrap_or(""),
                     receiver,
                 )
                 .unwrap_or_default();
@@ -488,44 +762,57 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
                 continue;
             }
             if lang == "typescript" {
+                if defs.get(&key(&ty, lang)).is_none_or(Vec::is_empty) {
+                    // Table-typed only (an uppercase receiver also matches
+                    // namespace aliases and npm default imports): park it for
+                    // a merged graph (#3152).
+                    if !upper(receiver) && family(file) == Some("jsts") {
+                        parked.push((caller.to_string(), callee.to_string(), ty, raw));
+                    }
+                    continue;
+                }
                 // Origin gate (#2553), which also picks among same-named
                 // definitions (#4233): the one the caller's file defines,
                 // imports by name, or imports the module of. Exactly one
                 // visible definition binds; none or several emit nothing.
-                let cf = file_of.get(caller);
+                let cf = file_of.get(declaring.as_deref().unwrap_or(caller));
                 let imported = cf.and_then(|f| imports.get(f));
                 let visible = defs
                     .get(&key(&ty, lang))
                     .into_iter()
                     .flatten()
                     .filter(|nid| {
-                        let tf = file_of.get(*nid);
+                        let tf = file_of.get(**nid);
                         (cf.is_some() && cf == tf)
                             || imported.is_some_and(|i| {
-                                i.contains(*nid) || tf.is_some_and(|f| i.contains(f))
+                                i.contains(**nid) || tf.is_some_and(|f| i.contains(f))
                             })
                     })
                     .collect::<Vec<_>>();
                 if visible.len() != 1 {
                     continue;
                 }
-                direct = Some(visible[0].clone());
+                direct = Some(*visible[0]);
             } else {
                 direct = type_lookup(&ty);
             }
         }
         let Some(owner) = direct else {
             let absent = defs.get(&key(&ty, lang)).is_none_or(Vec::is_empty);
+            // A builtin ObjC type (NSString, ...) is not what another repo
+            // declares (#3152).
             if absent
-                && (lang == "cpp" || (lang == "swift" && file.to_lowercase().ends_with(".swift")))
+                && (lang == "cpp"
+                    || (lang == "swift" && file.to_lowercase().ends_with(".swift"))
+                    || (lang == "objc" && !is_language_builtin(&ty)))
             {
                 parked.push((caller.to_string(), callee.to_string(), ty, raw));
             }
             continue;
         };
-        let mut target = methods.get(&(owner.clone(), key(callee, lang))).cloned();
+        let mut target = methods.get(&(owner, key(callee, lang))).copied();
         if lang == "typescript"
-            && let Some(method) = target.as_deref().and_then(|t| snapshot.get(t))
+            && let Some(method) = target.and_then(|t| snapshot.get(t))
             && s(method, "label").trim_start_matches('.').starts_with('#')
             && !callee.starts_with('#')
             && !method.get("_ts_public_twin").is_some_and(truthy)
@@ -537,24 +824,21 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
         }
         if lang == "cpp" && target.is_none() && upper(receiver) {
             let label = format!("{receiver}::{callee}()");
-            let candidates = nodes_ro
+            let candidates = nodes
                 .iter()
                 .filter(|n| !s(n, "source_file").is_empty() && s(n, "label") == label)
                 .collect::<Vec<_>>();
             if candidates.len() == 1 {
-                target = Some(s(candidates[0], "id").into());
+                target = Some(s(candidates[0], "id"));
             }
         }
         if let Some(target) = target {
-            emit(edges, &mut seen, raw, &target, "calls", exact);
+            emit_with(&mut added, &mut seen, raw, target, "calls", exact);
         } else if matches!(lang, "swift" | "cpp" | "objc") {
-            emit(edges, &mut seen, raw, &owner, "references", exact);
+            emit_with(&mut added, &mut seen, raw, owner, "references", exact);
         }
     }
-    // Nothing above reads what parking writes (a node's metadata list of
-    // unresolved calls), so the parks apply now, in the same order.
-    drop(snapshot);
-    apply_parks(nodes, parked, lang);
+    Some((added, parked))
 }
 /// `_resolve_csharp_member_calls` (#1609, #1620): a member call bound to its
 /// receiver's declared type with the namespace/using/alias scoping of the C#
@@ -564,13 +848,22 @@ pub fn resolve_members(lang: &str, per: &[Value], nodes: &mut [Value], edges: &m
 /// whose same-named field or property shadows it (#3797), a field chain
 /// `x.F.M()` (#4246), a `var` typed from the called method's declared return
 /// type (#4266), or the extractor's method-scoped type table.
-pub fn csharp_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
-    let ckey = |label: &str| label_key(label, true);
+pub fn csharp_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mut Vec<E>) {
+    // Case and `_` are part of a C# name: `Put` and `_Put` are two methods,
+    // so `this.Put()` must not bind to `_Put` (#4415). Only the label
+    // decoration (`.Put()`) goes: `re.sub(r"\W+", "", label)`.
+    let ckey = |label: &str| {
+        label
+            .chars()
+            .filter(|c| crate::export::python_word(*c))
+            .collect::<String>()
+    };
     let nodes_ro: &[Value] = nodes;
-    let contained = edges
+    let edges_ro: &[E] = edges;
+    let contained = edges_ro
         .iter()
-        .filter(|e| s(e, "relation") == "contains")
-        .map(|e| s(e, "target"))
+        .filter(|e| rs(*e, "relation") == "contains")
+        .map(|e| rs(e, "target"))
         .collect::<FxHashSet<_>>();
     let mut type_defs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut node_by_id: FxHashMap<&str, &Value> = FxHashMap::default();
@@ -586,28 +879,31 @@ pub fn csharp_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
                 .push(s(n, "id").into());
         }
     }
-    let resolver = CsharpNameResolver::new(nodes_ro, edges);
+    let resolver = CsharpNameResolver::new_of(nodes_ro, edges_ro);
     let mut method_index: BTreeMap<(String, String), String> = BTreeMap::new();
     let mut enclosing: BTreeMap<String, String> = BTreeMap::new();
-    for e in edges.iter().filter(|e| s(e, "relation") == "method") {
-        let Some(method) = node_by_id.get(s(e, "target")) else {
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
+        let Some(method) = node_by_id.get(rs(e, "target")) else {
             continue;
         };
         enclosing
-            .entry(s(e, "target").into())
-            .or_insert_with(|| s(e, "source").into());
+            .entry(rs(e, "target").into())
+            .or_insert_with(|| rs(e, "source").into());
         method_index.insert(
-            (s(e, "source").into(), ckey(s(method, "label"))),
-            s(e, "target").into(),
+            (rs(e, "source").into(), ckey(s(method, "label"))),
+            rs(e, "target").into(),
         );
     }
     let mut bases_of: Index = BTreeMap::new();
     let mut unresolved: BTreeSet<String> = BTreeSet::new();
-    for e in edges.iter().filter(|e| s(e, "relation") == "inherits") {
-        if !is_cs_file(&e["source_file"]) || !e["source"].is_string() || !e["target"].is_string() {
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "inherits") {
+        if !is_cs_file(at(e, "source_file"))
+            || !at(e, "source").is_string()
+            || !at(e, "target").is_string()
+        {
             continue;
         }
-        let (src, tgt) = (s(e, "source"), s(e, "target"));
+        let (src, tgt) = (rs(e, "source"), rs(e, "target"));
         if node_by_id
             .get(tgt)
             .is_none_or(|n| !n.get("source_file").is_some_and(truthy))
@@ -747,22 +1043,23 @@ pub fn csharp_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
         };
     let mut parked = Vec::new();
     let mut added = vec![];
-    let mut seen = pairs(edges, false);
-    for rc in raw_calls(per) {
-        if s(rc, "lang") != "csharp" || !rc.get("is_member_call").is_some_and(truthy) {
+    let mut seen: Seen = pairs(edges_ro, false);
+    for rc in raw_calls_of(per) {
+        if rs(rc, "lang") != "csharp" || !rc.rec_get("is_member_call").is_some_and(truthy) {
             continue;
         }
-        let (receiver, callee, caller) = (s(rc, "receiver"), s(rc, "callee"), s(rc, "caller_nid"));
-        let chain = rc["receiver_chain"]
+        let (receiver, callee, caller) =
+            (rs(rc, "receiver"), rs(rc, "callee"), rs(rc, "caller_nid"));
+        let chain = at(rc, "receiver_chain")
             .as_array()
             .map(Vec::as_slice)
             .unwrap_or_default();
         if (receiver.is_empty() && chain.is_empty()) || callee.is_empty() || caller.is_empty() {
             continue;
         }
-        let file = s(rc, "source_file");
+        let file = rs(rc, "source_file");
         let caller_node = node_by_id.get(caller).copied();
-        let receiver_type = s(rc, "receiver_type");
+        let receiver_type = rs(rc, "receiver_type");
         let (type_nid, qualified) = if receiver.is_empty() {
             // `x.F.M()` -> [type of x, "F"]; `xs[i].M()` -> [element type].
             let mut type_nid = resolve_type(chain[0].as_str().unwrap_or(""), caller_node, file);
@@ -802,8 +1099,9 @@ pub fn csharp_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
                 continue;
             };
             (type_nid, true)
-        } else if rc.get("receiver_call").is_some_and(truthy) && receiver_type.is_empty() {
-            let Some(type_nid) = call_return_type(&rc["receiver_call"], caller, caller_node, file)
+        } else if rc.rec_get("receiver_call").is_some_and(truthy) && receiver_type.is_empty() {
+            let Some(type_nid) =
+                call_return_type(at(rc, "receiver_call"), caller, caller_node, file)
             else {
                 continue;
             };
@@ -828,14 +1126,16 @@ pub fn csharp_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
         let Some(method) = method_on_type_or_bases(&type_nid, &ckey(callee)) else {
             continue;
         };
-        if method == caller || !seen.insert((caller.to_string(), method.clone())) {
+        if method == caller || !seen.insert(caller, &method) {
             continue;
         }
-        added.push(json!({"source":caller,"target":method,"relation":"calls","context":"call","confidence":if qualified{"EXTRACTED"}else{"INFERRED"},"confidence_score":if qualified{1.0}else{0.85},"source_file":file,"source_location":rc.get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
+        added.push(json!({"source":caller,"target":method,"relation":"calls","context":"call","confidence":if qualified{"EXTRACTED"}else{"INFERRED"},"confidence_score":if qualified{1.0}else{0.85},"source_file":file,"source_location":rc.rec_get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
     }
     drop(node_by_id);
     drop(resolver);
-    edges.extend(added);
+    drop(seen);
+    drop(contained);
+    append(edges, added);
     apply_parks(nodes, parked, "csharp");
 }
 /// What `_chain_type` reads while typing a Java receiver chain.
@@ -884,12 +1184,13 @@ impl JavaTables<'_> {
 /// defaults, ties bind nothing, constructors are not inherited); and a
 /// receiver that is itself a call, `new T()` or a cast, typed step by step
 /// from the declared return types on method nodes (`_java_ret`, #4304-#4307).
-pub fn java_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
+pub fn java_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mut Vec<E>) {
     let nodes_ro: &[Value] = nodes;
-    let contained = edges
+    let edges_ro: &[E] = edges;
+    let contained = edges_ro
         .iter()
-        .filter(|e| s(e, "relation") == "contains")
-        .map(|e| s(e, "target"))
+        .filter(|e| rs(*e, "relation") == "contains")
+        .map(|e| rs(e, "target"))
         .collect::<FxHashSet<_>>();
     let mut node_by_id: FxHashMap<&str, &Value> = FxHashMap::default();
     let mut type_defs: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -909,34 +1210,34 @@ pub fn java_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) 
     }
     let mut method_index: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
     let mut enclosing: BTreeMap<String, String> = BTreeMap::new();
-    for e in edges.iter().filter(|e| s(e, "relation") == "method") {
-        let Some(method) = node_by_id.get(s(e, "target")) else {
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
+        let Some(method) = node_by_id.get(rs(e, "target")) else {
             continue;
         };
         enclosing
-            .entry(s(e, "target").into())
-            .or_insert_with(|| s(e, "source").into());
+            .entry(rs(e, "target").into())
+            .or_insert_with(|| rs(e, "source").into());
         method_index
-            .entry((s(e, "source").into(), java_key(s(method, "label"))))
+            .entry((rs(e, "source").into(), java_key(s(method, "label"))))
             .or_default()
-            .insert(s(e, "target").into());
+            .insert(rs(e, "target").into());
     }
-    let mut seen = pairs(edges, false);
+    let mut seen: Seen = pairs(edges_ro, false);
     let mut inherits_bases: Index = BTreeMap::new();
     let mut supertypes: Index = BTreeMap::new();
-    for e in edges.iter() {
-        let relation = s(e, "relation");
+    for e in edges_ro {
+        let relation = rs(e, "relation");
         if relation == "inherits" {
             inherits_bases
-                .entry(s(e, "source").into())
+                .entry(rs(e, "source").into())
                 .or_default()
-                .push(s(e, "target").into());
+                .push(rs(e, "target").into());
         }
         if matches!(relation, "inherits" | "implements") {
             supertypes
-                .entry(s(e, "source").into())
+                .entry(rs(e, "source").into())
                 .or_default()
-                .push(s(e, "target").into());
+                .push(rs(e, "target").into());
         }
     }
     let class_fields = bind_field_tables(per, nodes_ro, "java");
@@ -1077,16 +1378,19 @@ pub fn java_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) 
     };
     let mut parked = Vec::new();
     let mut added = vec![];
-    let push = |added: &mut Vec<Value>, caller: &str, target: &str, raw: &Value, exact: bool| {
-        added.push(json!({"source":caller,"target":target,"relation":"calls","context":"call","confidence":if exact{"EXTRACTED"}else{"INFERRED"},"confidence_score":if exact{1.0}else{0.85},"source_file":s(raw,"source_file"),"source_location":raw.get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
+    let push = |added: &mut Vec<Value>, caller: &str, target: &str, raw: &P::R, exact: bool| {
+        added.push(json!({"source":caller,"target":target,"relation":"calls","context":"call","confidence":if exact{"EXTRACTED"}else{"INFERRED"},"confidence_score":if exact{1.0}else{0.85},"source_file":rs(raw,"source_file"),"source_location":raw.rec_get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
     };
-    for raw in raw_calls(per) {
-        if s(raw, "lang") != "java" {
+    for raw in raw_calls_of(per) {
+        if rs(raw, "lang") != "java" {
             continue;
         }
-        let (receiver, callee, caller) =
-            (s(raw, "receiver"), s(raw, "callee"), s(raw, "caller_nid"));
-        if !raw.get("is_member_call").is_some_and(truthy) {
+        let (receiver, callee, caller) = (
+            rs(raw, "receiver"),
+            rs(raw, "callee"),
+            rs(raw, "caller_nid"),
+        );
+        if !raw.rec_get("is_member_call").is_some_and(truthy) {
             // A bare `m()` the caller's file could not bind: a member the
             // class inherits from a supertype in another file. `new Base()`
             // names a constructor, which is not inherited.
@@ -1102,19 +1406,19 @@ pub fn java_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) 
                 .map_or("", |o| s(o, "label"));
             if method != caller
                 && java_key(owner_label) != java_key(callee)
-                && seen.insert((caller.to_string(), method.clone()))
+                && seen.insert(caller, &method)
             {
                 push(&mut added, caller, &method, raw, true);
             }
             continue;
         }
-        let chain = &raw["java_receiver_chain"];
+        let chain = at(raw, "java_receiver_chain");
         if truthy(chain) && receiver.is_empty() && !callee.is_empty() && !caller.is_empty() {
             let type_nid = tables.chain_type(chain, caller, 0);
             if let Some(method) =
                 type_nid.and_then(|t| method_on_type_or_bases(&t, &java_key(callee)))
                 && method != caller
-                && seen.insert((caller.to_string(), method.clone()))
+                && seen.insert(caller, &method)
             {
                 push(&mut added, caller, &method, raw, false);
             }
@@ -1141,8 +1445,8 @@ pub fn java_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) 
             base[0].clone()
         } else {
             let owner = enclosing.get(caller).map(String::as_str).unwrap_or("");
-            let mut ty = s(raw, "receiver_type").to_string();
-            if ty.is_empty() && raw.get("receiver_unbound").is_some_and(truthy) {
+            let mut ty = rs(raw, "receiver_type").to_string();
+            if ty.is_empty() && raw.rec_get("receiver_unbound").is_some_and(truthy) {
                 // A field the caller's file could not bind, typed through the
                 // class's supertypes in other files.
                 ty = inherited_field(&class_fields, &supertypes, owner, receiver)
@@ -1176,13 +1480,15 @@ pub fn java_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) 
         let Some(method) = method_on_type_or_bases(&type_nid, &java_key(callee)) else {
             continue;
         };
-        if method == caller || !seen.insert((caller.to_string(), method.clone())) {
+        if method == caller || !seen.insert(caller, &method) {
             continue;
         }
         push(&mut added, caller, &method, raw, exact);
     }
     drop(node_by_id);
-    edges.extend(added);
+    drop(seen);
+    drop(contained);
+    append(edges, added);
     apply_parks(nodes, parked, "java");
 }
 /// `_resolve_php_member_calls` (#3872): `Class::m()`, `self::`/`static::`
@@ -1190,7 +1496,7 @@ pub fn java_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) 
 /// class's own method, case-insensitively and by the last namespace segment.
 /// A `$var::m()` scope stays unresolved; a class declared nowhere in the
 /// corpus is parked for a merged graph.
-pub fn php_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
+pub fn php_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mut Vec<E>) {
     let php_key = |label: &str| {
         let label = py_strip(label);
         let label = label.strip_prefix('.').unwrap_or(label);
@@ -1205,10 +1511,11 @@ pub fn php_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
             .to_lowercase()
     };
     let nodes_ro: &[Value] = nodes;
-    let contained = edges
+    let edges_ro: &[E] = edges;
+    let contained = edges_ro
         .iter()
-        .filter(|e| s(e, "relation") == "contains")
-        .map(|e| s(e, "target"))
+        .filter(|e| rs(*e, "relation") == "contains")
+        .map(|e| rs(e, "target"))
         .collect::<FxHashSet<_>>();
     let mut node_by_id: FxHashMap<&str, &Value> = FxHashMap::default();
     for n in nodes_ro {
@@ -1216,7 +1523,9 @@ pub fn php_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
     }
     let mut type_defs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for n in nodes_ro {
-        if !s(n, "source_file").is_empty()
+        // Only PHP declarations: a same-named class in another language must
+        // neither answer nor hide that nothing here declares it (0.9.89).
+        if family(s(n, "source_file")) == Some("php")
             && contained.contains(s(n, "id"))
             && is_type_like_definition(n)
         {
@@ -1228,44 +1537,59 @@ pub fn php_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
     }
     let mut method_index: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
     let mut enclosing: BTreeMap<String, String> = BTreeMap::new();
-    for e in edges.iter().filter(|e| s(e, "relation") == "method") {
-        let Some(method) = node_by_id.get(s(e, "target")) else {
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
+        let Some(method) = node_by_id.get(rs(e, "target")) else {
             continue;
         };
         enclosing
-            .entry(s(e, "target").into())
-            .or_insert_with(|| s(e, "source").into());
+            .entry(rs(e, "target").into())
+            .or_insert_with(|| rs(e, "source").into());
         method_index
-            .entry((s(e, "source").into(), php_key(s(method, "label"))))
+            .entry((rs(e, "source").into(), php_key(s(method, "label"))))
             .or_default()
-            .insert(s(e, "target").into());
+            .insert(rs(e, "target").into());
     }
     let mut inherits_bases: Index = BTreeMap::new();
-    for e in edges.iter().filter(|e| s(e, "relation") == "inherits") {
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "inherits") {
         inherits_bases
-            .entry(s(e, "source").into())
+            .entry(rs(e, "source").into())
             .or_default()
-            .push(s(e, "target").into());
+            .push(rs(e, "target").into());
     }
-    let mut seen = pairs(edges, false);
+    // `php_type_table`: each file's receiver annotations (0.9.89).
+    let mut tables: FxHashMap<String, &serde_json::Map<String, Value>> = FxHashMap::default();
+    for r in per {
+        let entry = r.at("php_type_table");
+        let path = s(entry, "path");
+        if let Some(table) = entry["table"].as_object()
+            && !path.is_empty()
+        {
+            tables.insert(path.to_string(), table);
+        }
+    }
+    let mut seen: Seen = pairs(edges_ro, false);
     let mut parked = Vec::new();
     let mut added = vec![];
-    for raw in raw_calls(per) {
-        if !raw.get("is_member_call").is_some_and(truthy)
+    for raw in raw_calls_of(per) {
+        if !raw.rec_get("is_member_call").is_some_and(truthy)
             || !raw
-                .get("source_file")
+                .rec_get("source_file")
                 .map(string)
                 .unwrap_or_default()
                 .ends_with(".php")
         {
             continue;
         }
-        let (receiver, callee, caller) =
-            (s(raw, "receiver"), s(raw, "callee"), s(raw, "caller_nid"));
+        let (receiver, callee, caller) = (
+            rs(raw, "receiver"),
+            rs(raw, "callee"),
+            rs(raw, "caller_nid"),
+        );
         if receiver.is_empty() || callee.is_empty() || caller.is_empty() {
             continue;
         }
         let lowered = receiver.to_lowercase();
+        let mut inferred = false;
         let type_nid = if matches!(lowered.as_str(), "self" | "static") {
             let Some(owner) = enclosing.get(caller) else {
                 continue;
@@ -1280,6 +1604,35 @@ pub fn php_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
                 continue;
             };
             base[0].clone()
+        } else if !raw.rec_get("php_scoped").is_some_and(truthy) && !receiver.starts_with('$') {
+            // An instance receiver (`$g->m()`, `$this->prop->m()`): typed by
+            // the file's annotation table, never the call site, so INFERRED.
+            // An untyped, union or longer-chain receiver stays unresolved.
+            let Some(typed) = tables
+                .get(rs(raw, "source_file"))
+                .and_then(|t| t.get(receiver))
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            inferred = true;
+            let defs = type_defs
+                .get(&class_key(typed))
+                .cloned()
+                .unwrap_or_default();
+            if defs.is_empty() {
+                parked.push((
+                    caller.to_string(),
+                    callee.to_string(),
+                    typed.to_string(),
+                    raw,
+                ));
+                continue;
+            }
+            if defs.len() != 1 {
+                continue;
+            }
+            defs[0].clone()
         } else if !receiver.starts_with('$') {
             let defs = type_defs
                 .get(&class_key(receiver))
@@ -1309,25 +1662,29 @@ pub fn php_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
         else {
             continue;
         };
-        if method == caller || !seen.insert((caller.to_string(), method.clone())) {
+        if method == caller || !seen.insert(caller, method) {
             continue;
         }
-        added.push(json!({"source":caller,"target":method,"relation":"calls","context":"call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":s(raw,"source_file"),"source_location":raw.get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
+        // A table-typed receiver is the INFERRED rung (0.85); a source-named
+        // class scope stays EXTRACTED.
+        added.push(json!({"source":caller,"target":method,"relation":"calls","context":"call","confidence":if inferred {"INFERRED"} else {"EXTRACTED"},"confidence_score":if inferred {0.85} else {1.0},"source_file":rs(raw,"source_file"),"source_location":raw.rec_get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
     }
     drop(node_by_id);
-    edges.extend(added);
+    drop(seen);
+    drop(contained);
+    append(edges, added);
     apply_parks(nodes, parked, "php");
 }
 /// `_resolve_elixir_qualified_calls` (#4206): a remote call whose module
 /// the extractor expanded (`elixir_module`) binds to that module's own def
 /// when exactly one top-level module of the corpus carries the name. A
 /// module outside the corpus (`Repo`, `Enum`) gets no edge.
-pub fn elixir_qualified_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
-    let raw = raw_calls(per)
+pub fn elixir_qualified_calls<P: PerFile, E: Rec>(per: &[P], nodes: &[Value], edges: &mut Vec<E>) {
+    let raw = raw_calls_of(per)
         .filter(|rc| {
-            rc.get("elixir_module").is_some_and(truthy)
-                && rc.get("callee").is_some_and(truthy)
-                && rc.get("caller_nid").is_some_and(truthy)
+            rc.rec_get("elixir_module").is_some_and(truthy)
+                && rc.rec_get("callee").is_some_and(truthy)
+                && rc.rec_get("caller_nid").is_some_and(truthy)
         })
         .collect::<Vec<_>>();
     if raw.is_empty() {
@@ -1343,32 +1700,39 @@ pub fn elixir_qualified_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Va
         }
         labels.insert(s(n, "id"), label);
     }
+    let edges_ro: &[E] = edges;
     let mut defs: FxHashMap<(&str, &str), &str> = FxHashMap::default();
-    for e in edges.iter().filter(|e| s(e, "relation") == "method") {
-        let name = labels.get(s(e, "target")).map(String::as_str).unwrap_or("");
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
+        let name = labels
+            .get(rs(e, "target"))
+            .map(String::as_str)
+            .unwrap_or("");
         if let Some(name) = name.strip_suffix("()") {
-            defs.entry((s(e, "source"), name)).or_insert(s(e, "target"));
+            defs.entry((rs(e, "source"), name))
+                .or_insert(rs(e, "target"));
         }
     }
-    let mut seen = pairs(edges, true);
+    let mut seen: Seen<&str> = pairs(edges_ro, true);
     let mut added = vec![];
     for rc in raw {
-        let Some(module) = rc["elixir_module"].as_str() else {
+        let Some(module) = at(rc, "elixir_module").as_str() else {
             continue;
         };
         let Some(candidates) = modules.get(module).filter(|c| c.len() == 1) else {
             continue;
         };
-        let caller = s(rc, "caller_nid");
-        let Some(target) = defs.get(&(candidates[0], s(rc, "callee"))).copied() else {
+        let caller = rs(rc, "caller_nid");
+        let Some(target) = defs.get(&(candidates[0], rs(rc, "callee"))).copied() else {
             continue;
         };
-        if target == caller || !seen.insert((caller.to_string(), target.to_string())) {
+        if target == caller || !seen.insert(caller, target) {
             continue;
         }
-        added.push(json!({"source":caller,"target":target,"relation":"calls","context":"call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":s(rc,"source_file"),"source_location":rc.get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
+        added.push(json!({"source":caller,"target":target,"relation":"calls","context":"call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":rs(rc,"source_file"),"source_location":rc.rec_get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
     }
-    edges.extend(added);
+    drop((seen, defs));
+    drop((modules, labels));
+    append(edges, added);
 }
 /// Python's `_key()` of the member resolvers.
 fn pkey(label: &str) -> String {
@@ -1383,52 +1747,129 @@ fn pkey(label: &str) -> String {
 /// parameter (#4198), both behind the origin gate (INFERRED); a property
 /// read (`obj.items`) only as a `references` edge to a property getter of
 /// exactly that name (#4337).
-pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>) {
-    // Lookups only (the last of equal ids, as a dict collects them).
-    let by_id = nodes
+pub fn python_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mut Vec<E>) {
+    let nodes: &[Value] = nodes;
+    let added = {
+        let edges: &[E] = edges;
+        // Lookups only (the last of equal ids, as a dict collects them).
+        let by_id = nodes
+            .iter()
+            .map(|n| (s(n, "id"), n))
+            .collect::<FxHashMap<_, _>>();
+        let inherits = inherits_pairs(nodes, edges, &by_id);
+        python_member_edges(per, edges, &by_id, &inherits)
+    };
+    // Every table borrowed `edges` and is gone: grow by exactly the new
+    // edges, not by doubling the whole edge list for a handful of calls.
+    append(edges, added);
+}
+/// The (class, base) ids of the `inherits` edges, in edge order, for the
+/// base walk of [`python_members`]. A changed-files rebuild still has a base
+/// class from an unchanged file as a name stub, which a full build rewired
+/// already: that rewire runs on copies of the `inherits` edges so both
+/// builds walk the same chain, and only the copies' endpoints are kept.
+/// Without a stub base nothing is copied and the ids borrow from `edges`.
+fn inherits_pairs<'a, E: Rec>(
+    nodes: &[Value],
+    edges: &'a [E],
+    by_id: &FxHashMap<&str, &Value>,
+) -> Vec<(Cow<'a, str>, Cow<'a, str>)> {
+    fn ends<R: Rec>(e: &R) -> Option<(&str, &str)> {
+        Some((
+            e.rec_get("source")?.as_str()?,
+            e.rec_get("target")?.as_str()?,
+        ))
+    }
+    let inherits = edges.iter().filter(|e| rs(*e, "relation") == "inherits");
+    let stub_base = inherits.clone().any(|e| {
+        by_id
+            .get(rs(e, "target"))
+            .is_none_or(|n| !n.get("source_file").is_some_and(truthy))
+    });
+    if !stub_base {
+        return inherits
+            .filter_map(ends)
+            .map(|(src, tgt)| (Cow::Borrowed(src), Cow::Borrowed(tgt)))
+            .collect();
+    }
+    let mut copies = inherits.map(Rec::to_value).collect::<Vec<Value>>();
+    rewire_unique_stub_edges(nodes, &mut copies);
+    copies
         .iter()
-        .map(|n| (s(n, "id"), n))
-        .collect::<FxHashMap<_, _>>();
-    let mut classes: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut methods = BTreeMap::new();
+        .filter_map(ends)
+        .map(|(src, tgt)| (Cow::Owned(src.into()), Cow::Owned(tgt.into())))
+        .collect()
+}
+/// Interned `_key()` texts of the Python member tables: each distinct key is
+/// one shared allocation however many classes, methods and children carry it.
+#[derive(Default)]
+struct PyKeys(FxHashSet<Rc<str>>);
+impl PyKeys {
+    fn key(&mut self, label: &str) -> Rc<str> {
+        let key = pkey(label);
+        if let Some(shared) = self.0.get(key.as_str()) {
+            return shared.clone();
+        }
+        let shared: Rc<str> = key.into();
+        self.0.insert(shared.clone());
+        shared
+    }
+    /// The interned `_key()` of `label`; `None` when no table holds it.
+    fn find(&self, label: &str) -> Option<Rc<str>> {
+        self.0.get(pkey(label).as_str()).cloned()
+    }
+}
+/// The edges of [`python_members`]. Every id in its tables borrows from the
+/// records, nodes and edges it reads (the `_key()` texts are interned), so
+/// the tables copy no id text; the ordered tables order `&str` exactly as
+/// they ordered `String`, and the hashed ones are only looked up.
+fn python_member_edges<'a, P: PerFile, E: Rec>(
+    per: &'a [P],
+    edges: &'a [E],
+    by_id: &FxHashMap<&'a str, &'a Value>,
+    inherits: &'a [(Cow<'_, str>, Cow<'_, str>)],
+) -> Vec<Value> {
+    let mut keys = PyKeys::default();
+    let mut classes: BTreeMap<Rc<str>, BTreeSet<&'a str>> = BTreeMap::new();
+    let mut methods: BTreeMap<(&'a str, Rc<str>), &'a str> = BTreeMap::new();
     // A method hangs off its class (`method` edge): the last edge wins.
-    let mut method_class: FxHashMap<String, String> = FxHashMap::default();
-    let mut children: BTreeMap<String, Index> = BTreeMap::new();
-    let mut files = BTreeMap::new();
-    let mut imports: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    let mut aliases: BTreeMap<(String, String), String> = BTreeMap::new();
-    for e in edges.iter() {
-        let (src, tgt) = (s(e, "source"), s(e, "target"));
-        match s(e, "relation") {
+    let mut method_class: FxHashMap<&'a str, &'a str> = FxHashMap::default();
+    let mut children: BTreeMap<&'a str, BTreeMap<Rc<str>, Vec<&'a str>>> = BTreeMap::new();
+    let mut files: BTreeMap<&'a str, &'a str> = BTreeMap::new();
+    let mut imports: BTreeMap<&'a str, BTreeSet<&'a str>> = BTreeMap::new();
+    let mut aliases: BTreeMap<(&'a str, &'a str), String> = BTreeMap::new();
+    for e in edges {
+        let (src, tgt) = (rs(e, "source"), rs(e, "target"));
+        match rs(e, "relation") {
             "method" => {
                 if !src.is_empty() && !tgt.is_empty() {
-                    method_class.insert(tgt.to_string(), src.to_string());
+                    method_class.insert(tgt, src);
                 }
                 if let Some(n) = by_id.get(src) {
                     classes
-                        .entry(pkey(s(n, "label")))
+                        .entry(keys.key(s(n, "label")))
                         .or_default()
-                        .insert(src.into());
+                        .insert(src);
                 }
                 if let Some(n) = by_id.get(tgt) {
-                    methods.insert((src.to_string(), pkey(s(n, "label"))), tgt.to_string());
+                    methods.insert((src, keys.key(s(n, "label"))), tgt);
                 }
             }
             "contains" => {
                 if let Some(n) = by_id.get(tgt) {
                     children
-                        .entry(src.into())
+                        .entry(src)
                         .or_default()
-                        .entry(pkey(s(n, "label")))
+                        .entry(keys.key(s(n, "label")))
                         .or_default()
-                        .push(tgt.into());
-                    files.insert(tgt.to_string(), src.to_string());
+                        .push(tgt);
+                    files.insert(tgt, src);
                 }
             }
             "imports" | "imports_from" => {
-                imports.entry(src.into()).or_default().insert(tgt.into());
-                if !s(e, "local_alias").is_empty() {
-                    aliases.insert((src.into(), tgt.into()), pkey(s(e, "local_alias")));
+                imports.entry(src).or_default().insert(tgt);
+                if !rs(e, "local_alias").is_empty() {
+                    aliases.insert((src, tgt), pkey(rs(e, "local_alias")));
                 }
             }
             _ => {}
@@ -1437,19 +1878,24 @@ pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
     // Plain `import x` bindings of modules no parsed file defines (Graphify
     // 6868fff and 33edd89). Each binding keeps every target so a receiver two
     // imports answer to stays ambiguous.
-    let mut external: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
-    for e in edges.iter() {
-        if e["relation"] != "imports" || e["_python_plain_import"] != true {
+    let mut external: BTreeMap<&'a str, BTreeMap<&'a str, Vec<&'a str>>> = BTreeMap::new();
+    for e in edges {
+        if e.rec_get("relation").and_then(Value::as_str) != Some("imports")
+            || e.rec_get("_python_plain_import") != Some(&Value::Bool(true))
+        {
             continue;
         }
-        let (Some(src), Some(target)) = (e["source"].as_str(), e["target"].as_str()) else {
+        let (Some(src), Some(target)) = (
+            e.rec_get("source").and_then(Value::as_str),
+            e.rec_get("target").and_then(Value::as_str),
+        ) else {
             continue;
         };
         if by_id.contains_key(target) || children.contains_key(target) || files.contains_key(target)
         {
             continue;
         }
-        let alias = &e["local_alias"];
+        let alias = e.rec_get("local_alias").unwrap_or(&Value::Null);
         let binding = if crate::build::truthy(alias) {
             alias.as_str()
         } else {
@@ -1457,139 +1903,120 @@ pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
         };
         if let Some(binding) = binding {
             external
-                .entry(src.into())
+                .entry(src)
                 .or_default()
-                .entry(binding.into())
+                .entry(binding)
                 .or_default()
-                .push(target.into());
+                .push(target);
         }
     }
+    // The class owning the method `callee` (by `_key()`), if any.
+    let method_of = |class: &'a str, callee: &str| -> Option<&'a str> {
+        let key = keys.find(callee)?;
+        methods.get(&(class, key)).copied()
+    };
     // Climb `contains` / `method` parents to the top, which is the file: a
     // nested function's `contains` parent is its enclosing function (#4227).
-    let file_node = |nid: &str| -> Option<String> {
+    let file_node = |nid: &'a str| -> Option<&'a str> {
         let mut seen = FxHashSet::default();
-        let mut parent: Option<String> = None;
-        let mut nid = nid.to_string();
-        while !nid.is_empty() && seen.insert(nid.clone()) {
-            let Some(up) = files
-                .get(&nid)
+        let mut parent: Option<&'a str> = None;
+        let mut nid = nid;
+        while !nid.is_empty() && seen.insert(nid) {
+            let Some(&up) = files
+                .get(nid)
                 .filter(|up| !up.is_empty())
-                .or_else(|| method_class.get(&nid).filter(|up| !up.is_empty()))
+                .or_else(|| method_class.get(nid).filter(|up| !up.is_empty()))
             else {
                 return parent;
             };
-            parent = Some(up.clone());
-            nid = up.clone();
+            parent = Some(up);
+            nid = up;
         }
         None
     };
-    // A changed-files rebuild still has a base class from an unchanged file
-    // as a name stub, which a full build rewired already: run that rewire on
-    // copies of the `inherits` edges so both builds walk the same chain.
-    let mut inherits = edges
-        .iter()
-        .filter(|e| s(e, "relation") == "inherits")
-        .cloned()
-        .collect::<Vec<_>>();
-    if inherits.iter().any(|e| {
-        by_id
-            .get(s(e, "target"))
-            .is_none_or(|n| !n.get("source_file").is_some_and(truthy))
-    }) {
-        rewire_unique_stub_edges(nodes, &mut inherits);
-    }
-    let mut bases_of: Index = BTreeMap::new();
-    for e in &inherits {
-        let (Some(src), Some(tgt)) = (e["source"].as_str(), e["target"].as_str()) else {
-            continue;
-        };
-        let bases = bases_of.entry(src.into()).or_default();
-        if !bases.iter().any(|b| b == tgt) {
-            bases.push(tgt.into());
+    let mut bases_of: BTreeMap<&'a str, Vec<&'a str>> = BTreeMap::new();
+    for (src, tgt) in inherits {
+        let (src, tgt) = (&**src, &**tgt);
+        let bases = bases_of.entry(src).or_default();
+        if !bases.contains(&tgt) {
+            bases.push(tgt);
         }
     }
-    drop(inherits);
     // `self.m()` / `cls.m()` / `super().m()` whose `m` lives on a base class
     // in another file: a single-inheritance chain only, the caller's own base
     // defined in or imported by its file; the first class owning `m` wins.
-    let inherited_method = |caller: &str, callee: &str, skip_own: bool| -> Option<String> {
-        let mut cls = method_class.get(caller).cloned();
+    let inherited_method = |caller: &'a str, callee: &str, skip_own: bool| -> Option<&'a str> {
+        let mut cls = method_class.get(caller).copied();
         let mut seen = FxHashSet::default();
         let mut first_hop = true;
         let mut skip_own = skip_own;
         while let Some(current) = cls.filter(|c| !c.is_empty() && !seen.contains(c)) {
-            seen.insert(current.clone());
-            if !skip_own
-                && let Some(hit) = methods
-                    .get(&(current.clone(), pkey(callee)))
-                    .filter(|h: &&String| !h.is_empty())
-            {
-                return Some(hit.clone());
+            seen.insert(current);
+            if !skip_own && let Some(hit) = method_of(current, callee).filter(|h| !h.is_empty()) {
+                return Some(hit);
             }
             skip_own = false;
             if by_id
-                .get(current.as_str())
+                .get(current)
                 .is_some_and(|n| n["metadata"].get("python_opaque_bases").is_some_and(truthy))
             {
                 return None;
             }
-            let bases = bases_of
-                .get(&current)
-                .map(Vec::as_slice)
-                .unwrap_or_default();
+            let bases = bases_of.get(current).map(Vec::as_slice).unwrap_or_default();
             let [base] = bases else {
                 return None;
             };
-            if *base == current {
+            let base = *base;
+            if base == current {
                 return None;
             }
-            let (cls_file, base_file) = (file_node(&current), file_node(base));
+            let (cls_file, base_file) = (file_node(current), file_node(base));
             let (Some(cls_file), Some(base_file)) = (cls_file, base_file) else {
                 return None;
             };
             if !by_id
-                .get(base.as_str())
+                .get(base)
                 .is_some_and(|n| n.get("source_file").is_some_and(truthy))
             {
                 return None;
             }
             if first_hop {
-                let imported = imports.get(&cls_file);
+                let imported = imports.get(cls_file);
                 if !(base_file == cls_file
-                    || imported.is_some_and(|i| i.contains(base) || i.contains(&base_file)))
+                    || imported.is_some_and(|i| i.contains(base) || i.contains(base_file)))
                 {
                     return None;
                 }
             }
             first_hop = false;
-            cls = Some(base.clone());
+            cls = Some(base);
         }
         None
     };
-    let mut seen = pairs(edges, false);
+    let mut seen: Seen<&'a str> = pairs(edges, false);
     let mut added = vec![];
     // `_emit_call`: an attribute read only runs a property getter, and only
     // the one it spells (`_key()` folds `_items` into `items`), as a
     // `references` edge; INFERRED for the typed-receiver arms.
     let mut emit_call =
-        |raw: &Value, target: Option<&str>, inferred: bool, added: &mut Vec<Value>| {
-            let caller = s(raw, "caller_nid");
+        |raw: &'a P::R, target: Option<&'a str>, inferred: bool, added: &mut Vec<Value>| {
+            let caller = rs(raw, "caller_nid");
             let Some(target) = target.filter(|t| !t.is_empty() && *t != caller) else {
                 return;
             };
-            if seen.contains(&(caller.to_string(), target.to_string())) {
+            if seen.contains(caller, target) {
                 return;
             }
-            let attr_read = raw.get("_python_attr_read").is_some_and(truthy);
+            let attr_read = raw.rec_get("_python_attr_read").is_some_and(truthy);
             if attr_read {
                 let node = by_id.get(target).copied().unwrap_or(&Value::Null);
                 let label = py_strip(s(node, "label")).trim_start_matches('.');
                 let label = label.strip_suffix("()").unwrap_or(label);
-                if !node.get("_py_property").is_some_and(truthy) || label != s(raw, "callee") {
+                if !node.get("_py_property").is_some_and(truthy) || label != rs(raw, "callee") {
                     return;
                 }
             }
-            seen.insert((caller.to_string(), target.to_string()));
+            seen.insert(caller, target);
             added.push(json!({
                 "source": caller,
                 "target": target,
@@ -1597,41 +2024,47 @@ pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
                 "context": if attr_read { "property_read" } else { "call" },
                 "confidence": if inferred { "INFERRED" } else { "EXTRACTED" },
                 "confidence_score": if inferred { 0.85 } else { 1.0 },
-                "source_file": s(raw, "source_file"),
-                "source_location": raw.get("source_location").cloned().unwrap_or(Value::Null),
+                "source_file": rs(raw, "source_file"),
+                "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
                 "weight": 1.0,
             }));
         };
-    for raw in raw_calls(per) {
+    for raw in raw_calls_of(per) {
         // The receiver is bound by an ambiguous absolute import (#3729).
-        if crate::build::truthy(&raw["_ambiguous_python_import"]) || raw["is_member_call"] != true {
+        if raw.rec_get("_ambiguous_python_import").is_some_and(truthy)
+            || raw.rec_get("is_member_call") != Some(&Value::Bool(true))
+        {
             continue;
         }
-        let (receiver, callee, caller) =
-            (s(raw, "receiver"), s(raw, "callee"), s(raw, "caller_nid"));
+        let (receiver, callee, caller) = (
+            rs(raw, "receiver"),
+            rs(raw, "callee"),
+            rs(raw, "caller_nid"),
+        );
         if matches!(receiver, "self" | "cls" | "super")
             && !callee.is_empty()
             && !caller.is_empty()
-            && !raw.get("_python_super_args").is_some_and(truthy)
+            && !raw.rec_get("_python_super_args").is_some_and(truthy)
             && let Some(target) = inherited_method(caller, callee, receiver == "super")
         {
             // Same rule as the in-file base walk, across files.
-            emit_call(raw, Some(&target), false, &mut added);
+            emit_call(raw, Some(target), false, &mut added);
             continue;
         }
-        let attr_type = s(raw, "_python_self_attr_type");
+        let attr_type = rs(raw, "_python_self_attr_type");
         if !attr_type.is_empty() && !callee.is_empty() && !caller.is_empty() {
             // `self.X.m()` with X bound to one class (#2860): a unique class
             // the caller's own file defines or imports, owning `m`.
-            let class = classes.get(&pkey(attr_type)).filter(|c| c.len() == 1);
+            let class = classes
+                .get(pkey(attr_type).as_str())
+                .filter(|c| c.len() == 1);
             let caller_file = method_class.get(caller).and_then(|owner| files.get(owner));
             if let (Some(class), Some(caller_file)) = (class, caller_file) {
-                let class = class.iter().next().unwrap();
+                let class = *class.iter().next().unwrap();
                 if files.get(class) == Some(caller_file)
                     || imports.get(caller_file).is_some_and(|i| i.contains(class))
                 {
-                    let target = methods.get(&(class.clone(), pkey(callee))).cloned();
-                    emit_call(raw, target.as_deref(), true, &mut added);
+                    emit_call(raw, method_of(class, callee), true, &mut added);
                 }
             }
             continue;
@@ -1642,13 +2075,13 @@ pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
         // An external module has no parsed member definition: the extractor's
         // present-false lexical fact and one exact plain import are both
         // needed, so older cached facts and ambiguous bindings fail closed.
-        if raw.get("_python_receiver_shadowed") == Some(&Value::Bool(false)) {
+        if raw.rec_get("_python_receiver_shadowed") == Some(&Value::Bool(false)) {
             let targets = files
                 .get(caller)
                 .and_then(|file| external.get(file))
                 .and_then(|bindings| bindings.get(receiver));
             match targets.map(Vec::as_slice) {
-                Some([target]) => {
+                Some(&[target]) => {
                     emit_call(raw, Some(target), false, &mut added);
                     continue;
                 }
@@ -1656,38 +2089,41 @@ pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
                 _ => {}
             }
         }
-        let receiver_type = s(raw, "receiver_type");
+        let receiver_type = rs(raw, "receiver_type");
         if !receiver_type.is_empty() && !upper(receiver) {
             // A local or parameter typed by an annotation or a constructor
             // binding (#4198), behind the origin gate (#2553): the only class
             // of that name, defined in the caller's file, imported by name,
             // or inside a module the file imports. A typed local is never an
             // imported module, so the module arm is skipped.
-            if let Some(class) = classes.get(&pkey(receiver_type)).filter(|c| c.len() == 1)
+            if let Some(class) = classes
+                .get(pkey(receiver_type).as_str())
+                .filter(|c| c.len() == 1)
                 && let Some(caller_file) = file_node(caller)
             {
-                let class = class.iter().next().unwrap();
-                let imported = imports.get(&caller_file);
+                let class = *class.iter().next().unwrap();
+                let imported = imports.get(caller_file);
                 let class_file = file_node(class);
-                if class_file.as_ref() == Some(&caller_file)
+                if class_file == Some(caller_file)
                     || imported.is_some_and(|i| {
-                        i.contains(class) || class_file.as_ref().is_some_and(|f| i.contains(f))
+                        i.contains(class) || class_file.is_some_and(|f| i.contains(f))
                     })
                 {
-                    let target = methods.get(&(class.clone(), pkey(callee))).cloned();
-                    emit_call(raw, target.as_deref(), true, &mut added);
+                    emit_call(raw, method_of(class, callee), true, &mut added);
                 }
             }
             continue;
         }
         let target = if upper(receiver) {
             classes
-                .get(&pkey(receiver))
+                .get(pkey(receiver).as_str())
                 .filter(|c| c.len() == 1)
-                .and_then(|c| methods.get(&(c.iter().next().unwrap().clone(), pkey(callee))))
-                .cloned()
+                .and_then(|c| c.first().and_then(|&class| method_of(class, callee)))
         } else {
-            let Some(file) = files.get(caller) else {
+            // The caller's file through its enclosing scopes: `mod.func()`
+            // from a method or a nested function reads its file's imports
+            // too (0.9.91, #2447).
+            let Some(file) = file_node(caller) else {
                 continue;
             };
             let rkey = pkey(receiver);
@@ -1698,7 +2134,7 @@ pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
                 .filter(|t| {
                     // A `contains` target is a nested def, not a module (#3887).
                     children.contains_key(*t) && !files.contains_key(*t) && {
-                        let n = by_id.get(t.as_str());
+                        let n = by_id.get(*t);
                         let stem = n
                             .map(|n| {
                                 Path::new(s(n, "source_file"))
@@ -1713,8 +2149,7 @@ pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
                         } else {
                             stem
                         };
-                        pkey(&label) == rkey
-                            || aliases.get(&(file.clone(), (*t).clone())) == Some(&rkey)
+                        pkey(&label) == rkey || aliases.get(&(file, **t)) == Some(&rkey)
                     }
                 })
                 .collect::<Vec<_>>();
@@ -1723,33 +2158,35 @@ pub fn python_members(per: &[Value], nodes: &mut [Value], edges: &mut Vec<Value>
             }
             children
                 .get(mods[0])
-                .and_then(|m| m.get(&pkey(callee)))
+                .and_then(|m| m.get(pkey(callee).as_str()))
                 .filter(|c| c.len() == 1)
-                .map(|c| c[0].clone())
+                .map(|c| c[0])
         };
-        emit_call(raw, target.as_deref(), false, &mut added);
+        emit_call(raw, target, false, &mut added);
     }
-    drop(by_id);
-    edges.extend(added);
+    added
 }
-pub fn kotlin_imports(per: &[Value], edges: &mut [Value]) {
+pub fn kotlin_imports<P: PerFile>(per: &[P], edges: &mut [Value]) {
     let mut symbols: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for r in per {
-        let pkg = s(r, "kotlin_package");
+        let pkg = r
+            .key("kotlin_package")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if pkg.is_empty() {
             continue;
         }
-        for n in r["nodes"].as_array().into_iter().flatten() {
-            let label = s(n, "label");
-            if !s(n, "source_file").is_empty()
-                && s(n, "type") != "namespace"
+        for n in r.nodes().into_iter().flatten() {
+            let label = rs(n, "label");
+            if !rs(n, "source_file").is_empty()
+                && rs(n, "type") != "namespace"
                 && !label.is_empty()
                 && !label.starts_with('.')
             {
                 symbols
                     .entry((pkg.into(), label.trim_matches(['(', ')']).into()))
                     .or_default()
-                    .push(s(n, "id").into());
+                    .push(rs(n, "id").into());
             }
         }
     }
@@ -1767,7 +2204,7 @@ pub fn kotlin_imports(per: &[Value], edges: &mut [Value]) {
         }
     }
 }
-pub fn elixir_imports(nodes: &[Value], edges: &mut [Value]) {
+pub fn elixir_imports<E: Rec>(nodes: &[Value], edges: &mut [E]) {
     let ids = nodes.iter().map(|n| s(n, "id")).collect::<BTreeSet<_>>();
     let mut labels: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
     for n in nodes.iter().filter(|n| n["_elixir_module"] == true) {
@@ -1776,23 +2213,28 @@ pub fn elixir_imports(nodes: &[Value], edges: &mut [Value]) {
         }
     }
     for e in edges {
-        if s(e, "relation") != "imports"
-            || s(e, "context") != "import"
+        if rs(e, "relation") != "imports"
+            || rs(e, "context") != "import"
             || ![".ex", ".exs"]
                 .iter()
-                .any(|sf| s(e, "source_file").ends_with(sf))
-            || ids.contains(s(e, "target"))
+                .any(|sf| rs(e, "source_file").ends_with(sf))
+            || ids.contains(rs(e, "target"))
         {
             continue;
         }
-        if let Some(c) = labels.get(s(e, "target")).filter(|c| c.len() == 1)
-            && s(c[0], "source_file") != s(e, "source_file")
+        if let Some(c) = labels.get(rs(e, "target")).filter(|c| c.len() == 1)
+            && s(c[0], "source_file") != rs(e, "source_file")
         {
-            e["target"] = c[0]["id"].clone();
+            e.rec_set("target", c[0]["id"].clone());
         }
     }
 }
-pub fn qualified_calls(lang: &str, per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
+pub fn qualified_calls<P: PerFile, E: Rec>(
+    lang: &str,
+    per: &[P],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+) {
     let by_id = nodes
         .iter()
         .map(|n| (s(n, "id").to_string(), n))
@@ -1801,17 +2243,18 @@ pub fn qualified_calls(lang: &str, per: &[Value], nodes: &[Value], edges: &mut V
     let mut types: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     let mut methods: Index = BTreeMap::new();
     let mut contains: Index = BTreeMap::new();
-    for e in edges.iter() {
-        if s(e, "relation") == "method" {
+    let edges_ro: &[E] = edges;
+    for e in edges_ro {
+        if rs(e, "relation") == "method" {
             methods
-                .entry(s(e, "source").into())
+                .entry(rs(e, "source").into())
                 .or_default()
-                .push(s(e, "target").into());
-        } else if s(e, "relation") == "contains" {
+                .push(rs(e, "target").into());
+        } else if rs(e, "relation") == "contains" {
             contains
-                .entry(s(e, "source").into())
+                .entry(rs(e, "source").into())
                 .or_default()
-                .push(s(e, "target").into());
+                .push(rs(e, "target").into());
         }
     }
     if lang == "csharp" {
@@ -1831,20 +2274,20 @@ pub fn qualified_calls(lang: &str, per: &[Value], nodes: &[Value], edges: &mut V
         }
     } else {
         for r in per {
-            let pkg = s(r, "kotlin_package");
+            let pkg = r.at("kotlin_package").as_str().unwrap_or("");
             if pkg.is_empty() {
                 continue;
             }
-            let Some(file) = r["nodes"].as_array().into_iter().flatten().find(|n| {
-                !s(n, "source_file").is_empty()
-                    && Path::new(s(n, "source_file"))
+            let Some(file) = r.nodes().into_iter().flatten().find(|n| {
+                !rs(*n, "source_file").is_empty()
+                    && Path::new(rs(*n, "source_file"))
                         .file_name()
                         .and_then(|s| s.to_str())
-                        == Some(s(n, "label"))
+                        == Some(rs(*n, "label"))
             }) else {
                 continue;
             };
-            for tgt in contains.get(s(file, "id")).into_iter().flatten() {
+            for tgt in contains.get(rs(file, "id")).into_iter().flatten() {
                 if let Some(n) = by_id.get(tgt) {
                     let name = s(n, "label").trim_matches(['(', ')']);
                     if s(n, "source_file").is_empty() || name.is_empty() || name.starts_with('.') {
@@ -1866,14 +2309,15 @@ pub fn qualified_calls(lang: &str, per: &[Value], nodes: &[Value], edges: &mut V
             }
         }
     }
-    let mut seen = pairs(edges, lang == "csharp");
-    for raw in raw_calls(per) {
-        let prefix = s(raw, "qualified_prefix");
-        let callee = s(raw, "callee");
-        if s(raw, "lang") != lang
+    let mut seen = pairs(edges_ro, lang == "csharp");
+    let mut added = vec![];
+    for raw in raw_calls_of(per) {
+        let prefix = rs(raw, "qualified_prefix");
+        let callee = rs(raw, "callee");
+        if rs(raw, "lang") != lang
             || prefix.is_empty()
             || callee.is_empty()
-            || s(raw, "caller_nid").is_empty()
+            || rs(raw, "caller_nid").is_empty()
         {
             continue;
         }
@@ -1901,18 +2345,21 @@ pub fn qualified_calls(lang: &str, per: &[Value], nodes: &[Value], edges: &mut V
                 .collect();
         }
         if candidates.len() == 1 {
-            emit(edges, &mut seen, raw, &candidates[0], "calls", true);
+            emit(&mut added, &mut seen, raw, &candidates[0], "calls", true);
         }
     }
+    drop((seen, by_id, index, types, methods, contains));
+    append(edges, added);
 }
-pub fn kotlin_members(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
-    let by_id = nodes
+pub fn kotlin_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mut Vec<E>) {
+    let nodes_ro: &[Value] = nodes;
+    let by_id = nodes_ro
         .iter()
         .map(|n| (s(n, "id"), n))
         .collect::<BTreeMap<_, _>>();
     let mut types: Index = BTreeMap::new();
     let mut methods: Index = BTreeMap::new();
-    for n in nodes {
+    for n in nodes_ro {
         if n["_callable_class"] == true
             && [".kt", ".kts"]
                 .iter()
@@ -1924,28 +2371,41 @@ pub fn kotlin_members(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
                 .push(s(n, "id").into());
         }
     }
-    for e in edges.iter().filter(|e| s(e, "relation") == "method") {
+    let edges_ro: &[E] = edges;
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
         methods
-            .entry(s(e, "source").into())
+            .entry(rs(e, "source").into())
             .or_default()
-            .push(s(e, "target").into());
+            .push(rs(e, "target").into());
     }
-    let mut seen = pairs(edges, false);
-    for raw in raw_calls(per) {
-        if s(raw, "lang") != "kotlin"
-            || s(raw, "kotlin_object_receiver").is_empty()
-            || s(raw, "callee").is_empty()
-            || s(raw, "caller_nid").is_empty()
+    let mut parked = Vec::new();
+    let mut seen = pairs(edges_ro, false);
+    let mut added = vec![];
+    for raw in raw_calls_of(per) {
+        if rs(raw, "lang") != "kotlin"
+            || rs(raw, "kotlin_object_receiver").is_empty()
+            || rs(raw, "callee").is_empty()
+            || rs(raw, "caller_nid").is_empty()
         {
             continue;
         }
-        let Some(ts) = types
-            .get(s(raw, "kotlin_object_receiver"))
-            .filter(|t| t.len() == 1)
-        else {
+        let receiver = rs(raw, "kotlin_object_receiver");
+        let found = types.get(receiver).filter(|t| !t.is_empty());
+        let Some(ts) = found.filter(|t| t.len() == 1) else {
+            // Declared nowhere here: usually in a repo this build does not
+            // contain, so park it for the merge (#3152, #3388); a builtin
+            // receiver never crosses a repo boundary.
+            if found.is_none() && !is_language_builtin(receiver) {
+                parked.push((
+                    rs(raw, "caller_nid").to_string(),
+                    rs(raw, "callee").to_string(),
+                    receiver.to_string(),
+                    raw,
+                ));
+            }
             continue;
         };
-        let wanted = format!(".{}", s(raw, "callee"));
+        let wanted = format!(".{}", rs(raw, "callee"));
         let cs = methods
             .get(&ts[0])
             .into_iter()
@@ -1957,20 +2417,116 @@ pub fn kotlin_members(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
             })
             .collect::<Vec<_>>();
         if cs.len() == 1 {
-            emit(edges, &mut seen, raw, cs[0], "calls", true);
+            emit(&mut added, &mut seen, raw, cs[0], "calls", true);
         }
     }
+    drop((seen, by_id, types, methods));
+    append(edges, added);
+    apply_parks(nodes, parked, "kotlin");
 }
-pub fn rust_self_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
+/// `_resolve_go_member_calls`: `g.Greet()` bound through the receiver's
+/// declared type (the method's own receiver, the function's scope, then the
+/// file's flat table), to the single Go declaration of that type and its
+/// method of exactly that name (Go exports by case). Always INFERRED. A type
+/// declared nowhere in the corpus is parked for a merged graph (#3152).
+pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mut Vec<E>) {
+    let raw = raw_calls_of(per)
+        .filter(|rc| {
+            rs(*rc, "language") == "go"
+                && truthy(at(*rc, "is_member_call"))
+                && !rs(*rc, "member_receiver").is_empty()
+                && !rs(*rc, "callee").is_empty()
+                && !rs(*rc, "caller_nid").is_empty()
+        })
+        .collect::<Vec<_>>();
+    if raw.is_empty() {
+        return;
+    }
+    let mut tables: FxHashMap<&str, &serde_json::Map<String, Value>> = FxHashMap::default();
+    for r in per {
+        let entry = r.at("go_type_table");
+        let path = s(entry, "path");
+        if let Some(table) = entry["table"].as_object()
+            && !path.is_empty()
+        {
+            tables.insert(path, table);
+        }
+    }
+    let mut defs: FxHashMap<String, Vec<String>> = FxHashMap::default();
+    let mut methods: FxHashMap<(String, String), Vec<String>> = FxHashMap::default();
+    {
+        let mut by_id: FxHashMap<&str, &Value> = FxHashMap::default();
+        for n in nodes.iter() {
+            by_id.insert(s(n, "id"), n);
+            // Only Go declarations: a same-named class of another language
+            // must neither answer a Go receiver nor hide that nothing here
+            // declares it.
+            if truthy(&n["_callable_class"]) && family(s(n, "source_file")) == Some("go") {
+                defs.entry(java_key(s(n, "label")))
+                    .or_default()
+                    .push(s(n, "id").to_string());
+            }
+        }
+        for e in edges.iter().filter(|e| rs(*e, "relation") == "method") {
+            if let Some(target) = by_id.get(rs(e, "target")) {
+                methods
+                    .entry((rs(e, "source").to_string(), java_key(s(target, "label"))))
+                    .or_default()
+                    .push(rs(e, "target").to_string());
+            }
+        }
+    }
+    let mut parked = Vec::new();
+    let mut seen = pairs(&edges[..], false);
+    let mut added = vec![];
+    for rc in raw {
+        let (receiver, callee, caller) = (
+            rs(rc, "member_receiver"),
+            rs(rc, "callee"),
+            rs(rc, "caller_nid"),
+        );
+        // The method's own receiver and the function's scope come first:
+        // two types in one file may both name their receiver `s`.
+        let mut ty = rs(rc, "receiver_type");
+        if ty.is_empty() {
+            ty = tables
+                .get(rs(rc, "source_file"))
+                .and_then(|t| t.get(receiver))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+        }
+        if ty.is_empty() || is_language_builtin(ty) {
+            continue;
+        }
+        let Some(found) = defs.get(&java_key(ty)).filter(|d| !d.is_empty()) else {
+            parked.push((caller.to_string(), callee.to_string(), ty.to_string(), rc));
+            continue;
+        };
+        if found.len() != 1 {
+            continue;
+        }
+        let Some(targets) = methods.get(&(found[0].clone(), java_key(callee))) else {
+            continue;
+        };
+        if targets.len() == 1 {
+            emit(&mut added, &mut seen, rc, &targets[0], "calls", false);
+        }
+    }
+    drop(seen);
+    append(edges, added);
+    apply_parks(nodes, parked, "go");
+}
+pub fn rust_self_calls<P: PerFile, E: Rec>(per: &[P], nodes: &[Value], edges: &mut Vec<E>) {
     let mut labels: Index = BTreeMap::new();
     let mut impls: Index = BTreeMap::new();
     let mut declared: BTreeMap<String, usize> = BTreeMap::new();
     let mut generic: BTreeMap<String, i64> = BTreeMap::new();
     let mut methods: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-    let contained = edges
+    let edges_ro: &[E] = edges;
+    let contained = edges_ro
         .iter()
-        .filter(|e| s(e, "relation") == "contains")
-        .map(|e| s(e, "target"))
+        .filter(|e| rs(*e, "relation") == "contains")
+        .map(|e| rs(e, "target"))
         .collect::<BTreeSet<_>>();
     let by_id = nodes
         .iter()
@@ -1992,27 +2548,28 @@ pub fn rust_self_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
         *generic.entry(label.into()).or_default() +=
             n["_rust_declaration_count"].as_i64().unwrap_or(0).max(0);
     }
-    for e in edges.iter().filter(|e| s(e, "relation") == "method") {
-        if let Some(n) = by_id.get(s(e, "target")) {
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
+        if let Some(n) = by_id.get(rs(e, "target")) {
             methods
                 .entry((
-                    s(e, "source").into(),
+                    rs(e, "source").into(),
                     s(n, "label")
                         .trim_matches(['(', ')'])
                         .trim_start_matches('.')
                         .into(),
                 ))
                 .or_default()
-                .insert(s(e, "target").into());
+                .insert(rs(e, "target").into());
         }
     }
-    let mut seen = pairs(edges, true);
-    for raw in raw_calls(per) {
-        let ty = s(raw, "rust_self_type");
-        if ty.is_empty() || s(raw, "callee").is_empty() || s(raw, "caller_nid").is_empty() {
+    let mut seen = pairs(edges_ro, true);
+    let mut added = vec![];
+    for raw in raw_calls_of(per) {
+        let ty = rs(raw, "rust_self_type");
+        if ty.is_empty() || rs(raw, "callee").is_empty() || rs(raw, "caller_nid").is_empty() {
             continue;
         }
-        let ik = s(raw, "rust_self_impl_key");
+        let ik = rs(raw, "rust_self_impl_key");
         let owners = if !ik.is_empty() {
             if generic.get(ty).copied().unwrap_or(0) != 1 {
                 continue;
@@ -2029,7 +2586,7 @@ pub fn rust_self_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
             .flatten()
             .flat_map(|o| {
                 methods
-                    .get(&(o.clone(), s(raw, "callee").into()))
+                    .get(&(o.clone(), rs(raw, "callee").into()))
                     .into_iter()
                     .flatten()
                     .cloned()
@@ -2037,7 +2594,7 @@ pub fn rust_self_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
             .collect::<BTreeSet<_>>();
         if candidates.len() == 1 {
             emit(
-                edges,
+                &mut added,
                 &mut seen,
                 raw,
                 candidates.iter().next().unwrap(),
@@ -2046,4 +2603,16 @@ pub fn rust_self_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
             );
         }
     }
+    drop((seen, labels, impls, declared, generic, methods));
+    drop((contained, by_id));
+    append(edges, added);
 }
+
+#[cfg(test)]
+thread_local! {
+    /// Tests: the member passes that ran on compact records, in order.
+    pub(crate) static NATIVE_RUNS: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+#[cfg(test)]
+mod native_tests;

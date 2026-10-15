@@ -193,11 +193,17 @@ fn java_anonymous_classes_get_a_node_and_their_calls() {
 fn ts_class_fields_type_this_receivers() {
     let source = "class Svc {\n  protected repo: Repo;\n  #root: Node | undefined;\n  private logger = new Logger();\n  static shared: Cache;\n  run() { this.repo.save(); }\n}\n";
     let result = run("ts", "svc.ts", source);
+    // Since Graphify 0.9.91 the fields ride on their class node rather than
+    // in the file-wide table (static ones apart), so `this.repo` reads only
+    // the caller's own class.
+    let svc = node(&result, "Svc");
+    assert_eq!(svc["_ts_fields"]["repo"], "Repo");
+    assert_eq!(svc["_ts_fields"]["#root"], "Node");
+    assert_eq!(svc["_ts_fields"]["logger"], "Logger");
+    assert!(svc["_ts_fields"].get("shared").is_none());
+    assert_eq!(svc["_ts_static_fields"]["shared"], "Cache");
     let table = &result["ts_type_table"]["table"];
-    assert_eq!(table["repo"], "Repo");
-    assert_eq!(table["#root"], "Node");
-    assert_eq!(table["logger"], "Logger");
-    assert!(table.get("shared").is_none());
+    assert!(table.get("repo").is_none() && table.get("shared").is_none());
 }
 
 #[test]

@@ -258,12 +258,13 @@ impl Store {
         Ok(result)
     }
     pub fn backup(&self, path: &Path) -> Result<Value> {
+        #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
-        let file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let file = options.open(path)?;
         drop(file);
         let result = (|| {
             self.connect()?.backup(rusqlite::MAIN_DB, path, None)?;

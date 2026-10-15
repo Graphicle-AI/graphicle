@@ -42,9 +42,20 @@ const MORE: &str =
 /// Extraction keeps process-wide caches: one run at a time.
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// `canonicalize` in the engine's plain spelling: on Windows without the
+/// verbatim prefix (`\\?\C:\x` is `C:\x`), as the command line resolves a
+/// root; elsewhere `canonicalize` itself.
+fn canonical(path: &Path) -> std::path::PathBuf {
+    let path = path.canonicalize().unwrap();
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => plain.into(),
+        _ => path,
+    }
+}
+
 fn corpus() -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = canonical(dir.path());
     write(&root, "app/__init__.py", "");
     write(&root, "app/main.py", MAIN);
     write(&root, "app/routers/__init__.py", "");

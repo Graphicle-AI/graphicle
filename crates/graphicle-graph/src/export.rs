@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/export.py
 //! Native graphify/export.py: protected artifacts and graph serialization.
 pub use crate::export_formats::{to_graphml, to_svg};
@@ -761,13 +761,146 @@ pub fn to_json(
 }
 /// Indices `0..n` in the order a stable sort of their records by `sort_key`
 /// puts them, keying records on all cores without keeping them.
+///
+/// The keys are packed into [`KeyArena`] blocks rather than held one `Vec`
+/// per record: a key costs its bytes plus a 16-byte row, with no per-record
+/// header, allocator rounding or doubling slack. Sorting the rows by (key
+/// bytes, index) is the stable sort by key bytes, so the order is exactly the
+/// one [`sorted_by_key_oracle`] gives.
 fn sorted_by_key<F>(n: usize, value: &F) -> Result<Vec<usize>>
 where
     F: Fn(usize) -> Result<Value> + Sync,
 {
-    let workers = std::thread::available_parallelism()
+    sorted_by_key_in(n, value, key_workers(n), KEY_BLOCK)
+}
+fn key_workers(n: usize) -> usize {
+    std::thread::available_parallelism()
         .map_or(1, usize::from)
-        .min(n.div_ceil(2048).max(1));
+        .min(n.div_ceil(2048).max(1))
+}
+/// Bytes per arena block: big enough that a block's unused tail is noise
+/// next to the keys it holds, small enough that a worker's last, partly
+/// filled block is too.
+const KEY_BLOCK: usize = 1 << 20;
+/// One record's key: `len` bytes at `offset` in arena block `block`.
+#[derive(Clone, Copy, Default)]
+struct KeyRow {
+    block: u32,
+    offset: u32,
+    len: u32,
+    index: u32,
+}
+/// Sort keys packed back to back in blocks that are allocated at their final
+/// size and never grow; a key longer than a block gets a block of its own.
+#[derive(Default)]
+struct KeyArena {
+    blocks: Vec<Vec<u8>>,
+}
+impl KeyArena {
+    /// Append `key` as record `index`'s row; `None` when the key, its block
+    /// or the index does not fit the 32-bit row fields.
+    fn push(&mut self, key: &[u8], index: usize, block_size: usize) -> Option<KeyRow> {
+        if self
+            .blocks
+            .last()
+            .is_none_or(|b| b.capacity() - b.len() < key.len())
+        {
+            self.blocks
+                .push(Vec::with_capacity(block_size.max(key.len())));
+        }
+        let block = self.blocks.len() - 1;
+        let last = &mut self.blocks[block];
+        let offset = last.len();
+        last.extend_from_slice(key);
+        Some(KeyRow {
+            block: u32::try_from(block).ok()?,
+            offset: u32::try_from(offset).ok()?,
+            len: u32::try_from(key.len()).ok()?,
+            index: u32::try_from(index).ok()?,
+        })
+    }
+    fn key(&self, row: &KeyRow) -> &[u8] {
+        let start = row.offset as usize;
+        &self.blocks[row.block as usize][start..start + row.len as usize]
+    }
+}
+/// [`sorted_by_key`] with the worker count and block size given.
+fn sorted_by_key_in<F>(n: usize, value: &F, workers: usize, block: usize) -> Result<Vec<usize>>
+where
+    F: Fn(usize) -> Result<Value> + Sync,
+{
+    match arena_order(n, value, workers, block)? {
+        Some(order) => Ok(order),
+        None => sorted_by_key_oracle(n, value),
+    }
+}
+/// The arena sort; `None` when a row field would overflow 32 bits (the
+/// arena is freed before the caller falls back).
+fn arena_order<F>(n: usize, value: &F, workers: usize, block: usize) -> Result<Option<Vec<usize>>>
+where
+    F: Fn(usize) -> Result<Value> + Sync,
+{
+    if u32::try_from(n).is_err() {
+        return Ok(None);
+    }
+    let chunk = n.div_ceil(workers.max(1)).max(1);
+    // Each worker fills its own slice of the one row table.
+    let mut rows = vec![KeyRow::default(); n];
+    let arenas = std::thread::scope(|scope| {
+        rows.chunks_mut(chunk)
+            .enumerate()
+            .map(|(c, slots)| {
+                scope.spawn(move || -> Result<Option<KeyArena>> {
+                    let mut arena = KeyArena::default();
+                    let mut key = Vec::new();
+                    for (j, slot) in slots.iter_mut().enumerate() {
+                        let i = c * chunk + j;
+                        key.clear();
+                        sort_key_into(&value(i)?, &mut key);
+                        match arena.push(&key, i, block) {
+                            Some(row) => *slot = row,
+                            None => return Ok(None),
+                        }
+                    }
+                    Ok(Some(arena))
+                })
+            })
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().expect("export key worker panicked"))
+            .collect::<Result<Vec<_>>>()
+    })?;
+    // One arena: each chunk's blocks follow the earlier chunks', and its rows
+    // are renumbered to match.
+    let mut keys = KeyArena::default();
+    for (arena, slots) in arenas.into_iter().zip(rows.chunks_mut(chunk)) {
+        let Some(arena) = arena else {
+            return Ok(None);
+        };
+        let Ok(base) = u32::try_from(keys.blocks.len()) else {
+            return Ok(None);
+        };
+        keys.blocks.extend(arena.blocks);
+        if u32::try_from(keys.blocks.len()).is_err() {
+            return Ok(None);
+        }
+        for row in slots {
+            row.block += base;
+        }
+    }
+    rows.sort_unstable_by(|a, b| keys.key(a).cmp(keys.key(b)).then(a.index.cmp(&b.index)));
+    drop(keys);
+    Ok(Some(
+        rows.into_iter().map(|row| row.index as usize).collect(),
+    ))
+}
+/// The per-record path: every key its own `Vec`, then one stable sort. The
+/// arena's oracle in tests, and its fallback past the 32-bit row fields.
+fn sorted_by_key_oracle<F>(n: usize, value: &F) -> Result<Vec<usize>>
+where
+    F: Fn(usize) -> Result<Value> + Sync,
+{
+    let workers = key_workers(n);
     let chunk = n.div_ceil(workers).max(1);
     let keyed = std::thread::scope(|scope| {
         (0..n)
@@ -1098,6 +1231,165 @@ mod document_tests {
             String::from_utf8(text).unwrap(),
             r#"{"a, b":[1,2.5,"x: y, z",{"q":"\\\", "},null,[]],"c":{}}"#
         );
+    }
+
+    /// A small deterministic generator (xorshift64*), so the fuzz cases are
+    /// the same on every run.
+    struct Rng(u64);
+    impl Rng {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 >> 12;
+            self.0 ^= self.0 << 25;
+            self.0 ^= self.0 >> 27;
+            self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() % n as u64) as usize
+        }
+        fn pick<T: Copy>(&mut self, items: &[T]) -> T {
+            items[self.below(items.len())]
+        }
+    }
+
+    /// Text with shared prefixes, JSON escapes, control, non-ASCII and
+    /// astral characters.
+    fn fuzz_text(rng: &mut Rng) -> String {
+        const PREFIXES: [&str; 5] = ["", "pkg/api/", "pkg/api/v1.", "k8s.io/", "a"];
+        const PIECES: [&str; 16] = [
+            "a",
+            "b",
+            "z",
+            "\"",
+            "\\",
+            "/",
+            "\n",
+            "\t",
+            "\u{1}",
+            "\u{1f}",
+            "\u{7f}",
+            "\u{e9}",
+            "\u{2028}",
+            "\u{1f600}",
+            "\u{10ffff}",
+            ",",
+        ];
+        let mut text = rng.pick(&PREFIXES).to_owned();
+        for _ in 0..rng.below(6) {
+            text.push_str(rng.pick(&PIECES));
+        }
+        text
+    }
+
+    /// A scalar, including numbers whose texts share prefixes (`1.0`,
+    /// `1.05`) and are kept exactly as written.
+    fn fuzz_scalar(rng: &mut Rng) -> Value {
+        const NUMBERS: [&str; 12] = [
+            "1",
+            "1.0",
+            "1.05",
+            "10",
+            "-1",
+            "0",
+            "0.55",
+            "0.2",
+            "1e5",
+            "1.0e5",
+            "-0.0",
+            "12345678901234567890123",
+        ];
+        match rng.below(6) {
+            0 => Value::Null,
+            1 => Value::Bool(rng.below(2) == 1),
+            2 => serde_json::from_str(rng.pick(&NUMBERS)).unwrap(),
+            _ => Value::String(fuzz_text(rng)),
+        }
+    }
+
+    fn fuzz_value(rng: &mut Rng, depth: usize) -> Value {
+        match if depth == 0 { 0 } else { rng.below(5) } {
+            3 => Value::Array(
+                (0..rng.below(4))
+                    .map(|_| fuzz_value(rng, depth - 1))
+                    .collect(),
+            ),
+            4 => Value::Object(
+                (0..rng.below(4))
+                    .map(|_| (fuzz_text(rng), fuzz_value(rng, depth - 1)))
+                    .collect(),
+            ),
+            _ => fuzz_scalar(rng),
+        }
+    }
+
+    /// Edge- and node-like records with nested metadata; some repeat an
+    /// earlier record, so equal keys must keep their index order.
+    fn fuzz_records(rng: &mut Rng, n: usize) -> Vec<Value> {
+        let mut out: Vec<Value> = Vec::with_capacity(n);
+        for _ in 0..n {
+            if !out.is_empty() && rng.below(8) == 0 {
+                let again = out[rng.below(out.len())].clone();
+                out.push(again);
+                continue;
+            }
+            let mut record = serde_json::Map::new();
+            for key in ["source", "target", "relation", "id", "label"] {
+                if rng.below(3) > 0 {
+                    record.insert(key.into(), fuzz_scalar(rng));
+                }
+            }
+            for _ in 0..rng.below(3) {
+                record.insert(fuzz_text(rng), fuzz_value(rng, 3));
+            }
+            out.push(if rng.below(20) == 0 {
+                fuzz_value(rng, 2)
+            } else {
+                Value::Object(record)
+            });
+        }
+        out
+    }
+
+    /// The arena orders records exactly as the per-record keys did, whatever
+    /// the chunking across workers and wherever block boundaries fall.
+    #[test]
+    fn arena_order_matches_the_per_record_oracle() {
+        let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+        for n in [0, 1, 2, 3, 17, 256, 1000, 5000] {
+            let records = fuzz_records(&mut rng, n);
+            let value = |i: usize| Ok(records[i].clone());
+            let oracle = super::sorted_by_key_oracle(n, &value).unwrap();
+            let keys = records.iter().map(super::sort_key).collect::<Vec<_>>();
+            assert!(oracle.windows(2).all(|w| {
+                let (a, b) = (&keys[w[0]], &keys[w[1]]);
+                a < b || (a == b && w[0] < w[1])
+            }));
+            assert_eq!(super::sorted_by_key(n, &value).unwrap(), oracle, "n={n}");
+            for workers in [1, 2, 3, 8, 64] {
+                for block in [1, 5, 64, 4096, super::KEY_BLOCK] {
+                    assert_eq!(
+                        super::sorted_by_key_in(n, &value, workers, block).unwrap(),
+                        oracle,
+                        "n={n} workers={workers} block={block}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A record that fails to build fails the sort, as it did per record.
+    #[test]
+    fn arena_order_reports_record_errors() {
+        let value = |i: usize| {
+            if i == 4100 {
+                Err(crate::Error::from("bad record"))
+            } else {
+                Ok(json!({"id": i}))
+            }
+        };
+        for workers in [1, 3] {
+            assert!(super::sorted_by_key_in(5000, &value, workers, 64).is_err());
+        }
+        assert!(super::sorted_by_key_oracle(5000, &value).is_err());
     }
 
     #[test]

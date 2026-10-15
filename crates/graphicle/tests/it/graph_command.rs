@@ -4,8 +4,7 @@
 //! checks the hand-over on every run. The built engine is checked too when
 //! one is available: `GRAPHICLE_GRAPH_BIN`, or the engine crate's own
 //! `target/{debug,release}/graphicle-graph`; otherwise that test says it was
-//! skipped and passes.
-#![cfg(unix)]
+//! skipped and passes. On Windows the stand-in is a small compiled program.
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -23,7 +22,7 @@ fn scratch() -> tempfile::TempDir {
 /// that the folder it runs from holds only what the test puts there.
 fn program_in(folder: &Path) -> PathBuf {
     std::fs::create_dir_all(folder).unwrap();
-    let program = folder.join("graphicle");
+    let program = folder.join(crate::child_env::program("graphicle"));
     let built = Path::new(env!("CARGO_BIN_EXE_graphicle"));
     if std::fs::hard_link(built, &program).is_err() {
         std::fs::copy(built, &program).unwrap();
@@ -34,6 +33,7 @@ fn program_in(folder: &Path) -> PathBuf {
 /// A stand-in engine in `folder`: prints its argument count, each argument
 /// on a line and its standard input (shell built-ins only, so it needs no
 /// PATH), writes `stderr` to standard error and exits with 7.
+#[cfg(unix)]
 fn stand_in(folder: &Path, stderr: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     std::fs::create_dir_all(folder).unwrap();
@@ -51,14 +51,72 @@ fn stand_in(folder: &Path, stderr: &str) -> PathBuf {
     engine
 }
 
+/// The stand-in engine on Windows: [`compiled_stand_in`] in `folder`, with
+/// the `stderr` text it writes in the file beside it.
+#[cfg(windows)]
+fn stand_in(folder: &Path, stderr: &str) -> PathBuf {
+    std::fs::create_dir_all(folder).unwrap();
+    let engine = folder.join(crate::child_env::program("graphicle-graph"));
+    std::fs::copy(compiled_stand_in(), &engine).unwrap();
+    std::fs::write(folder.join("stand-in-stderr.txt"), stderr).unwrap();
+    engine
+}
+
+/// The Windows stand-in's program, compiled once per test run with the
+/// toolchain's rustc (beside Cargo, else on PATH): the shell stand-in's
+/// output, with its standard error text read from `stand-in-stderr.txt`.
+#[cfg(windows)]
+fn compiled_stand_in() -> &'static Path {
+    const SOURCE: &str = r#"use std::io::{BufRead, Write};
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut out = std::io::stdout().lock();
+    writeln!(out, "{}", args.len()).unwrap();
+    for arg in &args {
+        writeln!(out, "{arg}").unwrap();
+    }
+    for line in std::io::stdin().lock().lines() {
+        writeln!(out, "{}", line.unwrap()).unwrap();
+    }
+    out.flush().unwrap();
+    let text = std::env::current_exe().unwrap().with_file_name("stand-in-stderr.txt");
+    eprintln!("{}", std::fs::read_to_string(text).unwrap());
+    std::process::exit(7);
+}
+"#;
+    static BUILT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    BUILT.get_or_init(|| {
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("graph-command-stand-in-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("stand_in.rs");
+        std::fs::write(&source, SOURCE).unwrap();
+        let beside_cargo = Path::new(env!("CARGO")).with_file_name("rustc.exe");
+        let rustc = if beside_cargo.is_file() {
+            beside_cargo
+        } else {
+            PathBuf::from("rustc")
+        };
+        let built = dir.join("graphicle-graph.exe");
+        let status = Command::new(rustc)
+            .arg("--edition=2021")
+            .arg("-o")
+            .arg(&built)
+            .arg(&source)
+            .status()
+            .unwrap();
+        assert!(status.success(), "compiling the stand-in engine: {status}");
+        built
+    })
+}
+
 /// Run `program args` with only `path` on PATH and `home` as HOME, feeding
 /// `input` (none: standard input is empty).
 fn run(program: &Path, args: &[&str], path: &[&Path], home: &Path, input: &str) -> Output {
     let mut command = Command::new(program);
-    command
+    crate::child_env::home(&mut command, home)
         .args(args)
         .env("PATH", std::env::join_paths(path).unwrap())
-        .env("HOME", home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -175,7 +233,11 @@ fn built_engine() -> Option<PathBuf> {
     let engine = Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphicle-graph/target");
     ["release", "debug"]
         .iter()
-        .map(|profile| engine.join(profile).join("graphicle-graph"))
+        .map(|profile| {
+            engine
+                .join(profile)
+                .join(crate::child_env::program("graphicle-graph"))
+        })
         .find(|path| path.is_file())
 }
 
@@ -191,7 +253,14 @@ fn the_built_engine_answers_through_graphicle_graph_as_it_does_directly() {
     let dir = scratch();
     let bin = dir.path().join("bin");
     let program = program_in(&bin);
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&engine, bin.join("graphicle-graph")).unwrap();
+    #[cfg(windows)]
+    std::fs::copy(
+        &engine,
+        bin.join(crate::child_env::program("graphicle-graph")),
+    )
+    .unwrap();
     for args in [
         vec!["--version"],
         vec!["--help"],

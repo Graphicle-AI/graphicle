@@ -1021,8 +1021,9 @@ fn open_work_leads_the_session_start_context_until_closed() {
             )
             .unwrap()
     };
+    // Nothing reviewed, open or stale: no context at all.
     let before = context();
-    assert!(!before.contains("Open work"), "{before}");
+    assert_eq!(before, "");
     write(json!({"task":"move bucket","status":"doing","region":"eu-west-1"}));
     let open = context();
     assert!(
@@ -1153,7 +1154,11 @@ fn mcp_recall_can_skip_what_the_connection_was_already_given() {
         &claude(&f.root.to_string_lossy(), true),
     );
     let app = api::App::new(f.store.clone(), model::Config::default(), vec![]).unwrap();
-    let request = |arguments: Value| json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall_project","arguments":arguments}});
+    // The whole packet (`structured`), which these checks read.
+    let request = |mut arguments: Value| {
+        arguments["structured"] = json!(true);
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall_project","arguments":arguments}})
+    };
     let packet = |reply: Value| {
         assert_eq!(reply["result"]["isError"], false, "{reply}");
         reply["result"]["structuredContent"].clone()
@@ -1282,6 +1287,23 @@ fn hooks_add_context_at_start_and_import_after_stop_without_blocking() {
     let f = Fixture::new();
     let cwd = f.root.join("deploy").to_string_lossy().into_owned();
     let start = json!({"session_id":CLAUDE_SESSION,"cwd":cwd,"hook_event_name":"SessionStart","source":"startup"});
+    // Nothing reviewed, open or stale yet: the hook prints nothing at all.
+    let mut command = binary(&f);
+    command.args(["hook", "claude-code", "session-start"]);
+    let output = run_with_input(command, &start.to_string());
+    assert!(output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    f.store
+        .work_state_write(
+            f.ws(),
+            f.key(),
+            &f.args(json!({"list":"bucket move","fields":{"task":"move bucket","status":"doing"}})),
+        )
+        .unwrap();
     let mut command = binary(&f);
     command.args(["hook", "claude-code", "session-start"]);
     let output = run_with_input(command, &start.to_string());
@@ -1456,8 +1478,17 @@ fn connect_merges_claude_code_hooks_and_stays_idempotent() {
     assert_eq!(stop.len(), 2, "{document:#}");
     assert_eq!(stop[0]["hooks"][0]["command"], "echo other");
     let ours = s(&stop[1]["hooks"][0], "command");
+    // POSIX-quoted on macOS and Linux; on Windows the program comes first
+    // with `/` separators, bare or double-quoted, so Git Bash and
+    // PowerShell can run it.
+    let program_first = if cfg!(windows) {
+        let program = env!("CARGO_BIN_EXE_graphicle").replace('\\', "/");
+        ours.starts_with(&format!("{program} ")) || ours.starts_with(&format!("\"{program}\" "))
+    } else {
+        ours.starts_with('\'')
+    };
     assert!(
-        ours.ends_with(" hook claude-code stop") && ours.starts_with('\''),
+        ours.ends_with(" hook claude-code stop") && program_first,
         "{ours}"
     );
     assert!(f.root.join(".mcp.json").is_file());

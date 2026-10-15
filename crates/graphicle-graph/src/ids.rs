@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/ids.py
 //! Port of graphify/ids.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 //! Copyright notices of the upstream work: NOTICE; modified for Rust by KarLex AI, Inc.

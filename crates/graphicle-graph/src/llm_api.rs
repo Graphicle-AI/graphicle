@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! JSON bindings and explicitly recorded transport fixtures for qualification.
 use crate::{
@@ -468,7 +468,9 @@ pub fn dispatch(r: &Value) -> Result<Value> {
                         &mut d,
                     )
                     .map_err(|e| e.to_string())?;
-                    rt.transport.send(&request)
+                    // As every model call does: Ollama's native /api/chat
+                    // first, falling back to /v1 (0.9.91, #4413).
+                    transport::send(&*rt.transport, &request, &mut d)
                 }
                 "extract_files_direct" => {
                     rt.extract_files(&units(r, "files")?, &options(r)?, &mut d)

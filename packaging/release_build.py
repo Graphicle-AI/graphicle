@@ -13,6 +13,12 @@ edition, and that it links only operating-system libraries, then writes
                                                     root has them
     OUT/graphicle-<version>-<target>.tar.gz.sha256  "<sha256>  <archive name>"
 
+For a Windows target (*-windows-msvc) the programs are graphicle.exe and
+graphicle-graph.exe, the archive is a .zip with a .zip.sha256 beside it, and
+the programs must link the C runtime statically (RUSTFLAGS="-C
+target-feature=+crt-static"): they may import Windows system libraries only
+(WINDOWS_SYSTEM).
+
 The release workflow (.github/workflows/release.yml) runs it once per target on
 a native runner. Locally:
 
@@ -21,11 +27,11 @@ a native runner. Locally:
 
 CARGO_TARGET_DIR, when set, serves both crates; otherwise each builds in its
 own target/ folder. The archive is reproducible: sorted entries, owner 0, and
-file times from SOURCE_DATE_EPOCH, else from the last commit. The builds remap
-the folders that Rust code would embed in the programs (the checkout, Cargo's
-home, the build folder and the home folder) to fixed names (remap_flags); C
-code compiled by build scripts may still name them, so publish only the
-archives the release workflow builds.
+file times from SOURCE_DATE_EPOCH, else from the last commit (1980 at the
+earliest in a .zip). The builds remap the folders that Rust code would embed
+in the programs (the checkout, Cargo's home, the build folder and the home
+folder) to fixed names (remap_flags); C code compiled by build scripts may
+still name them, so publish only the archives the release workflow builds.
 """
 import argparse
 import gzip
@@ -33,9 +39,12 @@ import hashlib
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tarfile
+import time
+import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +63,14 @@ VERSION = r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?'
 MACOS_SYSTEM = ('/usr/lib/', '/System/Library/')
 LINUX_SYSTEM = {'libc.so.6', 'libm.so.6', 'libpthread.so.0', 'libdl.so.2', 'librt.so.1', 'libutil.so.1',
                 'libgcc_s.so.1', 'libz.so.1', 'ld-linux-x86-64.so.2', 'ld-linux-aarch64.so.1'}
+# Windows: the system DLLs every Windows has (lower case, without .dll), and the
+# API sets of the Windows core (api-ms-win-core-*). The C runtime (VCRUNTIME*,
+# MSVCP*, api-ms-win-crt-*, the Universal CRT) is not among them: a clean
+# Windows may lack it, so the programs link it statically.
+WINDOWS_SYSTEM = {'kernel32', 'ntdll', 'advapi32', 'ws2_32', 'bcrypt', 'bcryptprimitives', 'userenv', 'ole32',
+                  'oleaut32', 'shell32', 'crypt32', 'secur32', 'ncrypt'}
+WINDOWS_SYSTEM_PREFIXES = ('api-ms-win-core-',)
+WINDOWS_RUNTIME_PREFIXES = ('vcruntime', 'msvcp', 'api-ms-win-crt-')
 
 
 def fail(message):
@@ -120,10 +137,20 @@ def build(program, target, cross, offline):
         fail(f'building {program} failed')
 
 
+def windows(target):
+    return target.endswith('-windows-msvc')
+
+
+def program_file(program, target):
+    """The program's file name on the target: graphicle.exe on Windows."""
+    return program + '.exe' if windows(target) else program
+
+
 def program_path(program, target, cross, offline):
     workspace, _ = PROGRAMS[program]
     folder = target_directory(workspace, offline)
-    path = (folder / target / 'release' / program) if cross else (folder / 'release' / program)
+    name = program_file(program, target)
+    path = (folder / target / 'release' / name) if cross else (folder / 'release' / name)
     if not path.is_file():
         fail(f'{path} does not exist; build {program} first')
     return path
@@ -165,7 +192,107 @@ def check_linkage(path, target):
             fail(f'{path.name} links libraries outside the base system: {", ".join(foreign)}')
         versions = re.findall(r'GLIBC_(\d+(?:\.\d+)+)', result.stdout)
         return libraries, max(versions, key=version_key) if versions else None
+    if windows(target):
+        try:
+            libraries = pe_imports(path)
+        except (OSError, ValueError) as error:
+            fail(f'could not read the imports of {path}: {error}')
+        runtime, foreign = windows_foreign(libraries)
+        if runtime:
+            fail(f'{path.name} imports the C runtime ({", ".join(runtime)}), which a clean Windows may lack: '
+                 'build with RUSTFLAGS="-C target-feature=+crt-static"')
+        if foreign:
+            fail(f'{path.name} imports libraries outside Windows: {", ".join(foreign)}')
+        return libraries, None
     fail(f'no linkage rule for target {target}')
+
+
+def windows_foreign(libraries):
+    """(C runtime DLLs, other non-system DLLs) among a Windows program's imports."""
+    runtime, foreign = [], []
+    for library in libraries:
+        name = library.lower().removesuffix('.dll')
+        if name.startswith(WINDOWS_RUNTIME_PREFIXES):
+            runtime.append(library)
+        elif name not in WINDOWS_SYSTEM and not name.startswith(WINDOWS_SYSTEM_PREFIXES):
+            foreign.append(library)
+    return runtime, foreign
+
+
+def pe_imports(path):
+    """The DLLs a PE program (.exe or .dll) imports, directly or delay-loaded,
+    in the order its import tables name them; a short reader of the PE/COFF
+    format (no llvm-readobj needed). Raises ValueError for a file it cannot read."""
+    with open(path, 'rb') as stream:
+        def read(offset, size):
+            stream.seek(offset)
+            data = stream.read(size)
+            if len(data) != size:
+                raise ValueError(f'{path} ends at {offset + len(data)}, inside a header at {offset}')
+            return data
+
+        if read(0, 2) != b'MZ':
+            raise ValueError(f'{path} is not a PE file (no MZ header)')
+        pe = struct.unpack('<I', read(0x3C, 4))[0]
+        if read(pe, 4) != b'PE\0\0':
+            raise ValueError(f'{path} is not a PE file (no PE signature)')
+        sections, optional_size = struct.unpack('<2xH12xH2x', read(pe + 4, 20))
+        optional = pe + 24
+        magic = struct.unpack('<H', read(optional, 2))[0]
+        if magic not in (0x10B, 0x20B):
+            raise ValueError(f'{path} has an unknown optional header ({magic:#x})')
+        plus = magic == 0x20B
+        image_base = struct.unpack('<Q' if plus else '<I', read(optional + (24 if plus else 28), 8 if plus else 4))[0]
+        directories = optional + (112 if plus else 96)
+        count = struct.unpack('<I', read(directories - 4, 4))[0]
+        # Section headers, 40 bytes each after the optional header: the name
+        # (8 bytes), then the virtual size and address and the raw size and
+        # file offset.
+        table = [struct.unpack('<8x4I16x', read(start, 40))
+                 for start in range(optional + optional_size, optional + optional_size + 40 * sections, 40)]
+
+        def offset_of(rva):
+            for virtual_size, address, raw_size, raw in table:
+                if address <= rva < address + max(virtual_size, raw_size):
+                    return rva - address + raw
+            raise ValueError(f'{path}: address {rva:#x} is in no section')
+
+        def name_at(rva):
+            stream.seek(offset_of(rva))
+            data = stream.read(256)
+            if b'\0' not in data:
+                raise ValueError(f'{path}: unterminated library name at {rva:#x}')
+            return data.split(b'\0', 1)[0].decode('ascii')
+
+        def directory(index):
+            if index >= count:
+                return 0, 0
+            return struct.unpack('<II', read(directories + 8 * index, 8))
+
+        names = []
+        # The import directory (1): 20-byte descriptors, the name's address at
+        # offset 12, ended by a descriptor of zeros.
+        address, size = directory(1)
+        if address and size:
+            start = offset_of(address)
+            for entry in range(start, start + (1 << 20), 20):
+                fields = struct.unpack('<5I', read(entry, 20))
+                if not any(fields):
+                    break
+                names.append(name_at(fields[3]))
+        # The delay-load import directory (13): 32-byte descriptors, the
+        # attributes at offset 0 (bit 0: addresses are relative, else virtual
+        # addresses) and the name at offset 4, ended by a descriptor of zeros.
+        address, size = directory(13)
+        if address and size:
+            start = offset_of(address)
+            for entry in range(start, start + (1 << 20), 32):
+                fields = struct.unpack('<8I', read(entry, 32))
+                if not any(fields):
+                    break
+                attributes, name = fields[0], fields[1]
+                names.append(name_at(name if attributes & 1 else name - image_base))
+    return list(dict.fromkeys(names))
 
 
 def version_key(text):
@@ -209,6 +336,9 @@ def root_documents(allow_missing_docs, require_licenses):
 
 
 def write_archive(archive, members, mtime):
+    if archive.name.endswith('.zip'):
+        write_zip(archive, members, mtime)
+        return
     folders = sorted({parent.as_posix() for member, _, _ in members for parent in Path(member).parents
                       if parent != Path('.')})
 
@@ -227,6 +357,28 @@ def write_archive(archive, members, mtime):
         for member, source, mode in members:
             with open(source, 'rb') as stream:
                 tar.addfile(info(member, tarfile.REGTYPE, mode, source.stat().st_size), stream)
+
+
+def write_zip(archive, members, mtime):
+    """The .zip counterpart of the tarball: sorted entries, a folder entry for
+    each folder, the same modes, and every time at mtime (UTC; the format holds
+    1980 to 2107), so that the same inputs give the same bytes."""
+    folders = sorted({parent.as_posix() for member, _, _ in members for parent in Path(member).parents
+                      if parent != Path('.')})
+    stamp = time.gmtime(min(max(mtime, 315532800), 4354819198))[:6]
+
+    def info(name, mode):
+        entry = zipfile.ZipInfo(name, date_time=stamp)
+        entry.create_system = 3
+        entry.external_attr = mode << 16 | (0x10 if name.endswith('/') else 0)
+        return entry
+
+    with zipfile.ZipFile(archive, 'w') as bundle:
+        for folder in folders:
+            bundle.writestr(info(folder + '/', 0o40755), b'', compress_type=zipfile.ZIP_STORED)
+        for member, source, mode in members:
+            bundle.writestr(info(member, 0o100000 | mode), source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED,
+                            compresslevel=9)
 
 
 def sha256(path):
@@ -291,13 +443,13 @@ def main():
         warn(f'graphicle-graph reports version {engine_version}, the release is {version}')
 
     name = f'graphicle-{version}-{target}'
-    members = sorted([(f'{name}/{program}', path, 0o755) for program, path in programs.items()]
+    members = sorted([(f'{name}/{program_file(program, target)}', path, 0o755) for program, path in programs.items()]
                      + [(f'{name}/{relative}', source, 0o644) for relative, source in documents])
     args.out.mkdir(parents=True, exist_ok=True)
-    archive = args.out / f'{name}.tar.gz'
+    archive = args.out / (f'{name}.zip' if windows(target) else f'{name}.tar.gz')
     write_archive(archive, members, source_date_epoch())
     digest = sha256(archive)
-    (args.out / f'{archive.name}.sha256').write_text(f'{digest}  {archive.name}\n')
+    (args.out / f'{archive.name}.sha256').write_text(f'{digest}  {archive.name}\n', newline='\n')
     report.update({'version': version, 'archive': str(archive), 'sha256': digest, 'bytes': archive.stat().st_size,
                    'members': [member for member, _, _ in members]})
     print(json.dumps(report, indent=1))

@@ -39,6 +39,228 @@ pub fn recipe_defaults() -> Value {
     json!({"stem":true,"speaker":"auto","pack_focus":true})
 }
 
+/// Where `context` (and so `recall_project`) presents excerpts of test
+/// files ([`test_file`]), the `include_tests` option: `true` keeps 0.1.0's
+/// order; `false` presents every test-file excerpt after the other
+/// excerpts; `"auto"` (the default) does that unless the question names a
+/// test file or a test identifier ([`question_names_tests`]). Only the
+/// presentation moves: the candidate bound and the budget still go to the
+/// windows in rank order, so the packet holds the same excerpts as with
+/// `true`, and each group keeps its order. The packet's `test_files`
+/// reports what applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IncludeTests {
+    /// `true`: test files rank like other files (0.1.0).
+    Yes,
+    /// `false`: test files always follow the other files.
+    No,
+    /// `"auto"`: test files follow the other files unless the question
+    /// names a test file or a test identifier.
+    Auto,
+}
+
+/// `include_tests` when a call leaves it out: `"auto"`. Pillar 2's
+/// registered offline benchmark (E1) measured this rule, applied to the
+/// files of 0.1.0's default packets in delivered order, on SWE-bench
+/// Verified's 400 instances that study 1 did not use, with the issue text
+/// as the question: test files last raised file recall@1 from 0.245 to
+/// 0.310 (+0.065, 95% CI [+0.043, +0.090]; 29 tasks up, 0 down) and left
+/// recall@10 at 0.544; with [`question_names_tests`]'s exception, which
+/// fired on 55 of the 400 issue texts, recall@1 was 0.299 (+0.054
+/// [+0.034, +0.076]; 24 up, 0 down). Both met the registered rule (at
+/// least +0.05 with the CI above 0, recall@10 not lower). On 45 of those
+/// tasks, the packets this code builds gave E1's own file lists for both
+/// rules (44 of 45 identical in their first 10 files, the 45th differing
+/// in the base packet alike; every metric equal to 3 decimals). SWE-bench's
+/// gold never holds a test file, so what the move costs a question about
+/// tests was not measured; `true` keeps 0.1.0's order.
+pub const INCLUDE_TESTS_DEFAULT: IncludeTests = IncludeTests::Auto;
+
+impl IncludeTests {
+    /// The call's `include_tests` (absent or `null`: the default).
+    pub fn parse(args: &Value) -> Result<(Self, bool)> {
+        match args.get("include_tests") {
+            None | Some(Value::Null) => Ok((INCLUDE_TESTS_DEFAULT, true)),
+            Some(Value::Bool(true)) => Ok((Self::Yes, false)),
+            Some(Value::Bool(false)) => Ok((Self::No, false)),
+            Some(Value::String(mode)) if mode == "auto" => Ok((Self::Auto, false)),
+            Some(_) => Err(Error::bad("include_tests must be true, false or auto")),
+        }
+    }
+    fn value(self) -> Value {
+        match self {
+            Self::Yes => json!(true),
+            Self::No => json!(false),
+            Self::Auto => json!("auto"),
+        }
+    }
+}
+
+/// Whether a window comes from a test file of the project: a `file:` source
+/// whose path has a `test`, `tests` or `testing` folder, or whose file is
+/// `test_*`, `*_test.py`, `*_tests.py` or `conftest.py`. This is the TEST
+/// rule of the registered benchmark's rankers (see
+/// [`INCLUDE_TESTS_DEFAULT`]), character for character, so the rule that
+/// ships is the one measured. Other languages' test-file names
+/// (`header_test.go`, `parser.spec.ts`, `__tests__/`) are not in it.
+pub fn test_file(window: &Value) -> bool {
+    static TEST: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(
+            r"(^|/)(tests?|testing)/|(^|/)test_[^/]*$|_tests?\.py$|(^|/)conftest\.py$",
+        )
+        .expect("the test-file rule")
+    });
+    let source = &window["source"];
+    s(source, "id").starts_with("file:") && TEST.is_match(&s(source, "path").replace('\\', "/"))
+}
+
+/// Whether `question` names a test file or a test identifier: a path
+/// through a `test`, `tests` or `testing` folder (`tests/test_parser.py`,
+/// `django/test/utils.py`), a `test_` name (`test_parse_header`,
+/// `test_parser.py`), a `_test.py` or `_tests.py` file, `conftest.py`, or a
+/// `Test` class (`TestHTTPParser`). The words test, tests or testing alone
+/// do not count ("which tests cover parse_header"), nor do pytest, unittest
+/// or other names that only contain them. This is the rule of a ranker in the
+/// registered benchmark (see [`INCLUDE_TESTS_DEFAULT`]), so the exception
+/// that ships is the one measured. Test-file names of other languages
+/// (`header_test.go`, `parser.spec.ts`) are not in it; `include_tests: true`
+/// keeps test files in place for any question.
+pub fn question_names_tests(question: &str) -> bool {
+    static NAMES_TESTS: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"(?:^|[^A-Za-z0-9_])(?:tests?|testing)/[A-Za-z0-9_./-]",
+            r"|(?:^|[^A-Za-z0-9_])test_[A-Za-z0-9_]+",
+            r"|[A-Za-z0-9_]_tests?\.py\b|\bconftest\.py\b",
+            r"|\bTest[A-Z][A-Za-z0-9_]*",
+        ))
+        .expect("the names-tests rule")
+    });
+    NAMES_TESTS.is_match(question)
+}
+
+/// Mark the test-file windows among the packer's `hits` to be presented
+/// after the others (the packer's `last`); how many were marked.
+fn mark_test_files_last(hits: &mut [Value]) -> usize {
+    let mut marked = 0;
+    for hit in hits.iter_mut().filter(|hit| test_file(hit)) {
+        hit["last"] = json!(true);
+        marked += 1;
+    }
+    marked
+}
+
+/// The argument, beside the published contracts of `recall_project` and
+/// the graph tools, that asks for the whole answer in `structuredContent`:
+/// the reply 0.1.0 sent ([`lean_reply`] has the default).
+pub const STRUCTURED: &str = "structured";
+
+/// Most characters of `recall_project`'s Markdown over MCP: `context`'s
+/// default `max_chars`, a quarter of the 50,000 characters above which
+/// Claude Code hands the model a file pointer instead of a tool's text.
+pub const MCP_RECALL_CHARS: u64 = 12_000;
+
+/// Take [`STRUCTURED`] out of the arguments of `recall_project` or a graph
+/// tool, before its contract is checked: `true` asks for the 0.1.0 reply.
+/// Other tools keep it, and their contract refuses it.
+pub fn take_structured(name: &str, graph_tool: bool, args: &mut Value) -> Result<bool> {
+    if name != "recall_project" && !graph_tool {
+        return Ok(false);
+    }
+    match args.as_object_mut().and_then(|a| a.remove(STRUCTURED)) {
+        None => Ok(false),
+        Some(Value::Bool(structured)) => Ok(structured),
+        Some(_) => Err(Error::bad(format!("{STRUCTURED} must be true or false"))),
+    }
+}
+
+/// The line [`lean_reply`] adds for the `needs` a packet's excerpts do not
+/// cover.
+fn needs_line(needs: &[&str]) -> String {
+    format!(
+        "Needs these excerpts do not cover (a lexical check): {}\n",
+        needs.join("; ")
+    )
+}
+
+/// `recall_project`'s arguments for the default reply: `max_chars` at most
+/// [`MCP_RECALL_CHARS`], less the room the needs line takes when the call
+/// names `needs` (the line for every one of them; at least 2,000 characters
+/// stay for the packet), so the packet's Markdown, whose budget line then
+/// says so, and that line fit the reply.
+pub fn cap_recall(args: &mut Value) {
+    let reserve = {
+        let needs: Vec<&str> = args["needs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        if needs.is_empty() {
+            0
+        } else {
+            needs_line(&needs).chars().count() as u64
+        }
+    };
+    let cap = MCP_RECALL_CHARS.saturating_sub(reserve).max(2000);
+    // `context`'s default `max_chars` is MCP_RECALL_CHARS.
+    let asked = args
+        .get("max_chars")
+        .and_then(Value::as_u64)
+        .unwrap_or(MCP_RECALL_CHARS);
+    if asked > cap {
+        args["max_chars"] = json!(cap);
+    }
+}
+
+/// The default MCP reply of `recall_project` and the graph tools: the text
+/// an agent reads, once. Claude Code (2.1.287) shows the model a tool's
+/// `structuredContent` as JSON whenever a reply has one, instead of its
+/// `content`; 0.1.0 sent the whole packet there and again as escaped JSON
+/// text (recall: 40,000 to 56,000 characters on study 1's repositories;
+/// graph tools: a median of 55 KB). So the reply has no
+/// `structuredContent`:
+/// - `recall_project`: the packet's Markdown, which cites every excerpt
+///   (path and line, source id, SHA-256, where to continue), and the needs
+///   it did not find, at most [`MCP_RECALL_CHARS`] characters;
+/// - a graph tool: the engine's text, then the citations block
+///   ([`crate::graph_tools::citations_text`]).
+///
+/// `None` (the 0.1.0 reply stands) for any other tool or an answer without
+/// that text. [`STRUCTURED`] asks for the 0.1.0 reply.
+pub fn lean_reply(name: &str, graph_tool: bool, value: &Value) -> Option<Value> {
+    let content = if graph_tool {
+        let mut content = vec![json!({"type":"text","text":value.get("text")?.as_str()?})];
+        if value["nodes"].is_array() {
+            let citations = crate::graph_tools::citations_text(value).replace(
+                " in structuredContent",
+                " not listed (structured: true lists every citation)",
+            );
+            content.push(json!({"type":"text","text":citations}));
+        }
+        content
+    } else if name == "recall_project" {
+        let mut text = value.get("markdown")?.as_str()?.to_string();
+        let needs: Vec<&str> = value["unresolved_needs"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect();
+        let line = needs_line(&needs);
+        // cap_recall reserved room for it; only needs longer than 10,000
+        // characters in all can leave it out.
+        if !needs.is_empty()
+            && (text.chars().count() + line.chars().count()) as u64 <= MCP_RECALL_CHARS
+        {
+            text.push_str(&line);
+        }
+        vec![json!({"type":"text","text":text})]
+    } else {
+        return None;
+    };
+    Some(json!({"content":content,"isError":false}))
+}
+
 #[derive(Clone)]
 pub struct Snapshot {
     pub repository: Value,
@@ -638,6 +860,7 @@ pub fn context_on(
         }
     }
     let question = string(args, "question", 16000)?;
+    let (include_tests, tests_defaulted) = IncludeTests::parse(args)?;
     let max_tokens = integer(args, "max_tokens", 3000, 16000)?.max(256);
     let max_chars = integer(args, "max_chars", 12000, 64000)?.max(2000);
     let limit = integer(args, "limit", 8, 40)?.max(1);
@@ -1009,6 +1232,19 @@ pub fn context_on(
             Err(error) => doc_links_report = json!({"status":"error","error":error.message}),
         }
     }
+    // Test files after the other excerpts (`include_tests`): the packer
+    // presents them last once the budget has gone to the windows in rank
+    // order, so the bound and the budget below see 0.1.0's order.
+    let mut test_files = json!({"include_tests":include_tests.value(),"defaulted":tests_defaulted});
+    let demote = match include_tests {
+        IncludeTests::Yes => false,
+        IncludeTests::No => true,
+        IncludeTests::Auto => {
+            let named = question_names_tests(question);
+            test_files["question_names_tests"] = json!(named);
+            !named
+        }
+    };
     candidates.truncate(40);
     // Lifted windows come last: count those the candidate bound kept.
     if let Some(offered) = doc_links_report.get("lifted").and_then(Value::as_u64) {
@@ -1020,11 +1256,14 @@ pub fn context_on(
         doc_links_report["over_candidate_limit"] = json!(offered.saturating_sub(kept));
     }
     let arms = arm_report(&ranked, &extra_rankings, &sources, &selected_memories);
-    let hits = crate::evidence::source_hits(
+    let mut hits = crate::evidence::source_hits(
         &snapshot.documents,
         &candidates,
         args["expand_context"] != false,
     )?;
+    if demote {
+        mark_test_files_last(&mut hits);
+    }
     let mut pack_request = json!({"repo":snapshot.repository,"question":question,"hits":hits,"memories":selected_memories,
         "max_tokens":max_tokens,"max_chars":max_chars,"reasons":ranked["reasons"],"coverage":coverage,"needs":args.get("needs").cloned().unwrap_or(json!([])),
         "semantic":{"loaded":extra_rankings.get("semantic").is_some()},"mode":ranked["mode"]});
@@ -1054,6 +1293,15 @@ pub fn context_on(
         }
     }
     let mut packet = native("pack", pack_request)?;
+    // How many delivered test-file excerpts had another excerpt after them
+    // in rank order (0 under chronological presentation).
+    if demote {
+        let moved = packet
+            .as_object_mut()
+            .and_then(|p| p.remove("moved_last"))
+            .unwrap_or(json!(0));
+        test_files["moved"] = moved;
+    }
     let mut evidence = Vec::new();
     for source in packet["sources"].as_array().into_iter().flatten() {
         let doc = snapshot
@@ -1147,6 +1395,7 @@ pub fn context_on(
     packet["depth"] = json!({"limit":limit,"max_tokens":max_tokens});
     packet["arm_weights"] = arm_weights;
     packet["retrieval_defaults"] = json!(defaulted);
+    packet["test_files"] = test_files;
     if let Some(stemmer) = ranked.get("stemmer") {
         packet["stemmer"] = stemmer.clone();
     }
@@ -1610,6 +1859,208 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::{rerank_order, rerank_rrf_order};
+
+    #[test]
+    fn a_question_names_tests_by_a_test_file_or_identifier() {
+        use super::question_names_tests as names;
+        for yes in [
+            "what does test_parse_header check",
+            "is TestHTTPParser flaky",
+            "see tests/parser.py",
+            "django/test/utils.py breaks the runner",
+            "`testing/python/approx.py` fails",
+            "the fixture in conftest.py",
+            "parser_test.py and parser_tests.py differ",
+            "run test_parser.py",
+        ] {
+            assert!(names(yes), "{yes}");
+        }
+        for no in [
+            // The words alone, and names that only contain them.
+            "which tests cover parse_header",
+            "Where is the test for the parser?",
+            "Testing the cache",
+            "the parser_tests module",
+            "pytest prints the wrong lexer",
+            "unittest.skip is ignored",
+            "attestation of the build",
+            "the latest contest_results table",
+            // Other languages' test-file names are not in the rule.
+            "fix parser.spec.ts",
+            "`header_test.go` fails",
+            "how does parse_header split a raw header",
+            "parser.py reads the header",
+            "",
+        ] {
+            assert!(!names(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn test_files_are_the_benchmarks_test_rule() {
+        use serde_json::json;
+        let window = |path: &str| json!({"source":{"id":format!("file:{path}"),"path":path}});
+        // The registered benchmark's TEST rule (proto_card.py), including
+        // pytest's testing/ folder and *_tests.py.
+        for yes in [
+            "tests/test_a.py",
+            "pkg/tests/helpers.py",
+            "django/test/utils.py",
+            "testing/python/approx.py",
+            "src/testing/fixtures.rs",
+            "test_x.py",
+            "pkg/test_util.c",
+            "sklearn/utils/estimator_checks_test.py",
+            "pkg/parser_tests.py",
+            "pkg/conftest.py",
+            "conftest.py",
+            "tests\\test_win.py",
+        ] {
+            assert!(super::test_file(&window(yes)), "{yes}");
+        }
+        for no in [
+            "a.py",
+            "pkg/latest.py",
+            "contest/results.py",
+            "pkg/attest_x.py",
+            "header_test.go",
+            "parser.spec.ts",
+            "__tests__/a.js",
+            "spec/a_spec.rb",
+            "Tests/A.swift",
+            "pkg/testsuite.py",
+            "pytest.ini",
+        ] {
+            assert!(!super::test_file(&window(no)), "{no}");
+        }
+        let mut hits = vec![
+            window("tests/test_a.py"),
+            window("a.py"),
+            window("testing/python/approx.py"),
+            json!({"source":{"id":"connector:c:tests/x","path":"tests/x"}}),
+            window("pkg/parser_tests.py"),
+        ];
+        // A connector's document under tests/ is not a test file.
+        assert_eq!(super::mark_test_files_last(&mut hits), 3);
+        let marked: Vec<bool> = hits.iter().map(|h| h["last"] == true).collect();
+        assert_eq!(marked, [true, false, true, false, true]);
+    }
+
+    #[test]
+    fn include_tests_is_true_false_or_auto() {
+        use super::IncludeTests;
+        use serde_json::json;
+        let parse = |value: serde_json::Value| IncludeTests::parse(&json!({"include_tests":value}));
+        assert_eq!(
+            IncludeTests::parse(&json!({})).unwrap(),
+            (super::INCLUDE_TESTS_DEFAULT, true)
+        );
+        assert_eq!(
+            parse(json!(null)).unwrap(),
+            (super::INCLUDE_TESTS_DEFAULT, true)
+        );
+        assert_eq!(parse(json!(true)).unwrap(), (IncludeTests::Yes, false));
+        assert_eq!(parse(json!(false)).unwrap(), (IncludeTests::No, false));
+        assert_eq!(parse(json!("auto")).unwrap(), (IncludeTests::Auto, false));
+        for bad in [json!("yes"), json!(1), json!({})] {
+            assert!(parse(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn lean_replies_carry_the_text_once() {
+        use serde_json::json;
+        let packet = json!({"markdown":"Graphicle project evidence — p\nBudget: …\n","sources":[{"id":"file:a.py"}],
+            "evidence":[{"id":"file:a.py","text":"x"}],"unresolved_needs":["cents rounding"]});
+        let reply = super::lean_reply("recall_project", false, &packet).unwrap();
+        assert!(reply.get("structuredContent").is_none(), "{reply}");
+        assert_eq!(reply["isError"], false);
+        assert_eq!(
+            reply["content"],
+            json!([{"type":"text","text":"Graphicle project evidence — p\nBudget: …\nNeeds these excerpts do not cover (a lexical check): cents rounding\n"}])
+        );
+        // A need that would pass the cap is left out, never the Markdown.
+        let full = "x".repeat(super::MCP_RECALL_CHARS as usize - 10);
+        let big = json!({"markdown":full,"unresolved_needs":["cents rounding"]});
+        let reply = super::lean_reply("recall_project", false, &big).unwrap();
+        assert_eq!(reply["content"][0]["text"], json!(full));
+        // A graph answer: the engine's text, then the citations block, which
+        // no longer points into a structuredContent the reply leaves out.
+        let nodes: Vec<_> = (0..25)
+            .map(
+                |n| json!({"label":format!("f{n}()"),"relpath":"a.py","line":n + 1,"checked":true}),
+            )
+            .collect();
+        let answer = json!({"tool":"query_graph","text":"NODE f0()","episode":"e1","episode_lag":0,"nodes":nodes});
+        let reply = super::lean_reply("query_graph", true, &answer).unwrap();
+        assert!(reply.get("structuredContent").is_none(), "{reply}");
+        assert_eq!(
+            reply["content"][0],
+            json!({"type":"text","text":"NODE f0()"})
+        );
+        let citations = reply["content"][1]["text"].as_str().unwrap();
+        assert!(
+            citations.starts_with("Citations (code-graph episode e1"),
+            "{citations}"
+        );
+        assert!(
+            citations.ends_with(
+                "- 5 more cited nodes not listed (structured: true lists every citation)"
+            ),
+            "{citations}"
+        );
+        assert!(!citations.contains("structuredContent"), "{citations}");
+        // Other tools and answers without the text keep the 0.1.0 reply.
+        assert!(super::lean_reply("read_project_source", false, &packet).is_none());
+        assert!(super::lean_reply("recall_project", false, &json!({"evidence":[]})).is_none());
+        assert!(super::lean_reply("get_node", true, &json!({"nodes":[]})).is_none());
+    }
+
+    #[test]
+    fn structured_is_taken_from_recall_and_graph_calls_only() {
+        use serde_json::json;
+        let mut args = json!({"question":"q","structured":true});
+        assert!(super::take_structured("recall_project", false, &mut args).unwrap());
+        assert_eq!(args, json!({"question":"q"}));
+        let mut args = json!({"label":"f","structured":false});
+        assert!(!super::take_structured("get_node", true, &mut args).unwrap());
+        assert_eq!(args, json!({"label":"f"}));
+        let mut args = json!({"structured":"yes"});
+        assert!(super::take_structured("recall_project", false, &mut args).is_err());
+        // Another tool's contract refuses it: it stays.
+        let mut args = json!({"path":"a.py","structured":true});
+        assert!(!super::take_structured("read_project_source", false, &mut args).unwrap());
+        assert_eq!(args["structured"], true);
+        let mut args = json!({"question":"q","max_chars":40000});
+        super::cap_recall(&mut args);
+        assert_eq!(args["max_chars"], super::MCP_RECALL_CHARS);
+        let mut args = json!({"question":"q","max_chars":4000});
+        super::cap_recall(&mut args);
+        assert_eq!(args["max_chars"], 4000);
+        let mut args = json!({"question":"q"});
+        super::cap_recall(&mut args);
+        assert!(args.get("max_chars").is_none());
+        // Room for the needs line, under the default budget too.
+        let line = "Needs these excerpts do not cover (a lexical check): cents rounding; refunds\n";
+        let room = super::MCP_RECALL_CHARS - line.chars().count() as u64;
+        let mut args = json!({"question":"q","needs":["cents rounding","refunds"]});
+        super::cap_recall(&mut args);
+        assert_eq!(args["max_chars"], room);
+        let mut args =
+            json!({"question":"q","needs":["cents rounding","refunds"],"max_chars":40000});
+        super::cap_recall(&mut args);
+        assert_eq!(args["max_chars"], room);
+        let mut args =
+            json!({"question":"q","needs":["cents rounding","refunds"],"max_chars":4000});
+        super::cap_recall(&mut args);
+        assert_eq!(args["max_chars"], 4000);
+        let full = "x".repeat(room as usize);
+        let packet = json!({"markdown":full,"unresolved_needs":["refunds"]});
+        let reply = super::lean_reply("recall_project", false, &packet).unwrap();
+        let text = reply["content"][0]["text"].as_str().unwrap();
+        assert!(text.ends_with("(a lexical check): refunds\n"), "{text}");
+        assert!(text.chars().count() as u64 <= super::MCP_RECALL_CHARS);
+    }
 
     #[test]
     fn rank_fusion_weights_the_cross_encoder_over_its_partner() {

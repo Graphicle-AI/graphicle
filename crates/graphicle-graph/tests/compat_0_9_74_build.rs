@@ -16,7 +16,11 @@ fn merged_labels(hyperedges: Value, chunk: Value) -> Vec<String> {
         json!({"nodes": nodes, "edges": [], "hyperedges": hyperedges}).to_string(),
     )
     .unwrap();
-    let chunk = chunk.to_string().replace("{root}", &root.to_string_lossy());
+    // The root as JSON string content (a Windows path's `\\` escaped).
+    let root_json = serde_json::to_string(&root.to_string_lossy()).unwrap();
+    let chunk = chunk
+        .to_string()
+        .replace("{root}", &root_json[1..root_json.len() - 1]);
     let options = MergeOptions {
         graph_path: Some(graph_path),
         dedup: false,

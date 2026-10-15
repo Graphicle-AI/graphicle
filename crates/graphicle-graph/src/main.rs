@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py
 //! Native command-line entry point and backwards-compatible JSON Lines API.
 use std::io::{self, IsTerminal, Write};
@@ -46,6 +46,8 @@ fn use_mimalloc_for_tree_sitter() {
 }
 
 fn main() -> io::Result<()> {
+    // mimalloc's options for a run of short phases (`par::configure_allocator`).
+    graphicle::par::configure_allocator();
     use_mimalloc_for_tree_sitter();
     struct FlushCaches;
     impl Drop for FlushCaches {

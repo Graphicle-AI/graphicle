@@ -30,7 +30,8 @@ Usage: graphicle-graph <command> [options]
     0 with an answer, 3 when a name is ambiguous (the candidates are listed),
     4 when no node matches.
   diagnose multigraph    edge collapse diagnostics (--json, --max-examples N)
-  benchmark [graph.json] measure graph-context token reduction
+  benchmark [graph.json] whole corpus vs one graph answer (a size ratio,
+                         not an agent saving)
   add <url>              save content (--dir DIR, --author, --contributor)
   clone <github-url>     clone a repository (--branch NAME, --out DIR)
   tree                   collapsible HTML tree (--graph, --output, --root)
@@ -47,7 +48,8 @@ Usage: graphicle-graph <command> [options]
   cache-check <list>     semantic cache lookup (--root, --deep, --prompt-file)
   merge-chunks <files>   merge validated extraction chunks (--out PATH)
   merge-semantic        merge cached/new fragments (--cached, --new, --out)
-  hook <subcommand>      install, uninstall, status
+  hook <subcommand>      install, uninstall, status (post-commit, post-checkout,
+                         post-merge hooks and the graph.json merge driver)
   hook-guard <kind>      assistant read, search, or gemini guard (--strict)
   hook-check            silent compatibility hook
   install [platform]    assistant skill installation (--platform, --project)
@@ -55,6 +57,8 @@ Usage: graphicle-graph <command> [options]
     Platforms: claude, windows, codebuddy, codex, opencode, kilo, aider,
     copilot, vscode, claw, droid, trae, trae-cn, gemini, cursor, antigravity,
     hermes, kiro, pi, kimi, devin, amp, agents (alias: skills).
+  pi guard <action>     install, uninstall: register the Pi guard extension with
+                        `pi install`/`pi remove`; path: print its package folder
   serve [graph.json]    MCP over stdio (default) or streamable-http
     --transport NAME --host HOST --port N --api-key KEY --path /mcp
     --json-response --stateless --session-timeout S

@@ -4,6 +4,7 @@
 //! for changes made before that record, where Graphicle writes them.
 use crate::agent_detect::{self, Environment};
 use crate::agent_files::{self, Change};
+use crate::platform::CanonicalExt;
 use crate::setup::{Ui, native, shown, unix};
 use crate::{
     Error, Result, agent_instructions, agent_setup, codex_config, git_hooks, local, store::Store,
@@ -65,10 +66,10 @@ pub fn disconnect_report(
             found
                 .folder
                 .clone()
-                .unwrap_or_else(|| cwd.canonicalize().unwrap_or(cwd.clone())),
+                .unwrap_or_else(|| cwd.canonical().unwrap_or(cwd.clone())),
             Some(found.id),
         ),
-        _ => (cwd.canonicalize().unwrap_or(cwd.clone()), None),
+        _ => (cwd.canonical().unwrap_or(cwd.clone()), None),
     };
     // A record that cannot be read stops here: it holds which files
     // Graphicle created, and nothing may overwrite it.
@@ -765,7 +766,7 @@ pub fn uninstall(data: &Path, purge: bool, yes: bool, json_flag: bool) -> Result
         &env,
     )?;
     drop(store);
-    let executable = std::env::current_exe()?.canonicalize()?;
+    let executable = std::env::current_exe()?.canonical()?;
     let install = crate::terminal::installed(&executable);
     let mut report = json!({"disconnected":disconnected,"remove_program":removal(&executable, install.method),
         "data_dir":data,"also":[
@@ -782,11 +783,8 @@ fn purge_data(data: &Path, env: &Environment) -> Result<bool> {
     if !data.exists() {
         return Ok(false);
     }
-    let data = data.canonicalize()?;
-    let home = env
-        .home
-        .as_deref()
-        .and_then(|home| home.canonicalize().ok());
+    let data = data.canonical()?;
+    let home = env.home.as_deref().and_then(|home| home.canonical().ok());
     if !data.join("reviews.sqlite3").is_file()
         || data.parent().is_none()
         || home.as_deref() == Some(data.as_path())
@@ -827,18 +825,31 @@ fn removal(executable: &Path, method: &str) -> Value {
         return json!({"method":"cargo","command":format!("cargo uninstall {package}")});
     }
     // The install script's programs, or a source build's.
-    let mut files = vec![git_hooks::quote(&text)];
     let engine =
         executable.with_file_name(format!("graphicle-graph{}", std::env::consts::EXE_SUFFIX));
-    if engine.is_file() {
-        files.push(git_hooks::quote(&engine.to_string_lossy()));
-    }
     let method = if method == "source" {
         "source"
     } else {
         "files"
     };
-    json!({"method":method,"command":format!("rm {}", files.join(" "))})
+    // Windows: a PowerShell command (single quotes, a quote doubled).
+    #[cfg(windows)]
+    {
+        let quote = |path: &str| format!("'{}'", path.replace('\'', "''"));
+        let mut files = vec![quote(&text)];
+        if engine.is_file() {
+            files.push(quote(&engine.to_string_lossy()));
+        }
+        json!({"method":method,"command":format!("Remove-Item -LiteralPath {}", files.join(", "))})
+    }
+    #[cfg(not(windows))]
+    {
+        let mut files = vec![git_hooks::quote(&text)];
+        if engine.is_file() {
+            files.push(git_hooks::quote(&engine.to_string_lossy()));
+        }
+        json!({"method":method,"command":format!("rm {}", files.join(" "))})
+    }
 }
 
 /// The package of Cargo's install record (`.crates2.json`) whose programs
@@ -887,6 +898,16 @@ pub fn render_uninstall(report: &Value) -> String {
 mod tests {
     use super::*;
 
+    #[cfg(windows)]
+    #[test]
+    fn windows_removal_is_a_powershell_command() {
+        let removal = removal(Path::new(r"C:\Users\o'neil\bin\graphicle.exe"), "script");
+        assert_eq!(
+            removal["command"],
+            r"Remove-Item -LiteralPath 'C:\Users\o''neil\bin\graphicle.exe'"
+        );
+    }
+
     #[test]
     fn removal_follows_the_install() {
         // The method `graphicle update` finds for each program path.
@@ -909,9 +930,16 @@ mod tests {
             remove("/home/a/.cargo/bin/graphicle", false)["method"],
             "cargo"
         );
+        // The removal command is for the platform's shell: `rm` on macOS
+        // and Linux, PowerShell's Remove-Item on Windows.
+        let rm = if cfg!(windows) {
+            "Remove-Item -LiteralPath "
+        } else {
+            "rm "
+        };
         assert_eq!(
             remove("/home/a/.local/bin/graphicle", false)["command"],
-            "rm '/home/a/.local/bin/graphicle'"
+            format!("{rm}'/home/a/.local/bin/graphicle'")
         );
         assert_eq!(
             remove("/usr/local/bin/graphicle", true)["command"],
@@ -922,7 +950,7 @@ mod tests {
             false,
         );
         assert_eq!(built["method"], "source");
-        assert!(built["command"].as_str().unwrap().starts_with("rm "));
+        assert!(built["command"].as_str().unwrap().starts_with(rm));
         let record = br#"{"installs":{"other 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["other"]},"graphicle-runtime 0.1.0 (path+file:///src/graphicle)":{"bins":["graphicle"]}}}"#;
         assert_eq!(
             cargo_package(record, "graphicle").as_deref(),

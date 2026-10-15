@@ -1,8 +1,8 @@
 # Graphicle graph engine
 
-The Graphicle graph engine is a native Rust port of Graphify **0.9.88** (see
+The Graphicle graph engine is a native Rust port of Graphify **0.9.91** (see
 [NOTICE](NOTICE)), pinned to the release tag
-`a9860f70dc3cc2e9c2d8cb923484cfa0592b9067`. The application includes the extraction
+`10130e79ed9caf8f60d998073e097531eaa1a395`. The application includes the extraction
 pipeline, CLI, incremental updates, watcher, MCP server, hooks, assistant
 installer, exports and public library API. Python is used only for development
 comparisons; native operations do not fall back to the Python application.
@@ -21,6 +21,18 @@ calls), weight `AMBIGUOUS` edges in clustering (`GRAPHICLE_AMBIGUOUS_SCALE`)
 and honour git's user-wide excludes. File extractions cached by an earlier
 build are made again once (cache schema 8). Graphify Cloud's call to action
 is not ported.
+
+The three releases 0.9.89 to 0.9.91 were ported for 0.1.1. They bind member
+calls whose receiver type is declared in another repository (Go, PHP,
+TypeScript and JavaScript, Kotlin, Objective-C) on `merge-graphs` and
+`global add`, fold a Go package type declared across files into one node,
+type C# `foreach` variables and keep C# names that differ only by `_` or case
+apart, stop generic type parameters from becoming stub nodes, extract
+Objective-C `NS_ENUM` and `NS_OPTIONS`, link an interface member to every
+implementer, read Jinja templates as documents, install a `post-merge` hook,
+add a Pi guard extension and send Ollama requests to `/api/chat`. File
+extractions cached by an earlier build are made again once (cache schema 9).
+[CHANGELOG.md](../../CHANGELOG.md) lists every change.
 
 0.9.77 keeps an edge's stored direction wherever graph.json is read back, and
 adds enum and context-bound structure to several extractors. Changes in that
@@ -217,7 +229,7 @@ the tree-sitter 0.25.10 runtime, the one Python Graphify parses with, so
 `serve` defaults to MCP stdio; `--transport streamable-http` selects HTTP with
 host, port, API-key, session and path options. `install` and `uninstall`
 configure supported assistant platforms. `--help` lists the commands that
-come from Graphify 0.9.88, including labeling, query and navigation, global
+come from Graphify 0.9.91, including labeling, query and navigation, global
 graphs, merge workflows and exports; the additions below are documented here
 and in the repository's README.
 
@@ -254,7 +266,7 @@ recorded in the `manifest.json` next to it. The manifest check catches a
 corrupted or swapped pack, not a rewritten manifest;
 `GRAPHICLE_GRAMMAR_UNVERIFIED=1` skips it.
 
-## Beyond 0.9.88
+## Beyond 0.9.91
 
 The parity claim rests on the comparison checks: they compare graph content
 with the pinned upstream reference, with the reviewed upstream fixes of
@@ -407,7 +419,7 @@ internal algorithm is panic-free.
 ## Verification
 
 The comparison suite binds every receipt to an immutable binary, the complete
-Rust source set and the comparison tools. It needs the pinned Graphify 0.9.88
+Rust source set and the comparison tools. It needs the pinned Graphify 0.9.91
 source that `migration/FILES.json` names (its archive and SHA-256), unpacked
 under `reference/`, and a Python 3.12 environment in `.reference-venv` built
 from `tools/reference-requirements.txt` and `tools/comparison-requirements.txt`.
@@ -432,7 +444,7 @@ selected upstream fixes and remaining limitations, including the pinned Swift
 grammar issue. Explicit oracle adaptations are hashed and recorded in
 `migration/upstream-review/adaptations.json`, among them fixes upstream has not
 merged (for example the Kotlin annotation crash on untyped class properties).
-0.9.88 behaviour is the only behaviour, with no opt-out.
+0.9.91 behaviour is the only behaviour, with no opt-out.
 
 ## Notices
 

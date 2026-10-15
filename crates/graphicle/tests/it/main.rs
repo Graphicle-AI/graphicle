@@ -18,6 +18,9 @@ pub fn edition_setup() {}
 /// Child processes versus tests that rely on flock exclusivity.
 mod fork_guard;
 
+/// The fixture-home environment of the command-line suites' children.
+mod child_env;
+
 mod archived;
 mod ask;
 mod async_requests;
@@ -48,6 +51,7 @@ mod grounded_v2;
 mod grounded_v3;
 mod invalidation;
 mod jobs_bounds;
+mod lean_replies;
 mod local_inference;
 mod memory_handoffs;
 mod memory_symbols;

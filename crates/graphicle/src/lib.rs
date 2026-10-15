@@ -47,6 +47,7 @@ pub mod observer;
 pub mod operations;
 pub mod permissions;
 pub mod phase;
+pub mod platform;
 pub mod product;
 pub mod projection;
 pub mod prompt_context;

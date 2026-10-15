@@ -185,6 +185,16 @@ impl Fixture {
 }
 
 /// The project ids of a packet's evidence windows, in order.
+/// A call's arguments as these tests send them: recall_project and the
+/// graph tools answer with their whole packet in `structuredContent` only
+/// when asked (`structured: true`), and the tests read it.
+fn structured(name: &str, mut arguments: Value) -> Value {
+    if name == "recall_project" || graphicle_runtime::graph_tools::NAVIGATION.contains(&name) {
+        arguments["structured"] = json!(true);
+    }
+    arguments
+}
+
 fn projects_cited(packet: &Value) -> Vec<String> {
     packet["evidence"]
         .as_array()
@@ -767,7 +777,7 @@ fn an_unreadable_project_contributes_no_windows_no_cross_edges_and_no_counts() {
                 &f.workspace,
                 token,
                 &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-                "params":{"name":name,"arguments":arguments}}),
+                "params":{"name":name,"arguments":structured(name, arguments)}}),
             )
             .unwrap()
         };
@@ -919,7 +929,11 @@ async fn one_workspace_connection_answers_repo_and_workspace_recall() {
     let (f, shop, money) = Fixture::shop_and_money();
     let rpc = |id: u64, method: &str, params: Value| json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
     let call = |name: &str, arguments: Value| {
-        rpc(2, "tools/call", json!({"name":name,"arguments":arguments}))
+        rpc(
+            2,
+            "tools/call",
+            json!({"name":name,"arguments":structured(name, arguments)}),
+        )
     };
     let workspace = format!("/mcp/{}", f.workspace);
     let app = router(f.app());
@@ -1213,7 +1227,7 @@ fn a_workspace_connection_serves_the_graph_tools_of_the_project_repo_names() {
         rpc(
             app,
             "tools/call",
-            json!({"name":name,"arguments":arguments}),
+            json!({"name":name,"arguments":structured(name, arguments)}),
         )
     };
     let app = f.app();
@@ -1349,7 +1363,7 @@ fn a_project_connections_graph_tools_read_another_project_until_access_is_revoke
             &reader,
             &shop,
             &json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-                "params":{"name":name,"arguments":arguments}}),
+                "params":{"name":name,"arguments":structured(name, arguments)}}),
         )
         .unwrap()
     };
@@ -1416,7 +1430,7 @@ fn a_workspace_connection_skips_what_it_showed_per_project() {
             &f.workspace,
             &f.key,
             &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"recall_project",
-                "arguments":{"question":ABOUT_BOTH,"skip_shown":true}}}),
+                "arguments":{"question":ABOUT_BOTH,"skip_shown":true,"structured":true}}}),
             &mut session,
         )
         .unwrap()["result"]["structuredContent"]
@@ -1496,11 +1510,11 @@ fn graphicle_mcp_workspace_serves_every_project_over_stdio() {
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":ABOUT_THE_SHOP}}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":ABOUT_THE_SHOP,"repo":money}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":ABOUT_THE_SHOP,"structured":true}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":ABOUT_THE_SHOP,"repo":money,"structured":true}}}),
         // Over stdio a graph tool's `repo` may name a synced folder,
         // on a workspace connection too.
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_node","arguments":{"label":"quantize_cents","repo":"money"}}}),
+        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_node","arguments":{"label":"quantize_cents","repo":"money","structured":true}}}),
     ]
     .map(|r| r.to_string())
     .join("\n")

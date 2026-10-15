@@ -19,6 +19,7 @@
 //! hooks name the program and the data folder, gets its own line in the
 //! same block. Folder syncs never read backups either
 //! ([`crate::local::folder_walk`]).
+use crate::platform::CanonicalExt;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -95,7 +96,11 @@ const EXCLUDE_PATTERN: &str = "*.graphicle-bak";
 /// hook sets removed; `None` when it fails.
 fn git_line(folder: &Path, args: &[&str]) -> Option<String> {
     let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(folder).args(args);
+    // Git refuses Windows' verbatim `\\?\` paths.
+    command
+        .arg("-C")
+        .arg(crate::platform::simplified(folder.to_path_buf()))
+        .args(args);
     for variable in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_PREFIX"] {
         command.env_remove(variable);
     }
@@ -120,7 +125,7 @@ pub(crate) fn work_tree(folder: &Path) -> Option<(PathBuf, PathBuf)> {
     let root = PathBuf::from(git_line(folder, &["rev-parse", "--show-toplevel"])?);
     let exclude = git_line(&root, &["rev-parse", "--git-path", "info/exclude"])?;
     let exclude = root.join(exclude);
-    Some((root.canonicalize().unwrap_or(root), exclude))
+    Some((root.canonical().unwrap_or(root), exclude))
 }
 
 /// The lines `start..end` of the backups block in an exclude file's lines.
@@ -148,7 +153,7 @@ pub fn exclude_created(data: &Path, file: &Path) -> Result<()> {
     };
     let file = std::path::absolute(file)?;
     let file = match (file.parent(), file.file_name()) {
-        (Some(parent), Some(name)) => parent.canonicalize()?.join(name),
+        (Some(parent), Some(name)) => parent.canonical()?.join(name),
         _ => return Ok(()),
     };
     let Ok(relative) = file.strip_prefix(&root) else {
@@ -543,13 +548,13 @@ pub fn store_of<'a>(args: impl IntoIterator<Item = &'a str>) -> PathBuf {
         .and_then(|at| args.get(at + 1))
         .map(PathBuf::from)
         .unwrap_or_else(crate::local::default_data_dir);
-    named.canonicalize().unwrap_or(named)
+    named.canonical().unwrap_or(named)
 }
 
 /// Whether `data` (a data folder) is the store a `graphicle` command line
 /// with `args` opens.
 pub fn same_store<'a>(args: impl IntoIterator<Item = &'a str>, data: &Path) -> bool {
-    let data = data.canonicalize().unwrap_or_else(|_| data.to_path_buf());
+    let data = data.canonical().unwrap_or_else(|_| data.to_path_buf());
     store_of(args) == data
 }
 
@@ -701,7 +706,7 @@ mod tests {
     #[test]
     fn entries_belong_to_their_store_and_project() {
         let dir = tempfile::tempdir().unwrap();
-        let data = dir.path().canonicalize().unwrap();
+        let data = dir.path().canonical().unwrap();
         let named = |store: &Path, project: &str| json!({"command":"/bin/graphicle","args":["--data-dir",store,"mcp","--project",project]});
         let entry = named(&data, "p1");
         assert!(entry_uses_store(&entry, &data));

@@ -4,8 +4,8 @@ The pinned checkout is never edited. Selected hunks are applied in memory;
 exact context must match once. Rust is still compared independently against
 Python, including randomized inputs and complete provider transcripts.
 
-Pinned: Graphify 0.9.88 (a9860f70), the release tag. Fixes merged upstream by
-0.9.88 no longer need adaptations; the entries below are fixes upstream has not
+Pinned: Graphify 0.9.91 (10130e79), the release tag. Fixes merged upstream by
+0.9.91 no longer need adaptations; the entries below are fixes upstream has not
 merged. The Kotlin `line` hoist this file once carried landed as #3884, the
 label-retry salvage of partial labels landed as 18d834f (0.9.73), and the Rust
 `Self` type-reference filter (#2963) is subsumed by the prelude filter (#3973,

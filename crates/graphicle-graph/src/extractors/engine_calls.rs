@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Call traversal, scoped receivers, indirect dispatch and final graph assembly.
 use super::{
@@ -536,6 +536,25 @@ impl<'a, 't> Engine<'a, 't> {
                     {
                         c.self_receiver = Some("this");
                     }
+                    // `$this->greeter->greet()` types the receiver by the
+                    // property name, `$greeter->greet()` by the variable; a
+                    // longer chain names neither (0.9.89).
+                    let object = n.child_by_field_name("object");
+                    match object.map(|o| o.kind_name()) {
+                        Some("variable_name") => {
+                            c.receiver = php_variable_text(object, self.source);
+                        }
+                        Some("member_access_expression") => {
+                            let o = object.unwrap();
+                            if php_variable_text(o.child_by_field_name("object"), self.source)
+                                .as_deref()
+                                == Some("this")
+                            {
+                                c.receiver = o.child_by_field_name("name").map(text);
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             return c;
@@ -614,6 +633,18 @@ impl<'a, 't> Engine<'a, 't> {
                                         )
                                 {
                                     c.csharp_chain = Some(vec![elem]);
+                                }
+                            } else if r.kind_name() == "object_creation_expression" {
+                                // new X(...).M(): the receiver is the
+                                // constructed X (#1770), typed here now that a
+                                // nameless receiver defers (0.9.90).
+                                if let Some((name, _, _)) = read_csharp_type_name(
+                                    r.child_by_field_name("type"),
+                                    self.source,
+                                )
+                                .filter(|(name, _, _)| !name.is_empty())
+                                {
+                                    c.csharp_chain = Some(vec![name]);
                                 }
                             } else if r.kind_name() == "parenthesized_expression" {
                                 // ((IStore)x).M() / (x as IStore).M(): the cast
@@ -758,6 +789,16 @@ impl<'a, 't> Engine<'a, 't> {
                                 || f.kind_name() == "qualified_identifier"))
                     {
                         c.receiver = Some(text(obj));
+                        // `const { creator } = this; creator.m()` reads the
+                        // field as `this.creator.m()` does (0.9.91).
+                        if self.js()
+                            && obj.kind_name() == "identifier"
+                            && let Some(field) =
+                                ts_field_destructured_from_this(obj, &text(obj), self.source)
+                        {
+                            c.receiver = Some(field);
+                            c.this_field = true;
+                        }
                     } else if matches!(obj.kind_name(), "this" | "super")
                         && self.self_call_language()
                     {
@@ -1019,6 +1060,11 @@ impl<'a, 't> Engine<'a, 't> {
                         || (self.is("lua") && call.member && !lua_self_qualified)
                         || (call.member && builtin && !php_builtin_self_call)
                         || call.scoped
+                        // A C# member call defers even without a capturable
+                        // receiver name (`run.Sequence.Apply()`, `Make().M()`):
+                        // the bare-name map would bind the caller's own
+                        // same-named method (0.9.90).
+                        || (self.is("c_sharp") && call.member)
                         || (call.member
                             && receiver.is_some_and(|r| {
                                 upper(r) || call.this_field || self.is("c_sharp")
@@ -1094,6 +1140,17 @@ impl<'a, 't> Engine<'a, 't> {
                         {
                             target = None;
                         }
+                        // `new X()` constructs a type, never a method that
+                        // shares X's name; the cross-file pass looks for the
+                        // type itself (0.9.90).
+                        if self.is("c_sharp")
+                            && n.kind_name() == "object_creation_expression"
+                            && target
+                                .as_ref()
+                                .is_some_and(|t| self.method_owner.contains_key(t))
+                        {
+                            target = None;
+                        }
                     }
                     let external = target.as_ref().is_some_and(|id| {
                         !self.nodes.iter().any(|n| {
@@ -1136,8 +1193,22 @@ impl<'a, 't> Engine<'a, 't> {
                         {
                             raw["receiver_type"] = json!(receivers.ruby.get(r).cloned().flatten());
                         }
+                        // TS/JS `this.x.m()`: the receiver is a field of the
+                        // caller's own class, which its field table types.
+                        if call.this_field && self.js() {
+                            raw["ts_this_field"] = json!(true);
+                            if ts_in_static_method(n) {
+                                raw["ts_static_this"] = json!(true);
+                            }
+                        }
                         if self.is("cpp") {
                             raw["lang"] = json!("cpp");
+                        }
+                        // PHP: a scoped class call (`Helper::m()`) apart from an
+                        // instance member call (`$g->m()`), whose receiver the
+                        // resolver types through the file's table (0.9.89).
+                        if self.is("php") {
+                            raw["php_scoped"] = json!(call.scoped);
                         }
                         if self.is("c_sharp") {
                             raw["lang"] = json!("csharp");
@@ -1812,7 +1883,18 @@ impl<'a, 't> Engine<'a, 't> {
             out["swift_extensions"] = json!(self.swift_extensions);
         }
         if self.js() {
-            ts_receiver_type_table(root, self.source, &mut self.type_table);
+            // Class fields go on their class node (`_ts_fields`), never into
+            // the file-wide table: `this.x` reads the caller's class and its
+            // bases, which may live in files an incremental rebuild does not
+            // re-extract (0.9.91).
+            let mut fields = TsFieldTable::new();
+            ts_receiver_type_table(root, self.source, &mut self.type_table, Some(&mut fields));
+            if let Some(nodes) = out["nodes"].as_array_mut() {
+                ts_attach_class_fields(nodes, &fields, &self.path);
+            }
+        }
+        if self.is("php") {
+            php_receiver_type_table(root, self.source, &mut self.type_table);
         }
         let key = if self.is("swift") {
             Some("swift_type_table")
@@ -1820,6 +1902,8 @@ impl<'a, 't> Engine<'a, 't> {
             Some("ts_type_table")
         } else if self.is("cpp") {
             Some("cpp_type_table")
+        } else if self.is("php") {
+            Some("php_type_table")
         } else {
             None
         };

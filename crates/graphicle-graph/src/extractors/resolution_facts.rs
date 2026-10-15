@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/resolution.py
 //! Parser-derived import, alias, export and type facts.
 use super::engine_parser::Parsed;
@@ -14,9 +14,8 @@ use super::{
     resolution_paths::{is_python_package_dir, probe_declared_python_module_candidate},
 };
 use crate::rcfile::effective_suffix;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -372,40 +371,72 @@ pub fn heritage_entries(n: Node<'_>, s: &[u8]) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .collect()
 }
+/// The relation of a JS/TS use, as [`JsUse`] keeps it.
+#[derive(Clone, Copy)]
+enum UseRelation {
+    Calls,
+    References,
+    Inherits,
+    Implements,
+}
+impl UseRelation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Calls => "calls",
+            Self::References => "references",
+            Self::Inherits => "inherits",
+            Self::Implements => "implements",
+        }
+    }
+}
+/// The context of a JS/TS use, as [`JsUse`] keeps it.
+#[derive(Clone, Copy)]
+enum UseContext {
+    Call,
+    Type,
+    GenericArg,
+    ParameterType,
+    ReturnType,
+    Field,
+}
+impl UseContext {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Call => "call",
+            Self::Type => "type",
+            Self::GenericArg => "generic_arg",
+            Self::ParameterType => "parameter_type",
+            Self::ReturnType => "return_type",
+            Self::Field => "field",
+        }
+    }
+}
 fn use_refs(
-    path: &Path,
     id: &str,
     n: Option<Node<'_>>,
     s: &[u8],
     line: i64,
-    context: &str,
-    f: &mut SymbolResolutionFacts,
+    context: UseContext,
+    f: &mut JsFileFacts,
 ) {
     let mut refs = vec![];
     ts_collect_type_refs(n, s, false, &mut refs);
     for (name, role) in refs {
-        f.uses.push(SymbolUseFact::new(
-            path.to_path_buf(),
-            id.into(),
-            name,
-            "references".into(),
-            if role == "generic_arg" {
-                "generic_arg"
+        let source = f.source(id);
+        f.members.push(JsUse {
+            local_name: name.into(),
+            line,
+            source,
+            relation: UseRelation::References,
+            context: if role == "generic_arg" {
+                UseContext::GenericArg
             } else {
                 context
-            }
-            .into(),
-            line,
-        ));
+            },
+        });
     }
 }
-pub fn ts_class_members(
-    n: Node<'_>,
-    s: &[u8],
-    path: &Path,
-    id: &str,
-    f: &mut SymbolResolutionFacts,
-) {
+fn ts_class_members(n: Node<'_>, s: &[u8], id: &str, f: &mut JsFileFacts) {
     for child in children(n) {
         let mut clauses = vec![];
         if child.kind_name() == "class_heritage" {
@@ -416,29 +447,29 @@ pub fn ts_class_members(
                     (
                         c,
                         if c.kind_name() == "extends_clause" {
-                            "inherits"
+                            UseRelation::Inherits
                         } else {
-                            "implements"
+                            UseRelation::Implements
                         },
                     )
                 })
                 .collect();
             if clauses.is_empty() {
-                clauses.push((child, "inherits"));
+                clauses.push((child, UseRelation::Inherits));
             }
         } else if child.kind_name() == "extends_type_clause" {
-            clauses.push((child, "inherits"));
+            clauses.push((child, UseRelation::Inherits));
         }
-        for (c, rel) in clauses {
+        for (c, relation) in clauses {
             for name in heritage_entries(c, s) {
-                f.uses.push(SymbolUseFact::new(
-                    path.to_path_buf(),
-                    id.into(),
-                    name,
-                    rel.into(),
-                    "type".into(),
-                    (c.start_position().row + 1) as i64,
-                ));
+                let source = f.source(id);
+                f.members.push(JsUse {
+                    local_name: name.into(),
+                    line: (c.start_position().row + 1) as i64,
+                    source,
+                    relation,
+                    context: UseContext::Type,
+                });
             }
         }
     }
@@ -461,23 +492,21 @@ pub fn ts_class_members(
                         matches!(p.kind_name(), "required_parameter" | "optional_parameter")
                     }) {
                         use_refs(
-                            path,
                             &mid,
                             p.child_by_field_name("type"),
                             s,
                             line,
-                            "parameter_type",
+                            UseContext::ParameterType,
                             f,
                         );
                     }
                 }
                 use_refs(
-                    path,
                     &mid,
                     m.child_by_field_name("return_type"),
                     s,
                     line,
-                    "return_type",
+                    UseContext::ReturnType,
                     f,
                 );
             } else if matches!(
@@ -485,47 +514,137 @@ pub fn ts_class_members(
                 "public_field_definition" | "property_signature"
             ) {
                 use_refs(
-                    path,
                     id,
                     first_child(m, &["type_annotation"]),
                     s,
                     line,
-                    "field",
+                    UseContext::Field,
                     f,
                 );
             }
         }
     }
 }
+/// An exported declaration of a JS/TS file.
+struct JsDeclaration {
+    name: Box<str>,
+    line: i64,
+}
+/// A named or default import from the module `target`, an index into the
+/// file's [`JsFileFacts::targets`].
+struct JsImport {
+    local_name: Box<str>,
+    imported_name: Box<str>,
+    target: u32,
+    line: i64,
+}
+/// A lexical alias (`const a = b`).
+struct JsAlias {
+    alias: Box<str>,
+    target_name: Box<str>,
+    line: i64,
+}
+/// `export * as name from 'target'`.
+struct JsNamespaceExport {
+    exported_name: Box<str>,
+    target: u32,
+    line: i64,
+    type_only: bool,
+}
+/// `export * from 'target'`.
+struct JsStarExport {
+    target: u32,
+    line: i64,
+    type_only: bool,
+}
+/// A named export, re-exported from `target` when it has one.
+struct JsExport {
+    exported_name: Box<str>,
+    local_name: Option<Box<str>>,
+    target: Option<u32>,
+    target_name: Option<Box<str>>,
+    line: i64,
+    type_only: bool,
+}
+/// A use of a name by the body or class `source`, an index into the file's
+/// [`JsFileFacts::sources`].
+struct JsUse {
+    local_name: Box<str>,
+    line: i64,
+    source: u32,
+    relation: UseRelation,
+    context: UseContext,
+}
 /// One JS/TS file's facts, bucketed by the pass that produced them, so files
-/// can be processed independently and still be appended pass by pass in path
-/// order, exactly as four sequential passes over every file append them.
+/// can be processed independently and still be read pass by pass in path
+/// order, exactly as four sequential passes over every file append them. The
+/// file's path, each statement's module path and each use's source id are
+/// stored once rather than in every fact: the facts are kept from the file's
+/// extraction until assembly reads them.
 #[derive(Default)]
 pub struct JsFileFacts {
+    /// The path the facts were derived for: the file of every fact.
+    path: PathBuf,
+    /// Module paths, one per statement naming a module.
+    targets: Vec<PathBuf>,
+    /// Source ids of the uses, stored once per run of uses sharing one.
+    sources: Vec<Box<str>>,
     /// Pass 1: declarations, imports and lexical aliases.
-    first: SymbolResolutionFacts,
+    declarations: Vec<JsDeclaration>,
+    imports: Vec<JsImport>,
+    aliases: Vec<JsAlias>,
     /// Pass 2: namespace, star and named exports.
-    exports: SymbolResolutionFacts,
+    namespace_exports: Vec<JsNamespaceExport>,
+    star_exports: Vec<JsStarExport>,
+    exports: Vec<JsExport>,
     /// Pass 3: calls from top-level bodies.
-    calls: Vec<SymbolUseFact>,
+    calls: Vec<JsUse>,
     /// Pass 4: class and interface member type references.
-    members: SymbolResolutionFacts,
+    members: Vec<JsUse>,
+}
+impl JsFileFacts {
+    fn new(path: &Path) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            ..Self::default()
+        }
+    }
+    fn target(&mut self, path: PathBuf) -> u32 {
+        self.targets.push(path);
+        (self.targets.len() - 1) as u32
+    }
+    fn source(&mut self, id: &str) -> u32 {
+        if self.sources.last().is_none_or(|last| **last != *id) {
+            self.sources.push(id.into());
+        }
+        (self.sources.len() - 1) as u32
+    }
+    /// Drops the room the passes left spare.
+    fn shrink(&mut self) {
+        self.targets.shrink_to_fit();
+        self.sources.shrink_to_fit();
+        self.declarations.shrink_to_fit();
+        self.imports.shrink_to_fit();
+        self.aliases.shrink_to_fit();
+        self.namespace_exports.shrink_to_fit();
+        self.star_exports.shrink_to_fit();
+        self.exports.shrink_to_fit();
+        self.calls.shrink_to_fit();
+        self.members.shrink_to_fit();
+    }
 }
 /// `nodes` is [`walk`] of the file's tree: one pre-order walk serves every
 /// whole-file pass below.
-fn js_declarations_imports(
-    path: &Path,
-    parsed: &Parsed,
-    nodes: &[Node<'_>],
-    f: &mut SymbolResolutionFacts,
-) {
+fn js_declarations_imports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut JsFileFacts) {
     let s = &parsed.source;
     for &n in nodes {
         let line = (n.start_position().row + 1) as i64;
         if n.kind_name() == "export_statement" {
             for name in exported_names(n, s) {
-                f.declarations
-                    .push(SymbolDeclarationFact::new(path.to_path_buf(), name, line));
+                f.declarations.push(JsDeclaration {
+                    name: name.into(),
+                    line,
+                });
             }
         }
         if n.kind_name() == "import_statement"
@@ -533,40 +652,42 @@ fn js_declarations_imports(
             && let Some(target) =
                 js::resolve_js_module_path(&raw, path.parent()).map(|p| resolved(&p))
         {
-            for (imported, local) in named_specifiers(n, s, "import_specifier") {
-                f.imports.push(SymbolImportFact::new(
-                    path.to_path_buf(),
-                    local,
-                    target.clone(),
-                    imported,
-                    line,
-                ));
+            let specifiers = named_specifiers(n, s, "import_specifier");
+            let default =
+                first_child(n, &["import_clause"]).and_then(|c| first_child(c, &["identifier"]));
+            if specifiers.is_empty() && default.is_none() {
+                continue;
             }
-            if let Some(name) =
-                first_child(n, &["import_clause"]).and_then(|c| first_child(c, &["identifier"]))
-            {
-                f.imports.push(SymbolImportFact::new(
-                    path.to_path_buf(),
-                    read_text(name, s),
+            let target = f.target(target);
+            for (imported, local) in specifiers {
+                f.imports.push(JsImport {
+                    local_name: local.into(),
+                    imported_name: imported.into(),
                     target,
-                    "default".into(),
                     line,
-                ));
+                });
+            }
+            if let Some(name) = default {
+                f.imports.push(JsImport {
+                    local_name: read_text(name, s).into(),
+                    imported_name: "default".into(),
+                    target,
+                    line,
+                });
             }
         }
     }
     for &n in nodes {
         for (alias, target) in lexical_aliases(n, s) {
-            f.aliases.push(SymbolAliasFact::new(
-                path.to_path_buf(),
-                alias,
-                target,
-                (n.start_position().row + 1) as i64,
-            ));
+            f.aliases.push(JsAlias {
+                alias: alias.into(),
+                target_name: target.into(),
+                line: (n.start_position().row + 1) as i64,
+            });
         }
     }
 }
-fn js_exports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut SymbolResolutionFacts) {
+fn js_exports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut JsFileFacts) {
     let s = &parsed.source;
     for &n in nodes.iter().filter(|n| n.kind_name() == "export_statement") {
         let line = (n.start_position().row + 1) as i64;
@@ -580,63 +701,59 @@ fn js_exports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut SymbolRe
             else {
                 continue;
             };
+            let target = f.target(target);
             let namespace =
                 first_child(n, &["namespace_export"]).and_then(|n| first_child(n, &["identifier"]));
             if let Some(name) = namespace {
-                f.namespace_exports.push(NamespaceExportFact {
-                    file_path: path.to_path_buf(),
-                    exported_name: read_text(name, s),
-                    target_path: target.clone(),
+                f.namespace_exports.push(JsNamespaceExport {
+                    exported_name: read_text(name, s).into(),
+                    target,
                     line,
                     type_only,
                 });
             } else if children(n).iter().any(|n| n.kind_name() == "*") {
-                f.star_exports.push(StarExportFact {
-                    file_path: path.to_path_buf(),
-                    target_path: target.clone(),
+                f.star_exports.push(JsStarExport {
+                    target,
                     line,
                     type_only,
                 });
             }
             if let Some(clause) = clause {
                 for (original, exported) in named_specifiers(clause, s, "export_specifier") {
-                    f.exports.push(SymbolExportFact::reexport(
-                        path.to_path_buf(),
-                        exported,
+                    f.exports.push(JsExport {
+                        exported_name: exported.into(),
+                        local_name: None,
+                        target: Some(target),
+                        target_name: Some(original.into()),
                         line,
-                        None,
-                        Some(target.clone()),
-                        Some(original),
                         type_only,
-                    ));
+                    });
                 }
             }
             continue;
         }
         if let Some(clause) = clause {
             for (local, exported) in named_specifiers(clause, s, "export_specifier") {
-                f.exports.push(SymbolExportFact::reexport(
-                    path.to_path_buf(),
-                    exported,
+                f.exports.push(JsExport {
+                    exported_name: exported.into(),
+                    local_name: Some(local.into()),
+                    target: None,
+                    target_name: None,
                     line,
-                    Some(local),
-                    None,
-                    None,
-                    false,
-                ));
+                    type_only: false,
+                });
             }
             continue;
         }
         for name in exported_names(n, s) {
-            f.exports.push(SymbolExportFact::reexport(
-                path.to_path_buf(),
-                name.clone(),
+            f.exports.push(JsExport {
+                exported_name: name.as_str().into(),
+                local_name: Some(name.into()),
+                target: None,
+                target_name: None,
                 line,
-                Some(name),
-                None,
-                None,
-                false,
-            ));
+                type_only: false,
+            });
         }
         if children(n).iter().any(|c| c.kind_name() == "default") {
             let name = n
@@ -647,37 +764,36 @@ fn js_exports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut SymbolRe
                         .filter(|v| v.kind_name() == "identifier")
                 });
             if let Some(name) = name {
-                f.exports.push(SymbolExportFact::reexport(
-                    path.to_path_buf(),
-                    "default".into(),
+                f.exports.push(JsExport {
+                    exported_name: "default".into(),
+                    local_name: Some(read_text(name, s).into()),
+                    target: None,
+                    target_name: None,
                     line,
-                    Some(read_text(name, s)),
-                    None,
-                    None,
-                    false,
-                ));
+                    type_only: false,
+                });
             }
         }
     }
 }
-fn js_calls(path: &Path, parsed: &Parsed, uses: &mut Vec<SymbolUseFact>) {
+fn js_calls(path: &Path, parsed: &Parsed, f: &mut JsFileFacts) {
     let s = &parsed.source;
     for (id, body) in top_bodies(path, parsed.tree.root_node(), s, false) {
         for n in walk(body) {
             if let Some(name) = call_identifier(n, s, false) {
-                uses.push(SymbolUseFact::new(
-                    path.to_path_buf(),
-                    id.clone(),
-                    name,
-                    "calls".into(),
-                    "call".into(),
-                    (n.start_position().row + 1) as i64,
-                ));
+                let source = f.source(&id);
+                f.calls.push(JsUse {
+                    local_name: name.into(),
+                    line: (n.start_position().row + 1) as i64,
+                    source,
+                    relation: UseRelation::Calls,
+                    context: UseContext::Call,
+                });
             }
         }
     }
 }
-fn js_members(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut SymbolResolutionFacts) {
+fn js_members(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut JsFileFacts) {
     let s = &parsed.source;
     for &n in nodes.iter().filter(|n| {
         [
@@ -691,18 +807,19 @@ fn js_members(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut SymbolRe
             let name = read_text(name, s);
             if !name.is_empty() {
                 let id = make_id([file_stem(path).as_str(), name.as_str()]);
-                ts_class_members(n, s, path, &id, f);
+                ts_class_members(n, s, &id, f);
             }
         }
     }
 }
 fn js_file_facts(path: &Path, parsed: &Parsed) -> JsFileFacts {
-    let mut out = JsFileFacts::default();
+    let mut out = JsFileFacts::new(path);
     let nodes = walk(parsed.tree.root_node());
-    js_declarations_imports(path, parsed, &nodes, &mut out.first);
-    js_exports(path, parsed, &nodes, &mut out.exports);
-    js_calls(path, parsed, &mut out.calls);
-    js_members(path, parsed, &nodes, &mut out.members);
+    js_declarations_imports(path, parsed, &nodes, &mut out);
+    js_exports(path, parsed, &nodes, &mut out);
+    js_calls(path, parsed, &mut out);
+    js_members(path, parsed, &nodes, &mut out);
+    out.shrink();
     out
 }
 /// What [`collect_js`] reads from one JS/TS file's tree, derived by the file's
@@ -765,80 +882,406 @@ fn kept_js_facts(path: &Path, check: &CorpusCheck) -> Option<JsFileFacts> {
     let source = parse_cache::read(path).ok()?;
     (source_digest(&source) == kept.digest && check.matches(&kept.corpus)).then_some(kept.facts)
 }
-pub fn collect_js(paths: &[PathBuf], f: &mut SymbolResolutionFacts) {
+/// Every JS/TS file's facts among `paths`, in path order.
+pub fn collect_js_files(paths: &[PathBuf]) -> Vec<JsFileFacts> {
     let paths = paths
         .iter()
         .filter(|p| JS_CACHE_BYPASS_SUFFIXES.contains(&effective_suffix(p).as_str()))
         .collect::<Vec<_>>();
+    // Paths that name one file (a symlink beside its target) are read as one
+    // unit, in path order; every other path is a unit of its own.
     let keys = paths.iter().map(|p| resolved(p)).collect::<Vec<_>>();
-    let distinct = keys.iter().collect::<std::collections::BTreeSet<_>>().len() == keys.len();
-    let per_file = if distinct {
-        // Each file's facts depend only on its own tree and the filesystem, so
-        // the files are processed in parallel (each tree is freed as soon as
-        // its file is done) against this thread's source corpus. A file whose
-        // extraction kept its facts this run is not parsed again.
-        let corpus = js::current_source_corpus();
-        let check = CorpusCheck {
-            current: corpus.clone(),
-            seen: Default::default(),
-        };
-        // Module paths and grammars follow this thread's language overrides.
-        let overrides = crate::rcfile::snapshot();
-        parse_cache::par_map(&paths, |path| {
-            overrides.install();
-            let _corpus = js::enter_source_corpus(corpus.clone());
-            if let Some(kept) = kept_js_facts(path, &check) {
-                return kept;
+    let mut unit_of: FxHashMap<&PathBuf, usize> = FxHashMap::default();
+    let mut units: Vec<Vec<usize>> = Vec::with_capacity(paths.len());
+    for (i, key) in keys.iter().enumerate() {
+        match unit_of.entry(key) {
+            std::collections::hash_map::Entry::Occupied(unit) => units[*unit.get()].push(i),
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(units.len());
+                units.push(vec![i]);
             }
-            match parse_js_tree(path) {
+        }
+    }
+    drop(unit_of);
+    // Each unit's facts depend only on its own trees and the filesystem, so
+    // the units are processed in parallel (each tree is freed as soon as its
+    // unit is done) against this thread's source corpus. A file whose
+    // extraction kept its facts this run is not parsed again.
+    let corpus = js::current_source_corpus();
+    let check = CorpusCheck {
+        current: corpus.clone(),
+        seen: Default::default(),
+    };
+    // Module paths and grammars follow this thread's language overrides.
+    let overrides = crate::rcfile::snapshot();
+    let done = parse_cache::par_map(&units, |unit| {
+        overrides.install();
+        let _corpus = js::enter_source_corpus(corpus.clone());
+        if let [i] = unit[..] {
+            let path = paths[i];
+            if let Some(kept) = kept_js_facts(path, &check) {
+                return vec![kept];
+            }
+            return vec![match parse_js_tree(path) {
                 Some(parsed) => js_file_facts(path, &parsed),
                 None => JsFileFacts::default(),
-            }
-        })
-    } else {
-        // Two paths name one file: the later passes read the tree parsed last
-        // for that file, as the sequential passes over a shared table did.
-        let mut trees = BTreeMap::new();
-        let mut out = paths
-            .iter()
-            .map(|_| JsFileFacts::default())
-            .collect::<Vec<_>>();
-        for (i, path) in paths.iter().enumerate() {
-            let Some(parsed) = parse_js_tree(path) else {
-                continue;
-            };
-            js_declarations_imports(
-                path,
-                &parsed,
-                &walk(parsed.tree.root_node()),
-                &mut out[i].first,
-            );
-            trees.insert(keys[i].clone(), parsed);
+            }];
         }
-        for (i, path) in paths.iter().enumerate() {
-            if let Some(parsed) = trees.get(&keys[i]) {
-                let nodes = walk(parsed.tree.root_node());
-                js_exports(path, parsed, &nodes, &mut out[i].exports);
-                js_calls(path, parsed, &mut out[i].calls);
-                js_members(path, parsed, &nodes, &mut out[i].members);
-            }
+        js_shared_file_facts(&unit.iter().map(|&i| paths[i]).collect::<Vec<_>>())
+    });
+    let mut out = Vec::with_capacity(paths.len());
+    out.resize_with(paths.len(), JsFileFacts::default);
+    for (unit, facts) in units.iter().zip(done) {
+        for (&i, facts) in unit.iter().zip(facts) {
+            out[i] = facts;
         }
-        out
-    };
-    let mut calls = Vec::with_capacity(per_file.len());
-    let mut members = Vec::with_capacity(per_file.len());
-    for part in per_file {
-        f.declarations.extend(part.first.declarations);
-        f.imports.extend(part.first.imports);
-        f.aliases.extend(part.first.aliases);
-        f.namespace_exports.extend(part.exports.namespace_exports);
-        f.star_exports.extend(part.exports.star_exports);
-        f.exports.extend(part.exports.exports);
-        calls.push(part.calls);
-        members.push(part.members.uses);
     }
-    f.uses.extend(calls.into_iter().flatten());
-    f.uses.extend(members.into_iter().flatten());
+    out
+}
+/// The facts of `paths`, which name one file, in path order: each path's
+/// first pass reads the tree parsed from that path, and every path's later
+/// passes read the tree parsed last, as sequential passes over one table of
+/// trees by file did. Only these trees are held, not every file's.
+fn js_shared_file_facts(paths: &[&PathBuf]) -> Vec<JsFileFacts> {
+    let mut out = paths
+        .iter()
+        .map(|p| JsFileFacts::new(p))
+        .collect::<Vec<_>>();
+    let mut last = None;
+    for (path, facts) in paths.iter().zip(&mut out) {
+        // Facts kept for one path of the file are not read: its later passes
+        // follow the tree parsed last.
+        drop(parse_cache::take_facts(JS_SYNTAX, path));
+        let Some(parsed) = parse_js_tree(path) else {
+            continue;
+        };
+        js_declarations_imports(path, &parsed, &walk(parsed.tree.root_node()), facts);
+        last = Some(parsed);
+    }
+    if let Some(parsed) = &last {
+        let nodes = walk(parsed.tree.root_node());
+        for (path, facts) in paths.iter().zip(&mut out) {
+            js_exports(path, parsed, &nodes, facts);
+            js_calls(path, parsed, facts);
+            js_members(path, parsed, &nodes, facts);
+        }
+    }
+    out
+}
+/// Appends every JS/TS file's facts among `paths` to `f`, kind by kind in
+/// path order, the calls of every file before their member uses.
+pub fn collect_js(paths: &[PathBuf], f: &mut SymbolResolutionFacts) {
+    append_js_facts(collect_js_files(paths), f);
+}
+/// Appends `files`' facts to `f` as [`collect_js`] does.
+fn append_js_facts(files: Vec<JsFileFacts>, f: &mut SymbolResolutionFacts) {
+    let facts = PassFacts::new(files, SymbolResolutionFacts::default());
+    f.declarations.extend(
+        facts
+            .declarations()
+            .map(|d| SymbolDeclarationFact::new(d.file_path.into(), d.name.into(), d.line)),
+    );
+    f.imports.extend(facts.imports().map(|i| {
+        SymbolImportFact::new(
+            i.file_path.into(),
+            i.local_name.into(),
+            i.target_path.into(),
+            i.imported_name.into(),
+            i.line,
+        )
+    }));
+    f.aliases.extend(facts.aliases().map(|a| {
+        SymbolAliasFact::new(
+            a.file_path.into(),
+            a.alias.into(),
+            a.target_name.into(),
+            a.line,
+        )
+    }));
+    f.namespace_exports
+        .extend(facts.namespace_exports().map(|n| NamespaceExportFact {
+            file_path: n.file_path.into(),
+            exported_name: n.exported_name.into(),
+            target_path: n.target_path.into(),
+            line: n.line,
+            type_only: n.type_only,
+        }));
+    f.star_exports
+        .extend(facts.star_exports().map(|s| StarExportFact {
+            file_path: s.file_path.into(),
+            target_path: s.target_path.into(),
+            line: s.line,
+            type_only: s.type_only,
+        }));
+    f.exports.extend(facts.exports().map(|e| {
+        SymbolExportFact::reexport(
+            e.file_path.into(),
+            e.exported_name.into(),
+            e.line,
+            e.local_name.map(Into::into),
+            e.target_path.map(Into::into),
+            e.target_name.map(Into::into),
+            e.type_only,
+        )
+    }));
+    f.uses.extend(facts.js_uses().map(|u| {
+        SymbolUseFact::new(
+            u.file_path.into(),
+            u.source_id.into(),
+            u.local_name.into(),
+            u.relation.into(),
+            u.context.into(),
+            u.line,
+        )
+    }));
+}
+/// A declaration as a resolution pass reads it, from either form of facts.
+pub(crate) struct DeclarationRef<'a> {
+    pub(crate) file_path: &'a Path,
+    pub(crate) name: &'a str,
+    pub(crate) line: i64,
+}
+/// An import as a resolution pass reads it.
+pub(crate) struct ImportRef<'a> {
+    pub(crate) file_path: &'a Path,
+    pub(crate) local_name: &'a str,
+    pub(crate) target_path: &'a Path,
+    pub(crate) imported_name: &'a str,
+    pub(crate) line: i64,
+}
+/// A lexical alias as a resolution pass reads it.
+pub(crate) struct AliasRef<'a> {
+    pub(crate) file_path: &'a Path,
+    pub(crate) alias: &'a str,
+    pub(crate) target_name: &'a str,
+    pub(crate) line: i64,
+}
+/// A namespace export as a resolution pass reads it.
+pub(crate) struct NamespaceExportRef<'a> {
+    pub(crate) file_path: &'a Path,
+    pub(crate) exported_name: &'a str,
+    pub(crate) target_path: &'a Path,
+    pub(crate) line: i64,
+    pub(crate) type_only: bool,
+}
+/// A star export as a resolution pass reads it.
+pub(crate) struct StarExportRef<'a> {
+    pub(crate) file_path: &'a Path,
+    pub(crate) target_path: &'a Path,
+    pub(crate) line: i64,
+    pub(crate) type_only: bool,
+}
+/// A named export as a resolution pass reads it.
+pub(crate) struct ExportRef<'a> {
+    pub(crate) file_path: &'a Path,
+    pub(crate) exported_name: &'a str,
+    pub(crate) line: i64,
+    pub(crate) local_name: Option<&'a str>,
+    pub(crate) target_path: Option<&'a Path>,
+    pub(crate) target_name: Option<&'a str>,
+    pub(crate) type_only: bool,
+}
+/// A use as a resolution pass reads it.
+pub(crate) struct UseRef<'a> {
+    pub(crate) file_path: &'a Path,
+    pub(crate) source_id: &'a str,
+    pub(crate) local_name: &'a str,
+    pub(crate) relation: &'a str,
+    pub(crate) context: &'a str,
+    pub(crate) line: i64,
+}
+impl<'a> From<&'a SymbolUseFact> for UseRef<'a> {
+    fn from(u: &'a SymbolUseFact) -> Self {
+        UseRef {
+            file_path: &u.file_path,
+            source_id: &u.source_id,
+            local_name: &u.local_name,
+            relation: &u.relation,
+            context: &u.context,
+            line: u.line,
+        }
+    }
+}
+/// `uses` of the file `f` as a resolution pass reads them.
+fn js_use_refs<'a>(f: &'a JsFileFacts, uses: &'a [JsUse]) -> impl Iterator<Item = UseRef<'a>> {
+    uses.iter().map(move |u| UseRef {
+        file_path: &f.path,
+        source_id: &f.sources[u.source as usize],
+        local_name: &u.local_name,
+        relation: u.relation.as_str(),
+        context: u.context.as_str(),
+        line: u.line,
+    })
+}
+/// The facts one symbol-resolution pass applies: every JS/TS file's facts in
+/// path order, then the facts given whole (Python's, or a caller's). Each kind
+/// reads in the order [`collect_js`] and then [`collect_python`] append it,
+/// and each can be freed once its last reader is done.
+#[derive(Default)]
+pub struct PassFacts {
+    js: Vec<JsFileFacts>,
+    rest: SymbolResolutionFacts,
+}
+impl PassFacts {
+    pub fn new(js: Vec<JsFileFacts>, rest: SymbolResolutionFacts) -> Self {
+        Self { js, rest }
+    }
+    pub(crate) fn declarations(&self) -> impl Iterator<Item = DeclarationRef<'_>> {
+        let js = self.js.iter().flat_map(|f| {
+            f.declarations.iter().map(move |d| DeclarationRef {
+                file_path: &f.path,
+                name: &d.name,
+                line: d.line,
+            })
+        });
+        js.chain(self.rest.declarations.iter().map(|d| DeclarationRef {
+            file_path: &d.file_path,
+            name: &d.name,
+            line: d.line,
+        }))
+    }
+    pub(crate) fn imports(&self) -> impl Iterator<Item = ImportRef<'_>> {
+        let js = self.js.iter().flat_map(|f| {
+            f.imports.iter().map(move |i| ImportRef {
+                file_path: &f.path,
+                local_name: &i.local_name,
+                target_path: &f.targets[i.target as usize],
+                imported_name: &i.imported_name,
+                line: i.line,
+            })
+        });
+        js.chain(self.rest.imports.iter().map(|i| ImportRef {
+            file_path: &i.file_path,
+            local_name: &i.local_name,
+            target_path: &i.target_path,
+            imported_name: &i.imported_name,
+            line: i.line,
+        }))
+    }
+    pub(crate) fn aliases(&self) -> impl Iterator<Item = AliasRef<'_>> {
+        let js = self.js.iter().flat_map(|f| {
+            f.aliases.iter().map(move |a| AliasRef {
+                file_path: &f.path,
+                alias: &a.alias,
+                target_name: &a.target_name,
+                line: a.line,
+            })
+        });
+        js.chain(self.rest.aliases.iter().map(|a| AliasRef {
+            file_path: &a.file_path,
+            alias: &a.alias,
+            target_name: &a.target_name,
+            line: a.line,
+        }))
+    }
+    pub(crate) fn namespace_exports(&self) -> impl Iterator<Item = NamespaceExportRef<'_>> {
+        let js = self.js.iter().flat_map(|f| {
+            f.namespace_exports.iter().map(move |n| NamespaceExportRef {
+                file_path: &f.path,
+                exported_name: &n.exported_name,
+                target_path: &f.targets[n.target as usize],
+                line: n.line,
+                type_only: n.type_only,
+            })
+        });
+        js.chain(
+            self.rest
+                .namespace_exports
+                .iter()
+                .map(|n| NamespaceExportRef {
+                    file_path: &n.file_path,
+                    exported_name: &n.exported_name,
+                    target_path: &n.target_path,
+                    line: n.line,
+                    type_only: n.type_only,
+                }),
+        )
+    }
+    pub(crate) fn star_exports(&self) -> impl Iterator<Item = StarExportRef<'_>> {
+        let js = self.js.iter().flat_map(|f| {
+            f.star_exports.iter().map(move |s| StarExportRef {
+                file_path: &f.path,
+                target_path: &f.targets[s.target as usize],
+                line: s.line,
+                type_only: s.type_only,
+            })
+        });
+        js.chain(self.rest.star_exports.iter().map(|s| StarExportRef {
+            file_path: &s.file_path,
+            target_path: &s.target_path,
+            line: s.line,
+            type_only: s.type_only,
+        }))
+    }
+    pub(crate) fn exports(&self) -> impl Iterator<Item = ExportRef<'_>> {
+        let js = self.js.iter().flat_map(|f| {
+            f.exports.iter().map(move |e| ExportRef {
+                file_path: &f.path,
+                exported_name: &e.exported_name,
+                line: e.line,
+                local_name: e.local_name.as_deref(),
+                target_path: e.target.map(|t| f.targets[t as usize].as_path()),
+                target_name: e.target_name.as_deref(),
+                type_only: e.type_only,
+            })
+        });
+        js.chain(self.rest.exports.iter().map(|e| ExportRef {
+            file_path: &e.file_path,
+            exported_name: &e.exported_name,
+            line: e.line,
+            local_name: e.local_name.as_deref(),
+            target_path: e.target_path.as_deref(),
+            target_name: e.target_name.as_deref(),
+            type_only: e.type_only,
+        }))
+    }
+    pub(crate) fn module_imports(&self) -> &[(PathBuf, PathBuf, i64, String)] {
+        &self.rest.module_imports
+    }
+    /// The JS/TS uses: every file's calls, then every file's member uses.
+    pub(crate) fn js_uses(&self) -> impl Iterator<Item = UseRef<'_>> {
+        let calls = self.js.iter().flat_map(|f| js_use_refs(f, &f.calls));
+        calls.chain(self.js.iter().flat_map(|f| js_use_refs(f, &f.members)))
+    }
+    /// The uses given whole, which follow [`Self::js_uses`].
+    pub(crate) fn take_rest_uses(&mut self) -> Vec<SymbolUseFact> {
+        std::mem::take(&mut self.rest.uses)
+    }
+    pub(crate) fn free_declarations(&mut self) {
+        self.js.iter_mut().for_each(|f| f.declarations = Vec::new());
+        self.rest.declarations = Vec::new();
+    }
+    pub(crate) fn free_aliases(&mut self) {
+        self.js.iter_mut().for_each(|f| f.aliases = Vec::new());
+        self.rest.aliases = Vec::new();
+    }
+    pub(crate) fn free_star_exports(&mut self) {
+        self.js.iter_mut().for_each(|f| f.star_exports = Vec::new());
+        self.rest.star_exports = Vec::new();
+    }
+    pub(crate) fn free_namespace_exports(&mut self) {
+        self.js
+            .iter_mut()
+            .for_each(|f| f.namespace_exports = Vec::new());
+        self.rest.namespace_exports = Vec::new();
+    }
+    pub(crate) fn free_exports(&mut self) {
+        self.js.iter_mut().for_each(|f| f.exports = Vec::new());
+        self.rest.exports = Vec::new();
+    }
+    /// Frees the imports, and the module paths once nothing else reads them.
+    pub(crate) fn free_imports(&mut self) {
+        for f in &mut self.js {
+            f.imports = Vec::new();
+            if f.star_exports.is_empty() && f.namespace_exports.is_empty() && f.exports.is_empty() {
+                f.targets = Vec::new();
+            }
+        }
+        self.rest.imports = Vec::new();
+    }
+    pub(crate) fn free_module_imports(&mut self) {
+        self.rest.module_imports = Vec::new();
+    }
 }
 pub fn python_import_from_module(n: Node<'_>, s: &[u8]) -> Option<(usize, String)> {
     let mut level = 0;
@@ -1272,11 +1715,18 @@ pub fn collect_python(
         (part, uses)
     });
     let (parts, uses): (Vec<_>, Vec<_>) = per_file.into_iter().unzip();
+    f.module_imports
+        .reserve_exact(parts.iter().map(|p| p.module_imports.len()).sum());
+    f.imports
+        .reserve_exact(parts.iter().map(|p| p.imports.len()).sum());
+    f.exports
+        .reserve_exact(parts.iter().map(|p| p.exports.len()).sum());
     for part in parts {
         f.module_imports.extend(part.module_imports);
         f.imports.extend(part.imports);
         f.exports.extend(part.exports);
     }
+    f.uses.reserve_exact(uses.iter().map(Vec::len).sum());
     f.uses.extend(uses.into_iter().flatten());
 }
 
@@ -1315,5 +1765,61 @@ mod scan_root_tests {
             None
         );
         assert_eq!(scan_root_namespace(&company), None);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod js_unit_tests {
+    use super::*;
+
+    /// Paths naming one file read their first pass from their own tree and
+    /// their later passes from the tree parsed last, as sequential passes over
+    /// one table of trees by file did, even when the paths' grammars differ.
+    #[test]
+    fn symlinked_paths_read_the_tree_parsed_last() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = resolved(temp.path());
+        let a = root.join("a.ts");
+        let b = root.join("b.ts");
+        let c = root.join("c.js");
+        std::fs::write(
+            &a,
+            "import { Base, helper } from './b';\n\
+             export * from './b';\n\
+             export class Child extends Base {\n  field: Base;\n  run(p: Base): Base { return p }\n}\n\
+             export function main() { helper(1); }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &b,
+            "export class Base {}\nexport function helper(x) { return x }\n",
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&a, &c).unwrap();
+
+        let tree = |p: &Path| parse_js_tree(p).unwrap();
+        let (ta, tb, tc) = (tree(&a), tree(&b), tree(&c));
+        // a.ts: its first pass from its own (TypeScript) tree, the later ones
+        // from c.js's (JavaScript) tree, which was parsed last.
+        let mut expected_a = JsFileFacts::new(&a);
+        js_declarations_imports(&a, &ta, &walk(ta.tree.root_node()), &mut expected_a);
+        let nodes_c = walk(tc.tree.root_node());
+        js_exports(&a, &tc, &nodes_c, &mut expected_a);
+        js_calls(&a, &tc, &mut expected_a);
+        js_members(&a, &tc, &nodes_c, &mut expected_a);
+        let mut expected = SymbolResolutionFacts::default();
+        append_js_facts(
+            vec![expected_a, js_file_facts(&b, &tb), js_file_facts(&c, &tc)],
+            &mut expected,
+        );
+        // The grammars do differ here: a.ts's own tree has member types.
+        let mut own = SymbolResolutionFacts::default();
+        append_js_facts(vec![js_file_facts(&a, &ta)], &mut own);
+        assert!(own.uses.len() > expected.uses.iter().filter(|u| u.file_path == a).count());
+
+        let mut got = SymbolResolutionFacts::default();
+        collect_js(&[a.clone(), b.clone(), c.clone()], &mut got);
+        assert_eq!(got, expected);
+        assert!(!got.imports.is_empty() && !got.star_exports.is_empty());
     }
 }

@@ -2,9 +2,10 @@
 # prerelease) builds graphicle and graphicle-graph on a native runner per
 # target, packages each target as graphicle-<version>-<target>.tar.gz (both
 # programs, LICENSE, NOTICE, README.md, CHANGELOG.md and the third-party
-# licence texts) with packaging/release_build.py, writes SHA256SUMS and the
-# Homebrew formula, and publishes a GitHub release with the archives, their
-# .sha256 files, SHA256SUMS, install.sh and graphicle.rb. A final
+# licence texts; a .zip for Windows) with packaging/release_build.py, writes
+# SHA256SUMS and the Homebrew formula, and publishes a GitHub release with the
+# archives, their .sha256 files, SHA256SUMS, install.sh, install.ps1 and
+# graphicle.rb. A final
 # (non-prerelease) tag also updates graphicle-ai/homebrew-tap when the
 # HOMEBREW_TAP_TOKEN secret is set.
 # Run by hand (workflow_dispatch), it builds and packages without releasing.
@@ -32,7 +33,7 @@ jobs:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
     strategy:
-      fail-fast: true
+      fail-fast: false
       matrix:
         include:
           # macOS images: macos-13 is retired and macos-14 is unsupported from
@@ -53,10 +54,29 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-22.04-arm
             max_glibc: "2.35"
+          # Windows (preview). The programs link the C runtime statically, so
+          # a clean Windows without the Visual C++ runtime runs them;
+          # release_build.py checks their imports. RUSTFLAGS, not
+          # .cargo/config.toml: release_build.py passes the flags through
+          # CARGO_ENCODED_RUSTFLAGS, which makes Cargo ignore config rustflags.
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+            rustflags: -C target-feature=+crt-static
+            python: python
     env:
       # The oldest macOS the programs support.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+    # Git Bash on Windows, so that every target runs the same scripts.
+    defaults:
+      run:
+        shell: bash
     steps:
+      # Windows: long paths for deep files. Line endings need no setting: the
+      # repository's .gitattributes checks text files out with LF on every
+      # system, so the archives hold the same text as the tarballs.
+      - name: Git settings
+        if: runner.os == 'Windows'
+        run: git config --global core.longpaths true
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
@@ -84,19 +104,26 @@ jobs:
           rustup default "$RUST_TOOLCHAIN"
           host="$(rustc -vV | sed -n 's/^host: //p')"
           if [ "$host" != "$TARGET" ]; then echo "::error::runner host $host is not $TARGET"; exit 1; fi
+      # Python 3.14 unpacks the parser sources itself (compression.zstd).
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        if: runner.os == 'Windows'
+        with:
+          python-version: "3.14"
       - name: zstd (unpacks the parser sources)
+        if: runner.os != 'Windows'
         run: |
           if ! command -v zstd >/dev/null; then
             if [ "$RUNNER_OS" = macOS ]; then brew install zstd; else sudo apt-get update && sudo apt-get install -y zstd; fi
           fi
       - name: Prepare parser sources
-        run: python3 crates/graphicle/tools/prepare_parser_sources.py
+        run: ${{ matrix.python || 'python3' }} crates/graphicle/tools/prepare_parser_sources.py
       - name: Build and package
         env:
           VERSION: ${{ steps.version.outputs.version }}
           MAX_GLIBC: ${{ matrix.max_glibc }}
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: >-
-          python3 packaging/release_build.py --out dist --expect-version "$VERSION"
+          ${{ matrix.python || 'python3' }} packaging/release_build.py --out dist --expect-version "$VERSION"
           --require-licenses ${MAX_GLIBC:+--max-glibc "$MAX_GLIBC"}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -143,8 +170,9 @@ jobs:
           for target in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             test -f "graphicle-$VERSION-$target.tar.gz" || { echo "::error::no archive for $target"; exit 1; }
           done
-          sha256sum --check --strict *.tar.gz.sha256
-          sha256sum graphicle-*.tar.gz > SHA256SUMS
+          test -f "graphicle-$VERSION-x86_64-pc-windows-msvc.zip" || { echo "::error::no archive for x86_64-pc-windows-msvc"; exit 1; }
+          sha256sum --check --strict -- *.tar.gz.sha256 *.zip.sha256
+          sha256sum graphicle-*.tar.gz graphicle-*.zip > SHA256SUMS
           cat SHA256SUMS
       - name: Homebrew formula, installer and notes
         env:
@@ -153,6 +181,7 @@ jobs:
         run: |
           python3 packaging/homebrew/fill_formula.py --version "$VERSION" --sums dist/SHA256SUMS --out dist/graphicle.rb
           cp install.sh dist/install.sh
+          cp install.ps1 dist/install.ps1
           # The release notes: CHANGELOG.md's section for this version.
           awk -v version="$VERSION" '
             /^## / { if (found) exit; heading = $0; sub(/^## +\[?v?/, "", heading)
@@ -164,7 +193,9 @@ jobs:
             echo "See [CHANGELOG.md](https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md)." > "$RUNNER_TEMP/notes.md"
           fi
           # The tap is updated for final releases only, so a prerelease's notes
-          # give the installer alone.
+          # give the installer alone. The single quotes keep Markdown's
+          # backticks and PowerShell's $env: as they are.
+          # shellcheck disable=SC2016
           {
             printf '\n## Install\n\n```sh\n'
             if [ "$PRERELEASE" != true ]; then
@@ -172,6 +203,9 @@ jobs:
             fi
             printf 'curl -fsSL https://github.com/%s/releases/download/v%s/install.sh | sh -s -- --version %s\n' \
               "$GITHUB_REPOSITORY" "$VERSION" "$VERSION"
+            printf '```\n\nOn Windows (x86-64, preview), in PowerShell:\n\n```powershell\n'
+            printf '$env:GRAPHICLE_VERSION = '"'"'%s'"'"'; irm https://github.com/%s/releases/download/v%s/install.ps1 | iex\n' \
+              "$VERSION" "$GITHUB_REPOSITORY" "$VERSION"
             printf '```\n\nEach archive'"'"'s SHA-256 sum is in SHA256SUMS and beside it in a .sha256 file.\n'
           } >> "$RUNNER_TEMP/notes.md"
           cp "$RUNNER_TEMP/notes.md" dist/RELEASE_NOTES.md
@@ -189,7 +223,8 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
-          files="dist/graphicle-*.tar.gz dist/graphicle-*.tar.gz.sha256 dist/SHA256SUMS dist/install.sh dist/graphicle.rb"
+          files="dist/graphicle-*.tar.gz dist/graphicle-*.tar.gz.sha256 dist/graphicle-*.zip dist/graphicle-*.zip.sha256"
+          files="$files dist/SHA256SUMS dist/install.sh dist/install.ps1 dist/graphicle.rb"
           flags=""
           if [ "$PRERELEASE" = true ]; then flags="--prerelease"; fi
           # gh uploads the files to a draft and publishes it once all are there.

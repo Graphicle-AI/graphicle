@@ -444,7 +444,7 @@ pub fn apply(graph: &mut Graph, aliases: &AliasSet) -> Result<ApplySummary> {
         moved.push((
             ids[u].clone(),
             ids[v].clone(),
-            multigraph.then(|| edge.key.clone()),
+            multigraph.then(|| edge.key.to_value()),
             ids[nu.unwrap_or(u)].clone(),
             ids[nv.unwrap_or(v)].clone(),
             attributes,
@@ -460,7 +460,7 @@ pub fn apply(graph: &mut Graph, aliases: &AliasSet) -> Result<ApplySummary> {
             graph
                 .edges_between(&new_source, &new_target)
                 .iter()
-                .any(|edge| Some(&edge.key) == key.as_ref())
+                .any(|edge| Some(edge.key.value()) == key.as_ref())
         } else {
             graph.number_of_edges(&new_source, &new_target) > 0
         };
@@ -538,7 +538,7 @@ pub fn revert(graph: &mut Graph, id: &str) -> Result<usize> {
         moved.push((
             ids[u].clone(),
             ids[v].clone(),
-            multigraph.then(|| edge.key.clone()),
+            multigraph.then(|| edge.key.to_value()),
             new_source,
             new_target,
             attributes,

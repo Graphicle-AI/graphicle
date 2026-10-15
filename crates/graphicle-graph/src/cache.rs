@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cache.py, graphify/extract.py
 //! Port of graphify/cache.py: owned per-run cache state with explicit flush.
 //! The native release has its own AST version; semantic entries retain their
@@ -15,7 +15,13 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 /// Bump when AST cache-key semantics change independently of the package
-/// version; 8 carries the per-file record fields of Graphify 0.9.78-0.9.88
+/// version; 9 carries the per-file record fields of Graphify 0.9.89-0.9.91
+/// (upstream schemas 13-16: Go and PHP receiver type tables and member
+/// receivers, `_callable`/`_callable_class` markers on Go and Objective-C
+/// declarations, Objective-C NS_ENUM/NS_OPTIONS, generic type parameters that
+/// no longer mint stubs, C# `_`/case-distinct ids and receiver markers, TS
+/// class field tables, Go generic receivers and Rust `use` names); 8 carries
+/// the per-file record fields of Graphify 0.9.78-0.9.88
 /// (upstream schemas 6-12: Python typed receivers, `self.X` bindings, opaque
 /// bases, `super(args)` and property reads, C# `type_path`, receiver chains and
 /// return tables, Java receiver chains and `_java_ret`, Rust `use` groups,
@@ -23,7 +29,7 @@ use std::{
 /// resolved to; 7 invalidated records whose source paths leaked a walked
 /// directory alias when the extraction root was canonicalized (6 added
 /// receiver shadows).
-pub const AST_CACHE_SCHEMA: i64 = 8;
+pub const AST_CACHE_SCHEMA: i64 = 9;
 /// Where an AST entry lists the `target_file` stamps that named an existing
 /// file when it was written; a hit whose target is gone is a miss (#4185).
 pub const CACHED_TARGETS_KEY: &str = "_cached_target_files";
@@ -489,7 +495,9 @@ impl ExtractionCache {
     pub fn ensure_index(&mut self, root: &Path, cache_root: Option<&Path>) -> Result<()> {
         let new_root = resolve(cache_root.unwrap_or(root))?;
         if let Some(current) = self.stat_index_root.clone() {
-            if current == new_root {
+            // `Path ==` in pathlib: on Windows `file_hash` binds the
+            // normcased root, which names the same folder.
+            if crate::fsutil::path_key(&current) == crate::fsutil::path_key(&new_root) {
                 return Ok(());
             }
             // A later call naming a different cache root rebinds (#3989): the

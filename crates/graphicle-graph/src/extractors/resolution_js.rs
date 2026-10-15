@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/resolution.py
 //! JS/TS module, workspace, package exports and JSONC resolution.
 use super::{base::make_id, resolution_paths::resolve_cached};
@@ -100,20 +100,22 @@ fn js_family(path: &Path) -> bool {
         .contains(&crate::rcfile::effective_suffix(path).as_str())
 }
 /// `_resolve_js_import_path`: the exact file, the `.ts`/`.tsx` source of a
-/// `.js`/`.jsx` specifier, the specifier with a JS suffix appended (native
-/// suffixes before project-declared ones), then a directory index.
+/// `.js` (`.ts`, then `.tsx`) or `.jsx` specifier, the specifier with a JS
+/// suffix appended (native suffixes before project-declared ones), then a
+/// directory index.
 pub fn resolve_js_import_path(p: &Path) -> PathBuf {
     let p = norm(p);
     if source_file(&p) {
         return p;
     }
     let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("");
-    let mapped = match ext {
-        "js" => Some("ts"),
-        "jsx" => Some("tsx"),
-        _ => None,
+    // `.js` may spell a `.ts` or a `.tsx` source (#3486), `.jsx` a `.tsx` one.
+    let mapped: &[&str] = match ext {
+        "js" => &["ts", "tsx"],
+        "jsx" => &["tsx"],
+        _ => &[],
     };
-    if let Some(ext) = mapped {
+    for ext in mapped {
         let q = p.with_extension(ext);
         if source_file(&q) && js_family(&q) {
             return q;
@@ -807,7 +809,8 @@ mod tests {
     fn workspace_candidates_skip_outputs_outside_the_corpus_and_scope_is_restored() {
         let _serial = super::super::parse_cache::test_serial();
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().canonicalize().unwrap();
+        // Plain on Windows (no `\\?\`), as the engine resolves paths.
+        let root = crate::fsutil::plain(&temp.path().canonicalize().unwrap());
         let package = root.join("packages/lib");
         std::fs::create_dir_all(package.join("src")).unwrap();
         std::fs::create_dir_all(package.join("dist")).unwrap();

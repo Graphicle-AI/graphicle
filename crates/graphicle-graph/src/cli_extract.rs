@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Headless AST/semantic extraction, cache checkpoints, merge and manifest commit.
 use crate::{
@@ -7,6 +7,7 @@ use crate::{
     cli::{Args, Output, expand},
     cli_state::{self as state, ar, strings},
     detect, extract, llm, paths,
+    record::Attributes,
 };
 use serde_json::{Value, json};
 use std::{
@@ -16,6 +17,22 @@ use std::{
 };
 fn empty() -> Value {
     json!({"nodes":[],"edges":[],"hyperedges":[],"input_tokens":0,"output_tokens":0})
+}
+/// Put `records`, the AST edges an extract left as compact records, in front
+/// of the edges `data` holds, as JSON objects: the extraction as a reader of
+/// JSON edges takes it.
+fn with_json_edges(data: &mut Value, records: Vec<Attributes>) {
+    if records.is_empty() {
+        return;
+    }
+    let rest = match data["edges"].take() {
+        Value::Array(rest) => rest,
+        _ => Vec::new(),
+    };
+    let mut edges = Vec::with_capacity(records.len() + rest.len());
+    edges.extend(records.into_iter().map(Value::from));
+    edges.extend(rest);
+    data["edges"] = Value::Array(edges);
 }
 
 /// `extract --dry-run` (opt-in, beyond the upstream port): what a full extract would
@@ -146,6 +163,8 @@ fn context(
             "_ts_public_twin",
             "_py_property",
             "_java_ret",
+            "_ts_fields",
+            "_ts_static_fields",
         ] {
             if build::truthy(&n[k]) {
                 c[k] = n[k].clone();
@@ -177,7 +196,10 @@ fn context(
         ns.push(c);
     }
     for e in ar(existing.get("links").unwrap_or(&existing["edges"])) {
-        if !["contains", "method", "inherits"].contains(&e["relation"].as_str().unwrap_or(""))
+        // Import edges come too (0.9.91): a TS field inherited from an
+        // unchanged file is typed by that file's imports, as in a full build.
+        if !["contains", "method", "inherits", "imports", "imports_from"]
+            .contains(&e["relation"].as_str().unwrap_or(""))
             || !build::is_ast_tier(e)
             || !e["source_file"]
                 .as_str()
@@ -464,6 +486,9 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
     let mut runtime = llm::Runtime::new(cfg);
     let mut incomplete = !ar(&detection["walk_errors"]).is_empty();
     let mut ast = empty();
+    // The AST edges assembly left as compact records: they stay beside `ast`
+    // (whose `edges` is then empty) and come before every other edge.
+    let mut ast_records = Vec::new();
     if !code.is_empty() {
         let existing = if incremental {
             state::read_graph(&graph_path)?
@@ -471,7 +496,7 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
             Value::Null
         };
         let (ns, es) = context(&existing, &target, &detection["unchanged_files"], &code);
-        match extract::extract(
+        match extract::extract_assembled(
             &code,
             &extract::ExtractOptions {
                 root: Some(target.clone()),
@@ -482,7 +507,7 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
                 ..Default::default()
             },
         ) {
-            Ok(v) => ast = v,
+            Ok(assembled) => (ast, ast_records) = assembled.into_parts(),
             Err(e) => {
                 if !allow_partial {
                     return Err(format!("AST extraction failed: {e}").into());
@@ -714,6 +739,7 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
             }
             out.line("[graphicle extract] no incremental changes detected (--no-cluster); outputs left untouched.");
         } else {
+            with_json_edges(&mut merged, ast_records);
             if merge_existing {
                 build::merge_raw_extraction(&mut merged, &graph_path, &prune, Some(&target), None)?;
                 handle_shrink(&merged["_unverified_semantic_shrink"], out)?;
@@ -782,8 +808,9 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         // Only the token counters of `merged` are read after the build, so the
         // build takes the extraction itself instead of two copies of it.
         let counters = json!({"input_tokens": merged["input_tokens"], "output_tokens": merged["output_tokens"]});
-        let extraction = std::mem::replace(&mut merged, counters);
+        let mut extraction = std::mem::replace(&mut merged, counters);
         let mut g = if merge_existing {
+            with_json_edges(&mut extraction, ast_records);
             build::build_merge_owned(
                 vec![extraction],
                 &build::MergeOptions {
@@ -798,7 +825,14 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
                 Some(&mut runtime),
             )?
         } else {
-            build::build_owned(vec![extraction], &options, &mut d, Some(&mut runtime))?
+            // The AST edge records move into the graph with no JSON copy.
+            build::build_owned_records(
+                extraction,
+                ast_records,
+                &options,
+                &mut d,
+                Some(&mut runtime),
+            )?
         };
         handle_shrink(
             g.attributes
@@ -809,6 +843,9 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         if g.nodes.is_empty() {
             return Err("graph is empty — extraction produced no nodes".into());
         }
+        // The extraction's records are now graph attributes and are freed: hand
+        // their pages back before clustering allocates (`par::trim`).
+        crate::par::trim();
         stages.mark("build", &mut d.stderr);
         let comm = crate::cluster::cluster(&g, resolution, exclude_hubs, "auto")?;
         stages.mark("cluster", &mut d.stderr);

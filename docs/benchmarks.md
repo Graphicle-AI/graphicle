@@ -9,7 +9,7 @@ endorsement is implied.
 
 | Area | Status | Result |
 |---|---|---|
-| Code-graph engine: parity | Done, 13 October 2026; widened 14 October 2026 | 96 of 96 comparison checks against Graphify 0.9.88 pass, with reviewed upstream fixes applied to nine of the reference's modules. Widened on 14 October, they run 354 of its 402 test files against the engine: 350 pass and 4 have known differences (7 tests). The limits are [below](#parity-with-graphify) |
+| Code-graph engine: parity | Graphify 0.9.91: run on Linux, 15 October 2026; the full run on macOS is pending. Graphify 0.9.88: done, 13 October 2026; widened 14 October 2026 | Against Graphify 0.9.91, 89 of the 96 comparison checks pass on Linux; the other 7 stop on that host, as they did against 0.9.88 (IPv4 loopback, ffmpeg and one layout tolerance). Against Graphify 0.9.88, 96 of 96 pass, with reviewed upstream fixes applied to nine of the reference's modules; widened on 14 October, they run 354 of its 402 test files against the engine: 350 pass and 4 have known differences (7 tests). The limits are [below](#parity-with-graphify) |
 | Code-graph engine: speed | Done, on a pre-release build that followed Graphify 0.9.77. The 0.1.0 engine: an exploratory survey, 14 October 2026; its registered quiet-host repeat is pending | Django (pre-release build): code-only extract 7.5 s against 72.8 s for Graphify 0.9.77. Kubernetes v1.37.1 (the 0.1.0 engine, which follows Graphify 0.9.88; exploratory, one run each on one Linux host, the same 16 CPUs, 8 workers, with four recorded deviations): code-only extract 198.4 s against 1,597.9 s for Graphify 0.9.88, the same graph, with about 2.1 times more peak memory for Graphicle. [Details](#speed-on-kubernetes) |
 | Agent memory: comparison with seven memory systems | Done, on development sets, with a proxy evaluator | Every system's scores and the 21 registered comparisons are [below](#agent-memory-comparison-with-seven-memory-systems). None of them is a headline claim |
 | Agent memory: retrieval defaults | Chosen | Model-free retrieval runs on development data, plus held-out checks; their records are not published yet, so no numbers are given |
@@ -19,12 +19,39 @@ endorsement is implied.
 ### Parity with Graphify
 
 The engine is a Rust port of Graphify. It follows Graphify
-0.9.88 (tag commit `a9860f70`): the port was made from 0.9.77 (`5c7b8479`),
-and the eleven releases 0.9.78 to 0.9.88 were ported for this release. It
-passes the 96 comparison checks against Graphify 0.9.88, and all 95
-application modules have passing receipts. That is the parity claim, with
-these limits:
+0.9.91 (tag commit `10130e79`): the port was made from 0.9.77 (`5c7b8479`),
+the eleven releases 0.9.78 to 0.9.88 were ported for 0.1.0, and the three
+releases 0.9.89 to 0.9.91 for 0.1.1. Against Graphify 0.9.88 it passed the
+96 comparison checks, and all 95 application modules had passing receipts.
+Against Graphify 0.9.91 the checks have run on Linux, where 7 of them stop
+for reasons of that host (below); the full run on macOS, which records every
+module's receipt, is still to be made for 0.9.91. That is the parity claim,
+with these limits:
 
+- **Graphify 0.9.91 (15 October 2026).** The qualified release build of the
+  0.1.1 source (binary SHA-256 `adf81bb2…`) ran against the pinned archive of
+  Graphify 0.9.91 (`10130e79`, archive SHA-256 `f4916b0c…`, with `graphifyy`
+  0.9.91 from PyPI) on Linux (x86_64). Of the 96 checks, 89 pass:
+  `tools/qualify_all.py` passed 88, and `check_detect` passed when run on its
+  own (in the full run, one upstream test could not bind a Unix socket
+  because the run's temporary path was longer than the system allows). The
+  other 7 stop on that host, as they did against 0.9.88: 5 need IPv4
+  loopback connections, which the host refuses (4 of them pass with their
+  test servers on the host's own address; in `check_native_workflows` the
+  reference's own client then fails to set up TLS on that host),
+  `check_transcribe` needs ffmpeg, which the host lacks, and in
+  `check_export` a graph layout position differs from NetworkX's by 2.2e-9,
+  against a tolerance of 2e-9. Of the 19 test files that 0.9.89 to 0.9.91
+  add and the 25 they change, the checks run all but five: two test
+  Graphify's skill text and skill generator, one patches the reference's
+  own subprocess call (the engine's equivalent has a Rust test), and the two
+  Ollama files drive mocked Python clients, so `check_llm` compares the
+  engine's Ollama requests with the reference's instead. On
+  Kubernetes, prometheus and tokio, the engine's `update --force
+  --no-cluster` gives the same nodes and edges as Graphify 0.9.91's on the
+  same folder, record for record and in the same order; the files differ
+  only in where some edges place their `context` key, as 0.1.0's did. The
+  items below describe the 0.9.88 runs unless they say otherwise.
 - **What the checks do.** Each check runs upstream tests and comparisons
   against the Rust engine and compares the engine's results with the pinned
   Python release. Together they run 354 of Graphify 0.9.88's 402 test files
@@ -89,7 +116,7 @@ these limits:
   14 October 2026 on a Linux release build of the same source. Both builds
   use the default features plus `postgres`, `bedrock` and `transcription`,
   which some checks exercise. The engine pins tree-sitter 0.25.10, the parser
-  runtime that Python Graphify 0.9.88 uses, so files that a grammar rejects
+  runtime that Python Graphify 0.9.88 and 0.9.91 use, so files that a grammar rejects
   recover the same way. Release archives contain the default build, without
   those three features.
 - **The record.** [evidence/engine-parity-0.9.88.json](evidence/engine-parity-0.9.88.json)
@@ -101,7 +128,7 @@ these limits:
   upstream fixes that were reviewed and the known limitations.
 
 The opt-in additions (`--precise`, `extract --docs`, `extract --routes`,
-`retrieve`, `serve --watch`) go beyond Graphify 0.9.88, so the parity claim
+`retrieve`, `serve --watch`) go beyond Graphify 0.9.91, so the parity claim
 does not cover them. Each one is off unless you ask for it.
 
 ### Speed against Graphify 0.9.77

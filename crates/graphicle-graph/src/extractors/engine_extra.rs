@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 #[derive(Clone, Copy)]
 pub struct CallableInfo<'a> {
@@ -164,6 +164,13 @@ impl<'a, 't> Engine<'a, 't> {
                 for c in closures {
                     if let Some(b) = c.child_by_field_name("body") {
                         self.js_members(b, &file, false);
+                        // #4448: the walk runs under the file node, so the
+                        // closure's own parameters and locals ride along as
+                        // this body's locals; otherwise `forEach(function
+                        // (value) { s.on(value) })` resolves `value` to any
+                        // same-named function in the corpus.
+                        self.closure_locals
+                            .insert(b.id(), js_local_bound_names(c, self.source));
                         self.bodies.push((file.clone(), b));
                     }
                 }
@@ -508,7 +515,13 @@ impl<'a, 't> Engine<'a, 't> {
                     if name.is_empty() {
                         continue;
                     }
-                    let id = make_id([parent, name.as_str()]);
+                    let mut id = make_id([parent, name.as_str()]);
+                    if self.is("c_sharp") {
+                        // `enum E { Value, value }`: the pre-scan salts the
+                        // pair apart (#4415); the guard stays for anything
+                        // else landing on one id.
+                        id = python_underscore_salted_nid(&id, &name, &self.csharp_member_groups);
+                    }
                     if !self.seen.contains(&id) || !self.is("c_sharp") {
                         self.add_node(&id, &name, line, None, Value::Null);
                         self.edge(parent, &id, "case_of", line, None, Value::Null);

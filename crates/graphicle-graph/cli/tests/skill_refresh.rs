@@ -2,7 +2,6 @@
 // Upstream: tests/test_skill_auto_refresh.py
 //! #1805: a CLI run after an upgrade refreshes the skills an older release
 //! installed, under upstream's limits and skill-directory lock.
-#![cfg(unix)]
 use graphicle::{VERSION, install};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -14,16 +13,19 @@ const PACKAGED: &str = include_str!("../../src/assets/install/SKILL.md");
 
 /// The executable under `home` with nothing else from the caller's environment.
 fn graph_cli(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_graphicle-graph"))
-        .args(args)
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_graphicle-graph"));
+    cmd.args(args)
         .current_dir(home)
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", home)
-        .env("USERPROFILE", home)
-        .envs(env.iter().copied())
-        .output()
-        .unwrap()
+        .env("USERPROFILE", home);
+    // Windows programs need SystemRoot to load their system libraries.
+    #[cfg(windows)]
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        cmd.env("SystemRoot", root);
+    }
+    cmd.envs(env.iter().copied()).output().unwrap()
 }
 
 fn version(home: &Path, env: &[(&str, &str)]) -> (String, String) {
@@ -35,13 +37,16 @@ fn version(home: &Path, env: &[(&str, &str)]) -> (String, String) {
     )
 }
 
-/// Lay down a skill as an older release left it.
+/// Lay down a skill as an older release left it. The path is joined as the
+/// engine joins a skill destination (`home.join("<dir>/SKILL.md")`), so the
+/// paths it prints compare equal on Windows too; on Unix the same path.
 fn stale(home: &Path, dir: &str, stamp: &str, body: &str) -> PathBuf {
-    let dir = home.join(dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("SKILL.md"), body).unwrap();
+    let skill = home.join(format!("{dir}/SKILL.md"));
+    let dir = skill.parent().unwrap();
+    std::fs::create_dir_all(dir).unwrap();
+    std::fs::write(&skill, body).unwrap();
     std::fs::write(dir.join(".graphicle_version"), stamp).unwrap();
-    dir.join("SKILL.md")
+    skill
 }
 
 fn stamp(dst: &Path) -> String {
@@ -84,15 +89,28 @@ fn lock_is_free(home: &Path, dst: &Path) -> bool {
 fn every_stale_copy_is_refreshed_and_stdout_stays_clean() {
     let home = tempfile::tempdir().unwrap();
     let home = home.path();
-    let dsts: Vec<PathBuf> = [
-        ".claude/skills/graphicle",
-        ".codex/skills/graphicle",
-        ".config/opencode/skills/graphicle",
-        ".gemini/skills/graphicle",
-    ]
-    .iter()
-    .map(|dir| stale(home, dir, OLD, PACKAGED))
-    .collect();
+    // On Windows Gemini's user skill lives in ~/.agents/skills, which the
+    // generic Agent-Skills target writes too; upstream leaves a directory
+    // with two writers to the version warning, and ~/.gemini/skills is no
+    // Windows target, so the Gemini copy is not refreshed there.
+    let dirs: &[&str] = if cfg!(windows) {
+        &[
+            ".claude/skills/graphicle",
+            ".codex/skills/graphicle",
+            ".config/opencode/skills/graphicle",
+        ]
+    } else {
+        &[
+            ".claude/skills/graphicle",
+            ".codex/skills/graphicle",
+            ".config/opencode/skills/graphicle",
+            ".gemini/skills/graphicle",
+        ]
+    };
+    let dsts: Vec<PathBuf> = dirs
+        .iter()
+        .map(|dir| stale(home, dir, OLD, PACKAGED))
+        .collect();
     let (stdout, stderr) = version(home, &[]);
     assert_eq!(stdout, format!("graphicle-graph {VERSION}\n"));
     for dst in &dsts {
@@ -234,7 +252,13 @@ fn directories_with_more_than_one_writer_are_not_guessed() {
     let real = home.join(".config/opencode/skills/graphicle");
     std::fs::create_dir_all(&real).unwrap();
     std::fs::create_dir_all(home.join(".codex/skills")).unwrap();
+    #[cfg(unix)]
     std::os::unix::fs::symlink(&real, home.join(".codex/skills/graphicle")).unwrap();
+    // Windows: a directory symlink needs Developer Mode or the privilege.
+    #[cfg(windows)]
+    if std::os::windows::fs::symlink_dir(&real, home.join(".codex/skills/graphicle")).is_err() {
+        return;
+    }
     let dst = stale(home, ".codex/skills/graphicle", OLD, OLD_BODY);
     version(home, &[]);
     assert_eq!(stamp(&dst), OLD);

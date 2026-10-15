@@ -2,6 +2,52 @@
 
 Full release notes with details on each version: [GitHub Releases](https://github.com/Graphify-Labs/graphify/releases)
 
+## 0.9.91 (2026-10-14)
+
+Eight community pull requests: a Windows MCP-stdio hang fix, Rust/JS/TS/extract call-resolution and id-collision fixes, an Ollama context-size fix, and a clustering label-retention fix. The AST cache schema is bumped, so the first build after upgrading re-extracts.
+
+- Fix: **MCP** `graph_stats` no longer hangs under a stdio host on Windows (and no longer silently drops its built-at-commit staleness line): `_git_head` closes the git child's stdin so git does not block on the JSON-RPC pipe (#4440, #4441, thanks @bercedev).
+- Fix: **Rust** a `use crate::…::Name` edge now lands on the declaration it imports rather than a bare name-folded target, so `explain`/`affected` resolve the type even when it is only constructed; a cross-crate `use std::…`/`use serde::…` still does not hijack a same-named local declaration (#4439, #4443, thanks @bercedev).
+- Fix: **JS/TS** a file-scope callback's own parameters are now shadowed, so a bare parameter passed on as a call argument no longer mints phantom cross-bundle `indirect_call` edges to same-named functions elsewhere in the corpus (#4448, #4457, thanks @bercedev).
+- Fix: **extract** a module symbol whose id spells a sibling file's id (a `const sql` beside `x.sql`) is kept on its own node instead of being merged onto the sibling's file node and dropped; the file stays findable by label (#4449, #4452, thanks @Deepjyoti-Sarmah).
+- Fix: **TypeScript** a class field's receiver type is now scoped to its own class and bases, so `this.field.method()` resolves to the right class when two classes share a field name; a same-named local or parameter no longer borrows a field's type (#4294, #4297, thanks @rohit-jsfreaky).
+- Fix: **Ollama** extraction and labeling requests now go to Ollama's native `/api/chat`, so the derived `num_ctx` actually reaches the server and large prompts are no longer silently truncated; a server without `/api/chat` (LM Studio, llama.cpp) falls back to the OpenAI-compatible endpoint (#4413, #4414, thanks @smngvlkz).
+- Fix: **cluster** a community keeps its curated or LLM label across a rebuild when its membership still overlaps the previous community by a strict majority, instead of discarding the name on a single-node change or a community-count change (#2298, #4451, thanks @SrijanSriv).
+- Test: **ingest** the skip-existing symlink test now compares the link target against what `readlink` returned, fixing a false failure on Windows where `readlink` returns an extended-length path (#4435, #4442, thanks @bercedev).
+
+## 0.9.90 (2026-10-13)
+
+Fourteen community pull requests: C# call-resolution and id-collision fixes, Python/Go/dedup correctness, a hub-label sidecar, a post-merge heal hook, and query/build fixes. The AST cache schema is bumped, so the first build after upgrading re-extracts.
+
+- Fix: **C#** a nameless member-call receiver (`run.Sequence.Apply()`, `Make().Apply()`) no longer mis-binds to the caller's own same-named method; every C# member call defers and resolves only through a typed receiver (#4422, thanks @nixvideojuego-ui).
+- Fix: **C#** `new X()` no longer binds to a method that shares the type's name, same-file or cross-file; a real same-named type still wins (#4428, thanks @nixvideojuego-ui).
+- Feature: **C#** `foreach` loop variables are now typed from the collection's element type (arrays, known sequences, dictionary `.Keys`/`.Values`), so calls on the loop variable resolve; untypable iterables stay unresolved (#4423, thanks @nixvideojuego-ui).
+- Fix: **C#** node ids now keep names that differ only by a leading/trailing `_` or by case apart (`Action`/`_Action`, `Load`/`load`, `Token`/`TOKEN`), in both ids and member-call resolution keys, instead of collapsing one onto the other (#4415, #4416, thanks @JensD-git).
+- Fix: **C#** colliding ids are salted before the partial-class merge, so a partial half keeps its members and an unrelated node sharing a half's id is no longer deleted (#4411, #4412, thanks @JensD-git).
+- Fix: **Go** a generic receiver type (`func (b *Box[T]) ...`) is normalized before building its id, so a generic type's methods attach to the type node instead of a separate `Box[T]` node (#4438, thanks @Goodkamalpandey).
+- Fix: **Python** a module member call (`mod.func()`) now resolves when the caller is a method or nested function, by walking the enclosing scopes to the file node instead of reading only the immediate parent (#2447, #4437, thanks @SrijanSriv).
+- Fix: an edge between two surviving nodes is no longer dropped just because its own `source_file` was not dispatched this run; it is kept as long as both endpoints are kept nodes (#2276, #4436, thanks @SrijanSriv).
+- Fix: dedup keeps a dropped-folder document next to a top-level file that mints the same id (`protocol.md` beside `docs/protocol.md` and `docs/firmware/protocol.md`), path-qualifying the siblings instead of collapsing and losing one; a genuine reference still collapses onto the named file (#4281, #4410, thanks @Deepjyoti-Sarmah).
+- Fix: **Jinja** templates (`.j2`, `.jinja`, `.jinja2`) are now classified as documents instead of being dropped from the graph (#3427, #3455, thanks @nikhilsaxena04).
+- Fix: **build** source-less placeholder nodes orphaned by a re-extraction that drops their edges are now swept on a normal (non-prune) incremental build, not just under prune; the sweep removes only code placeholders and external stubs and spares disk-isolated, fresh-isolated, and hyperedge-member nodes (#4399, thanks @Mpasha17).
+- Fix: **query** the fallback traversal now retains relationships among the visited nodes (seed-to-seed edges, cycles, cross-links, and parallel relations), via the induced subgraph, instead of printing only tree edges (#4314, #4315, thanks @vibhanshu-mishra).
+- Feature: **watch** hub-fallback community labels now go to a `.graphify_labels.pending.json` sidecar, so the tracked `.graphify_labels.json` holds only curated (manual/LLM) names; a promoted name drops from the sidecar and an emptied sidecar is removed (#3334, #3551, thanks @ayushcodes10).
+- Feature: **hooks** `graphify hook install` now also installs a `post-merge` hook that runs an unscoped background rebuild after a merge, healing a symbol the graph.json union merge driver resurrected on one side (which nothing else would re-extract), so the phantom node no longer persists (#2418, #3556, thanks @ayushcodes10).
+
+## 0.9.89 (2026-10-13)
+
+Sixteen community pull requests: cross-repo member-call resolution (Go, PHP, TypeScript, Kotlin, Objective-C), generic/template type-parameter cleanup (Kotlin, Scala, C++, Swift), an Objective-C enum extractor, interface-dispatch fan-out, a native Pi guard extension, and several resolution/ingest fixes. The AST cache schema is bumped, so the first build after upgrading re-extracts.
+
+- Feature: **cross-repo member calls** now finish across a repository boundary for Go, PHP, TypeScript/JS, Kotlin and Objective-C: a call whose receiver type is declared in another repo is parked by name during the single-repo build and bound on `merge-graphs`/`global add` against a unique same-named exported type, fail-closed on ambiguity (#3152, #3388, #3393, #3385, #3387, #3389, #3391, #3395, thanks @xiongjianxu).
+- Fix: **Go** a package's type whose methods span several files now folds into one node instead of fragmenting under `_disambiguate_colliding_node_ids`, so single-definition guards and receiver typing work (#3399, #3400, thanks @xiongjianxu).
+- Fix: **Kotlin / Scala / C++ / Swift** generic and template type parameters (`class Box<T>`, `[T]`, `template<typename T>`, `struct Stack<Element>`) no longer mint sourceless stub god-nodes; a real same-named type is still referenced (#4406, #4407, #4408, #4409, thanks @rajatnagda45).
+- Feature: **Objective-C** `NS_ENUM` and `NS_OPTIONS` declarations are now extracted as an enum type plus its members, with the macro forms validated and malformed macros rejected fail-closed (#4400, #4401, thanks @oleksii-tumanov).
+- Feature: **dispatch** an interface member now links to every implementer, not just one, so a DI chain through a multi-implementer interface resolves; the fan-out is gated to genuine implementers with a correct method match (#3800, #4396, thanks @Goodkamalpandey).
+- Feature: **Pi** a native Pi guard extension now runs `graphify hook-guard` before Pi's tool calls and also loads under Oh My Pi, so the hook-guard policy reaches Pi; install/uninstall delegates to `pi install`/`pi remove` and the guard fails open (#4378, thanks @andrebrait).
+- Feature: **hook** a firing read/search nudge now shows the graph nodes behind the nudged call and tightens its wording, so agents act on it instead of treating it as noise; the graph read piggybacks on the already-bounded nudge and is injection-safe and size-capped (#4368, thanks @andrebrait).
+- Fix: **resolution** a `.js` import now resolves to a `.tsx` source when no real `.js` file exists, matching TypeScript's NodeNext resolution; a real `.js` still wins (#3486, #4395, thanks @DevChiniwala).
+- Fix: distinct downloaded binary captures (PDFs/images) whose URLs collide to one filename are now kept under numbered names instead of silently overwriting each other, matching the markdown path's de-dup (#4393, #4394, thanks @oleksii-tumanov).
+
 ## 0.9.88 (2026-10-12)
 
 Twenty community pull requests: language-extraction and call-resolution fixes (Java, C/C++, Python, Swift, Go, PowerShell, C#, JS/EJS), dedup/shrink-guard hardening, and query/graph.html ergonomics. The AST cache schema is bumped, so the first build after upgrading re-extracts.

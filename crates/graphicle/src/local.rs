@@ -1,3 +1,4 @@
+use crate::platform::CanonicalExt;
 use crate::store::{Store, s};
 use crate::{Error, Result, id, now};
 use serde::{Deserialize, Serialize};
@@ -24,14 +25,20 @@ pub fn data_dir() -> PathBuf {
 /// client finds when it starts `graphicle` without `--data-dir` and without
 /// the user's environment.
 pub fn default_data_dir() -> PathBuf {
-    let user_dir = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
+    // Windows: `%LOCALAPPDATA%\Graphicle`.
+    #[cfg(windows)]
+    {
+        crate::platform::local_app_data()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Graphicle")
+    }
+    #[cfg(not(windows))]
+    let user_dir = crate::platform::home_dir().unwrap_or_else(|| PathBuf::from("."));
     #[cfg(target_os = "macos")]
     {
         user_dir.join("Library/Application Support/Graphicle")
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(not(target_os = "macos"), not(windows)))]
     {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
@@ -382,7 +389,7 @@ pub fn sync_folder(
     requested: Option<&str>,
 ) -> Result<Value> {
     let limits = store.limits()?;
-    let root = root.canonicalize()?;
+    let root = root.canonical()?;
     if !root.is_dir() {
         return Err(Error::bad("Choose a project folder"));
     }
@@ -1090,25 +1097,27 @@ pub fn spawn_graph_build(directory: &Path, repository: &str) -> Result<()> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    #[cfg(unix)]
+    // Windows will not rename or delete a folder a running process has as
+    // its current folder, so the build does not keep the caller's (often
+    // the project) for its whole run.
+    #[cfg(windows)]
     {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        if directory.is_absolute() {
+            command.current_dir(directory);
+        }
     }
-    command.spawn()?;
+    crate::platform::spawn_detached(&mut command)?;
     Ok(())
 }
 pub fn open_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
     let mut command = std::process::Command::new("open");
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut c = std::process::Command::new("cmd");
-        c.args(["/C", "start", ""]);
-        c
-    };
+    let mut command = crate::platform::open_url_command(url)
+        .ok_or_else(|| Error::bad("Could not open the app URL"))?;
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     let mut command = std::process::Command::new("xdg-open");
+    #[cfg(not(target_os = "windows"))]
     command.arg(url);
     if !command.status()?.success() {
         return Err(Error::bad("Could not open the app URL"));
@@ -1117,6 +1126,7 @@ pub fn open_url(url: &str) -> Result<()> {
 }
 
 pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<Value> {
+    #[cfg(unix)]
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     if directory.join("reviews.sqlite3").exists() {
         return Err(Error::bad(
@@ -1134,10 +1144,11 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
     if integrity != "ok" || !schema {
         return Err(Error::bad("This is not a valid Graphicle store backup"));
     }
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(directory)?;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder.create(directory)?;
     if std::fs::symlink_metadata(directory)?
         .file_type()
         .is_symlink()
@@ -1145,11 +1156,11 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
         return Err(Error::bad("Store directory must not be a symlink"));
     }
     let destination = directory.join("reviews.sqlite3");
-    std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&destination)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(&destination)?;
     if let Err(error) = source.backup(rusqlite::MAIN_DB, &destination, None) {
         let _ = std::fs::remove_file(&destination);
         return Err(error.into());

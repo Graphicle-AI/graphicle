@@ -369,8 +369,10 @@ def decompressed(bundle):
         pass
     program = shutil.which('zstd')
     if program is None:
+        hint = ('`py -m pip install zstandard`' if os.name == 'nt'
+                else '`brew install zstd` or `apt install zstd`')
         sys.exit('Decompressing the bundle needs Python 3.14 or later, the zstandard module or the zstd program '
-                 '(for example `brew install zstd` or `apt install zstd`).')
+                 f'(for example {hint}).')
     process = subprocess.Popen([program, '-d', '-c', '-q', '--', str(bundle)], stdout=subprocess.PIPE)
     return process.stdout, process
 

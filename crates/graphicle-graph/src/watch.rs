@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/watch.py
 //! Incremental rebuilds, conservative reconciliation, and filesystem watching.
 use crate::extractors::resolution::resolved;
@@ -95,16 +95,21 @@ pub fn root_marker_value_for(path: &Path, out_dir: &str) -> Result<String> {
     Ok(marker.to_string_lossy().into_owned())
 }
 
+/// `.pending.lock`, opened to append. Windows also needs read access:
+/// `LockFileEx` refuses a handle that may only append.
+fn open_pending_lock(out: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .read(cfg!(windows))
+        .open(out.join(".pending.lock"))
+}
 pub fn queue_pending(out: &Path, changed: &[PathBuf]) -> Result<()> {
     if changed.is_empty() {
         return Ok(());
     }
     fs::create_dir_all(out).map_err(crate::Error::from)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(out.join(".pending.lock"))
-        .map_err(crate::Error::from)?;
+    let lock = open_pending_lock(out).map_err(crate::Error::from)?;
     lock.lock().map_err(crate::Error::from)?;
     let mut f = OpenOptions::new()
         .create(true)
@@ -124,11 +129,7 @@ pub fn drain_pending(out: &Path) -> Vec<PathBuf> {
     if !out.is_dir() {
         return vec![];
     }
-    let Ok(lock) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(out.join(".pending.lock"))
-    else {
+    let Ok(lock) = open_pending_lock(out) else {
         return vec![];
     };
     if lock.lock().is_err() {
@@ -223,6 +224,11 @@ pub fn write_flag_config(out: &Path, key: &str) {
 pub struct RebuildLock {
     _file: File,
 }
+/// Graphify's `_rebuild_lock` on Windows, where byte-range locks are
+/// mandatory: lock one byte at offset 4096 so other processes can still read
+/// the PID at byte 0.
+#[cfg(windows)]
+const WINDOWS_LOCK_OFFSET: u64 = 4096;
 impl RebuildLock {
     pub fn acquire(out: &Path, blocking: bool) -> Result<Option<Self>> {
         fs::create_dir_all(out).map_err(crate::Error::from)?;
@@ -233,6 +239,14 @@ impl RebuildLock {
             .truncate(false)
             .open(out.join(".rebuild.lock"))
             .map_err(crate::Error::from)?;
+        #[cfg(windows)]
+        while !crate::win::try_lock_range(&f, WINDOWS_LOCK_OFFSET, 1).map_err(crate::Error::from)? {
+            if !blocking {
+                return Ok(None);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        #[cfg(not(windows))]
         if blocking {
             f.lock().map_err(crate::Error::from)?;
         } else {
@@ -247,17 +261,32 @@ impl RebuildLock {
         Ok(Some(Self { _file: f }))
     }
 }
+#[cfg(windows)]
+impl Drop for RebuildLock {
+    fn drop(&mut self) {
+        crate::win::unlock_range(&self._file, WINDOWS_LOCK_OFFSET, 1);
+    }
+}
 pub fn node_communities(data: &Value) -> BTreeMap<String, i64> {
-    items(data, "nodes")
-        .iter()
-        .filter_map(|n| {
-            let id = n.get("id")?;
+    communities_by_id(
+        items_ref(data, "nodes")
+            .iter()
+            .map(|n| (&n["id"], &n["community"])),
+    )
+}
+/// [`node_communities`] of each node's `id` and `community` (`Null` where
+/// the record has none, or is not an object).
+fn communities_by_id<'a>(
+    nodes: impl Iterator<Item = (&'a Value, &'a Value)>,
+) -> BTreeMap<String, i64> {
+    nodes
+        .filter_map(|(id, community)| {
             if id.is_null() {
                 return None;
             }
-            let cid = n["community"]
+            let cid = community
                 .as_i64()
-                .or_else(|| n["community"].as_str()?.parse().ok())?;
+                .or_else(|| community.as_str()?.parse().ok())?;
             Some((
                 if let Some(s) = id.as_str() {
                     s.into()
@@ -352,8 +381,16 @@ pub fn canonical_graph_key(data: &Value, topology: bool) -> Vec<u8> {
 /// writer's version) that a candidate built fresh from the graph never
 /// carries. `None` when nothing is dropped.
 fn topology_graph_metadata(data: &Value, topology: bool) -> Option<Value> {
-    let meta = data.get("graph")?.as_object()?;
-    if !topology || !GRAPH_VERSION_KEYS.iter().any(|k| meta.contains_key(*k)) {
+    if !topology {
+        return None;
+    }
+    without_version_keys(data.get("graph")?)
+}
+/// A `graph` object without its [`GRAPH_VERSION_KEYS`]; `None` when it is
+/// not an object or has none of them.
+fn without_version_keys(graph: &Value) -> Option<Value> {
+    let meta = graph.as_object()?;
+    if !GRAPH_VERSION_KEYS.iter().any(|k| meta.contains_key(*k)) {
         return None;
     }
     let mut meta = meta.clone();
@@ -376,8 +413,8 @@ const GRAPH_VERSION_KEYS: [&str; 3] = [
 /// sorted, so no key (hundreds of MB for a large graph) is ever built.
 pub fn canonical_graph_digest(data: &Value, topology: bool) -> [u8; 32] {
     use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
     let Value::Object(top) = data else {
+        let mut h = Sha256::new();
         h.update(canonical_graph_key_owned(data.clone(), topology));
         return h.finalize().into();
     };
@@ -392,10 +429,47 @@ pub fn canonical_graph_digest(data: &Value, topology: bool) -> [u8; 32] {
         keys.push("directed");
     }
     keys.sort_unstable();
-    let mut bytes = Vec::new();
     let graph_meta = topology_graph_metadata(data, topology);
+    digest_entries(keys.into_iter().map(|k| {
+        let entry = if !topology && k == "directed" {
+            DigestEntry::Value(&directed)
+        } else {
+            match &top[k] {
+                Value::Array(items) if SORTED_ARRAYS.contains(&k) => {
+                    let rewritten = topology && matches!(k, "nodes" | "links" | "edges");
+                    DigestEntry::Records(record_digests(
+                        items,
+                        workers,
+                        rewritten.then_some(k == "nodes"),
+                    ))
+                }
+                other => DigestEntry::Value(
+                    graph_meta
+                        .as_ref()
+                        .filter(|_| k == "graph")
+                        .unwrap_or(other),
+                ),
+            }
+        };
+        (k, entry)
+    }))
+}
+/// One top-level entry of a graph document as [`canonical_graph_digest`]
+/// hashes it: the record digests of a sorted array (in any order), or a
+/// value written canonically.
+enum DigestEntry<'a> {
+    Records(Vec<[u8; 32]>),
+    Value(&'a Value),
+}
+/// The digest of a document's entries, given in sorted key order: the
+/// object's canonical text with each sorted array's records replaced by
+/// their sorted SHA-256 digests.
+fn digest_entries<'a>(entries: impl IntoIterator<Item = (&'a str, DigestEntry<'a>)>) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    let mut bytes = Vec::new();
     h.update(b"{");
-    for (i, k) in keys.into_iter().enumerate() {
+    for (i, (k, entry)) in entries.into_iter().enumerate() {
         if i > 0 {
             h.update(b",");
         }
@@ -403,26 +477,8 @@ pub fn canonical_graph_digest(data: &Value, topology: bool) -> [u8; 32] {
         serde_json::to_writer(&mut bytes, k).expect("string serializes");
         bytes.push(b':');
         h.update(&bytes);
-        if !topology && k == "directed" {
-            bytes.clear();
-            crate::extract_normalize::write_canonical(&directed, None, &mut bytes);
-            h.update(&bytes);
-            continue;
-        }
-        match &top[k] {
-            Value::Array(items) if SORTED_ARRAYS.contains(&k) => {
-                let rewritten = topology && matches!(k, "nodes" | "links" | "edges");
-                let mut digests = crate::par::map(items, workers, |item| {
-                    let encoded = if rewritten {
-                        prepared_record(item, k == "nodes")
-                    } else {
-                        Some(crate::extract_normalize::canonical_bytes(item))
-                    };
-                    encoded.map(|e| <[u8; 32]>::from(Sha256::digest(&e)))
-                })
-                .into_iter()
-                .flatten()
-                .collect::<Vec<_>>();
+        match entry {
+            DigestEntry::Records(mut digests) => {
                 digests.sort_unstable();
                 h.update(b"[");
                 for (j, d) in digests.iter().enumerate() {
@@ -433,22 +489,77 @@ pub fn canonical_graph_digest(data: &Value, topology: bool) -> [u8; 32] {
                 }
                 h.update(b"]");
             }
-            other => {
+            DigestEntry::Value(value) => {
                 bytes.clear();
-                crate::extract_normalize::write_canonical(
-                    graph_meta
-                        .as_ref()
-                        .filter(|_| k == "graph")
-                        .unwrap_or(other),
-                    None,
-                    &mut bytes,
-                );
+                crate::extract_normalize::write_canonical(value, None, &mut bytes);
                 h.update(&bytes);
             }
         }
     }
     h.update(b"}");
     h.finalize().into()
+}
+/// The SHA-256 of each record's canonical bytes, on `workers` threads.
+/// `prepared` is `Some(node)` for the nodes or edges of a topology
+/// comparison ([`prepared_record`], which skips non-objects).
+fn record_digests(items: &[Value], workers: usize, prepared: Option<bool>) -> Vec<[u8; 32]> {
+    use sha2::{Digest, Sha256};
+    crate::par::map(items, workers, |item| {
+        let encoded = match prepared {
+            Some(node) => prepared_record(item, node),
+            None => Some(crate::extract_normalize::canonical_bytes(item)),
+        };
+        encoded.map(|e| <[u8; 32]>::from(Sha256::digest(&e)))
+    })
+    .into_iter()
+    .flatten()
+    .collect()
+}
+/// [`canonical_graph_digest`] with `topology` of the graph's node-link
+/// document as a rebuild compares it (`to_node_link("links")` plus its
+/// `hyperedges` attribute, or an empty list), made one record at a time:
+/// the document itself, as large as the graph, is never built.
+fn graph_topology_digest(graph: &crate::graph::Graph) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let workers = crate::par::workers(None);
+    let digest = |record: &Value, node: bool| {
+        prepared_record(record, node).map(|e| <[u8; 32]>::from(Sha256::digest(&e)))
+    };
+    let indices = (0..graph.nodes.len()).collect::<Vec<_>>();
+    let nodes = crate::par::map(&indices, workers, |i| {
+        digest(&graph.node_link_node(*i), true)
+    })
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    drop(indices);
+    let edges = graph.iter_edges().collect::<Vec<_>>();
+    let links = crate::par::map(&edges, workers, |(u, v, edge)| {
+        digest(&graph.node_link_edge(*u, *v, edge), false)
+    })
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    drop(edges);
+    let directed = Value::Bool(graph.directed);
+    let multigraph = Value::Bool(graph.multigraph);
+    let empty = json!([]);
+    let hyperedges = match graph.attributes.get("hyperedges").unwrap_or(&empty) {
+        Value::Array(items) => DigestEntry::Records(record_digests(items, workers, None)),
+        other => DigestEntry::Value(other),
+    };
+    let meta = without_version_keys(&graph.attributes);
+    digest_entries([
+        ("directed", DigestEntry::Value(&directed)),
+        (
+            "graph",
+            DigestEntry::Value(meta.as_ref().unwrap_or(&graph.attributes)),
+        ),
+        ("hyperedges", hyperedges),
+        ("links", DigestEntry::Records(links)),
+        ("multigraph", DigestEntry::Value(&multigraph)),
+        ("nodes", DigestEntry::Records(nodes)),
+    ])
 }
 /// Canonical bytes of one topology node or edge as `prepared_fields` leaves
 /// it (`None` for the non-objects it drops): a node without its community
@@ -634,12 +745,62 @@ pub fn check_shrink_with(
     deleted: &BTreeSet<String>,
     messages: &mut Vec<String>,
 ) -> bool {
+    let after = items_ref(new, "nodes");
+    shrink_allowed(
+        force,
+        old,
+        ShrinkCandidate {
+            nodes: after.len(),
+            lost: &|deleted| {
+                // Only a saved semantic node can be lost: without one, the
+                // check (which indexes every new node) has nothing to find.
+                if has_saved_semantic(old) {
+                    build::lost_saved_semantic_nodes(&old.saved, after, deleted)
+                } else {
+                    vec![]
+                }
+            },
+            ids: &|| after.iter().map(|n| n["id"].to_string()).collect(),
+        },
+        deletions,
+        rebuilt,
+        failed,
+        deleted,
+        messages,
+    )
+}
+/// Whether the stored graph had a saved semantic node, the only kind the
+/// shrink check can find lost.
+fn has_saved_semantic(old: &ShrinkBase) -> bool {
+    old.saved
+        .iter()
+        .any(|n| n.is_object() && !build::is_ast_tier(n))
+}
+/// What [`shrink_allowed`] reads of a candidate graph: its node count, the
+/// saved semantic nodes it lost (given the deleted sources), and every
+/// node's `id` as JSON text.
+struct ShrinkCandidate<'a> {
+    nodes: usize,
+    lost: &'a dyn Fn(&[String]) -> Vec<Value>,
+    ids: &'a dyn Fn() -> BTreeSet<String>,
+}
+/// [`check_shrink_with`] over what it reads of the candidate.
+#[allow(clippy::too_many_arguments)]
+fn shrink_allowed(
+    force: bool,
+    old: &ShrinkBase,
+    new: ShrinkCandidate<'_>,
+    deletions: bool,
+    rebuilt: Option<&BTreeSet<String>>,
+    failed: &BTreeSet<String>,
+    deleted: &BTreeSet<String>,
+    messages: &mut Vec<String>,
+) -> bool {
     if force || old.empty || deletions && rebuilt.is_none() {
         return true;
     }
-    let after = items(new, "nodes");
     let deleted = deleted.iter().cloned().collect::<Vec<_>>();
-    let missing = build::lost_saved_semantic_nodes(&old.saved, &after, &deleted);
+    let missing = (new.lost)(&deleted);
     if !missing.is_empty() {
         let ids = missing
             .iter()
@@ -649,19 +810,16 @@ pub fn check_shrink_with(
         messages.push(format!(
             "[graphicle] WARNING: Refusing to overwrite — saved semantic node(s) are missing from the new graph: {ids}."
         ));
-        if after.len() < old.nodes.len() {
-            messages.push(shrink_warning(after.len(), old.nodes.len()));
+        if new.nodes < old.nodes.len() {
+            messages.push(shrink_warning(new.nodes, old.nodes.len()));
         }
         return false;
     }
-    if after.len() >= old.nodes.len() {
+    if new.nodes >= old.nodes.len() {
         return true;
     }
     if let Some(rebuilt) = rebuilt {
-        let ids = after
-            .iter()
-            .map(|n| n["id"].to_string())
-            .collect::<BTreeSet<_>>();
+        let ids = (new.ids)();
         if old
             .nodes
             .iter()
@@ -675,7 +833,7 @@ pub fn check_shrink_with(
             return true;
         }
     }
-    messages.push(shrink_warning(after.len(), old.nodes.len()));
+    messages.push(shrink_warning(new.nodes, old.nodes.len()));
     false
 }
 fn shrink_warning(new: usize, old: usize) -> String {
@@ -749,16 +907,19 @@ pub fn reconcile_html_owned(out: &Path, data: Value, messages: &mut Vec<String>)
 enum HtmlSource<'a> {
     Borrowed(&'a Value),
     Owned(Value),
+    /// The graph stored at `path`, whose nodes' facts were already read: it
+    /// is loaded from the file only to render.
+    Stored {
+        path: &'a Path,
+        nodes: Vec<NodeFacts>,
+        edges_key: &'static str,
+    },
 }
 fn reconcile_html_with(
     out: &Path,
     source: HtmlSource<'_>,
     messages: &mut Vec<String>,
 ) -> Option<String> {
-    let data = match &source {
-        HtmlSource::Borrowed(data) => *data,
-        HtmlSource::Owned(data) => data,
-    };
     let target = out.join("graph.html");
     let marker = out.join(crate::exporters::html::HTML_STALE_MARKER);
     let limit = crate::exporters::html::viz_node_limit();
@@ -771,33 +932,24 @@ fn reconcile_html_with(
     if target.exists() && !marker.exists() {
         return None;
     }
-    let cids = node_communities(data);
-    // Upstream groups the members by iterating its node -> community dict,
-    // so communities (and the aggregated view's community nodes) come in the
-    // order of their first member in graph.json, each node id once.
-    let mut communities: Vec<(i64, Vec<Value>)> = Vec::new();
-    let mut slots = std::collections::HashMap::<i64, usize>::new();
-    let mut members_seen = std::collections::HashSet::new();
-    let mut labels = BTreeMap::new();
-    for n in items(data, "nodes") {
-        let id = text(&n, "id");
-        if let Some(cid) = cids.get(&id) {
-            if members_seen.insert(id) {
-                let slot = *slots.entry(*cid).or_insert_with(|| {
-                    communities.push((*cid, Vec::new()));
-                    communities.len() - 1
-                });
-                communities[slot].1.push(n["id"].clone());
-            }
-            if n["community_name"].as_str().is_some_and(|s| !s.is_empty()) {
-                labels.entry(*cid).or_insert(n["community_name"].clone());
-            }
-        }
-    }
+    let (communities, labels) = match &source {
+        HtmlSource::Borrowed(data) => html_groups(items_ref(data, "nodes"), record_view),
+        HtmlSource::Owned(data) => html_groups(items_ref(data, "nodes"), record_view),
+        HtmlSource::Stored { nodes, .. } => html_groups(nodes, NodeFacts::view),
+    };
     let render = || -> Result<bool> {
         let g = match source {
             HtmlSource::Borrowed(data) => paths::load_node_link_graph(data)?,
             HtmlSource::Owned(data) => paths::load_node_link_graph_owned(data)?,
+            HtmlSource::Stored {
+                path,
+                nodes,
+                edges_key,
+            } => {
+                let aggregated = nodes.len() as i64 > limit;
+                drop(nodes);
+                load_stored_graph(path, edges_key, aggregated.then_some(limit))?
+            }
         };
         let mut d = build::Diagnostics::default();
         crate::exporters::html::to_html(
@@ -823,6 +975,46 @@ fn reconcile_html_with(
             None
         }
     }
+}
+/// The communities (each with its member ids) and the community labels the
+/// HTML renders.
+type HtmlGroups = (Vec<(i64, Vec<Value>)>, BTreeMap<i64, Value>);
+/// A node record's `id`, `community` and `community_name`, as
+/// [`html_groups`] reads them.
+fn record_view(node: &Value) -> [&Value; 3] {
+    [&node["id"], &node["community"], &node["community_name"]]
+}
+/// The communities and labels [`reconcile_html`] renders, from each node's
+/// `id`, `community` and `community_name` (`view`). Upstream groups the
+/// members by iterating its node -> community dict, so communities (and the
+/// aggregated view's community nodes) come in the order of their first
+/// member in graph.json, each node id once.
+fn html_groups<T>(nodes: &[T], view: impl Fn(&T) -> [&Value; 3]) -> HtmlGroups {
+    let cids = communities_by_id(nodes.iter().map(|n| {
+        let [id, community, _] = view(n);
+        (id, community)
+    }));
+    let mut communities: Vec<(i64, Vec<Value>)> = Vec::new();
+    let mut slots = std::collections::HashMap::<i64, usize>::new();
+    let mut members_seen = std::collections::HashSet::new();
+    let mut labels = BTreeMap::new();
+    for n in nodes {
+        let [node_id, _, name] = view(n);
+        let id = node_id.as_str().unwrap_or("").to_string();
+        if let Some(cid) = cids.get(&id) {
+            if members_seen.insert(id) {
+                let slot = *slots.entry(*cid).or_insert_with(|| {
+                    communities.push((*cid, Vec::new()));
+                    communities.len() - 1
+                });
+                communities[slot].1.push(node_id.clone());
+            }
+            if name.as_str().is_some_and(|s| !s.is_empty()) {
+                labels.entry(*cid).or_insert(name.clone());
+            }
+        }
+    }
+    (communities, labels)
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -948,6 +1140,158 @@ fn rebuild_unwarmed(path: &Path, options: &RebuildOptions) -> Result<RebuildResu
 /// ensure_ascii=False, indent=2) + "\n"`, so entries are ordered by community
 /// id (reused labels and hub-filled ones interleave) and the file ends in a
 /// newline.
+/// The sidecar beside `.graphicle_labels.json` that holds hub-fallback
+/// community names (#3334).
+pub const PENDING_LABELS_FILE: &str = ".graphicle_labels.pending.json";
+/// `int(k)` for a labels-file key, the way Python reads one.
+fn label_cid(key: &str) -> Option<i64> {
+    crate::llm_config::parse_integer(key)
+}
+/// The labels a rebuild uses (curated, pending and hub names merged) and the
+/// community ids whose name belongs in the pending sidecar (upstream
+/// `_rebuild_code`, 0.9.91): tracked names first, then pending ones for
+/// communities without a tracked name; a name whose community changed is
+/// dropped unless the shared members are a strict majority of both the saved
+/// and the current set (#2298); every community left without a name gets its
+/// hub, which is pending.
+fn rebuild_labels(
+    graph: &crate::graph::Graph,
+    communities: &cluster::Communities,
+    previous: &BTreeMap<String, i64>,
+    cur_sigs: &Value,
+    label_file: &Path,
+    sig_file: &Path,
+    pending_file: &Path,
+) -> (Value, BTreeSet<i64>) {
+    let in_communities = |cid: i64| communities.iter().any(|(c, _)| *c == cid);
+    let placeholder = |cid: i64, v: &Value| v.as_str() == Some(format!("Community {cid}").as_str());
+    let read = |path: &Path| {
+        fs::read(path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+    };
+    // Tracked names; a key that is not an integer discards the whole file,
+    // as upstream's comprehension does.
+    let raw = read(label_file).unwrap_or(json!({}));
+    let mut labels: BTreeMap<i64, Value> = BTreeMap::new();
+    let mut raw_len = 0;
+    if let Some(map) = raw.as_object() {
+        let parsed: Option<Vec<(i64, &Value)>> = map
+            .iter()
+            .map(|(k, v)| label_cid(k).map(|c| (c, v)))
+            .collect();
+        if let Some(parsed) = parsed {
+            raw_len = map.len();
+            for (cid, v) in parsed {
+                if in_communities(cid) && v.is_string() && !placeholder(cid, v) {
+                    labels.insert(cid, v.clone());
+                }
+            }
+        }
+    }
+    // Pending names, for communities without a tracked one. A bad key stops
+    // the scan, keeping the names read before it.
+    let mut pending_cids = BTreeSet::new();
+    if let Some(map) = read(pending_file).as_ref().and_then(Value::as_object) {
+        for (k, v) in map {
+            let Some(cid) = label_cid(k) else {
+                break;
+            };
+            if in_communities(cid)
+                && !labels.contains_key(&cid)
+                && v.is_string()
+                && !placeholder(cid, v)
+            {
+                labels.insert(cid, v.clone());
+                pending_cids.insert(cid);
+            }
+        }
+    }
+    // Saved membership signatures: string values only, and none at all when
+    // a key is not an integer.
+    let saved_sigs: BTreeMap<i64, String> = read(sig_file)
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|map| {
+            map.iter()
+                .map(|(k, v)| Ok::<_, ()>((label_cid(k).ok_or(())?, v)))
+                .collect::<std::result::Result<Vec<_>, ()>>()
+                .ok()
+        })
+        .map(|pairs| {
+            pairs
+                .into_iter()
+                .filter_map(|(c, v)| Some((c, v.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let members = |cid: i64| -> &[Value] {
+        communities
+            .iter()
+            .find(|(c, _)| *c == cid)
+            .map(|(_, m)| m.as_slice())
+            .unwrap_or(&[])
+    };
+    let stale: Vec<i64> = if !saved_sigs.is_empty() {
+        labels
+            .keys()
+            .copied()
+            .filter(|cid| {
+                !cluster::label_still_applies(
+                    *cid,
+                    members(*cid),
+                    previous,
+                    saved_sigs.get(cid).map(String::as_str),
+                    cur_sigs[cid.to_string()].as_str(),
+                )
+            })
+            .collect()
+    } else if raw_len != communities.len() {
+        labels
+            .keys()
+            .copied()
+            .filter(|cid| !cluster::label_still_applies(*cid, members(*cid), previous, None, None))
+            .collect()
+    } else {
+        vec![]
+    };
+    for cid in &stale {
+        labels.remove(cid);
+        pending_cids.remove(cid);
+    }
+    let missing: cluster::Communities = communities
+        .iter()
+        .filter(|(c, _)| !labels.contains_key(c))
+        .cloned()
+        .collect();
+    if let Some(hubs) = cluster::label_communities_by_hub(graph, &missing).as_object() {
+        for (k, v) in hubs {
+            if let Some(cid) = label_cid(k) {
+                labels.insert(cid, v.clone());
+                pending_cids.insert(cid);
+            }
+        }
+    }
+    let labels = Value::Object(
+        labels
+            .into_iter()
+            .map(|(cid, v)| (cid.to_string(), v))
+            .collect(),
+    );
+    (labels, pending_cids)
+}
+/// `labels` split into the tracked (curated) names and the pending ones.
+fn split_labels(labels: &Value, pending_cids: &BTreeSet<i64>) -> (Value, Value) {
+    let (mut curated, mut pending) = (serde_json::Map::new(), serde_json::Map::new());
+    for (k, v) in labels.as_object().into_iter().flatten() {
+        if label_cid(k).is_some_and(|cid| pending_cids.contains(&cid)) {
+            pending.insert(k.clone(), v.clone());
+        } else {
+            curated.insert(k.clone(), v.clone());
+        }
+    }
+    (Value::Object(curated), Value::Object(pending))
+}
 fn labels_text(labels: &Value) -> Result<String> {
     let mut entries: Vec<(&String, &Value)> = labels
         .as_object()
@@ -977,6 +1321,268 @@ fn read_graph(path: &Path) -> Result<Value> {
         return Err(format!("Invalid graph at {}; refusing to overwrite", path.display()).into());
     }
     Ok(v)
+}
+/// One node of a graph a rebuild wrote, as the shrink check and the HTML
+/// read it: its `id`, `community` and `community_name` (`Null` where the
+/// record has none, as indexing it reads them).
+struct NodeFacts {
+    id: Value,
+    community: Value,
+    community_name: Value,
+}
+impl NodeFacts {
+    fn of(node: &Value) -> Self {
+        NodeFacts {
+            id: node["id"].clone(),
+            community: node["community"].clone(),
+            community_name: node["community_name"].clone(),
+        }
+    }
+    fn view(&self) -> [&Value; 3] {
+        [&self.id, &self.community, &self.community_name]
+    }
+}
+/// The graph.json a rebuild wrote ([`read_candidate`]), as the rest of the
+/// rebuild reads it.
+enum Candidate {
+    /// Read one record at a time: its [`canonical_graph_digest`] without
+    /// topology, its nodes' [`NodeFacts`] and its edge field. The document
+    /// (about as large as the graph) is never built.
+    Streamed {
+        full: [u8; 32],
+        nodes: Vec<NodeFacts>,
+        edges_key: &'static str,
+    },
+    /// The whole document, as [`read_graph`] reads it.
+    Whole(Value),
+}
+impl Candidate {
+    fn full_digest(&self) -> [u8; 32] {
+        match self {
+            Candidate::Streamed { full, .. } => *full,
+            Candidate::Whole(data) => canonical_graph_digest(data, false),
+        }
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn check_shrink(
+        &self,
+        force: bool,
+        old: &ShrinkBase,
+        deletions: bool,
+        rebuilt: Option<&BTreeSet<String>>,
+        failed: &BTreeSet<String>,
+        deleted: &BTreeSet<String>,
+        messages: &mut Vec<String>,
+    ) -> bool {
+        match self {
+            Candidate::Whole(data) => check_shrink_with(
+                force, old, data, deletions, rebuilt, failed, deleted, messages,
+            ),
+            // Streamed only when the stored graph has no saved semantic node
+            // (`read_candidate`), so none can be lost.
+            Candidate::Streamed { nodes, .. } => shrink_allowed(
+                force,
+                old,
+                ShrinkCandidate {
+                    nodes: nodes.len(),
+                    lost: &|_| vec![],
+                    ids: &|| nodes.iter().map(|n| n.id.to_string()).collect(),
+                },
+                deletions,
+                rebuilt,
+                failed,
+                deleted,
+                messages,
+            ),
+        }
+    }
+}
+/// The candidate graph at `path`: [`read_graph`], streamed record by record
+/// unless `whole` (the shrink check then reads whole nodes) or the document
+/// is not one the stream reader takes ([`stream_candidate`]).
+fn read_candidate(path: &Path, whole: bool) -> Result<Candidate> {
+    if !whole {
+        security::check_graph_file_size_cap(path)?;
+        let bytes = fs::read(path).map_err(crate::Error::from)?;
+        if let Some(candidate) = stream_candidate(&bytes) {
+            return Ok(candidate);
+        }
+    }
+    read_graph(path).map(Candidate::Whole)
+}
+/// [`Candidate::Streamed`] of a graph document's text; `None` where it is
+/// not a JSON object, has a repeated top-level key, a `nodes`, `links`,
+/// `edges` or `hyperedges` field that is not an array, or no `nodes`.
+fn stream_candidate(bytes: &[u8]) -> Option<Candidate> {
+    use serde::de::Deserializer as _;
+    let mut deserializer = serde_json::Deserializer::from_slice(bytes);
+    let document = (&mut deserializer)
+        .deserialize_map(CandidateVisitor {
+            workers: crate::par::workers(None),
+        })
+        .ok()?;
+    deserializer.end().ok()?;
+    let nodes = document.nodes?;
+    let has = |key: &str| document.entries.iter().any(|(k, _)| k == key);
+    let edges_key = if !has("links") && has("edges") {
+        "edges"
+    } else {
+        "links"
+    };
+    // `canonical_graph_digest(document, false)`: `built_at_commit` left out,
+    // `directed` always present as a boolean.
+    let directed = json!(
+        document
+            .entries
+            .iter()
+            .find(|(k, _)| k == "directed")
+            .and_then(|(_, entry)| match entry {
+                StreamEntry::Value(value) => value.as_bool(),
+                StreamEntry::Records(_) => None,
+            })
+            .unwrap_or(false)
+    );
+    // The keys are distinct (a repeated one is declined above), so the map
+    // holds every entry, in the sorted order the digest reads them.
+    let mut entries = document
+        .entries
+        .into_iter()
+        .filter(|(k, _)| k != "built_at_commit")
+        .collect::<BTreeMap<_, _>>();
+    entries.insert("directed".into(), StreamEntry::Value(directed));
+    let full = digest_entries(entries.iter_mut().map(|(k, entry)| {
+        (
+            k.as_str(),
+            match entry {
+                StreamEntry::Records(digests) => DigestEntry::Records(std::mem::take(digests)),
+                StreamEntry::Value(value) => DigestEntry::Value(&*value),
+            },
+        )
+    }));
+    Some(Candidate::Streamed {
+        full,
+        nodes,
+        edges_key,
+    })
+}
+/// A top-level field of a streamed document: a sorted array's record
+/// digests, or the value itself.
+enum StreamEntry {
+    Records(Vec<[u8; 32]>),
+    Value(Value),
+}
+struct StreamedDocument {
+    entries: Vec<(String, StreamEntry)>,
+    nodes: Option<Vec<NodeFacts>>,
+}
+struct CandidateVisitor {
+    workers: usize,
+}
+impl<'de> serde::de::Visitor<'de> for CandidateVisitor {
+    type Value = StreamedDocument;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a graph object")
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(
+        self,
+        mut map: A,
+    ) -> std::result::Result<StreamedDocument, A::Error> {
+        let mut document = StreamedDocument {
+            entries: vec![],
+            nodes: None,
+        };
+        while let Some(key) = map.next_key::<String>()? {
+            if document.entries.iter().any(|(k, _)| *k == key) {
+                return Err(serde::de::Error::custom("repeated key"));
+            }
+            let entry = if SORTED_ARRAYS.contains(&key.as_str()) {
+                let mut facts = (key == "nodes").then(Vec::new);
+                let digests = map.next_value_seed(RecordDigests {
+                    workers: self.workers,
+                    facts: facts.as_mut(),
+                })?;
+                if facts.is_some() {
+                    document.nodes = facts;
+                }
+                StreamEntry::Records(digests)
+            } else {
+                StreamEntry::Value(map.next_value()?)
+            };
+            document.entries.push((key, entry));
+        }
+        Ok(document)
+    }
+}
+/// The canonical digests of an array's records ([`record_digests`]), made a
+/// batch at a time on the run's workers; with `facts`, each record's
+/// [`NodeFacts`] too.
+struct RecordDigests<'a> {
+    workers: usize,
+    facts: Option<&'a mut Vec<NodeFacts>>,
+}
+impl<'de> serde::de::DeserializeSeed<'de> for RecordDigests<'_> {
+    type Value = Vec<[u8; 32]>;
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> std::result::Result<Self::Value, D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+impl<'de> serde::de::Visitor<'de> for RecordDigests<'_> {
+    type Value = Vec<[u8; 32]>;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("an array of records")
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(
+        mut self,
+        mut seq: A,
+    ) -> std::result::Result<Self::Value, A::Error> {
+        const BATCH: usize = 8192;
+        let mut digests = Vec::new();
+        let mut batch = Vec::with_capacity(BATCH);
+        loop {
+            let item = seq.next_element::<Value>()?;
+            let done = item.is_none();
+            if let Some(item) = item {
+                if let Some(facts) = self.facts.as_mut() {
+                    facts.push(NodeFacts::of(&item));
+                }
+                batch.push(item);
+            }
+            if batch.len() == BATCH || done {
+                digests.extend(record_digests(&batch, self.workers, None));
+                batch.clear();
+            }
+            if done {
+                return Ok(digests);
+            }
+        }
+    }
+}
+/// The graph stored at `path` as [`paths::load_node_link_graph_owned`]
+/// loads its parsed document, streamed from the text where the streaming
+/// loader takes it. With `aggregate_above`, a graph with more nodes than
+/// that is loaded as its topology alone: the HTML then renders the
+/// aggregated community view, which reads no node or edge attribute.
+fn load_stored_graph(
+    path: &Path,
+    edges_key: &str,
+    aggregate_above: Option<i64>,
+) -> Result<crate::graph::Graph> {
+    let text = fs::read_to_string(path).map_err(crate::Error::from)?;
+    if let Some(limit) = aggregate_above
+        && let Some(graph) = crate::graph::Graph::from_node_link_json_topology(&text, edges_key)
+        && graph.nodes.len() as i64 > limit
+    {
+        return Ok(graph);
+    }
+    if let Some(graph) = crate::graph::Graph::from_node_link_json_with_arcs(&text, edges_key) {
+        return Ok(graph);
+    }
+    let data = serde_json::from_str::<Value>(&text).map_err(crate::Error::from)?;
+    drop(text);
+    paths::load_node_link_graph_owned(data)
 }
 fn stamp_manifest(
     out: &Path,
@@ -1035,15 +1641,23 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     }
     let mut detector = detect::Detector::default();
     let graph_path = out.join("graph.json");
-    // The stored graph is parsed while the corpus is detected: neither reads
-    // the other, and a detection error still takes precedence.
-    let (detected, existing) = std::thread::scope(|scope| {
+    // The stored graph is parsed, and the ignore rules reconcile consults are
+    // loaded (which may run `git ls-files`), while the corpus is detected:
+    // none reads the others. A detection error still takes precedence, and an
+    // error loading the ignore rules still surfaces after extraction.
+    let (detected, existing, mut ignore_states) = std::thread::scope(|scope| {
         let loading = scope.spawn(|| {
             if graph_path.exists() {
                 read_graph(&graph_path)
             } else {
                 Ok(json!({}))
             }
+        });
+        let ignoring = scope.spawn(|| {
+            let mut warning = detect::EncodingWarnings::default();
+            let always = detect::IgnoreState::new(&watch_root, &excludes, false, &mut warning)?;
+            let all = detect::IgnoreState::new(&watch_root, &excludes, gitignore, &mut warning)?;
+            Ok::<_, crate::Error>((always, all, warning))
         });
         let detected = detector.detect(
             path,
@@ -1054,10 +1668,13 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 ..Default::default()
             },
         );
-        let existing = loading
-            .join()
-            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-        (detected, existing)
+        fn join<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
+            handle
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        }
+        let existing = join(loading);
+        (detected, existing, join(ignoring))
     });
     let detected = detected?;
     // The equality skips below compare parsed data, not layout: a multi-line
@@ -1076,7 +1693,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         .collect::<Vec<_>>();
     code.extend(docs.clone());
     timer.mark("detect");
-    let existing = std::sync::Arc::new(existing?);
+    let existing = existing?;
     timer.mark("load_existing");
     if code.is_empty() && !graph_path.exists() {
         result
@@ -1085,7 +1702,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         return Ok(result);
     }
     let sp = StoredSourcePaths::new(&existing, out, &project_root, &watch_root);
-    let semantic = items(&existing, "nodes")
+    let semantic = items_ref(&existing, "nodes")
         .iter()
         .filter(|n| {
             !build::is_ast_tier(n)
@@ -1168,14 +1785,6 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             .cloned()
             .collect()
     };
-    // What the rest of the rebuild reads from the stored graph once the new
-    // graph is built (its comparison digests, communities and shrink base) is
-    // taken beside extraction, so that the stored document (about as large as
-    // the new graph) can be released before the new graph is built.
-    let stored_job = {
-        let existing = existing.clone();
-        std::thread::spawn(move || StoredGraph::of(&existing))
-    };
     let mut context_nodes = vec![];
     let mut context_edges = vec![];
     if !full && graph_path.exists() {
@@ -1189,10 +1798,10 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                         .any(|p| sp.absolute_identity(&p.to_string_lossy(), &project_root) == *s)
             })
             .collect::<BTreeSet<_>>();
-        for n in items(&existing, "nodes") {
-            if text(&n, "id").is_empty()
-                || !build::is_ast_tier(&n)
-                || !live.contains(&sp.identity(&text(&n, "source_file")))
+        for n in items_ref(&existing, "nodes") {
+            if text(n, "id").is_empty()
+                || !build::is_ast_tier(n)
+                || !live.contains(&sp.identity(&text(n, "source_file")))
             {
                 continue;
             }
@@ -1201,7 +1810,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 c[k] = n[k].clone();
             }
             // `--routes`: requests in re-extracted files reach stored routes.
-            if text(&n, "node_kind") == "route" {
+            if text(n, "node_kind") == "route" {
                 for k in ["node_kind", "route_method", "route_path"] {
                     c[k] = n[k].clone();
                 }
@@ -1215,6 +1824,8 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 "_ts_public_twin",
                 "_py_property",
                 "_java_ret",
+                "_ts_fields",
+                "_ts_static_fields",
             ] {
                 if build::truthy(&n[k]) {
                     c[k] = n[k].clone();
@@ -1243,7 +1854,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             }
             context_nodes.push(c);
         }
-        for e in items(
+        for e in items_ref(
             &existing,
             if existing.get("links").is_some() {
                 "links"
@@ -1251,9 +1862,12 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 "edges"
             },
         ) {
-            if !["contains", "method", "inherits"].contains(&text(&e, "relation").as_str())
-                || !build::is_ast_tier(&e)
-                || !live.contains(&sp.identity(&text(&e, "source_file")))
+            // Import edges come too (0.9.91): a TS field inherited from an
+            // unchanged file is typed by that file's imports, as in a full build.
+            if !["contains", "method", "inherits", "imports", "imports_from"]
+                .contains(&text(e, "relation").as_str())
+                || !build::is_ast_tier(e)
+                || !live.contains(&sp.identity(&text(e, "source_file")))
             {
                 continue;
             }
@@ -1275,46 +1889,81 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         }
     }
     timer.mark("context");
-    // The ignore rules reconcile consults (loading them may run `git
-    // ls-files`) are read while extraction runs; an error loading them still
-    // surfaces after extraction, as before.
-    let (extraction, ignore_states) = std::thread::scope(|scope| {
-        let ignore_states = scope.spawn(|| {
-            let mut warning = detect::EncodingWarnings::default();
-            let always = detect::IgnoreState::new(&watch_root, &excludes, false, &mut warning)?;
-            let all = detect::IgnoreState::new(&watch_root, &excludes, gitignore, &mut warning)?;
-            Ok::<_, crate::Error>((always, all, warning))
-        });
-        let extraction = if targets.is_empty() {
-            Ok(json!({"nodes":[],"edges":[],"hyperedges":[],"input_tokens":0,"output_tokens":0}))
-        } else {
-            extract::extract(
-                &targets,
-                &extract::ExtractOptions {
-                    cache_root: Some(watch_root.clone()),
-                    resolution_context_nodes: context_nodes,
-                    resolution_context_edges: context_edges,
-                    ..Default::default()
+    // Everything the rest of the rebuild reads from the stored graph is taken
+    // now, before extraction: the comparison digests, communities and shrink
+    // base once the new graph is built, and what reconcile keeps of it (its
+    // eviction decisions and the records that may survive; see
+    // `watch_reconcile::plan`). The stored document, about as large as the
+    // new graph, is then released before the new graph is extracted.
+    // `--no-cluster` compares the whole stored document below and keeps it.
+    let (mut stored, plan) = std::thread::scope(|scope| {
+        let stored = scope.spawn(|| StoredGraph::of(&existing));
+        let plan = ignore_states.as_mut().ok().map(|(always, all, warning)| {
+            crate::watch_reconcile::plan(
+                &existing,
+                &crate::watch_reconcile::ReconcileOptions {
+                    out,
+                    project_root: &project_root,
+                    watch_root: &watch_root,
+                    code_files: &code,
+                    extract_targets: &targets,
+                    full,
+                    deleted_paths: &mut deleted,
+                    deleted_identities: &deleted_ids,
+                },
+                |p, full| {
+                    if full {
+                        all.predicate(p, warning).unwrap_or(false)
+                    } else {
+                        always.predicate(p, warning).unwrap_or(false)
+                    }
                 },
             )
-        };
-        let ignore_states = ignore_states
+        });
+        let stored = stored
             .join()
             .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-        (extraction, ignore_states)
+        (stored, plan)
     });
+    // Freed here and handed back to the system at once (`par::trim`): on a
+    // small repository the whole rebuild is shorter than the allocator's
+    // purge delay, and the extraction would otherwise grow on top of it.
+    let existing = if o.no_cluster {
+        existing
+    } else {
+        drop(existing);
+        crate::par::trim();
+        Value::Null
+    };
+    timer.mark("plan");
+    let extraction = if targets.is_empty() {
+        Ok(json!({"nodes":[],"edges":[],"hyperedges":[],"input_tokens":0,"output_tokens":0}))
+    } else {
+        extract::extract(
+            &targets,
+            &extract::ExtractOptions {
+                cache_root: Some(watch_root.clone()),
+                resolution_context_nodes: context_nodes,
+                resolution_context_edges: context_edges,
+                ..Default::default()
+            },
+        )
+    };
     let mut extraction = extraction?;
     timer.mark("extract");
     rebase(&mut extraction, &watch_root, &project_root);
-    let failed = items(&extraction, "failed_sources")
+    let failed = items_ref(&extraction, "failed_sources")
         .iter()
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
-    let (mut always, mut all, mut warning) = ignore_states?;
-    if graph_path.exists() {
-        extraction = crate::watch_reconcile::reconcile(
-            &existing,
+    // An error loading the ignore rules surfaces here, after extraction.
+    ignore_states?;
+    if graph_path.exists()
+        && let Some(plan) = plan
+    {
+        extraction = crate::watch_reconcile::finish(
+            plan,
             extraction,
             &mut crate::watch_reconcile::ReconcileOptions {
                 out,
@@ -1325,13 +1974,6 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 full,
                 deleted_paths: &mut deleted,
                 deleted_identities: &deleted_ids,
-            },
-            |p, full| {
-                if full {
-                    all.predicate(p, &mut warning).unwrap_or(false)
-                } else {
-                    always.predicate(p, &mut warning).unwrap_or(false)
-                }
             },
             &mut result.messages,
         )?;
@@ -1360,9 +2002,9 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         // deduplicated (#1317). Run-only extraction keys are left out, and
         // hyperedges are always written so a first build and a reconciled
         // rebuild of one tree give the same file (0.9.80).
-        let mut nodes = build::dedupe_nodes(&items(&extraction, "nodes"))?;
+        let mut nodes = build::dedupe_nodes(items_ref(&extraction, "nodes"))?;
         build::disambiguate_file_labels_in_nodes(&mut nodes);
-        let links = build::dedupe_edges(&items(&extraction, "edges"))?;
+        let links = build::dedupe_edges(items_ref(&extraction, "edges"))?;
         let mut candidate = serde_json::Map::new();
         for (k, v) in extraction.as_object().into_iter().flatten() {
             if !matches!(k.as_str(), "edges" | "nodes")
@@ -1414,33 +2056,27 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             .map_err(crate::Error::from)?;
         stamp_manifest(out, &detected, &watch_root, &failed)?;
         result.success = true;
-        result.nodes = items(&candidate, "nodes").len();
-        result.edges = items(&candidate, "links").len();
+        result.nodes = items_ref(&candidate, "nodes").len();
+        result.edges = items_ref(&candidate, "links").len();
         return Ok(result);
     }
-    let mut stored = stored_job
-        .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-    crate::par::drop_later(existing);
-    let graph = build::build_from_json(
+    // The extraction's records move into the graph (nothing reads them
+    // after the build), so the build holds one copy of them, not two.
+    let graph = build::build_from_json_consuming(
         &mut extraction,
         stored.directed,
         None,
         &mut build::Diagnostics::default(),
     )?;
-    // Nothing reads the extraction after the build.
+    // Nothing reads the extraction after the build; its records are handed
+    // back before clustering allocates, as `extract` does.
     drop(extraction);
+    crate::par::trim();
     timer.mark("build");
-    let mut topology = graph.to_node_link("links");
-    topology["hyperedges"] = graph
-        .attributes
-        .get("hyperedges")
-        .cloned()
-        .unwrap_or(json!([]));
-    let topology_unchanged = graph_path.exists()
-        && !legacy_layout
-        && stored.topology == canonical_graph_digest(&topology, true);
-    crate::par::drop_later(topology);
+    // The digest is made from the graph's records one at a time, not from its
+    // node-link document (`graph_topology_digest`).
+    let topology_unchanged =
+        graph_path.exists() && !legacy_layout && stored.topology == graph_topology_digest(&graph);
     timer.mark("topology_compare");
     if topology_unchanged {
         stamp_manifest(out, &detected, &watch_root, &failed)?;
@@ -1458,44 +2094,25 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     let mut communities = cluster::cluster(&graph, 1.0, None, "auto")?;
     let previous = std::mem::take(&mut stored.communities);
     if !previous.is_empty() {
-        let previous = previous.into_iter().map(|(k, v)| (json!(k), v)).collect();
+        let previous = previous.iter().map(|(k, v)| (json!(k), *v)).collect();
         communities = cluster::remap_communities_to_previous(&communities, &previous)?;
     }
     timer.mark("cluster");
     let cur_sigs = cluster::community_member_sigs(&communities);
     let label_file = out.join(".graphicle_labels.json");
     let sig_file = out.join(".graphicle_labels.json.sig");
-    let raw = fs::read(&label_file)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .unwrap_or(json!({}));
-    let saved = fs::read(&sig_file)
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .unwrap_or(json!({}));
-    let mut labels = json!({});
-    let mut missing = vec![];
-    for (cid, members) in &communities {
-        let key = cid.to_string();
-        let fresh = if saved.as_object().is_some_and(|m| !m.is_empty()) {
-            saved[&key] == cur_sigs[&key]
-        } else {
-            raw.as_object()
-                .is_some_and(|m| m.len() == communities.len())
-        };
-        if fresh
-            && raw[&key]
-                .as_str()
-                .is_some_and(|s| s != format!("Community {cid}"))
-        {
-            labels[&key] = raw[&key].clone();
-        } else {
-            missing.push((*cid, members.clone()));
-        }
-    }
-    if let Some(m) = cluster::label_communities_by_hub(&graph, &missing).as_object() {
-        labels.as_object_mut().unwrap().extend(m.clone());
-    }
+    // Hub-fallback names live in their own sidecar (#3334), so the tracked
+    // labels file only ever holds names someone set (manual or LLM).
+    let pending_file = out.join(PENDING_LABELS_FILE);
+    let (labels, pending_cids) = rebuild_labels(
+        &graph,
+        &communities,
+        &previous,
+        &cur_sigs,
+        &label_file,
+        &sig_file,
+        &pending_file,
+    );
     timer.mark("labels");
     let commit = export::git_head(Some(&watch_root));
     timer.mark("git_head");
@@ -1553,21 +2170,26 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     let (graph_nodes, graph_edges) = (graph.nodes.len(), graph.edge_count());
     drop(communities);
     drop(graph);
-    let candidate = read_graph(&tmp)?;
+    crate::par::trim();
+    // Read record by record (`read_candidate`) unless the shrink check reads
+    // whole nodes.
+    let candidate = read_candidate(&tmp, has_saved_semantic(&stored.shrink))?;
+    // The reader's batches and buffers are handed back before the query
+    // snapshot and the HTML load the new graph.
+    crate::par::trim();
     let old_report = fs::read_to_string(out.join("GRAPH_REPORT.md")).unwrap_or_default();
     let unchanged = graph_path.exists()
         && !legacy_layout
-        && stored.full == canonical_graph_digest(&candidate, false)
+        && stored.full == candidate.full_digest()
         && report_for_compare(&old_report) == report_for_compare(&report);
     timer.mark("final_compare");
     if unchanged {
         let _ = fs::remove_file(&tmp);
     } else {
         let mut refusal = vec![];
-        if !check_shrink_with(
+        if !candidate.check_shrink(
             o.force,
             &stored.shrink,
-            &candidate,
             !deleted.is_empty(),
             Some(&rebuilt),
             &normalized_failed,
@@ -1583,15 +2205,33 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         paths::os_replace_with_fallback(&tmp, &graph_path).map_err(crate::Error::from)?;
         paths::write_text_atomic(&out.join("GRAPH_REPORT.md"), &report)
             .map_err(crate::Error::from)?;
-        paths::write_text_atomic(&label_file, &labels_text(&labels)?)
+        // Split back into the tracked (curated) file and the pending
+        // (hub-fallback) sidecar (#3334); the report and graph.json above used
+        // the merged labels.
+        let (curated, pending) = split_labels(&labels, &pending_cids);
+        paths::write_text_atomic(&label_file, &labels_text(&curated)?)
             .map_err(crate::Error::from)?;
+        if pending.as_object().is_some_and(|m| !m.is_empty()) {
+            paths::write_text_atomic(&pending_file, &labels_text(&pending)?)
+                .map_err(crate::Error::from)?;
+        } else {
+            // Every community has a curated name, or none is pending this run:
+            // an emptied sidecar would otherwise stay forever.
+            match fs::remove_file(&pending_file) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(crate::Error::from(e));
+                }
+                _ => {}
+            }
+        }
         paths::write_json_atomic(&sig_file, &cur_sigs, None, false).map_err(crate::Error::from)?;
     }
     timer.mark("write_outputs");
     // A full rebuild writes the new graph's query snapshot (see `rebuild`)
-    // while the manifest and HTML are written, instead of after them. A
-    // changed-paths rebuild leaves it to `rebuild`: it may run again for
-    // changes queued meanwhile.
+    // while the manifest is written, instead of after it. A changed-paths
+    // rebuild leaves it to `rebuild`: it may run again for changes queued
+    // meanwhile. The snapshot's graph is released before the HTML loads its
+    // own: two graphs are never resident at once.
     let prewarm = !unchanged && full;
     // The candidate document is read for the last time by the HTML below.
     let mut candidate = Some(candidate);
@@ -1601,8 +2241,26 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             .map_err(crate::Error::from)?;
         stamp_manifest(out, &detected, &watch_root, &failed)?;
         timer.mark("manifest");
+        if let Some(warm) = warm {
+            let _ = warm.join();
+        }
+        crate::par::trim();
+        timer.mark("prewarm");
         if !unchanged && let Some(candidate) = candidate.take() {
-            reconcile_html_owned(out, candidate, &mut result.messages);
+            match candidate {
+                Candidate::Whole(data) => reconcile_html_owned(out, data, &mut result.messages),
+                Candidate::Streamed {
+                    nodes, edges_key, ..
+                } => reconcile_html_with(
+                    out,
+                    HtmlSource::Stored {
+                        path: &graph_path,
+                        nodes,
+                        edges_key,
+                    },
+                    &mut result.messages,
+                ),
+            };
             for entry in fs::read_dir(out).map_err(crate::Error::from)?.flatten() {
                 let p = entry.path();
                 if p.file_name()
@@ -1618,9 +2276,6 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             }
         }
         timer.mark("html");
-        if let Some(warm) = warm {
-            let _ = warm.join();
-        }
         Ok(())
     })?;
     result.prewarmed = prewarm;
@@ -2021,6 +2676,41 @@ mod rebuild_lock_tests {
         };
         assert!(reacquired.is_some());
     }
+
+    /// Windows: the lock covers one byte at offset 4096, as Graphify's
+    /// `msvcrt.locking` does, so another handle can still read the PID.
+    #[cfg(windows)]
+    #[test]
+    fn rebuild_lock_leaves_the_pid_readable_on_windows() {
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join(".graphicle");
+        let held = RebuildLock::acquire(&out, false).unwrap().unwrap();
+        let other = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(out.join(".rebuild.lock"))
+            .unwrap();
+        assert!(!crate::win::try_lock_range(&other, 4096, 1).unwrap());
+        assert!(crate::win::try_lock_range(&other, 0, 1).unwrap());
+        crate::win::unlock_range(&other, 0, 1);
+        let contents = std::fs::read_to_string(out.join(".rebuild.lock")).unwrap();
+        assert_eq!(contents, format!("{}\n", std::process::id()));
+        drop(held);
+        assert!(crate::win::try_lock_range(&other, 4096, 1).unwrap());
+    }
+
+    /// The pending queue round-trips under its lock (on Windows the lock
+    /// needs a handle with read access).
+    #[test]
+    fn pending_changes_queue_then_drain() {
+        let temp = tempfile::tempdir().unwrap();
+        let out = temp.path().join(".graphicle");
+        let a = std::path::PathBuf::from("a.py");
+        let b = std::path::PathBuf::from("b.py");
+        super::queue_pending(&out, &[a.clone(), b.clone(), a.clone()]).unwrap();
+        assert_eq!(super::drain_pending(&out), vec![a, b]);
+        assert!(super::drain_pending(&out).is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -2127,5 +2817,233 @@ mod labels_file_tests {
             "{\n  \"0\": \"日本 \u{2028}\",\n  \"1\": \"a\\\"b\\\\c\",\n  \"2\": \"Große\",\n  \"10\": \"Zeta\"\n}\n"
         );
         assert_eq!(super::labels_text(&json!({})).unwrap(), "{}\n");
+    }
+}
+
+#[cfg(test)]
+mod digest_tests {
+    use super::{
+        Candidate, GRAPH_VERSION_KEYS, SORTED_ARRAYS, canonical_graph_digest,
+        canonical_graph_key_owned, graph_topology_digest, prepared_record, record_view,
+        stream_candidate, topology_graph_metadata,
+    };
+    use serde_json::{Value, json};
+
+    /// `canonical_graph_digest` as written before its entries were hashed
+    /// through `digest_entries`: the oracle for its exact value.
+    fn digest_oracle(data: &Value, topology: bool) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        let Value::Object(top) = data else {
+            h.update(canonical_graph_key_owned(data.clone(), topology));
+            return h.finalize().into();
+        };
+        let directed = json!(data["directed"].as_bool().unwrap_or(false));
+        let mut keys = top
+            .keys()
+            .map(String::as_str)
+            .filter(|k| *k != "built_at_commit")
+            .collect::<Vec<_>>();
+        if !topology && !top.contains_key("directed") {
+            keys.push("directed");
+        }
+        keys.sort_unstable();
+        let mut bytes = Vec::new();
+        let graph_meta = topology_graph_metadata(data, topology);
+        h.update(b"{");
+        for (i, k) in keys.into_iter().enumerate() {
+            if i > 0 {
+                h.update(b",");
+            }
+            bytes.clear();
+            serde_json::to_writer(&mut bytes, k).unwrap();
+            bytes.push(b':');
+            h.update(&bytes);
+            if !topology && k == "directed" {
+                bytes.clear();
+                crate::extract_normalize::write_canonical(&directed, None, &mut bytes);
+                h.update(&bytes);
+                continue;
+            }
+            match &top[k] {
+                Value::Array(items) if SORTED_ARRAYS.contains(&k) => {
+                    let rewritten = topology && matches!(k, "nodes" | "links" | "edges");
+                    let mut digests = items
+                        .iter()
+                        .filter_map(|item| {
+                            let encoded = if rewritten {
+                                prepared_record(item, k == "nodes")
+                            } else {
+                                Some(crate::extract_normalize::canonical_bytes(item))
+                            };
+                            encoded.map(|e| <[u8; 32]>::from(Sha256::digest(&e)))
+                        })
+                        .collect::<Vec<_>>();
+                    digests.sort_unstable();
+                    h.update(b"[");
+                    for (j, d) in digests.iter().enumerate() {
+                        if j > 0 {
+                            h.update(b",");
+                        }
+                        h.update(d);
+                    }
+                    h.update(b"]");
+                }
+                other => {
+                    bytes.clear();
+                    crate::extract_normalize::write_canonical(
+                        graph_meta
+                            .as_ref()
+                            .filter(|_| k == "graph")
+                            .unwrap_or(other),
+                        None,
+                        &mut bytes,
+                    );
+                    h.update(&bytes);
+                }
+            }
+        }
+        h.update(b"}");
+        h.finalize().into()
+    }
+
+    /// Graph documents as a rebuild writes and compares them, plus the
+    /// unusual shapes the digest still has to encode.
+    fn documents() -> Vec<Value> {
+        let node = |id: &str, c: i64| {
+            json!({"label": id, "file_type": "code", "source_file": "a.rs",
+                   "source_location": "L1", "community": c, "community_name": format!("C{c}"),
+                   "norm_label": id, "_origin": "ast", "id": id})
+        };
+        let edge = |s: &str, t: &str, r: &str| {
+            json!({"relation": r, "confidence": "EXTRACTED", "source_file": "a.rs",
+                   "_src": s, "_tgt": t, "confidence_score": 1.0, "weight": 1.0,
+                   "source": t, "target": s})
+        };
+        assert_eq!(crate::export::GRAPH_VERSION_KEY, "graphicle_version");
+        vec![
+            json!({"directed": false, "multigraph": false,
+                   "graph": {"hyperedges": [{"id": "h", "nodes": ["a", "b"]}],
+                             "graphicle_version": "0.1.0", "schema_version": 2},
+                   "nodes": [node("a", 0), node("b", 1), node("c", 0)],
+                   "links": [edge("a", "b", "calls"), edge("b", "c", "imports"), edge("a", "b", "calls")],
+                   "hyperedges": [{"id": "h", "nodes": ["a", "b"]}], "built_at_commit": "abc"}),
+            json!({"directed": true, "multigraph": true, "graph": {},
+                   "nodes": [node("x", 3), {"id": 5, "label": 1.50}, "stray", {"label": "no id"}],
+                   "links": [{"source": "x", "target": 5, "key": 0, "relation": "r"},
+                             {"source": 5, "target": "x", "key": "k", "w": [2, {"b": 1, "a": null}]}],
+                   "hyperedges": []}),
+            json!({"nodes": [], "edges": [edge("a", "b", "calls")], "directed": 1}),
+            json!({"nodes": [node("a", 1)], "links": [], "hyperedges": "none", "extra": [3, 1, 2]}),
+            json!({"graph": {"graphify_version": "0.9.88"}, "nodes": [node("q", 2)], "links": []}),
+        ]
+    }
+
+    #[test]
+    fn digest_keeps_its_former_value() {
+        let mut documents = documents();
+        documents.extend([json!({}), json!(null)]);
+        for document in &documents {
+            for topology in [false, true] {
+                assert_eq!(
+                    canonical_graph_digest(document, topology),
+                    digest_oracle(document, topology),
+                    "{document} topology={topology}"
+                );
+            }
+        }
+    }
+
+    /// The rebuild's topology digest of a built graph equals the digest of
+    /// the node-link document it used to build for the comparison.
+    #[test]
+    fn topology_digest_of_a_graph_matches_its_document() {
+        for document in documents() {
+            let edges_key = if document.get("links").is_some() {
+                "links"
+            } else {
+                "edges"
+            };
+            let Ok(graph) =
+                crate::graph::Graph::from_node_link_owned_with_arcs(document.clone(), edges_key)
+            else {
+                continue;
+            };
+            let mut topology = graph.to_node_link("links");
+            topology["hyperedges"] = graph
+                .attributes
+                .get("hyperedges")
+                .cloned()
+                .unwrap_or(json!([]));
+            assert_eq!(
+                graph_topology_digest(&graph),
+                canonical_graph_digest(&topology, true),
+                "{document}"
+            );
+            assert_eq!(
+                graph_topology_digest(&graph),
+                digest_oracle(&topology, true),
+                "{document}"
+            );
+        }
+        let mut graph = crate::graph::Graph::new(false, true);
+        graph.attributes = json!("not an object");
+        assert_eq!(
+            graph_topology_digest(&graph),
+            digest_oracle(
+                &{
+                    let mut t = graph.to_node_link("links");
+                    t["hyperedges"] = json!([]);
+                    t
+                },
+                true
+            )
+        );
+        assert!(GRAPH_VERSION_KEYS.contains(&crate::export::GRAPH_VERSION_KEY));
+    }
+
+    /// A streamed candidate has the whole document's digest and, per node,
+    /// what the shrink check and the HTML read; documents it does not take
+    /// whole-record-wise are declined.
+    #[test]
+    fn streamed_candidate_matches_the_document() {
+        for document in documents() {
+            let text = serde_json::to_vec(&document).unwrap();
+            let Some(Candidate::Streamed {
+                full,
+                nodes,
+                edges_key,
+            }) = stream_candidate(&text)
+            else {
+                assert!(
+                    document["hyperedges"].is_string() || !document["nodes"].is_array(),
+                    "{document}"
+                );
+                continue;
+            };
+            assert_eq!(full, digest_oracle(&document, false), "{document}");
+            let records = document["nodes"].as_array().unwrap();
+            assert_eq!(nodes.len(), records.len());
+            for (facts, record) in nodes.iter().zip(records) {
+                assert_eq!(facts.view(), record_view(record));
+                assert_eq!(facts.id.to_string(), record["id"].to_string());
+            }
+            let expected = if document.get("links").is_none() && document.get("edges").is_some() {
+                "edges"
+            } else {
+                "links"
+            };
+            assert_eq!(edges_key, expected);
+        }
+        for text in [
+            r#"{"nodes":[],"links":[],"links":[]}"#,
+            r#"{"nodes":{},"links":[]}"#,
+            r#"{"links":[]}"#,
+            r#"[]"#,
+            r#"{"nodes":[],"links":[]} trailing"#,
+            r#"{"nodes":[],"hyperedges":null}"#,
+        ] {
+            assert!(stream_candidate(text.as_bytes()).is_none(), "{text}");
+        }
     }
 }

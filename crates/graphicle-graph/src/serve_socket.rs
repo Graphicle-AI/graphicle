@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Beyond the upstream port (opt-in): a resident server for the CLI's read-only graph
 //! commands.
@@ -46,7 +46,9 @@ const FORWARDED: &[&str] = &[
 ];
 /// Flags that switch process-wide modes; commands using them run locally.
 const MODE_FLAGS: &[&str] = &["precise", "retrieval", "docs", "routes"];
+#[cfg(unix)]
 const MAX_REQUEST: u64 = 1 << 20;
+#[cfg(unix)]
 const MAX_RESPONSE: u64 = 64 << 20;
 const PROTOCOL: u64 = 1;
 

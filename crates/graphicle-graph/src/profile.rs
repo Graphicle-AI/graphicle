@@ -42,20 +42,30 @@ fn cpu_seconds() -> f64 {
     }
 }
 
+/// The process's peak resident set so far, in bytes (`ru_maxrss`; 0 where
+/// unavailable). One system call, whether or not profiling is on.
+pub fn peak_resident_bytes() -> u64 {
+    #[cfg(unix)]
+    {
+        rusage().map_or(0, |u| {
+            // ru_maxrss is bytes on macOS and KiB elsewhere.
+            let raw = u64::try_from(u.ru_maxrss).unwrap_or(0);
+            if cfg!(target_os = "macos") {
+                raw
+            } else {
+                raw * 1024
+            }
+        })
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 /// Resident set now and at its peak, in MiB (0 where unavailable).
 fn resident_mib() -> (f64, f64) {
-    #[cfg(unix)]
-    let peak = rusage().map_or(0.0, |u| {
-        // ru_maxrss is bytes on macOS and KiB elsewhere.
-        let raw = u.ru_maxrss as f64;
-        if cfg!(target_os = "macos") {
-            raw / 1048576.0
-        } else {
-            raw / 1024.0
-        }
-    });
-    #[cfg(not(unix))]
-    let peak = 0.0;
+    let peak = peak_resident_bytes() as f64 / 1048576.0;
     #[cfg(target_os = "linux")]
     let now = std::fs::read_to_string("/proc/self/statm")
         .ok()
@@ -121,9 +131,16 @@ pub fn report(name: &str, wall: f64, cpu: f64) {
         return;
     }
     let (now, peak) = resident_mib();
+    // The shared value table (`crate::vtab`): distinct scalars, their text
+    // and slot bytes, and the record write-backs and array/object spills.
+    let table = crate::vtab::stats();
     eprintln!(
-        "[graphicle profile] {name} wall={wall:.3}s cpu={cpu:.3}s cores={:.1} rss={now:.0}MiB peak={peak:.0}MiB",
+        "[graphicle profile] {name} wall={wall:.3}s cpu={cpu:.3}s cores={:.1} rss={now:.0}MiB peak={peak:.0}MiB vtab={}/{:.0}MiB writebacks={} spills={}",
         if wall > 0.0 { cpu / wall } else { 0.0 },
+        table.values,
+        (table.text_bytes + table.slot_bytes) as f64 / 1048576.0,
+        table.write_backs,
+        table.spills,
     );
 }
 

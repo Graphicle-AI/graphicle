@@ -1,6 +1,7 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Complete native AST corpus extraction and cross-file assembly.
+pub mod per_file;
 use crate::{
     Result,
     cache::{self, CacheOptions, ExtractionCache},
@@ -13,8 +14,10 @@ use crate::{
         resolution_types as types,
     },
     rcfile::effective_suffix,
-    resolver_registry::{self, LanguageResolver},
+    record::Attributes,
+    resolver_registry::{self, EdgeList, LanguageResolver, Rec, rs},
 };
+use per_file::{FileRecords, PerFile, PerList, per_dispatch};
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -302,14 +305,48 @@ fn default_root(paths: &[PathBuf]) -> PathBuf {
 }
 fn run_defaults(
     paths: &[PathBuf],
-    per: &mut Vec<Value>,
+    per: &mut PerList,
     nodes: &mut Vec<Value>,
-    edges: &mut Vec<Value>,
+    edges: &mut EdgeList,
 ) {
     register_resolvers();
-    for warning in resolver_registry::run_language_resolvers(paths, per, nodes, edges, None) {
+    for warning in resolver_registry::run_language_resolvers_on(paths, per, nodes, edges, None) {
         log::warn!("{}", warning.message);
     }
+}
+/// Register a member pass written once over [`PerFile`] results and [`Rec`]
+/// edges together with its record-native form: the JSON entry runs `$body`
+/// on JSON lists, the native one on the lists as assembly holds them
+/// (`$per` is the per-file slice, `$nodes` the nodes, `$edges` the edges).
+macro_rules! member_pass {
+    ($name:expr, $ext:expr, |$per:ident, $nodes:ident, $edges:ident| $body:expr) => {{
+        let resolve: Arc<resolver_registry::Resolve> = Arc::new(
+            move |per: &mut Vec<Value>, $nodes: &mut Vec<Value>, $edges: &mut Vec<Value>| {
+                let $per = &per[..];
+                $body;
+                Ok(())
+            },
+        );
+        let records: Arc<resolver_registry::ResolveRecords> = Arc::new(
+            move |per: &mut PerList, $nodes: &mut Vec<Value>, $edges: &mut Vec<Attributes>| {
+                #[cfg(test)]
+                crate::extract_members::NATIVE_RUNS.with(|runs| runs.borrow_mut().push($name));
+                per_dispatch!(per, per => {
+                    let $per = &per[..];
+                    $body;
+                });
+                Ok(())
+            },
+        );
+        resolver_registry::register_native(
+            LanguageResolver {
+                name: $name.into(),
+                suffixes: $ext.iter().map(|s| s.to_string()).collect(),
+                resolve,
+            },
+            records,
+        );
+    }};
 }
 pub fn register_resolvers() {
     static REGISTERED: OnceLock<()> = OnceLock::new();
@@ -329,18 +366,13 @@ pub fn register_resolvers() {
                 Ok(())
             }),
         );
+        // The member passes read the per-file results and the edges in
+        // either form, so none of them turns assembly's lists back to JSON.
         for (name, lang, ext) in [
             ("swift_member_calls", "swift", vec![".swift"]),
             ("python_member_calls", "python", vec![".py"]),
         ] {
-            add(
-                name,
-                &ext,
-                Arc::new(move |p, n, e| {
-                    members::resolve_members(lang, p, n, e);
-                    Ok(())
-                }),
-            );
+            member_pass!(name, ext, |p, n, e| members::resolve_members(lang, p, n, e));
         }
         add(
             "ruby_member_calls",
@@ -351,7 +383,9 @@ pub fn register_resolvers() {
             (
                 "typescript_member_calls",
                 "typescript",
-                vec![".ts", ".tsx", ".mts", ".cts", ".js", ".jsx"],
+                // Every suffix the TS/JS extractors claim, so a pure-ESM
+                // (`.mjs`) repo still activates the resolver.
+                vec![".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"],
             ),
             (
                 "cpp_member_calls",
@@ -363,23 +397,11 @@ pub fn register_resolvers() {
             ("java_member_calls", "java", vec![".java"]),
             ("php_member_calls", "php", vec![".php"]),
         ] {
-            add(
-                name,
-                &ext,
-                Arc::new(move |p, n, e| {
-                    members::resolve_members(lang, p, n, e);
-                    Ok(())
-                }),
-            );
+            member_pass!(name, ext, |p, n, e| members::resolve_members(lang, p, n, e));
         }
-        add(
-            "rust_self_member_calls",
-            &[".rs"],
-            Arc::new(|p, n, e| {
-                members::rust_self_calls(p, n, e);
-                Ok(())
-            }),
-        );
+        member_pass!("rust_self_member_calls", [".rs"], |p, n, e| {
+            members::rust_self_calls(p, n, e)
+        });
         add(
             "vbnet_partial_calls",
             &[".vb"],
@@ -412,51 +434,31 @@ pub fn register_resolvers() {
                 Ok(())
             }),
         );
-        add(
-            "elixir_import_targets",
-            &[".ex", ".exs"],
-            Arc::new(|_, n, e| {
-                members::elixir_imports(n, e);
-                Ok(())
-            }),
-        );
-        add(
-            "elixir_qualified_calls",
-            &[".ex", ".exs"],
-            Arc::new(|p, n, e| {
-                members::elixir_qualified_calls(p, n, e);
-                Ok(())
-            }),
-        );
+        member_pass!("elixir_import_targets", [".ex", ".exs"], |_p, n, e| {
+            members::elixir_imports(n, e)
+        });
+        member_pass!("elixir_qualified_calls", [".ex", ".exs"], |p, n, e| {
+            members::elixir_qualified_calls(p, n, e)
+        });
         add(
             "pascal_inherited_calls",
             &[".pas", ".pp", ".dpr", ".dpk", ".inc"],
             Arc::new(|p, n, e| crate::pascal_resolution::resolve_pascal_inherited_calls(p, n, e)),
         );
-        add(
-            "kotlin_qualified_calls",
-            &[".kt", ".kts"],
-            Arc::new(|p, n, e| {
-                members::qualified_calls("kotlin", p, n, e);
-                Ok(())
-            }),
-        );
-        add(
-            "kotlin_member_calls",
-            &[".kt", ".kts"],
-            Arc::new(|p, n, e| {
-                members::kotlin_members(p, n, e);
-                Ok(())
-            }),
-        );
-        add(
-            "csharp_qualified_calls",
-            &[".cs"],
-            Arc::new(|p, n, e| {
-                members::qualified_calls("csharp", p, n, e);
-                Ok(())
-            }),
-        );
+        member_pass!("kotlin_qualified_calls", [".kt", ".kts"], |p, n, e| {
+            members::qualified_calls("kotlin", p, n, e)
+        });
+        member_pass!("kotlin_member_calls", [".kt", ".kts"], |p, n, e| {
+            members::kotlin_members(p, n, e)
+        });
+        // Go receiver-typed member calls (`g.Greet()` on a type declared in
+        // another file); the shared pass skips member calls.
+        member_pass!("go_member_calls", [".go"], |p, n, e| {
+            members::go_members(p, n, e)
+        });
+        member_pass!("csharp_qualified_calls", [".cs"], |p, n, e| {
+            members::qualified_calls("csharp", p, n, e)
+        });
         add(
             "csharp_interface_dispatch",
             &[".cs"],
@@ -475,6 +477,79 @@ pub fn register_resolvers() {
                 Ok(())
             }),
         );
+        // These passes also run on the per-file results and the edges in
+        // whichever form assembly holds them, so neither list converts for
+        // them; each is the JSON pass above, written once over both forms.
+        for (name, any) in [
+            (
+                "terraform_modules",
+                resolver_registry::any_form!(|p, n, e| {
+                    extractors::terraform::resolve_terraform_modules_any(p, n, e);
+                    Ok(())
+                }),
+            ),
+            (
+                "ruby_member_calls",
+                resolver_registry::any_form!(|p, n, e| {
+                    crate::ruby_resolution::resolve_ruby_member_calls_any(p, n, e)
+                }),
+            ),
+            (
+                "vbnet_partial_calls",
+                resolver_registry::any_form!(|p, n, e| {
+                    extractors::vbnet::resolve_vbnet_partial_calls_any(p, n, e);
+                    Ok(())
+                }),
+            ),
+            (
+                "r_sourced_calls",
+                resolver_registry::any_form!(|p, n, e| {
+                    extractors::r::resolve_r_sourced_calls_any(p, n, e);
+                    Ok(())
+                }),
+            ),
+            (
+                "solidity_type_references",
+                resolver_registry::any_form!(|p, n, e| {
+                    extractors::solidity::resolve_solidity_type_references_any(p, n, e);
+                    Ok(())
+                }),
+            ),
+            (
+                "erlang_remote_calls",
+                resolver_registry::any_form!(|p, n, e| {
+                    extractors::erlang::resolve_erlang_remote_calls_any(p, n, e);
+                    Ok(())
+                }),
+            ),
+            (
+                "pascal_inherited_calls",
+                resolver_registry::any_form!(|p, n, e| {
+                    crate::pascal_resolution::resolve_pascal_inherited_calls_any(p, n, e)
+                }),
+            ),
+            (
+                "csharp_interface_dispatch",
+                resolver_registry::any_form!(|p, n, e| {
+                    crate::csharp_dispatch::resolve_csharp_interface_dispatch_any(p, n, e)
+                }),
+            ),
+            (
+                "swift_protocol_dispatch",
+                resolver_registry::any_form!(|p, n, e| {
+                    crate::swift_dispatch::resolve_swift_protocol_dispatch_any(p, n, e)
+                }),
+            ),
+            (
+                "markdown_mentions",
+                resolver_registry::any_form!(|p, n, e| {
+                    crate::markdown_resolution::resolve_markdown_mentions_any(p, n, e);
+                    Ok(())
+                }),
+            ),
+        ] {
+            resolver_registry::attach_any_form(name, any);
+        }
     });
 }
 /// Which inputs an [`extract_with_report`] run actually re-parsed.
@@ -536,7 +611,7 @@ pub fn extract_with_report(
             .unwrap_or(&default_root(paths)),
     );
     let started = std::time::Instant::now();
-    let (per, report) = records_with_report(paths, options, paths)?;
+    let (per, report) = records_list(paths, options, paths)?;
     if std::env::var("GRAPHICLE_WATCH_TIMING").is_ok_and(|v| v == "1")
         && !options.resolution_context_nodes.is_empty()
     {
@@ -545,7 +620,39 @@ pub fn extract_with_report(
             started.elapsed().as_secs_f64() * 1000.0
         );
     }
-    Ok((assemble(paths, per, &root, options)?, report))
+    Ok((assemble_list(paths, per, &root, options, paths)?, report))
+}
+
+/// [`extract`] for a caller that builds the graph itself (the extract
+/// command): the assembled edges stay beside the extraction as compact
+/// records ([`Assembled`]), which go to the build as they are instead of being
+/// rebuilt as JSON first. A list that a JSON-only pass left as JSON is
+/// converted here, on the run's workers, so the build holds no edge maps.
+pub(crate) fn extract_assembled(paths: &[PathBuf], options: &ExtractOptions) -> Result<Assembled> {
+    let _sources = extractors::parse_cache::RunScope::begin();
+    extractors::resolution_js::clear();
+    extractors::markdown::clear_link_index_cache();
+    let root = resolved(
+        options
+            .root
+            .as_deref()
+            .or(options.cache_root.as_deref())
+            .unwrap_or(&default_root(paths)),
+    );
+    let started = std::time::Instant::now();
+    let (per, _) = records_list(paths, options, paths)?;
+    if std::env::var("GRAPHICLE_WATCH_TIMING").is_ok_and(|v| v == "1")
+        && !options.resolution_context_nodes.is_empty()
+    {
+        eprintln!(
+            "[extract timing] records={:.1}ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    let mut assembled = assemble_records(paths, per, &root, options, paths)?;
+    // Lossless, and a list holding an edge that is no object stays JSON.
+    let _ = assembled.edges.records();
+    Ok(assembled)
 }
 
 /// Parse/cache the immutable per-file inputs without performing cross-file resolution.
@@ -555,6 +662,40 @@ pub(crate) fn records_with_report(
     options: &ExtractOptions,
     corpus_paths: &[PathBuf],
 ) -> Result<(Vec<Value>, ExtractReport)> {
+    let (per, report) = records_in(paths, options, corpus_paths, false)?;
+    Ok((per.into_values(), report))
+}
+
+/// [`records_with_report`] with every result in compact form where it
+/// converts ([`FileRecords`]). A parsed file converts on the worker that
+/// extracted it, after its AST cache entry was written from the extractor's
+/// own JSON, so the cached bytes are unchanged; cache hits convert after
+/// loading, on the run's workers.
+fn records_list(
+    paths: &[PathBuf],
+    options: &ExtractOptions,
+    corpus_paths: &[PathBuf],
+) -> Result<(PerList, ExtractReport)> {
+    records_in(
+        paths,
+        options,
+        corpus_paths,
+        !resolver_registry::json_only(),
+    )
+}
+
+/// One file's result as a worker hands it back.
+enum Parsed {
+    Json(Value),
+    Records(FileRecords),
+}
+
+fn records_in(
+    paths: &[PathBuf],
+    options: &ExtractOptions,
+    corpus_paths: &[PathBuf],
+    compact: bool,
+) -> Result<(PerList, ExtractReport)> {
     let root = resolved(
         options
             .root
@@ -584,6 +725,12 @@ pub(crate) fn records_with_report(
     };
     let mut cache = ExtractionCache::default();
     let mut per = vec![Value::Null; paths.len()];
+    // The results that converted to compact form on their worker.
+    let mut compacted: Vec<Option<FileRecords>> = if compact {
+        std::iter::repeat_with(|| None).take(paths.len()).collect()
+    } else {
+        Vec::new()
+    };
     let mut work = vec![];
     let mut report = ExtractReport::default();
     let worker_count = |items: usize| {
@@ -621,6 +768,20 @@ pub(crate) fn records_with_report(
             .iter()
             .map(|i| paths[*i].as_path())
             .collect::<Vec<_>>();
+        // Compact results: a hit converts on the worker that read it, so the
+        // corpus never sits in memory as JSON (a warm run). The converted
+        // record waits in its candidate's slot; the loader hands back a
+        // placeholder. A path listed twice keeps the conversion for later.
+        let position = candidate_paths
+            .iter()
+            .enumerate()
+            .map(|(k, path)| (*path, k))
+            .collect::<FxHashMap<_, _>>();
+        let early = (compact && position.len() == candidate_paths.len()).then(|| {
+            std::iter::repeat_with(OnceLock::<FileRecords>::new)
+                .take(candidate_paths.len())
+                .collect::<Vec<_>>()
+        });
         // A file the project remaps to another language keys its entry with
         // the declaration (`cache_salt`), so the same bytes cached under the
         // old extractor are a miss.
@@ -630,16 +791,32 @@ pub(crate) fn records_with_report(
             worker_count(candidates.len()),
             |path: &Path| crate::rcfile::cache_salt(path),
             |path, entry, value| {
-                tighten(value);
+                // A compact result tightens what stays JSON when it converts.
+                if !compact {
+                    tighten(value);
+                }
                 if let Some(dir) = &syntax_dir {
                     keep_cached_syntax(dir, path, entry);
                 }
+                if let (Some(slots), Some(&k)) = (&early, position.get(path)) {
+                    match FileRecords::from_value(std::mem::take(value)) {
+                        Ok(records) => {
+                            let _ = slots[k].set(records);
+                        }
+                        Err(original) => *value = original,
+                    }
+                }
             },
         );
+        let mut early = early.map(|slots| slots.into_iter().map(OnceLock::into_inner));
         for (i, loaded) in candidates.into_iter().zip(loaded) {
+            let converted = early.as_mut().and_then(|slots| slots.next().flatten());
             match loaded {
                 Ok(Some(value)) => {
-                    per[i] = value;
+                    match converted {
+                        Some(records) => compacted[i] = Some(records),
+                        None => per[i] = value,
+                    }
                     report.unchanged += 1;
                 }
                 Ok(None) => work.push((i, &paths[i])),
@@ -694,7 +871,9 @@ pub(crate) fn records_with_report(
         let profiled = crate::profile::enabled().then(std::time::Instant::now);
         let _corpus = extractors::resolution_js::enter_source_corpus(corpus.clone());
         let mut value = extract_file(path, Some(&root));
-        tighten(&mut value);
+        if !compact {
+            tighten(&mut value);
+        }
         if cacheable(path, &value) {
             let salted;
             let co = match crate::rcfile::cache_salt(path) {
@@ -741,7 +920,16 @@ pub(crate) fn records_with_report(
         if let Some(started) = profiled {
             crate::profile::file_done(path, started.elapsed());
         }
-        value
+        if !compact {
+            return Parsed::Json(value);
+        }
+        match FileRecords::from_value(value) {
+            Ok(records) => Parsed::Records(records),
+            Err(mut value) => {
+                tighten(&mut value);
+                Parsed::Json(value)
+            }
+        }
     };
     let workers = worker_count(work.len());
     let parse_span = crate::profile::span("extract.records.parse");
@@ -774,13 +962,19 @@ pub(crate) fn records_with_report(
             }
             Ok::<_, crate::Error>(())
         })?;
-        for (i, value) in results.into_inner().unwrap_or_else(|e| e.into_inner()) {
-            per[i] = value;
+        for (i, parsed) in results.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            match parsed {
+                Parsed::Json(value) => per[i] = value,
+                Parsed::Records(records) => compacted[i] = Some(records),
+            }
         }
     }
     for (i, path) in &work {
-        if per[*i].is_null() {
-            per[*i] = extract_one(*i, path);
+        if per[*i].is_null() && compacted.get(*i).is_none_or(Option::is_none) {
+            match extract_one(*i, path) {
+                Parsed::Json(value) => per[*i] = value,
+                Parsed::Records(records) => compacted[*i] = Some(records),
+            }
         }
     }
     drop(parse_span);
@@ -794,12 +988,66 @@ pub(crate) fn records_with_report(
     }
     cache.flush();
     drop(flush_span);
+    let mut per = if compact {
+        compact_list(per, compacted)
+    } else {
+        PerList::Values(per)
+    };
     if options.test_identities {
-        for (path, record) in paths.iter().zip(&mut per) {
+        for (path, record) in paths.iter().zip(per.values()) {
             extractors::test_identities::augment(path, record, &root);
+        }
+        if compact {
+            per.records();
         }
     }
     Ok((per, report))
+}
+
+/// The results as one compact list: those still JSON (cache hits, files
+/// without an extractor, results that did not convert) convert on the run's
+/// workers. If one of them does not convert, the whole list stays JSON.
+fn compact_list(mut per: Vec<Value>, compacted: Vec<Option<FileRecords>>) -> PerList {
+    let pending = compacted
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.is_none())
+        .map(|(i, _)| i)
+        .collect::<Vec<_>>();
+    let converted = per_file::convert(
+        pending
+            .iter()
+            .map(|&i| std::mem::take(&mut per[i]))
+            .collect(),
+        FileRecords::from_value,
+    );
+    if converted.iter().all(std::result::Result::is_ok) {
+        let mut slots = compacted;
+        for (i, records) in pending.into_iter().zip(converted) {
+            slots[i] = records.ok();
+        }
+        return PerList::Records(
+            slots
+                .into_iter()
+                .map(|records| records.expect("every result converted"))
+                .collect(),
+        );
+    }
+    for (i, records) in pending.into_iter().zip(converted) {
+        per[i] = match records {
+            Ok(records) => records.into_value(),
+            Err(mut value) => {
+                tighten(&mut value);
+                value
+            }
+        };
+    }
+    for (i, records) in compacted.into_iter().enumerate() {
+        if let Some(records) = records {
+            per[i] = records.into_value();
+        }
+    }
+    PerList::Values(per)
 }
 
 /// Which kept syntax facts the AST cache stores beside a file's record.
@@ -876,14 +1124,14 @@ fn keep_cached_syntax(dir: &Path, path: &Path, entry: &Path) {
 /// Exactly one node, so the zero-node case stays with the failure report;
 /// files with parse errors (warned above), extractor errors, intentional
 /// skips, no extractor, or only whitespace are not reported.
-fn warn_symbolless_files(per: &[Value], paths: &[PathBuf], root: &Path) {
+fn warn_symbolless_files<P: PerFile>(per: &[P], paths: &[PathBuf], root: &Path) {
     let truthy = crate::build::truthy;
     let mut files = vec![];
     for (r, p) in per.iter().zip(paths) {
-        if truthy(&r["parse_errors"]) || truthy(&r["error"]) || truthy(&r["skipped"]) {
+        if truthy(r.at("parse_errors")) || truthy(r.at("error")) || truthy(r.at("skipped")) {
             continue;
         }
-        if get_extractor(p).is_none() || r["nodes"].as_array().is_none_or(|n| n.len() != 1) {
+        if get_extractor(p).is_none() || r.node_count().is_none_or(|n| n != 1) {
             continue;
         }
         let size = match std::fs::read(p) {
@@ -898,7 +1146,9 @@ fn warn_symbolless_files(per: &[Value], paths: &[PathBuf], root: &Path) {
             }
             Err(_) => 0,
         };
-        let rel = p.strip_prefix(root).unwrap_or(p);
+        // `root` is resolved (never `\\?\` on Windows); compare `p` the same way.
+        let p = crate::fsutil::plain(p);
+        let rel = p.strip_prefix(root).unwrap_or(&p);
         files.push((rel.to_string_lossy().replace('\\', "/"), size));
     }
     if files.is_empty() {
@@ -933,41 +1183,30 @@ pub fn assemble(
 
 pub(crate) fn assemble_with_corpus(
     paths: &[PathBuf],
-    mut per: Vec<Value>,
+    per: Vec<Value>,
     root: &Path,
     options: &ExtractOptions,
     corpus_paths: &[PathBuf],
 ) -> Result<Value> {
-    let assemble_started = std::time::Instant::now();
-    let _assemble_span = crate::profile::span("extract.assemble");
-    let collect_span = crate::profile::span("assemble.collect");
-    // Binding raw calls and default cross-file resolvers consult package entries
-    // too. Keep the same source boundary as the parser workers, including when
-    // an incremental call resolves only a dependency closure.
-    let corpus = (options.receiver_resolution
-        && corpus_paths.iter().any(|p| {
-            [
-                ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
-            ]
-            .contains(&languages::suffix(p).as_str())
-        }))
-    .then(|| extractors::resolution_js::source_corpus(corpus_paths));
-    let _corpus = extractors::resolution_js::enter_source_corpus(corpus);
+    assemble_list(paths, PerList::Values(per), root, options, corpus_paths)
+}
+
+/// The failed sources of a run (and a warning per file with syntax errors).
+fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> Vec<String> {
     let mut failed = vec![];
     let mut failed_seen = BTreeSet::new();
     for (r, p) in per.iter().zip(paths) {
-        let empty = r["nodes"].as_array().is_none_or(Vec::is_empty);
-        if crate::build::truthy(&r["error"])
-            || (empty && !crate::build::truthy(&r["skipped"]) && get_extractor(p).is_some())
+        let empty = r.nodes().is_none_or(<[P::R]>::is_empty);
+        if crate::build::truthy(r.at("error"))
+            || (empty && !crate::build::truthy(r.at("skipped")) && get_extractor(p).is_some())
         {
             let sf = p.to_string_lossy().into_owned();
             if failed_seen.insert(sf.clone()) {
                 failed.push(sf);
             }
         }
-        if let Some(errors) = r.get("parse_errors")
-            && (r["nodes"].as_array().is_none_or(|a| a.len() <= 1)
-                || errors["multiline_error"] == true)
+        if let Some(errors) = r.key("parse_errors")
+            && (r.node_count().is_none_or(|n| n <= 1) || errors["multiline_error"] == true)
         {
             log::warn!(
                 "{} has syntax errors; extracted symbols may be incomplete",
@@ -975,98 +1214,49 @@ pub(crate) fn assemble_with_corpus(
             );
         }
     }
-    warn_symbolless_files(&per, paths, root);
-    for (r, p) in per.iter_mut().zip(paths) {
-        if [".tf", ".tfvars", ".hcl"].contains(&languages::suffix(p).as_str()) {
-            extractors::terraform::prepare_terraform(r, p, root)?;
-        }
-    }
-    let count = |key: &str| {
+    failed
+}
+
+/// Copy every per-file node into `nodes` and move (with the intermediate
+/// output: copy) every per-file edge into `edges`.
+fn collect_records<P: PerFile>(
+    per: &mut [P],
+    include_intermediate: bool,
+    nodes: &mut Vec<Value>,
+    edges: &mut Vec<Value>,
+) {
+    nodes.reserve_exact(per.iter().filter_map(PerFile::node_count).sum());
+    edges.reserve_exact(
         per.iter()
-            .map(|r| r[key].as_array().map_or(0, Vec::len))
-            .sum::<usize>()
-    };
-    let mut nodes = Vec::with_capacity(count("nodes"));
-    let mut edges = Vec::with_capacity(count("edges"));
-    // Raw call records are shared with the per-file results in the reference
-    // model: they are remapped in place there and moved out below once the
-    // cross-file passes that touch them have run, so no copy is taken here.
-    let mut raw = Vec::with_capacity(count("raw_calls"));
-    for r in &mut per {
-        nodes.extend(r["nodes"].as_array().into_iter().flatten().cloned());
+            .map(|r| r.at("edges").as_array().map_or(0, Vec::len))
+            .sum(),
+    );
+    for r in per {
+        nodes.extend(r.nodes().into_iter().flatten().map(Rec::to_value));
         // After this point nothing reads a per-file record's edges except the
         // `intermediate` output, so the records are moved rather than copied
         // unless that output is requested.
-        match r.get_mut("edges") {
-            Some(Value::Array(es)) if !options.include_intermediate => {
+        match r.key_mut("edges") {
+            Some(Value::Array(es)) if !include_intermediate => {
                 edges.extend(std::mem::take(es));
             }
             Some(Value::Array(es)) => edges.extend(es.iter().cloned()),
             _ => {}
         }
     }
-    // #3729: absolute module names that more than one scanned file answers to
-    // stay unresolved. The corpus, not an incremental subset, decides.
-    let phase = |name: &str, since: std::time::Instant| {
-        if !options.resolution_context_nodes.is_empty()
-            && std::env::var("GRAPHICLE_WATCH_TIMING").is_ok_and(|v| v == "1")
-        {
-            eprintln!(
-                "[extract timing] {name}={:.1}ms",
-                since.elapsed().as_secs_f64() * 1000.0
-            );
-        }
-    };
-    let t = std::time::Instant::now();
-    drop(collect_span);
-    let profiled = crate::profile::span("assemble.python_modules");
-    let (module_files, root_modules) = extract_python::absolute_import_alias_files(
-        &extract_python::scan_paths(corpus_paths, &options.resolution_context_nodes, root),
-        root,
+}
+
+/// Disambiguate colliding node ids. Raw call records are shared with the
+/// per-file results in the reference model: they are moved out for the pass
+/// and back again afterwards, and the per-file nodes follow the corpus nodes.
+fn disambiguate<P: PerFile>(per: &mut [P], nodes: &mut [Value], edges: &mut [Value], root: &Path) {
+    let mut raw = Vec::with_capacity(
+        per.iter()
+            .map(|r| r.raw_calls().map_or(0, <[P::R]>::len))
+            .sum(),
     );
-    let ambiguous = extract_python::ambiguous_modules(&module_files, &root_modules);
-    extract_python::suppress_ambiguous_imports(
-        &mut edges,
-        &nodes,
-        &mut per,
-        &ambiguous,
-        &module_files,
-        root,
-    );
-    drop(module_files);
-    drop(profiled);
-    phase("python_modules", t);
-    let t = std::time::Instant::now();
-    let profiled = crate::profile::span("assemble.symbol_resolution");
-    resolution::augment_symbol_resolution_edges(
-        paths,
-        &mut nodes,
-        &mut edges,
-        root,
-        &ambiguous,
-        &options.resolution_context_nodes,
-    );
-    drop(profiled);
-    phase("symbol_resolution", t);
-    let profiled = crate::profile::span("assemble.merge_decl_def");
-    types::merge_decl_def_classes(&mut nodes, &mut edges);
-    drop(profiled);
-    let profiled = crate::profile::span("assemble.normalize_ids");
-    norm::normalize_ids(paths, &mut nodes, &mut edges, &mut raw, &mut per, root);
-    drop(profiled);
-    let profiled = crate::profile::span("assemble.repoint_python_imports");
-    merge::repoint_python_imports(paths, &nodes, &mut edges, root);
-    drop(profiled);
-    let profiled = crate::profile::span("assemble.swift_csharp_merge");
-    merge::merge_swift_extensions(&per, &mut nodes, &mut edges);
-    merge::merge_csharp_partials(&mut per, &mut nodes, &mut edges, paths, root);
-    drop(profiled);
-    let profiled = crate::profile::span("assemble.disambiguate");
-    // Raw call records are shared with per-file results in the reference model:
-    // move them out for disambiguation and back again afterwards.
-    raw.clear();
-    for r in &mut per {
-        if let Some(rs) = r.get_mut("raw_calls").and_then(Value::as_array_mut) {
+    for r in per.iter_mut() {
+        if let Some(rs) = r.raw_calls_mut() {
             raw.extend(rs.iter_mut().map(std::mem::take));
         }
     }
@@ -1074,28 +1264,41 @@ pub(crate) fn assemble_with_corpus(
         .iter()
         .map(|n| (s(n, "id").to_string(), s(n, "source_file").to_string()))
         .collect::<Vec<_>>();
-    resolution::disambiguate_colliding_node_ids(&mut nodes, &mut edges, &mut raw, root);
-    norm::sync_per_nodes(&mut per, &before, &nodes);
+    resolution::disambiguate_colliding_node_ids(nodes, edges, &mut raw[..], root);
+    norm::sync_per_nodes(per, &before, nodes);
     drop(before);
     // Moved back rather than copied: `bind_raw_calls` below reads the records
     // through `per`, in this same order.
     let mut raw = raw.into_iter();
-    for r in &mut per {
-        if let Some(rs) = r.get_mut("raw_calls").and_then(Value::as_array_mut) {
+    for r in per.iter_mut() {
+        if let Some(rs) = r.raw_calls_mut() {
             for rc in rs {
                 *rc = raw.next().unwrap_or_default();
             }
         }
     }
-    drop(raw);
-    merge::canonicalize_namespaces(&mut nodes, &mut edges);
-    drop(profiled);
+}
+
+/// The cross-file passes that read the per-file results of one language at a
+/// time (PHP, Java, Go and Python types and imports, Bash sources, Kotlin
+/// imports), with the passes between them.
+fn language_passes<P: PerFile>(
+    per: &mut [P],
+    paths: &[PathBuf],
+    nodes: &mut Vec<Value>,
+    edges: &mut Vec<Value>,
+    root: &Path,
+    options: &ExtractOptions,
+    ambiguous: &extractors::resolution_facts::AmbiguousModules,
+) -> Result<()> {
     // Cross-file passes read the records of one language at a time; lend them
     // out of `per` instead of copying every record of that language. Files
     // are selected by their effective suffix (a `.graphiclerc` declaration
     // counts, #2961): exactly for Java, Go and Python, case-folded for PHP and
-    // .NET, as upstream compares them.
-    let select = |per: &mut [Value], wanted: &dyn Fn(&Path) -> bool| {
+    // .NET, as upstream compares them. A pass that reads JSON gets the
+    // selected results as JSON (`json_slice`: borrowed when they are); the
+    // Java and Go passes read them in place, in either form.
+    let select = |per: &mut [P], wanted: &dyn Fn(&Path) -> bool| {
         let mut idx = vec![];
         let mut rs = vec![];
         let mut ps = vec![];
@@ -1119,57 +1322,93 @@ pub(crate) fn assemble_with_corpus(
     let dotnet = |p: &Path| {
         [".cs", ".razor", ".cshtml"].contains(&effective_suffix(p).to_lowercase().as_str())
     };
-    let restore = |per: &mut [Value], idx: Vec<usize>, rs: Vec<Value>| {
+    let restore = |per: &mut [P], idx: Vec<usize>, rs: Vec<P>| {
         for (i, r) in idx.into_iter().zip(rs) {
             per[i] = r;
         }
     };
     let profiled = crate::profile::span("assemble.php_java_go_types");
-    let (idx, php_records, pp) = select(&mut per, &php);
+    let (idx, php_records, pp) = select(per, &php);
     if !pp.is_empty() {
-        types::resolve_php_type_references(&php_records, &pp, &mut nodes, &mut edges);
+        types::resolve_php_type_references(&P::json_slice(&php_records), &pp, nodes, edges);
     }
-    restore(&mut per, idx, php_records);
-    let (idx, java, jp) = select(&mut per, &exact(".java"));
+    restore(per, idx, php_records);
+    let (idx, java, jp) = select(per, &exact(".java"));
     if !jp.is_empty() {
-        types::resolve_java_type_references(&java, &jp, &mut nodes, &mut edges);
+        types::resolve_java_type_references(&java[..], &jp, nodes, edges);
     }
-    restore(&mut per, idx, java);
-    let (idx, go, gp) = select(&mut per, &exact(".go"));
+    restore(per, idx, java);
+    let (idx, go, gp) = select(per, &exact(".go"));
     if !gp.is_empty() {
         types::resolve_go_type_references(
-            &go,
+            &go[..],
             &gp,
-            &mut nodes,
-            &mut edges,
+            nodes,
+            edges,
             root,
             &options.resolution_context_nodes,
             &options.resolution_context_edges,
         );
     }
-    restore(&mut per, idx, go);
+    restore(per, idx, go);
     drop(profiled);
     let profiled = crate::profile::span("assemble.python_imports");
-    let (idx, py, pyp) = select(&mut per, &exact(".py"));
+    let (idx, py, pyp) = select(per, &exact(".py"));
     if !pyp.is_empty() {
-        let added = types::cross_file_python_imports(&py, &pyp, &mut nodes, &mut edges, &ambiguous);
+        let added =
+            types::cross_file_python_imports(&P::json_slice(&py), &pyp, nodes, edges, ambiguous);
         edges.extend(added);
     }
-    restore(&mut per, idx, py);
+    restore(per, idx, py);
     drop(profiled);
     let profiled = crate::profile::span("assemble.rewire_unique_stubs");
-    merge::rewire_unique_stubs(&mut nodes, &mut edges);
+    {
+        // An incremental build re-extracts only the changed files, so the
+        // rewire also takes the unchanged ones as candidates. #4439: a Rust
+        // `use` reached its declaration only when a type annotation had left
+        // a sourceless node under the same id; the rewire is lent one for each
+        // imported name that has none. Neither is kept, so an unresolved
+        // import dangles as before.
+        let fresh = nodes.iter().map(|n| s(n, "id")).collect::<FxHashSet<_>>();
+        let mut use_stubs: Vec<Value> = vec![];
+        let mut use_stub_index: FxHashMap<String, usize> = FxHashMap::default();
+        for e in edges.iter() {
+            let Some(name) = e.get("_rust_use_name").and_then(Value::as_str) else {
+                continue;
+            };
+            let target = s(e, "target");
+            if !extract_python::is_identifier(name) || fresh.contains(target) {
+                continue;
+            }
+            let stub = json!({"id":target,"label":name,"file_type":"code","source_file":""});
+            match use_stub_index.get(target) {
+                Some(&i) => use_stubs[i] = stub,
+                None => {
+                    use_stub_index.insert(target.to_string(), use_stubs.len());
+                    use_stubs.push(stub);
+                }
+            }
+        }
+        let context = options
+            .resolution_context_nodes
+            .iter()
+            .filter(|n| !fresh.contains(s(n, "id")))
+            .collect::<Vec<_>>();
+        drop(fresh);
+        let lent = use_stubs.iter().chain(context).collect::<Vec<_>>();
+        merge::rewire_unique_stubs_with(nodes, &lent, edges);
+    }
     drop(profiled);
     let profiled = crate::profile::span("assemble.java_csharp_bash_kotlin");
     if !jp.is_empty() {
-        let (idx, java, _) = select(&mut per, &exact(".java"));
-        edges.extend(types::cross_file_java_imports(&java, &jp));
-        restore(&mut per, idx, java);
+        let (idx, java, _) = select(per, &exact(".java"));
+        edges.extend(types::cross_file_java_imports(&java[..], &jp));
+        restore(per, idx, java);
     }
     if paths.iter().any(|p| dotnet(p)) {
-        extractors::csharp::resolve_csharp_type_references(&mut nodes, &mut edges)?;
-        extractors::csharp::resolve_cross_file_csharp_imports(&mut nodes, &mut edges);
-        merge::drop_shadowed_csharp_partial_bases(&nodes, &mut edges);
+        extractors::csharp::resolve_csharp_type_references(nodes, edges)?;
+        extractors::csharp::resolve_cross_file_csharp_imports(nodes, edges);
+        merge::drop_shadowed_csharp_partial_bases(nodes, edges);
     }
     let sh_idx = per
         .iter()
@@ -1177,11 +1416,10 @@ pub(crate) fn assemble_with_corpus(
         .enumerate()
         .filter(|(_, (r, p))| {
             [".sh", ".bash"].contains(&languages::suffix(p).as_str())
-                || r["nodes"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .any(|n| n["metadata"]["language"] == "bash")
+                || r.nodes().into_iter().flatten().any(|n| {
+                    n.rec_get("metadata")
+                        .is_some_and(|m| m["language"] == "bash")
+                })
         })
         .map(|(i, _)| i)
         .collect::<Vec<_>>();
@@ -1191,11 +1429,16 @@ pub(crate) fn assemble_with_corpus(
             .map(|i| std::mem::take(&mut per[*i]))
             .collect::<Vec<_>>();
         let sp = sh_idx.iter().map(|i| paths[*i].clone()).collect::<Vec<_>>();
-        let added = crate::symbol_resolution::resolve_bash_source_edges(&sh, &sp, root, &edges);
-        restore(&mut per, sh_idx, sh);
+        let added = crate::symbol_resolution::resolve_bash_source_edges(
+            &P::json_slice(&sh),
+            &sp,
+            root,
+            edges,
+        );
+        restore(per, sh_idx, sh);
         edges.extend(added?);
     }
-    members::kotlin_imports(&per, &mut edges);
+    members::kotlin_imports(&*per, edges);
     // Quoted C/C++/ObjC includes outside the including file's directory, to
     // their header file nodes (#4354): after the id remaps, before the
     // import-evidence index of the bare-name pass reads the edges.
@@ -1210,20 +1453,207 @@ pub(crate) fn assemble_with_corpus(
                     .filter(|n| !s(n, "id").is_empty() && !fresh.contains(s(n, "id"))),
             );
         }
-        merge::resolve_c_include_edges(&mut edges, &resolution_nodes, Some(root));
+        merge::resolve_c_include_edges(edges, &resolution_nodes, Some(root));
     }
     drop(profiled);
-    let raw = per
-        .iter()
-        .flat_map(|r| r["raw_calls"].as_array().into_iter().flatten())
-        .collect::<Vec<_>>();
+    Ok(())
+}
+
+/// Every raw call record of the per-file results, in file order.
+fn raw_calls_of<P: PerFile>(per: &[P]) -> Vec<&P::R> {
+    per.iter()
+        .flat_map(|r| r.raw_calls().into_iter().flatten())
+        .collect()
+}
+
+/// [`bind_raw_calls`] over the edge list in record form when it converts.
+fn bind_per_file<P: PerFile>(per: &[P], nodes: &[Value], edges: &mut EdgeList, root: &Path) {
+    let raw = raw_calls_of(per);
+    match edges.records() {
+        Some(records) => bind_raw_calls(&raw[..], nodes, records, root),
+        None => bind_raw_calls(&raw[..], nodes, edges.values(), root),
+    }
+}
+
+/// An assembled extraction whose edge list is held beside it, in the form
+/// assembly left it: compact records unless a JSON-only pass turned the list
+/// back into JSON. The extract command hands both to the build as they are
+/// ([`crate::build::build_owned_records`]), so the records are not rebuilt as
+/// one JSON map each (Kubernetes: 1.4M edges, about 1.3 GB of maps beside the
+/// records); [`Assembled::into_value`] gives the extraction everyone else reads.
+pub(crate) struct Assembled {
+    /// The extraction object, holding an empty `edges` array in its place.
+    extraction: Value,
+    edges: EdgeList,
+}
+impl Assembled {
+    /// The extraction with its edges in place as JSON objects, converted on
+    /// this thread: at the end of assembly the pages of the per-file records
+    /// it just freed are this thread's, and the rebuilt maps reuse them.
+    pub(crate) fn into_value(self) -> Value {
+        let Self {
+            mut extraction,
+            edges,
+        } = self;
+        extraction["edges"] = Value::Array(edges.into_values());
+        extraction
+    }
+    /// The extraction and the compact edge records that come before the edges
+    /// it holds: the records with an empty `edges` array when the list is in
+    /// record form, else no records and the JSON edges in place.
+    pub(crate) fn into_parts(self) -> (Value, Vec<Attributes>) {
+        match self.edges {
+            EdgeList::Records(records) => (self.extraction, records),
+            edges => (
+                Self {
+                    extraction: self.extraction,
+                    edges,
+                }
+                .into_value(),
+                Vec::new(),
+            ),
+        }
+    }
+}
+
+/// [`assemble_records`] with the edges in place as JSON.
+fn assemble_list(
+    paths: &[PathBuf],
+    per: PerList,
+    root: &Path,
+    options: &ExtractOptions,
+    corpus_paths: &[PathBuf],
+) -> Result<Value> {
+    assemble_records(paths, per, root, options, corpus_paths).map(Assembled::into_value)
+}
+
+/// Assembly over the per-file results in either form ([`PerList`]): the
+/// passes read them through [`PerFile`], and a pass that reads only JSON gets
+/// them converted for its run. The edges come back beside the extraction in
+/// the form the passes left them ([`Assembled`]).
+fn assemble_records(
+    paths: &[PathBuf],
+    mut per: PerList,
+    root: &Path,
+    options: &ExtractOptions,
+    corpus_paths: &[PathBuf],
+) -> Result<Assembled> {
+    let assemble_started = std::time::Instant::now();
+    let _assemble_span = crate::profile::span("extract.assemble");
+    let collect_span = crate::profile::span("assemble.collect");
+    // Binding raw calls and default cross-file resolvers consult package entries
+    // too. Keep the same source boundary as the parser workers, including when
+    // an incremental call resolves only a dependency closure.
+    let corpus = (options.receiver_resolution
+        && corpus_paths.iter().any(|p| {
+            [
+                ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
+            ]
+            .contains(&languages::suffix(p).as_str())
+        }))
+    .then(|| extractors::resolution_js::source_corpus(corpus_paths));
+    let _corpus = extractors::resolution_js::enter_source_corpus(corpus);
+    let failed = per_dispatch!(&per, p => failed_sources(&p[..], paths));
+    per_dispatch!(&per, p => warn_symbolless_files(&p[..], paths, root));
+    for (i, p) in paths.iter().enumerate() {
+        if [".tf", ".tfvars", ".hcl"].contains(&languages::suffix(p).as_str()) {
+            per.edit_json(i, |r| extractors::terraform::prepare_terraform(r, p, root))?;
+        }
+    }
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    per_dispatch!(&mut per, p => collect_records(
+        &mut p[..],
+        options.include_intermediate,
+        &mut nodes,
+        &mut edges,
+    ));
+    // #3729: absolute module names that more than one scanned file answers to
+    // stay unresolved. The corpus, not an incremental subset, decides.
+    let phase = |name: &str, since: std::time::Instant| {
+        if !options.resolution_context_nodes.is_empty()
+            && std::env::var("GRAPHICLE_WATCH_TIMING").is_ok_and(|v| v == "1")
+        {
+            eprintln!(
+                "[extract timing] {name}={:.1}ms",
+                since.elapsed().as_secs_f64() * 1000.0
+            );
+        }
+    };
+    let t = std::time::Instant::now();
+    drop(collect_span);
+    let profiled = crate::profile::span("assemble.python_modules");
+    let (module_files, root_modules) = extract_python::absolute_import_alias_files(
+        &extract_python::scan_paths(corpus_paths, &options.resolution_context_nodes, root),
+        root,
+    );
+    let ambiguous = extract_python::ambiguous_modules(&module_files, &root_modules);
+    per_dispatch!(&mut per, p => extract_python::suppress_ambiguous_imports(
+        &mut edges,
+        &nodes,
+        &mut p[..],
+        &ambiguous,
+        &module_files,
+        root,
+    ));
+    drop(module_files);
+    drop(profiled);
+    phase("python_modules", t);
+    let t = std::time::Instant::now();
+    let profiled = crate::profile::span("assemble.symbol_resolution");
+    resolution::augment_symbol_resolution_edges(
+        paths,
+        &mut nodes,
+        &mut edges,
+        root,
+        &ambiguous,
+        &options.resolution_context_nodes,
+    );
+    drop(profiled);
+    phase("symbol_resolution", t);
+    let profiled = crate::profile::span("assemble.merge_decl_def");
+    types::merge_decl_def_classes(&mut nodes, &mut edges);
+    // The same fold for a Go package's type, which every file declaring a
+    // method on it mints again under one id (#3399).
+    types::merge_go_package_types(&mut nodes, &edges);
+    drop(profiled);
+    let profiled = crate::profile::span("assemble.normalize_ids");
+    per_dispatch!(&mut per, p => norm::normalize_ids(paths, &mut nodes, &mut edges, &mut p[..], root));
+    drop(profiled);
+    let profiled = crate::profile::span("assemble.repoint_python_imports");
+    merge::repoint_python_imports(paths, &nodes, &mut edges, root);
+    drop(profiled);
+    let profiled = crate::profile::span("assemble.swift_csharp_merge");
+    per_dispatch!(&mut per, p => merge::merge_swift_extensions(&p[..], &mut nodes, &mut edges));
+    drop(profiled);
+    let profiled = crate::profile::span("assemble.disambiguate");
+    per_dispatch!(&mut per, p => {
+        disambiguate(&mut p[..], &mut nodes, &mut edges, root);
+        // The C# partial merge runs after the colliding ids are salted apart
+        // (0.9.91, #4411, #4428): it rewires every half's edges onto the
+        // canonical half, and a canonical id that collides with another file's
+        // node (`Spec.cs` next to `_Spec.cs`) would otherwise be split by its
+        // edges' own source files, leaving them on a dead id. The halves are
+        // joined by type path, whatever their (salted) ids.
+        merge::merge_csharp_partials_of(&mut p[..], &mut nodes, &mut edges, paths, root);
+    });
+    merge::canonicalize_namespaces(&mut nodes, &mut edges);
+    drop(profiled);
+    per_dispatch!(&mut per, p => language_passes(&mut p[..], paths, &mut nodes, &mut edges, root, options, &ambiguous))?;
+    // From here on the edges are compact records (eight bytes per field,
+    // values shared through the value table) instead of one serde map each:
+    // the call edges bound below and the ~10^5-10^6 repointed Go imports are
+    // cloned and added in that form. Passes that read only JSON get it back
+    // losslessly for their run (`EdgeList`).
+    let mut edges = EdgeList::Values(edges);
     if options.resolution_context_nodes.is_empty() && options.resolution_context_edges.is_empty() {
         let profiled = crate::profile::span("assemble.bind_raw_calls");
-        bind_raw_calls(&raw, &nodes, &mut edges, root);
+        per_dispatch!(&per, p => bind_per_file(&p[..], &nodes, &mut edges, root));
         drop(profiled);
         let _profiled = crate::profile::span("assemble.run_defaults");
         run_defaults(paths, &mut per, &mut nodes, &mut edges);
     } else {
+        let edges = edges.values();
         let _profiled = crate::profile::span("assemble.context_resolve");
         // GRAPHICLE_WATCH_TIMING=1: where a live update's extract time goes.
         let timing = std::env::var("GRAPHICLE_WATCH_TIMING").is_ok_and(|v| v == "1");
@@ -1254,13 +1684,20 @@ pub(crate) fn assemble_with_corpus(
         );
         drop(ids);
         mark("context_nodes");
-        bind_raw_calls(&raw, &resolution_nodes, &mut edges, root);
+        per_dispatch!(&per, p => bind_raw_calls(
+            &raw_calls_of(&p[..])[..],
+            &resolution_nodes,
+            edges,
+            root,
+        ));
         mark("bind_raw_calls");
         let mut combined = edges.clone();
         combined.extend(options.resolution_context_edges.iter().cloned());
         let (n0, e0) = (resolution_nodes.len(), combined.len());
         mark("context_edges");
+        let mut combined = EdgeList::Values(combined);
         run_defaults(paths, &mut per, &mut resolution_nodes, &mut combined);
+        let combined = combined.into_values();
         mark("resolvers");
         for n in nodes.iter_mut() {
             if let Some(new) = resolution_nodes.iter().find(|v| v["id"] == n["id"]) {
@@ -1274,33 +1711,53 @@ pub(crate) fn assemble_with_corpus(
         edges.extend(combined[e0..].iter().cloned());
         mark("copy_back");
     }
+    // Past the resolvers, only receiver resolution and the intermediate output
+    // read the per-file records. Without those, free the records here rather
+    // than after `finish`: their raw calls and node copies (Kubernetes: about
+    // 1.5 GB as JSON) would otherwise sit beside every new call and import
+    // edge until assembly ends. Freed on this thread so the passes below reuse
+    // the pages.
+    let mut per = if options.receiver_resolution || options.include_intermediate {
+        Some(per)
+    } else {
+        let _profiled = crate::profile::span("assemble.release_records");
+        drop(per);
+        None
+    };
     // A Rust `use` group keeps one edge per binding; the group edge only
     // served the passes above (#4135).
-    edges.retain_mut(|e| {
-        let group = e
-            .as_object_mut()
-            .and_then(|m| m.shift_remove("_rust_use_group"));
-        if let Some(m) = e.as_object_mut() {
-            m.shift_remove("_rust_use_binding");
-        }
-        !group.is_some_and(|g| crate::build::truthy(&g))
-    });
+    match &mut edges {
+        EdgeList::Values(values) => drop_rust_use_groups(values),
+        EdgeList::Records(records) => drop_rust_use_groups(records),
+    }
     let profiled = crate::profile::span("assemble.receiver_precise_routes");
-    let unresolved_calls = options
-        .receiver_resolution
-        .then(|| extractors::receiver_resolution::resolve(paths, &per, &nodes, &mut edges, root));
+    let unresolved_calls = if options.receiver_resolution {
+        let per: &[Value] = match per.as_mut() {
+            Some(per) => per.values(),
+            None => &[],
+        };
+        Some(extractors::receiver_resolution::resolve(
+            paths,
+            per,
+            &nodes,
+            edges.values(),
+            root,
+        ))
+    } else {
+        None
+    };
     if options.precise {
         extractors::precise_python::resolve(
             paths,
             &nodes,
-            &mut edges,
+            edges.values(),
             &options.resolution_context_nodes,
             &options.resolution_context_edges,
             root,
         );
         extractors::precise_dart::resolve(
             &mut nodes,
-            &mut edges,
+            edges.values(),
             &options.resolution_context_nodes,
             root,
         );
@@ -1308,7 +1765,7 @@ pub(crate) fn assemble_with_corpus(
         extractors::precise_js::resolve(
             paths,
             &nodes,
-            &mut edges,
+            edges.values(),
             &options.resolution_context_nodes,
             &options.resolution_context_edges,
             root,
@@ -1316,7 +1773,7 @@ pub(crate) fn assemble_with_corpus(
         let indexer = extractors::precise_scip::resolve(
             paths,
             &nodes,
-            &mut edges,
+            edges.values(),
             &options.resolution_context_nodes,
             &options.resolution_context_edges,
             root,
@@ -1333,24 +1790,29 @@ pub(crate) fn assemble_with_corpus(
                 .collect::<Vec<_>>();
             extractors::evidence::runtime_pairs(&all, root, &traces)
         };
-        extractors::evidence::annotate(&mut edges, &indexer, &runtime);
+        extractors::evidence::annotate(edges.values(), &indexer, &runtime);
     }
     if extractors::routes::enabled() {
         extractors::routes::resolve(
             paths,
             &mut nodes,
-            &mut edges,
+            edges.values(),
             &options.resolution_context_nodes,
             root,
         );
     }
     drop(profiled);
     let profiled = crate::profile::span("assemble.finish");
-    norm::finish(&mut nodes, &mut edges, root);
+    match &mut edges {
+        EdgeList::Values(values) => norm::finish(&mut nodes, values, root),
+        EdgeList::Records(records) => norm::finish(&mut nodes, records, root),
+    }
     drop(profiled);
     let mut result = serde_json::Map::new();
     result.insert("nodes".into(), Value::Array(nodes));
-    result.insert("edges".into(), Value::Array(edges));
+    // The edges stay beside the result ([`Assembled`]); this keeps the key's
+    // place.
+    result.insert("edges".into(), Value::Array(Vec::new()));
     result.insert("input_tokens".into(), json!(0));
     result.insert("output_tokens".into(), json!(0));
     result.insert("failed_sources".into(), json!(failed));
@@ -1365,12 +1827,36 @@ pub(crate) fn assemble_with_corpus(
         result["unresolved_calls"] = json!(unresolved);
     }
     if options.include_intermediate {
+        let per: &[Value] = match per.as_mut() {
+            Some(per) => per.values(),
+            None => &[],
+        };
         result["intermediate"] = json!(per);
     }
-    crate::par::drop_later(per);
-    Ok(result)
+    if let Some(per) = per {
+        crate::par::drop_later(per);
+    }
+    Ok(Assembled {
+        extraction: result,
+        edges,
+    })
 }
-pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, root: &Path) {
+
+/// Drop the Rust `use` group edges and the binding markers (#4135).
+fn drop_rust_use_groups<E: Rec>(edges: &mut Vec<E>) {
+    edges.retain_mut(|e| {
+        let group = e.rec_shift_remove("_rust_use_group");
+        e.rec_shift_remove("_rust_use_binding");
+        e.rec_shift_remove("_rust_use_name");
+        !group.is_some_and(|g| crate::build::truthy(&g))
+    });
+}
+pub fn bind_raw_calls<E: Rec, R: Rec>(
+    raw: &[&R],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+    root: &Path,
+) {
     // Every table here is lookup-only, so hashing replaces ordered maps.
     let mut labels: FxHashMap<&str, Vec<String>> = FxHashMap::default();
     let mut ci: FxHashMap<String, Vec<String>> = FxHashMap::default();
@@ -1436,32 +1922,39 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
     }
     let mut symbols: FxHashMap<&str, FxHashSet<&str>> = FxHashMap::default();
     let mut modules: FxHashMap<&str, FxHashSet<&str>> = FxHashMap::default();
-    let mut existing = FxHashSet::with_capacity_and_hasher(edges.len(), Default::default());
-    let mut call_pairs = FxHashSet::default();
+    let mut pair_ids = PairIds::default();
+    let mut existing: FxHashSet<(u32, u32)> =
+        FxHashSet::with_capacity_and_hasher(edges.len(), Default::default());
+    let mut call_pairs: FxHashSet<(u32, u32)> = FxHashSet::default();
     for e in edges.iter() {
-        let (source, target, relation) = (s(e, "source"), s(e, "target"), s(e, "relation"));
+        let (source, target, relation) = (rs(e, "source"), rs(e, "target"), rs(e, "relation"));
         // A Rust `use` binding edge is not evidence that the caller's file
         // imported the callee's module (#4135).
         if let Some(map) = match relation {
             "imports" => Some(&mut symbols),
-            "imports_from" if !field(e, "_rust_use_binding").is_some_and(crate::build::truthy) => {
+            "imports_from"
+                if !e
+                    .rec_get("_rust_use_binding")
+                    .is_some_and(crate::build::truthy) =>
+            {
                 Some(&mut modules)
             }
             _ => None,
         } {
             map.entry(source).or_default().insert(target);
         }
-        existing.insert((source.to_string(), target.to_string()));
+        let pair = pair_ids.pair(source, target);
+        existing.insert(pair);
         if ["calls", "indirect_call"].contains(&relation) {
-            call_pairs.insert((source.to_string(), target.to_string()));
+            call_pairs.insert(pair);
         }
     }
     // Enum members (`case_of`) and fields/properties (`defines`) are never what
     // a C# `new X()` constructs (#3815, #3888).
     let member_ids: FxHashSet<&str> = edges
         .iter()
-        .filter(|e| matches!(s(e, "relation"), "case_of" | "defines"))
-        .map(|e| s(e, "target"))
+        .filter(|e| matches!(rs(*e, "relation"), "case_of" | "defines"))
+        .map(|e| rs(e, "target"))
         .collect();
     // Top-level Elixir module names per file, for scoping unqualified Elixir
     // calls; read from the resolution nodes so an unchanged file's modules stay
@@ -1484,21 +1977,28 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
     let mut stub_resolver: Option<extractors::csharp::CsharpNameResolver> = None;
     // method id -> owning type id, built on first use.
     let mut method_owner: Option<FxHashMap<&str, &str>> = None;
+    // nested type id -> its outer type's label, built on first use.
+    let mut outer_type: Option<FxHashMap<&str, &str>> = None;
+    // The Go package of every candidate's file, read from disk once per pass.
+    let mut go_modules = types::GoModules::new(root);
     // The tables borrow from `edges`; new edges are appended after the loop.
     let mut added = vec![];
-    for rc in raw {
+    for &rc in raw {
         // Bound by an ambiguous absolute import (#3729): never guess a target.
-        if field(rc, "_ambiguous_python_import").is_some_and(crate::build::truthy) {
+        if rc
+            .rec_get("_ambiguous_python_import")
+            .is_some_and(crate::build::truthy)
+        {
             continue;
         }
-        let callee = s(rc, "callee");
-        let sf = s(rc, "source_file");
+        let callee = rs(rc, "callee");
+        let sf = rs(rc, "source_file");
         if callee.is_empty()
             || is_language_builtin(callee)
-            || field(rc, "is_member_call") == Some(&Value::Bool(true))
-            || field(rc, "is_mixin") == Some(&Value::Bool(true))
-            || ["bash", "markdown"].contains(&s(rc, "language"))
-            || (s(rc, "language") == "go" && extractors::go::PREDECLARED_FUNCS.contains(&callee))
+            || rc.rec_get("is_member_call") == Some(&Value::Bool(true))
+            || rc.rec_get("is_mixin") == Some(&Value::Bool(true))
+            || ["bash", "markdown"].contains(&rs(rc, "language"))
+            || (rs(rc, "language") == "go" && extractors::go::PREDECLARED_FUNCS.contains(&callee))
         {
             continue;
         }
@@ -1508,18 +2008,31 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
         }
         // An enum member or a field/property is never a C# call target, nor
         // what `new X()` constructs (#3815, #3888, #4245).
-        let csharp_new = field(rc, "csharp_new").is_some_and(crate::build::truthy);
-        if csharp_new || s(rc, "lang") == "csharp" {
+        let csharp_new = rc.rec_get("csharp_new").is_some_and(crate::build::truthy);
+        if csharp_new || rs(rc, "lang") == "csharp" {
             cs.retain(|c| !member_ids.contains(c.as_str()));
+        }
+        if csharp_new {
+            // Nor does `new X()` construct a method that shares X's name:
+            // every `new List<T>()` would bind to a `List()` method (0.9.90).
+            let owners = method_owner.get_or_insert_with(|| {
+                edges
+                    .iter()
+                    .filter(|e| rs(*e, "relation") == "method")
+                    .map(|e| (rs(e, "target"), rs(e, "source")))
+                    .collect::<FxHashMap<_, _>>()
+            });
+            cs.retain(|c| !owners.contains_key(c.as_str()));
         }
         // A call rescued from an annotation stub (#3888) binds to a same-named
         // class elsewhere only with evidence: an import, or the C# scope.
-        let via_stub = field(rc, "via_stub") == Some(&Value::Bool(true));
+        let via_stub = rc.rec_get("via_stub") == Some(&Value::Bool(true));
         let mut stub_scope_hit = false;
-        if via_stub && s(rc, "lang") == "csharp" && !cs.is_empty() {
-            let resolver = stub_resolver
-                .get_or_insert_with(|| extractors::csharp::CsharpNameResolver::new(nodes, edges));
-            if let Some(caller_node) = resolver.node_by_id.get(s(rc, "caller_nid"))
+        if via_stub && rs(rc, "lang") == "csharp" && !cs.is_empty() {
+            let resolver = stub_resolver.get_or_insert_with(|| {
+                extractors::csharp::CsharpNameResolver::new(nodes, &E::json_slice(edges))
+            });
+            if let Some(caller_node) = resolver.node_by_id.get(rs(rc, "caller_nid"))
                 && let Some(scoped) = resolver.resolve_label(callee, caller_node, sf)
                 && cs.contains(&scoped)
             {
@@ -1533,20 +2046,18 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
                     .is_none_or(|g| g == f)
             });
         }
-        let go_exact = s(rc, "language") == "go" && !s(rc, "import_path").is_empty();
+        let go_exact = rs(rc, "language") == "go" && !rs(rc, "import_path").is_empty();
         if go_exact {
             cs.retain(|c| {
-                types::go_import_path_for_file(
-                    Path::new(id_source.get(c.as_str()).copied().unwrap_or("")),
-                    root,
-                )
-                .is_some_and(|p| p == s(rc, "import_path"))
+                go_modules
+                    .import_path(Path::new(id_source.get(c.as_str()).copied().unwrap_or("")))
+                    .is_some_and(|p| p == rs(rc, "import_path"))
             });
         }
         // An unqualified Elixir call can only reach the caller's own module,
         // Kernel, or a module imported or used in the caller's lexical scope
         // (Graphify c96a743, 48de615, #4001).
-        if let Some(scope) = field(rc, "elixir_call_scope").filter(|v| !v.is_null()) {
+        if let Some(scope) = rc.rec_get("elixir_call_scope").filter(|v| !v.is_null()) {
             let scope: FxHashSet<String> = scope
                 .as_array()
                 .into_iter()
@@ -1565,7 +2076,7 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
         if cs.is_empty() {
             continue;
         }
-        let caller = s(rc, "caller_nid");
+        let caller = rs(rc, "caller_nid");
         let cf = sf_file.get(sf).or_else(|| id_file.get(caller));
         let syms = cf.and_then(|f| symbols.get(f.as_str()));
         let mods = cf.and_then(|f| modules.get(f.as_str()));
@@ -1580,12 +2091,12 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
         // the merge a same-named method elsewhere must not hide the other
         // half's member. Exactly one own-type candidate binds.
         let mut own_type = vec![];
-        if cs.len() > 1 && s(rc, "lang") == "csharp" && !csharp_new {
+        if cs.len() > 1 && rs(rc, "lang") == "csharp" && !csharp_new {
             let owners = method_owner.get_or_insert_with(|| {
                 edges
                     .iter()
-                    .filter(|e| s(e, "relation") == "method")
-                    .map(|e| (s(e, "target"), s(e, "source")))
+                    .filter(|e| rs(*e, "relation") == "method")
+                    .map(|e| (rs(e, "target"), rs(e, "source")))
                     .collect::<FxHashMap<_, _>>()
             });
             if let Some(owner) = owners.get(caller) {
@@ -1611,6 +2122,33 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
                 let module = cs.iter().filter(|c| has_module(c)).collect::<Vec<_>>();
                 if module.len() == 1 {
                     (module[0].clone(), true)
+                } else if csharp_new && !rs(rc, "qualified_prefix").is_empty() {
+                    // A qualified construction (`new Outer.Slot()`) names
+                    // which Slot it means: the one nested in a type called
+                    // Outer, or no edge; a proximity guess over the bare name
+                    // would ignore it (0.9.90). A namespace qualifier matches
+                    // no outer type and is left to the qualified-call pass.
+                    let outers = outer_type.get_or_insert_with(|| {
+                        edges
+                            .iter()
+                            .filter(|e| rs(*e, "relation") == "contains")
+                            .map(|e| {
+                                (
+                                    rs(e, "target"),
+                                    id_label.get(rs(e, "source")).copied().unwrap_or(""),
+                                )
+                            })
+                            .collect::<FxHashMap<_, _>>()
+                    });
+                    let outer = rs(rc, "qualified_prefix").rsplit('.').next().unwrap_or("");
+                    let nested = cs
+                        .iter()
+                        .filter(|c| outers.get(c.as_str()) == Some(&outer))
+                        .collect::<Vec<_>>();
+                    if nested.len() != 1 {
+                        continue;
+                    }
+                    (nested[0].clone(), false)
                 } else {
                     let files = cs
                         .iter()
@@ -1637,11 +2175,11 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
         {
             continue;
         }
-        let indirect = field(rc, "indirect") == Some(&Value::Bool(true));
+        let indirect = rc.rec_get("indirect") == Some(&Value::Bool(true));
         if indirect {
             if !callable.contains(target.as_str())
                 || classes.contains(target.as_str())
-                || !call_pairs.insert((caller.into(), target.clone()))
+                || !call_pairs.insert(pair_ids.pair(caller, &target))
             {
                 continue;
             }
@@ -1655,19 +2193,50 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
             if via_stub && !(evidence || stub_scope_hit) {
                 continue;
             }
-            if !existing.insert((caller.into(), target.clone())) {
+            if !existing.insert(pair_ids.pair(caller, &target)) {
                 continue;
             }
         }
         let label = id_label.get(target.as_str()).copied().unwrap_or("");
         let constructor =
             !indirect && sf.ends_with(".rs") && !label.is_empty() && !label.ends_with(')');
-        let mut edge = json!({"source":caller,"target":target,"relation":if indirect{"indirect_call"}else if constructor{"references"}else{"calls"},"context":if indirect{rc["context"].as_str().unwrap_or("argument")}else if constructor{"constructor"}else{"call"},"confidence":if !indirect&&evidence{"EXTRACTED"}else{"INFERRED"},"confidence_score":if !indirect&&evidence{1.0}else{0.85},"source_file":sf,"source_location":rc.get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0});
+        let mut edge = json!({"source":caller,"target":target,"relation":if indirect{"indirect_call"}else if constructor{"references"}else{"calls"},"context":if indirect{rc.rec_get("context").and_then(Value::as_str).unwrap_or("argument")}else if constructor{"constructor"}else{"call"},"confidence":if !indirect&&evidence{"EXTRACTED"}else{"INFERRED"},"confidence_score":if !indirect&&evidence{1.0}else{0.85},"source_file":sf,"source_location":rc.rec_get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0});
         tighten(&mut edge);
-        added.push(edge);
+        let Value::Object(edge) = edge else {
+            unreachable!("an edge literal is an object")
+        };
+        added.push(E::from_object(edge));
     }
+    edges.reserve_exact(added.len());
     edges.extend(added);
-    repoint_go_imports(&sf_file, edges, root, &mut existing);
+    repoint_go_imports(
+        &sf_file,
+        edges,
+        &mut go_modules,
+        &mut existing,
+        &mut pair_ids,
+    );
+}
+
+/// Id texts numbered once for the `(source, target)` pair tables of
+/// [`bind_raw_calls`]: a pair is two integers rather than two owned copies of
+/// its id strings (Kubernetes holds about 1.6 million pairs at once). Two
+/// texts get the same number exactly when they are equal, so every lookup
+/// answers as it would on the strings.
+#[derive(Default)]
+struct PairIds(FxHashMap<Box<str>, u32>);
+impl PairIds {
+    fn id(&mut self, text: &str) -> u32 {
+        if let Some(&id) = self.0.get(text) {
+            return id;
+        }
+        let id = u32::try_from(self.0.len()).expect("fewer than 2^32 distinct ids");
+        self.0.insert(text.into(), id);
+        id
+    }
+    fn pair(&mut self, source: &str, target: &str) -> (u32, u32) {
+        (self.id(source), self.id(target))
+    }
 }
 
 /// #3746: repoint intra-module Go `imports_from` edges from the
@@ -1675,11 +2244,12 @@ pub fn bind_raw_calls(raw: &[&Value], nodes: &[Value], edges: &mut Vec<Value>, r
 /// nodes. Stdlib and external imports have no file in the corpus and stay
 /// sinks. Mirrors the block that follows qualified-call binding in
 /// upstream `extract.py`.
-fn repoint_go_imports(
+fn repoint_go_imports<E: Rec>(
     sf_file: &FxHashMap<&str, String>,
-    edges: &mut Vec<Value>,
-    root: &Path,
-    existing: &mut FxHashSet<(String, String)>,
+    edges: &mut Vec<E>,
+    go_modules: &mut types::GoModules<'_>,
+    existing: &mut FxHashSet<(u32, u32)>,
+    pair_ids: &mut PairIds,
 ) {
     let mut go_pkg_files: FxHashMap<String, Vec<String>> = FxHashMap::default();
     let mut ordered: Vec<(&str, &String)> = sf_file
@@ -1690,9 +2260,9 @@ fn repoint_go_imports(
     // `sf_file` hashes its keys; sort so per-package file order is stable.
     ordered.sort();
     for (sf, fnid) in ordered {
-        if let Some(import_path) = types::go_import_path_for_file(Path::new(sf), root) {
+        if let Some(import_path) = go_modules.import_path(Path::new(sf)) {
             go_pkg_files
-                .entry(import_path)
+                .entry(import_path.to_owned())
                 .or_default()
                 .push(fnid.clone());
         }
@@ -1704,26 +2274,43 @@ fn repoint_go_imports(
         .keys()
         .map(|ip| (extractors::base::make_id(["go", "pkg", ip.as_str()]), ip))
         .collect();
-    let mut rewritten = Vec::with_capacity(edges.len());
-    for e in edges.drain(..) {
-        let import_path = if s(&e, "relation") == "imports_from" {
-            sinks.get(s(&e, "target")).copied()
+    let sink_of = |e: &E| {
+        if rs(e, "relation") == "imports_from" {
+            sinks.get(rs(e, "target")).copied()
         } else {
             None
-        };
-        let Some(import_path) = import_path else {
-            rewritten.push(e);
+        }
+    };
+    // Decide every repointed copy first, in edge order and with the same pair
+    // checks, so the rewritten list is allocated once at its final length
+    // (Kubernetes: about 750,000 copies) instead of doubling beside the old.
+    let mut counts = vec![];
+    let mut targets: Vec<&String> = vec![];
+    for e in edges.iter() {
+        let Some(import_path) = sink_of(e) else {
             continue;
         };
-        let source = s(&e, "source").to_string();
+        let source = rs(e, "source");
+        let before = targets.len();
         for fnid in &go_pkg_files[import_path] {
-            if *fnid == source || existing.contains(&(source.clone(), fnid.clone())) {
+            if fnid.as_str() == source || !existing.insert(pair_ids.pair(source, fnid)) {
                 continue;
             }
+            targets.push(fnid);
+        }
+        counts.push(targets.len() - before);
+    }
+    let mut rewritten = Vec::with_capacity(edges.len() - counts.len() + targets.len());
+    let (mut counts, mut targets) = (counts.into_iter(), targets.into_iter());
+    for e in edges.drain(..) {
+        if sink_of(&e).is_none() {
+            rewritten.push(e);
+            continue;
+        }
+        for fnid in targets.by_ref().take(counts.next().unwrap_or(0)) {
             let mut repointed = e.clone();
-            repointed["target"] = json!(fnid);
+            repointed.rec_set_str("target", fnid);
             rewritten.push(repointed);
-            existing.insert((source.clone(), fnid.clone()));
         }
     }
     *edges = rewritten;
@@ -1805,6 +2392,239 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Assembly's record path (edges as compact records from raw-call binding
+    /// on: bound calls, repointed Go imports, the Python member pass, the Rust
+    /// `use` group drop and `finish`) gives byte for byte the extraction of
+    /// the JSON path, cold and from the cache, and with the intermediate output.
+    #[test]
+    fn record_edges_extract_exactly_like_json_edges() {
+        let _serial = extractors::parse_cache::test_serial();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        write("go.mod", "module example.com/demo\n\ngo 1.22\n");
+        let mut paths = vec![
+            write(
+                "a/a.go",
+                "package a\n\nfunc Alpha() int { return 1 }\n\ntype Thing struct{}\n\nfunc (t *Thing) Do() int { return Alpha() }\n",
+            ),
+            write(
+                "a/a2.go",
+                "package a\n\nfunc Beta() int { return Alpha() }\n",
+            ),
+            write(
+                "b/b.go",
+                "package b\n\nimport (\n\t\"fmt\"\n\t\"example.com/demo/a\"\n)\n\nfunc Bravo() { fmt.Println(a.Alpha()); Charlie() }\n\nfunc Charlie() {}\n",
+            ),
+            write(
+                "c/c.go",
+                "package c\n\nimport \"example.com/demo/a\"\n\nfunc Cee() int { return a.Beta() + Helper() }\n\nfunc Helper() int { return 2 }\n",
+            ),
+            write(
+                "py/models.py",
+                "class Base:\n    def run(self):\n        return 1\n\n\nclass Child(Base):\n    def go(self):\n        return self.run()\n",
+            ),
+            write(
+                "py/app.py",
+                "import models\nfrom models import Child\n\n\ndef main():\n    c = Child()\n    models.Base().run()\n    return c.go()\n",
+            ),
+            write(
+                "src/lib.rs",
+                "use std::collections::{HashMap, HashSet};\n\npub struct S;\n\nimpl S {\n    pub fn new() -> Self { S }\n    pub fn f(&self) -> usize { self.g() }\n    fn g(&self) -> usize { 1 }\n}\n\npub fn make() -> S { S::new() }\n",
+            ),
+        ];
+        paths.sort();
+        let run = |json_only: bool, use_cache: bool, include_intermediate: bool| {
+            crate::resolver_registry::JSON_ONLY.with(|f| f.set(json_only));
+            let out = extract(
+                &paths,
+                &ExtractOptions {
+                    root: Some(root.clone()),
+                    cache_root: Some(root.join("cache")),
+                    use_cache,
+                    include_intermediate,
+                    parallel: false,
+                    ..Default::default()
+                },
+            );
+            crate::resolver_registry::JSON_ONLY.with(|f| f.set(false));
+            serde_json::to_string(&out.unwrap()).unwrap()
+        };
+        for (use_cache, intermediate) in
+            [(false, false), (true, false), (true, false), (false, true)]
+        {
+            let json = run(true, use_cache, intermediate);
+            let records = run(false, use_cache, intermediate);
+            assert_eq!(
+                records, json,
+                "cache {use_cache}, intermediate {intermediate}"
+            );
+        }
+        // The fixture reaches the passes the record path runs.
+        let out: Value = serde_json::from_str(&run(false, false, false)).unwrap();
+        let edges = out["edges"].as_array().unwrap();
+        assert!(edges.iter().any(|e| e["relation"] == "calls"));
+        assert!(edges.iter().any(|e| {
+            e["relation"] == "imports_from"
+                && e["target"]
+                    .as_str()
+                    .is_some_and(|t| !t.starts_with("go_pkg"))
+        }));
+        assert!(edges.iter().all(|e| e["_origin"] == "ast"));
+    }
+
+    /// Assembly over compact per-file results (node and raw-call records as
+    /// `Attributes`) gives byte for byte the extraction over JSON results, for
+    /// every language pass that reads them, cold, from the cache (all hits)
+    /// and with the intermediate output; the cache entries are the same bytes.
+    #[test]
+    fn per_file_records_extract_exactly_like_json_results() {
+        let _serial = extractors::parse_cache::test_serial();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        write("go.mod", "module example.com/demo\n\ngo 1.22\n");
+        let mut paths = vec![
+            write(
+                "a/a.go",
+                "package a\n\nimport \"example.com/demo/b\"\n\ntype Thing struct{ B b.Item }\n\nfunc Alpha() int { return b.Make().N }\n",
+            ),
+            write(
+                "b/b.go",
+                "package b\n\ntype Item struct{ N int }\n\nfunc Make() Item { return Item{} }\n",
+            ),
+            write("py/pkg/__init__.py", ""),
+            write(
+                "py/pkg/models.py",
+                "class Base:\n    def run(self):\n        return 1\n\n\nclass Child(Base):\n    def go(self):\n        return self.run()\n",
+            ),
+            write(
+                "py/app.py",
+                "from pkg import models\nfrom pkg.models import Child\n\n\ndef main():\n    models.Base().run()\n    return Child().go()\n",
+            ),
+            write("scripts/lib.sh", "#!/bin/bash\nhelper() {\n  echo hi\n}\n"),
+            write(
+                "scripts/main.sh",
+                "#!/bin/bash\nsource ./lib.sh\nmain() {\n  helper\n}\nmain\n",
+            ),
+            write(
+                "k/A.kt",
+                "package demo.k\n\nclass A {\n    fun f(): Int = 1\n}\n",
+            ),
+            write(
+                "k/B.kt",
+                "package demo.other\n\nimport demo.k.A\n\nfun g(): Int = A().f()\n",
+            ),
+            write(
+                "cs/P1.cs",
+                "namespace N {\n  public partial class P {\n    public void A() { B(); }\n  }\n}\n",
+            ),
+            write(
+                "cs/P2.cs",
+                "namespace N {\n  public partial class P {\n    public void B() { }\n  }\n}\n",
+            ),
+            write("sw/S.swift", "struct S {\n    func a() {}\n}\n"),
+            write("sw/E.swift", "extension S {\n    func f() { a() }\n}\n"),
+            write("tf/main.tf", "module \"m\" {\n  source = \"./mod\"\n}\n"),
+            write("tf/mod/main.tf", "variable \"x\" {}\n"),
+            write(
+                "j/p/A.java",
+                "package p;\n\npublic class A {\n    public void f() {}\n}\n",
+            ),
+            write(
+                "j/q/B.java",
+                "package q;\n\nimport p.A;\n\nclass B {\n    void g() { new A().f(); }\n}\n",
+            ),
+            write(
+                "ph/A.php",
+                "<?php\nnamespace P;\n\nclass A {\n    public function f() {}\n}\n",
+            ),
+            write(
+                "ph/B.php",
+                "<?php\nnamespace Q;\n\nuse P\\A;\n\nclass B {\n    public function g() { (new A())->f(); }\n}\n",
+            ),
+            write(
+                "src/lib.rs",
+                "pub struct S;\n\nimpl S {\n    pub fn f(&self) -> usize { self.g() }\n    fn g(&self) -> usize { 1 }\n}\n",
+            ),
+        ];
+        paths.sort();
+        let cache_files = |dir: &Path| {
+            let mut files = std::collections::BTreeMap::new();
+            let mut stack = vec![dir.to_path_buf()];
+            while let Some(d) = stack.pop() {
+                for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        stack.push(path);
+                    } else if path.extension().is_some_and(|e| e == "json")
+                        && !path.ends_with("stat-index.json")
+                    {
+                        files.insert(
+                            path.strip_prefix(dir).unwrap().to_path_buf(),
+                            std::fs::read(&path).unwrap(),
+                        );
+                    }
+                }
+            }
+            files
+        };
+        let run = |json_only: bool, cache: &str, use_cache: bool, include_intermediate: bool| {
+            crate::resolver_registry::JSON_ONLY.with(|f| f.set(json_only));
+            let out = extract(
+                &paths,
+                &ExtractOptions {
+                    root: Some(root.clone()),
+                    cache_root: Some(root.join(cache)),
+                    use_cache,
+                    include_intermediate,
+                    parallel: false,
+                    ..Default::default()
+                },
+            );
+            crate::resolver_registry::JSON_ONLY.with(|f| f.set(false));
+            serde_json::to_string(&out.unwrap()).unwrap()
+        };
+        for (use_cache, intermediate) in [(true, false), (true, false), (true, true), (false, true)]
+        {
+            let json = run(true, "cache-json", use_cache, intermediate);
+            let records = run(false, "cache-records", use_cache, intermediate);
+            assert_eq!(
+                records, json,
+                "cache {use_cache}, intermediate {intermediate}"
+            );
+            assert_eq!(
+                cache_files(&root.join("cache-records")),
+                cache_files(&root.join("cache-json"))
+            );
+        }
+        // The fixture reaches the per-file passes: Go type references, Bash
+        // sources, Kotlin imports, the C# partial merge and bound calls.
+        let out: Value = serde_json::from_str(&run(false, "cache-check", false, false)).unwrap();
+        let edges = out["edges"].as_array().unwrap();
+        assert!(edges.iter().any(|e| e["relation"] == "calls"));
+        assert!(edges.iter().any(|e| {
+            e["source_file"]
+                .as_str()
+                .is_some_and(|f| f.ends_with(".sh"))
+                && e["relation"] != "contains"
+        }));
+        assert!(
+            !cache_files(&root.join("cache-records")).is_empty(),
+            "the cache holds entries"
+        );
     }
 
     #[test]

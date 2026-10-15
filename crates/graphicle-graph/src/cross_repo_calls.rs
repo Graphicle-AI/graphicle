@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cross_repo_calls.py
 //! Native translation of graphify/cross_repo_calls.py.
 use crate::{
@@ -54,9 +54,32 @@ pub fn language_suffixes(lang: &str) -> &'static [&'static str] {
             ".cpp", ".cc", ".cxx", ".hpp", ".hh", ".hxx", ".h", ".cu", ".cuh",
         ],
         "csharp" => &[".cs"],
+        "go" => &[".go"],
         "java" => &[".java"],
+        "kotlin" => &[".kt", ".kts"],
+        "objc" => &[".h", ".m", ".mm"],
         "swift" => &[".swift"],
+        "php" => &[
+            ".php", ".phtml", ".php3", ".php4", ".php5", ".php7", ".phps",
+        ],
+        // TS and JS share one key: a TS class answers a JS call site, and an
+        // SFC script block is TS/JS too.
+        "typescript" => &[
+            ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte",
+            ".astro",
+        ],
         _ => &[],
+    }
+}
+/// `_member_keys`: the member-index keys a parked callee may answer to. An
+/// Objective-C selector carries no class/instance distinction, so both
+/// sigils are tried (a type declaring `+greet` and `-greet` is ambiguous).
+pub fn member_keys(lang: &str, callee: &str) -> Vec<String> {
+    if lang == "objc" {
+        let selector = callee.trim_start_matches(['+', '-']);
+        vec![format!("-{selector}"), format!("+{selector}")]
+    } else {
+        vec![callee.to_string()]
     }
 }
 pub fn member_relations(lang: &str) -> &'static [&'static str] {
@@ -207,14 +230,20 @@ pub fn link_cross_repo_member_calls(graph: &mut Graph) -> Result<usize> {
                     continue;
                 }
             }
-            let targets = member_relations(&lang).iter().find_map(|relation| {
-                members[*relation]
-                    .get(&(candidates[0], callee.clone()))
-                    .filter(|v| !v.is_empty())
-            });
-            let Some(targets) = targets.filter(|v| v.len() == 1) else {
+            let mut targets: Vec<usize> = Vec::new();
+            for relation in member_relations(&lang) {
+                for member_key in member_keys(&lang, &callee) {
+                    if let Some(found) = members[*relation].get(&(candidates[0], member_key)) {
+                        targets.extend(found.iter().copied());
+                    }
+                }
+                if !targets.is_empty() {
+                    break;
+                }
+            }
+            if targets.len() != 1 {
                 continue;
-            };
+            }
             let target = targets[0];
             if target == caller
                 || graph.number_of_edges(&graph.nodes[caller].id, &graph.nodes[target].id) > 0
@@ -250,6 +279,18 @@ pub fn dispatch(request: &Value) -> Result<Value> {
             return Ok(json!(member_relations(
                 request["language"].as_str().unwrap_or("")
             )));
+        }
+        "cross_calls.member_keys" => {
+            return Ok(json!(member_keys(
+                request["language"].as_str().unwrap_or(""),
+                request["callee"].as_str().unwrap_or("")
+            )));
+        }
+        "cross_calls.language_suffixes" => {
+            let mut suffixes =
+                language_suffixes(request["language"].as_str().unwrap_or("")).to_vec();
+            suffixes.sort_unstable();
+            return Ok(json!(suffixes));
         }
         _ => (),
     }

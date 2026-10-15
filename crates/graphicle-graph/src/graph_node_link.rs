@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/affected.py
 //! Streaming node-link deserialization straight into a [`Graph`].
 //!
@@ -88,7 +88,7 @@ impl Document {
     }
 }
 
-fn add_raw_edge(graph: &mut Graph, edge: RawEdge) -> crate::Result<()> {
+fn add_raw_edge(graph: &mut Graph, edge: RawEdge, keep: Keep) -> crate::Result<()> {
     let RawEdge {
         source,
         target,
@@ -106,11 +106,22 @@ fn add_raw_edge(graph: &mut Graph, edge: RawEdge) -> crate::Result<()> {
     let key = match key {
         Some((_, key)) if graph.multigraph => Some(key),
         Some((position, key)) => {
-            attributes.shift_insert(position.min(attributes.len()), "key".into(), key);
+            if keep != Keep::Topology {
+                attributes.shift_insert(position.min(attributes.len()), "key".into(), key);
+            }
             None
         }
         None => None,
     };
+    if keep == Keep::Arcs {
+        // As `Graph::from_node_link_with_arcs` stamps them: after every other
+        // attribute, unless the link already carries the marker.
+        for (marker, end) in [("_src", &source), ("_tgt", &target)] {
+            if !attributes.contains_key(marker) {
+                attributes.insert(marker.into(), end.clone());
+            }
+        }
+    }
     graph.add_edge(source, target, key, attributes)?;
     Ok(())
 }
@@ -118,18 +129,39 @@ fn add_raw_edge(graph: &mut Graph, edge: RawEdge) -> crate::Result<()> {
 impl<'de> DeserializeSeed<'de> for NodeLinkSeed<'_> {
     type Value = Graph;
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Graph, D::Error> {
-        if self.edges_key == "nodes" {
-            return Err(declined("edge field aliases nodes"));
-        }
-        let document = deserializer.deserialize_map(DocumentVisitor {
-            edges_key: self.edges_key,
-        })?;
-        document.finish().map_err(serde::de::Error::custom)
+        node_link(deserializer, self.edges_key, Keep::Attributes)
     }
+}
+
+/// What a streamed load keeps of each node and link.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Keep {
+    /// Every attribute (`Graph::from_node_link_owned`).
+    Attributes,
+    /// Every attribute, plus each link's stored direction as `_src`/`_tgt`
+    /// (`Graph::from_node_link_with_arcs`).
+    Arcs,
+    /// No attribute: node ids, endpoints and multigraph keys only, the same
+    /// nodes, edges and adjacency order at a fraction of the memory.
+    Topology,
+}
+
+/// The streamed document.
+fn node_link<'de, D: Deserializer<'de>>(
+    deserializer: D,
+    edges_key: &str,
+    keep: Keep,
+) -> Result<Graph, D::Error> {
+    if edges_key == "nodes" {
+        return Err(declined("edge field aliases nodes"));
+    }
+    let document = deserializer.deserialize_map(DocumentVisitor { edges_key, keep })?;
+    document.finish().map_err(serde::de::Error::custom)
 }
 
 struct DocumentVisitor<'a> {
     edges_key: &'a str,
+    keep: Keep,
 }
 
 enum DocumentField {
@@ -196,7 +228,7 @@ impl<'de> Visitor<'de> for DocumentVisitor<'_> {
                 DocumentField::Attributes => document.attributes = Some(map.next_value()?),
                 DocumentField::Nodes => {
                     let graph = document.start_graph()?;
-                    map.next_value_seed(Nodes(graph))?;
+                    map.next_value_seed(Nodes(graph, self.keep))?;
                 }
                 DocumentField::Edges => {
                     if document.edges_seen {
@@ -206,7 +238,7 @@ impl<'de> Visitor<'de> for DocumentVisitor<'_> {
                         .graph
                         .as_mut()
                         .ok_or_else(|| declined("edges before nodes"))?;
-                    map.next_value_seed(Edges(graph))?;
+                    map.next_value_seed(Edges(graph, self.keep))?;
                     document.edges_seen = true;
                 }
                 DocumentField::Other => {
@@ -218,7 +250,7 @@ impl<'de> Visitor<'de> for DocumentVisitor<'_> {
     }
 }
 
-struct Nodes<'g>(&'g mut Graph);
+struct Nodes<'g>(&'g mut Graph, Keep);
 
 impl<'de> DeserializeSeed<'de> for Nodes<'_> {
     type Value = ();
@@ -234,7 +266,7 @@ impl<'de> Visitor<'de> for Nodes<'_> {
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
         let mut index = 0usize;
-        while let Some(node) = seq.next_element_seed(NodeSeed)? {
+        while let Some(node) = seq.next_element_seed(NodeSeed(self.1))? {
             let id = node.id.unwrap_or_else(|| json!(index));
             self.0
                 .add_node(id, node.attributes)
@@ -245,7 +277,7 @@ impl<'de> Visitor<'de> for Nodes<'_> {
     }
 }
 
-struct NodeSeed;
+struct NodeSeed(Keep);
 
 impl<'de> DeserializeSeed<'de> for NodeSeed {
     type Value = RawNode;
@@ -301,6 +333,9 @@ impl<'de> Visitor<'de> for NodeSeed {
         while let Some(key) = map.next_key_seed(Reserved(["id"]))? {
             match key {
                 AttributeKey::Reserved(_) => node.id = Some(map.next_value()?),
+                AttributeKey::Attribute(_) if self.0 == Keep::Topology => {
+                    map.next_value::<IgnoredAny>()?;
+                }
                 AttributeKey::Attribute(name) => {
                     let value = map.next_value()?;
                     node.attributes.insert_field(name, value);
@@ -312,7 +347,7 @@ impl<'de> Visitor<'de> for NodeSeed {
     }
 }
 
-struct Edges<'g>(&'g mut Graph);
+struct Edges<'g>(&'g mut Graph, Keep);
 
 impl<'de> DeserializeSeed<'de> for Edges<'_> {
     type Value = ();
@@ -327,14 +362,14 @@ impl<'de> Visitor<'de> for Edges<'_> {
         f.write_str("an array of edge objects")
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-        while let Some(edge) = seq.next_element_seed(EdgeSeed)? {
-            add_raw_edge(self.0, edge).map_err(serde::de::Error::custom)?;
+        while let Some(edge) = seq.next_element_seed(EdgeSeed(self.1))? {
+            add_raw_edge(self.0, edge, self.1).map_err(serde::de::Error::custom)?;
         }
         Ok(())
     }
 }
 
-struct EdgeSeed;
+struct EdgeSeed(Keep);
 
 impl<'de> DeserializeSeed<'de> for EdgeSeed {
     type Value = RawEdge;
@@ -360,6 +395,9 @@ impl<'de> Visitor<'de> for EdgeSeed {
                     // A repeated key keeps its first position, like a map insert.
                     let position = key.as_ref().map_or(attributes.len(), |(p, _)| *p);
                     key = Some((position, value));
+                }
+                AttributeKey::Attribute(_) if self.0 == Keep::Topology => {
+                    map.next_value::<IgnoredAny>()?;
                 }
                 AttributeKey::Attribute(name) => {
                     let value = map.next_value()?;
@@ -390,6 +428,28 @@ impl Graph {
         let graph = NodeLinkSeed { edges_key }
             .deserialize(&mut deserializer)
             .ok()?;
+        deserializer.end().ok()?;
+        Some(graph)
+    }
+
+    /// [`Graph::from_node_link_json`] that keeps each link's stored direction
+    /// as `_src`/`_tgt`, as `from_node_link_owned_with_arcs` does; `None`
+    /// where the streaming loader declines the input.
+    pub fn from_node_link_json_with_arcs(text: &str, edges_key: &str) -> Option<Graph> {
+        Self::streamed(text, edges_key, Keep::Arcs)
+    }
+
+    /// The topology of [`Graph::from_node_link_json_with_arcs`]: the same
+    /// nodes, edges (with their multigraph keys), adjacency order and graph
+    /// attributes, without any node or edge attribute. For readers of the
+    /// structure only, such as the aggregated HTML view.
+    pub fn from_node_link_json_topology(text: &str, edges_key: &str) -> Option<Graph> {
+        Self::streamed(text, edges_key, Keep::Topology)
+    }
+
+    fn streamed(text: &str, edges_key: &str, keep: Keep) -> Option<Graph> {
+        let mut deserializer = serde_json::Deserializer::from_str(text);
+        let graph = node_link(&mut deserializer, edges_key, keep).ok()?;
         deserializer.end().ok()?;
         Some(graph)
     }
@@ -424,6 +484,92 @@ mod tests {
                      {"relation":"first","source":"a","target":"a","key":"k","z":true}]}"#,
             "links",
         );
+    }
+
+    /// The arcs loader against `from_node_link_owned_with_arcs`: markers
+    /// after every other attribute (after a simple graph's `key`), a marker
+    /// the link already carries kept, in both graph kinds.
+    #[test]
+    fn arcs_match_dynamic_loader() {
+        for (text, edges_key) in [
+            (
+                r#"{"directed":false,"multigraph":true,"graph":{"hyperedges":[]},
+                "nodes":[{"id":"b","label":"B"},{"id":"a"}],
+                "links":[{"source":"a","target":"b","key":0,"relation":"calls"},
+                         {"source":"b","target":"a","relation":"uses","_src":"x"},
+                         {"_tgt":"y","source":"a","target":"a"}]}"#,
+                "links",
+            ),
+            (
+                r#"{"directed":false,"multigraph":false,"nodes":[{"id":"a"},{"id":"b"}],
+                "links":[{"source":"b","before":1,"key":"kept","after":2,"target":"a"},
+                         {"source":"a","target":"b","other":1}]}"#,
+                "links",
+            ),
+            (
+                r#"{"directed":true,"multigraph":false,"nodes":[{"id":1},{"id":"c"}],
+                "edges":[{"source":"c","target":1,"w":0.5}]}"#,
+                "edges",
+            ),
+        ] {
+            let streamed = Graph::from_node_link_json_with_arcs(text, edges_key).unwrap();
+            let expected = Graph::from_node_link_owned_with_arcs(
+                serde_json::from_str(text).unwrap(),
+                edges_key,
+            )
+            .unwrap();
+            assert_eq!(
+                streamed.to_node_link(edges_key),
+                expected.to_node_link(edges_key),
+                "{text}"
+            );
+        }
+    }
+
+    /// The topology loader keeps the full loader's nodes, edges, keys,
+    /// adjacency order and graph attributes, and no record attribute.
+    #[test]
+    fn topology_matches_full_loader_structure() {
+        for (text, edges_key) in [
+            (
+                r#"{"directed":false,"multigraph":true,"graph":{"hyperedges":[{"id":"h"}]},
+                "nodes":[{"id":"b","label":"B"},{"id":"a","x":[1]}],
+                "links":[{"source":"a","target":"b","key":0,"relation":"calls"},
+                         {"source":"b","target":"a","key":0,"w":1},
+                         {"source":"a","target":"c","relation":"new node"},
+                         {"source":"a","target":"a"}]}"#,
+                "links",
+            ),
+            (
+                r#"{"directed":true,"multigraph":false,"nodes":[{"id":1},{"id":"c"}],
+                "edges":[{"source":"c","target":1,"key":"k","w":0.5},{"source":"c","target":1,"w":2}]}"#,
+                "edges",
+            ),
+        ] {
+            let full = Graph::from_node_link_json_with_arcs(text, edges_key).unwrap();
+            let bare = Graph::from_node_link_json_topology(text, edges_key).unwrap();
+            assert_eq!(bare.attributes, full.attributes);
+            let ids = |g: &Graph| g.nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>();
+            assert_eq!(ids(&bare), ids(&full), "{text}");
+            assert!(bare.nodes.iter().all(|n| n.attributes.is_empty()));
+            let edges = |g: &Graph| {
+                g.iter_edges()
+                    .map(|(u, v, e)| (u, v, e.key.to_value(), e.attributes.is_empty()))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                edges(&bare)
+                    .into_iter()
+                    .map(|(u, v, k, _)| (u, v, k))
+                    .collect::<Vec<_>>(),
+                edges(&full)
+                    .into_iter()
+                    .map(|(u, v, k, _)| (u, v, k))
+                    .collect::<Vec<_>>(),
+                "{text}"
+            );
+            assert!(edges(&bare).iter().all(|(_, _, _, empty)| *empty));
+        }
     }
 
     #[test]

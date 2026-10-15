@@ -1,8 +1,11 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/csharp.py
 //! Native translation of graphify/extractors/csharp.py.
 //! This file resolves C# graph facts; the source parser remains in the extractor core.
-use crate::{Result, html_compat, ids::make_id, python_compat::string, rcfile::effective_suffix};
+use crate::{
+    Result, html_compat, ids::make_id, python_compat::string, rcfile::effective_suffix,
+    resolver_registry::Rec,
+};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 pub const DOTNET_SOURCE_EXTS: &[&str] = &[".cs", ".razor", ".cshtml"];
@@ -51,20 +54,30 @@ fn sort_key(node: &Value) -> (String, String, String) {
 /// `defines` and `method` edges (enum members, properties, fields, methods)
 /// are never type definitions, even when they share a type's name (#3815).
 pub fn build_csharp_type_def_index(nodes: &[Value], edges: Option<&[Value]>) -> TypeIndex {
+    type_def_index_of(nodes, edges)
+}
+/// `edge[key]` (`Null` when absent) on an edge of either record form.
+fn edge_at<'a, E: Rec>(edge: &'a E, key: &str) -> &'a Value {
+    static NULL: Value = Value::Null;
+    edge.rec_get(key).unwrap_or(&NULL)
+}
+/// [`build_csharp_type_def_index`] over edges in either record form.
+pub fn type_def_index_of<E: Rec>(nodes: &[Value], edges: Option<&[E]>) -> TypeIndex {
     let non_type_ids: HashSet<&str> = edges
         .into_iter()
         .flatten()
         .filter(|e| {
             matches!(
-                e["relation"].as_str(),
+                e.rec_get("relation").and_then(Value::as_str),
                 Some("case_of" | "defines" | "method")
             )
         })
         .filter_map(|e| {
-            let target = if truthy(&e["_tgt"]) {
-                &e["_tgt"]
+            let tgt = edge_at(e, "_tgt");
+            let target = if truthy(tgt) {
+                tgt
             } else {
-                &e["target"]
+                edge_at(e, "target")
             };
             target.as_str()
         })
@@ -214,6 +227,10 @@ pub struct CsharpNameResolver {
 }
 impl CsharpNameResolver {
     pub fn new(nodes: &[Value], edges: &[Value]) -> Self {
+        Self::new_of(nodes, edges)
+    }
+    /// [`Self::new`] over edges in either record form.
+    pub fn new_of<E: Rec>(nodes: &[Value], edges: &[E]) -> Self {
         let node_by_id = nodes
             .iter()
             .filter_map(|node| {
@@ -223,7 +240,7 @@ impl CsharpNameResolver {
                     .map(|id| (id.to_string(), node.clone()))
             })
             .collect();
-        let type_def_index = build_csharp_type_def_index(nodes, Some(edges));
+        let type_def_index = type_def_index_of(nodes, Some(edges));
         let known_namespaces = nodes
             .iter()
             .filter(|n| n["type"] == "namespace")
@@ -239,10 +256,10 @@ impl CsharpNameResolver {
             nested_types_by_holder: BTreeMap::new(),
         };
         for edge in edges {
-            if edge["relation"] != "imports" {
+            if *edge_at(edge, "relation") != "imports" {
                 continue;
             }
-            let Some(source) = edge["source"]
+            let Some(source) = edge_at(edge, "source")
                 .as_str()
                 .and_then(|id| out.node_by_id.get(id))
             else {
@@ -254,7 +271,7 @@ impl CsharpNameResolver {
                 continue;
             }
             let source_file = source["source_file"].as_str().unwrap().to_string();
-            let meta = metadata(&edge["metadata"]);
+            let meta = metadata(edge_at(edge, "metadata"));
             let Some(target) = meta
                 .get("target_fqn")
                 .and_then(Value::as_str)
@@ -303,10 +320,10 @@ impl CsharpNameResolver {
         // source_location, id).
         let mut nested: BTreeMap<(String, String), BTreeMap<String, &Value>> = BTreeMap::new();
         for edge in edges {
-            if edge["relation"] != "contains" {
+            if *edge_at(edge, "relation") != "contains" {
                 continue;
             }
-            let Some(target) = edge["target"].as_str().filter(|s| !s.is_empty()) else {
+            let Some(target) = edge_at(edge, "target").as_str().filter(|s| !s.is_empty()) else {
                 continue;
             };
             let Some(node) = out.node_by_id.get(target) else {
@@ -320,7 +337,7 @@ impl CsharpNameResolver {
             let Some(label) = node["label"].as_str().filter(|s| !s.is_empty()) else {
                 continue;
             };
-            let Some(holder) = edge["source"].as_str().filter(|s| !s.is_empty()) else {
+            let Some(holder) = edge_at(edge, "source").as_str().filter(|s| !s.is_empty()) else {
                 continue;
             };
             nested

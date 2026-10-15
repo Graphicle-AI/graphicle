@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/hooks.py
 //! Detached native hook workers. No interpreter discovery or runtime fallback.
 use crate::{Result, hooks::*, paths, watch};
@@ -111,7 +111,8 @@ pub fn saved_root(cwd: &Path, out: &Path) -> (PathBuf, Option<String>) {
     let candidate = cwd.join(raw);
     let root = crate::extractors::resolution::resolved(cwd);
     match candidate.canonicalize() {
-        Ok(p) if p.is_dir() && p.starts_with(&root) => (candidate, None),
+        // `canonicalize` is verbatim (`\\?\C:\...`) on Windows and the root is not.
+        Ok(p) if p.is_dir() && crate::fsutil::path_starts_with(&p, &root) => (candidate, None),
         _ => (
             cwd.to_path_buf(),
             Some(format!(
@@ -120,8 +121,11 @@ pub fn saved_root(cwd: &Path, out: &Path) -> (PathBuf, Option<String>) {
         ),
     }
 }
+/// The hook events `hook launch`/`hook run` accept. post-checkout and
+/// post-merge (#2418) rebuild unscoped; post-commit rebuilds what it changed.
+const HOOK_EVENTS: [&str; 3] = ["post-commit", "post-checkout", "post-merge"];
 pub fn launch(path: &Path, event: &str) -> Result<String> {
-    if !["post-commit", "post-checkout"].contains(&event) {
+    if !HOOK_EVENTS.contains(&event) {
         return Err(format!("Unknown hook event: {event}").into());
     }
     let root = git_root(path).ok_or("Not in a git repository.")?;
@@ -176,10 +180,8 @@ pub fn launch(path: &Path, event: &str) -> Result<String> {
         }
     }
     #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000008);
-    }
+    let child = spawn_detached(&mut cmd).map_err(crate::Error::from)?;
+    #[cfg(not(windows))]
     let child = cmd.spawn().map_err(crate::Error::from)?;
     Ok(format!(
         "[graphicle hook] rebuild started (pid {}, log {})",
@@ -187,12 +189,33 @@ pub fn launch(path: &Path, event: &str) -> Result<String> {
         log.display()
     ))
 }
+/// Graphify's hooks.py on Windows: CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP,
+/// breaking away from any job object when allowed (CREATE_BREAKAWAY_FROM_JOB),
+/// else without it. CREATE_NO_WINDOW, not DETACHED_PROCESS, so no console
+/// window shows for the whole rebuild. This process's standard handles are
+/// made non-inheritable first, as Graphify's `Popen` passes only the child's
+/// own: else the rebuild holds the Git hook's output pipes open and a caller
+/// that reads them (an agent's shell, an IDE) waits for the whole rebuild.
+#[cfg(windows)]
+fn spawn_detached(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+    use std::os::windows::process::CommandExt;
+    const FLAGS: u32 = 0x0800_0000 | 0x0000_0200;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    crate::win::keep_standard_handles();
+    match cmd
+        .creation_flags(FLAGS | CREATE_BREAKAWAY_FROM_JOB)
+        .spawn()
+    {
+        Ok(child) => Ok(child),
+        Err(_) => cmd.creation_flags(FLAGS).spawn(),
+    }
+}
 pub fn run_rebuild(
     cwd: &Path,
     event: &str,
     changed: Option<Vec<PathBuf>>,
 ) -> Result<watch::RebuildResult> {
-    if !["post-commit", "post-checkout"].contains(&event) {
+    if !HOOK_EVENTS.contains(&event) {
         return Err(format!("Unknown hook event: {event}").into());
     }
     let changed = changed.unwrap_or_else(|| {
@@ -372,11 +395,19 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             s("marker"),
             s("end")
         )?),
-        "script" => json!(script(
-            r["checkout"].as_bool().unwrap_or(false),
-            s("executable"),
-            r["viz_node_limit"].as_i64()
-        )),
+        "script" => json!(if r["merge"].as_bool().unwrap_or(false) {
+            crate::hooks::hook_script(
+                crate::hooks::HookKind::Merge,
+                s("executable"),
+                r["viz_node_limit"].as_i64(),
+            )
+        } else {
+            script(
+                r["checkout"].as_bool().unwrap_or(false),
+                s("executable"),
+                r["viz_node_limit"].as_i64(),
+            )
+        }),
         "saved_root" => json!(saved_root(path("path"), path("out"))),
         "changed_files" => json!(changed_files(path("path"))?),
         "unquote_git_path" => json!(unquote_git_path(s("name"))),
@@ -395,4 +426,77 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         .map_err(crate::Error::from)?,
         x => return Err(format!("Unknown hooks action: {x}").into()),
     })
+}
+
+#[cfg(all(test, windows))]
+mod windows_spawn_tests {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn detached_child_runs_without_a_console() {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "exit 7"]);
+        let status = super::spawn_detached(&mut cmd).unwrap().wait().unwrap();
+        assert_eq!(status.code(), Some(7));
+    }
+
+    /// The caller's half of [`detached_child_leaves_the_callers_pipes`]: run
+    /// in a child of that test whose output is two pipes, it starts a
+    /// 20-second program detached with its own output (as `launch` does)
+    /// and returns. Run by itself it does nothing.
+    #[test]
+    #[allow(clippy::zombie_processes)] // the detached child outlives this test by design
+    fn detached_child_pipe_caller() {
+        if std::env::var_os("HOOK_LAUNCH_PIPE_CALLER").is_none() {
+            return;
+        }
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "21", "127.0.0.1"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        super::spawn_detached(&mut cmd).unwrap();
+    }
+
+    /// A Git hook's caller reads the hook's output to its end: that end must
+    /// come when `hook launch` exits, not when the detached rebuild does.
+    #[test]
+    fn detached_child_leaves_the_callers_pipes() {
+        let start = Instant::now();
+        let mut caller = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "hooks_runtime::windows_spawn_tests::detached_child_pipe_caller",
+                "--exact",
+                "--test-threads=1",
+                "--nocapture",
+            ])
+            .env("HOOK_LAUNCH_PIPE_CALLER", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut errors = caller.stderr.take().unwrap();
+        let reader = std::thread::spawn(move || {
+            let mut text = String::new();
+            errors.read_to_string(&mut text).map(|_| text)
+        });
+        let mut output = String::new();
+        caller
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_string(&mut output)
+            .unwrap();
+        let errors = reader.join().unwrap().unwrap();
+        let waited = start.elapsed();
+        assert!(caller.wait().unwrap().success(), "{output}{errors}");
+        assert!(output.contains("1 passed"), "{output}{errors}");
+        assert!(
+            waited < Duration::from_secs(12),
+            "the detached child held the caller's pipes for {waited:?}"
+        );
+    }
 }

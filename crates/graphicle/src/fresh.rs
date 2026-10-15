@@ -26,6 +26,7 @@
 //! a refresh synced something or the data is stale. (`freshness` was taken:
 //! `context`, `status` and the graph replies already carry the reviewed
 //! memory's staleness under that name.)
+use crate::platform::CanonicalExt;
 use crate::{
     Error, Result,
     local::{self, Session},
@@ -468,7 +469,7 @@ fn scan(
     binaries: &BTreeSet<String>,
 ) -> Option<BTreeSet<String>> {
     let started = Instant::now();
-    let store = store.canonicalize().ok();
+    let store = store.canonical().ok();
     let inside = store
         .as_deref()
         .and_then(|dir| dir.strip_prefix(folder).ok());
@@ -580,7 +581,7 @@ fn git_state(folder: &Path, store: &Path) -> Option<GitState> {
         return None;
     }
     let inside = store
-        .canonicalize()
+        .canonical()
         .ok()
         .and_then(|dir| dir.strip_prefix(folder).ok().map(Path::to_path_buf));
     let mut digest = Sha256::new();
@@ -701,7 +702,11 @@ fn porcelain(output: &[u8], prefix: &str) -> (String, Vec<(String, Vec<u8>)>, bo
 /// index another git process may be using.
 fn git(folder: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(folder).args(args);
+    // Git refuses Windows' verbatim `\\?\` paths.
+    command
+        .arg("-C")
+        .arg(crate::platform::simplified(folder.to_path_buf()))
+        .args(args);
     for variable in [
         "GIT_DIR",
         "GIT_WORK_TREE",
@@ -1086,7 +1091,7 @@ fn files(count: usize) -> &'static str {
 fn sync_command(folder: Option<&Path>) -> String {
     let here = std::env::current_dir()
         .ok()
-        .and_then(|cwd| cwd.canonicalize().ok());
+        .and_then(|cwd| cwd.canonical().ok());
     match folder {
         Some(folder) if !here.is_some_and(|here| here.starts_with(folder)) => {
             let text = folder.to_string_lossy();
@@ -1197,7 +1202,7 @@ pub fn sync_quiet(
     no_graph: bool,
     background: bool,
 ) -> Result<()> {
-    let folder = path.canonicalize()?;
+    let folder = path.canonical()?;
     if !folder.is_dir() {
         return Err(Error::bad("Choose a project folder"));
     }
@@ -1237,7 +1242,7 @@ pub fn sync_quiet(
 /// process left nothing to do. A sync that still finds a newer one finished
 /// first (a sync of the same project from another path) runs once more.
 pub fn locked<T>(store: &Store, folder: &Path, mut sync: impl FnMut() -> Result<T>) -> Result<T> {
-    let folder = folder.canonicalize()?;
+    let folder = folder.canonical()?;
     let mut held = lock(&store.directory, &folder, Duration::ZERO)
         .ok()
         .flatten();
@@ -1461,7 +1466,7 @@ mod tests {
     #[test]
     fn a_scan_counts_files_changed_after_its_time_and_synced_files_gone() {
         let dir = tempfile::tempdir().unwrap();
-        let folder = dir.path().canonicalize().unwrap();
+        let folder = dir.path().canonical().unwrap();
         let store = folder.join("data");
         std::fs::create_dir_all(store.join("gf-cache")).unwrap();
         std::fs::write(folder.join("old.py"), "x = 1\n").unwrap();

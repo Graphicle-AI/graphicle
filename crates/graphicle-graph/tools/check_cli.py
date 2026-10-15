@@ -98,6 +98,10 @@ GUARD_FILES = ['tests/test_hook_guard.py', 'tests/test_hook_strict.py']
 GUARD_NOT_APPLICABLE = {
     'test_search_out_path_error_is_swallowed': "injects an OSError into the reference's graphify.paths.out_path; the native guard has no Python seam to fail (its own errors fail open the same way)",
     'test_gemini_always_allows_even_when_check_throws': "injects an OSError into the reference's graphify.paths.out_path; the native gemini guard has no Python seam to fail (it always prints the allow decision)",
+    # 0.9.89 (#4368): the hint's graph-size cap is a compiled constant in the
+    # native guard (24 MiB, as upstream); cli/tests/hook_guard_hints.rs checks
+    # it at the cap and one byte over (a_graph_over_the_size_cap_keeps_the_plain_nudge).
+    'test_oversized_graph_keeps_the_plain_nudge': "patches the reference's cli._HINT_GRAPH_MAX_BYTES to 10 bytes; the native cap is a compiled constant with no seam (cli/tests/hook_guard_hints.rs checks it at 24 MiB)",
 }
 # Upstream files that run the command line as a child process (`python -m
 # graphify ...`), first run here on 14 October 2026: every such child runs the

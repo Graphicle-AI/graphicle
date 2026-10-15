@@ -1,6 +1,6 @@
 """The single name translation table between the pinned reference and the engine.
 
-Development-only. The comparison suite runs Python Graphify 0.9.88 unchanged
+Development-only. The comparison suite runs Python Graphify 0.9.91 unchanged
 under its own names (`import graphify`, `python -m graphify`, the output folder
 `graphify-out`, `GRAPHIFY_*` settings) and the unchanged upstream test files.
 The engine ships Graphicle names. Checks translate names here, at the harness
@@ -131,8 +131,11 @@ TOKENS = [
 # reference spelling. Used only to map native output back before an exact
 # comparison; every entry is a complete renamed phrase.
 PHRASES = [
-    # Benchmark report, tree viewer, saved query results, LLM system prompt.
-    ('graphicle token reduction benchmark', 'graphify token reduction benchmark'),
+    # Benchmark report (the engine labels the ratio a size ratio, not a
+    # saving), tree viewer, saved query results, LLM system prompt.
+    ('graphicle graph benchmark: whole corpus vs one graph answer', 'graphify token reduction benchmark'),
+    ('  Size ratio:      ', '  Reduction:       '),
+    ('x (a size ratio, not an agent saving)\n', 'x fewer tokens per query\n'),
     (' — Graphicle tree viewer', ' — graphify tree viewer'),
     ('contributor: "graphicle"', 'contributor: "graphify"'),
     ('You are a Graphicle semantic extraction agent.', 'You are a graphify semantic extraction agent.'),

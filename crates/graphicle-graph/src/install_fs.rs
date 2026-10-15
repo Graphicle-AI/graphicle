@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 //! Installer file operations preserve unrelated configuration and user text.
 use crate::{Result, paths};
@@ -280,7 +280,10 @@ pub fn install_refs(dst: &Path, source: &Path) -> Result<()> {
                     use std::os::unix::fs::PermissionsExt;
                     permissions.set_mode(permissions.mode() | 0o200);
                 }
+                // Windows: clears the read-only attribute only; the lint's
+                // world-writable concern is Unix's, which takes the branch above.
                 #[cfg(not(unix))]
+                #[allow(clippy::permissions_set_readonly_false)]
                 permissions.set_readonly(false);
                 fs::set_permissions(out, permissions).map_err(crate::Error::from)?;
             }

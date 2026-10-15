@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! Native HTTP, CLI and AWS transports for llm.py.
 
@@ -43,6 +43,109 @@ pub struct Request {
     pub(crate) headers: Vec<(String, String)>,
     #[serde(skip)]
     pub(crate) env: Environment,
+    /// Ollama's native `/api/chat` request, tried before this one (0.9.91,
+    /// #4413): the OpenAI-compatible `/v1` endpoint ignores `options`, so
+    /// `num_ctx` only reaches the server through the native endpoint.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ollama_native: Option<Box<Request>>,
+}
+/// Ollama roots that answered `/api/chat` with 404/405: servers that only
+/// speak `/v1` (LM Studio, llama.cpp). Later requests skip the native call.
+static OLLAMA_NO_NATIVE: std::sync::LazyLock<Mutex<BTreeSet<String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(BTreeSet::new()));
+/// `request` through `transport`, first as Ollama's native `/api/chat` call
+/// when the plan has one (upstream `_call_ollama_native`). The native answer
+/// is returned in the OpenAI-compatible shape the response readers expect.
+/// A 404/405 that does not name the model marks the server as `/v1`-only,
+/// warns once, and falls back to the `/v1` request.
+pub fn send(transport: &dyn Transport, request: &Request, d: &mut Diagnostics) -> Result<Value> {
+    if let Some(native) = &request.ollama_native {
+        let root = native
+            .url
+            .strip_suffix("/api/chat")
+            .unwrap_or(&native.url)
+            .to_owned();
+        let known = OLLAMA_NO_NATIVE
+            .lock()
+            .map_err(|_| Error::runtime("ollama endpoint cache lock poisoned"))?
+            .contains(&root);
+        if !known {
+            match transport.send(native) {
+                Ok(data) => return Ok(ollama_native_response(&data)),
+                Err(e)
+                    if matches!(e.http_status, Some(404 | 405))
+                        && !e.message.to_lowercase().contains("model") =>
+                {
+                    OLLAMA_NO_NATIVE
+                        .lock()
+                        .map_err(|_| Error::runtime("ollama endpoint cache lock poisoned"))?
+                        .insert(root.clone());
+                    d.stderr.push(format!("[graphicle] {root}/api/chat is not available; falling back to the OpenAI-compatible /v1 endpoint, which ignores num_ctx."));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+    transport.send(request)
+}
+/// An `/api/chat` reply as an OpenAI chat completion: the message content,
+/// `prompt_eval_count`/`eval_count` as usage, and `done_reason == "length"`
+/// as the finish reason.
+pub fn ollama_native_response(data: &Value) -> Value {
+    let count = |key: &str| {
+        data.get(key)
+            .filter(|v| crate::build::truthy(v))
+            .cloned()
+            .unwrap_or(json!(0))
+    };
+    let content = data
+        .get("message")
+        .filter(|m| crate::build::truthy(m))
+        .and_then(|m| m.get("content"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let finish = if data.get("done_reason").and_then(Value::as_str) == Some("length") {
+        "length"
+    } else {
+        "stop"
+    };
+    json!({
+        "choices": [{"message": {"role": "assistant", "content": content}, "finish_reason": finish}],
+        "usage": {"prompt_tokens": count("prompt_eval_count"), "completion_tokens": count("eval_count")},
+    })
+}
+/// `_ollama_request_extras`: `num_ctx` sized to the prompt (the
+/// GRAPHICLE_OLLAMA_NUM_CTX setting wins, with warnings for a bad or too
+/// small value) and `keep_alive`.
+fn ollama_request_extras(
+    env: &Environment,
+    user: &str,
+    max_tokens: i64,
+    d: &mut Diagnostics,
+) -> (i64, Value) {
+    let input = user.chars().count() as i64 / 4 + 400;
+    let auto = (input + max_tokens + 2000).clamp(8192, 131072);
+    let raw = cfg::trim(cfg::get(env, "GRAPHICLE_OLLAMA_NUM_CTX"));
+    let n = if raw.is_empty() {
+        auto
+    } else if let Some(n) = cfg::parse_integer(raw) {
+        if n < input {
+            d.stderr.push(format!("[graphicle] warning: GRAPHICLE_OLLAMA_NUM_CTX={n} is smaller than the estimated chunk input (~{input} tokens). Ollama will silently truncate the prompt and return empty responses. Try --token-budget {} or increase NUM_CTX.",1024.max(n.div_euclid(3))))
+        }
+        n
+    } else {
+        d.stderr.push(format!(
+            "[graphicle] GRAPHICLE_OLLAMA_NUM_CTX={} is not a valid integer; using auto-derived value ({auto}).",
+            repr_string(raw)
+        ));
+        auto
+    };
+    let keep_alive = json!(
+        env.get("GRAPHICLE_OLLAMA_KEEP_ALIVE")
+            .map(String::as_str)
+            .unwrap_or("30m")
+    );
+    (n, keep_alive)
 }
 pub trait Transport: Send + Sync {
     fn send(&self, request: &Request) -> Result<Value>;
@@ -114,6 +217,7 @@ pub fn plan(
         cli_args: vec![],
         cli_input: String::new(),
         cli_schema: false,
+        ollama_native: None,
     };
     let system = extract.map(crate::llm::extraction_system);
     match backend {
@@ -256,42 +360,27 @@ pub fn plan(
                         None
                     }
                 });
-                if backend == "ollama" && extract.is_some() {
-                    if cfg::trim(cfg::get(env, "GRAPHICLE_MAX_RETRIES")).is_empty() {
-                        request.retries = 0
-                    }
-                    if explicit.is_none() {
-                        let input = user.chars().count() as i64 / 4 + 400;
-                        let auto = (input + max_tokens + 2000).clamp(8192, 131072);
-                        let raw = cfg::trim(cfg::get(env, "GRAPHICLE_OLLAMA_NUM_CTX"));
-                        let n = if raw.is_empty() {
-                            auto
-                        } else if let Some(n) = cfg::parse_integer(raw) {
-                            if n < input {
-                                d.stderr.push(format!("[graphicle] warning: GRAPHICLE_OLLAMA_NUM_CTX={n} is smaller than the estimated chunk input (~{input} tokens). Ollama will silently truncate the prompt and return empty responses. Try --token-budget {} or increase NUM_CTX.",1024.max(n.div_euclid(3))))
-                            }
-                            n
-                        } else {
-                            d.stderr.push(format!("[graphicle] GRAPHICLE_OLLAMA_NUM_CTX={} is not a valid integer; using auto-derived value ({auto}).",repr_string(raw)));
-                            auto
-                        };
-                        // Merge, don't assign: GRAPHICLE_DISABLE_THINKING may have
-                        // set the body above (Graphify 69d87e0, #3988).
-                        let mut merged = extra
-                            .take()
-                            .and_then(|v| v.as_object().cloned())
-                            .unwrap_or_default();
-                        merged.insert("options".into(), json!({"num_ctx": n}));
-                        merged.insert(
-                            "keep_alive".into(),
-                            json!(
-                                env.get("GRAPHICLE_OLLAMA_KEEP_ALIVE")
-                                    .map(String::as_str)
-                                    .unwrap_or("30m")
-                            ),
-                        );
-                        extra = Some(Value::Object(merged));
-                    }
+                if backend == "ollama"
+                    && extract.is_some()
+                    && cfg::trim(cfg::get(env, "GRAPHICLE_MAX_RETRIES")).is_empty()
+                {
+                    request.retries = 0
+                }
+                // The num_ctx default applies to extraction and, since 0.9.91
+                // (#4413), to plain calls (community labels) too. A provider
+                // with its own extra_body has opted out.
+                let ollama = backend == "ollama" && explicit.is_none();
+                if ollama {
+                    let (n, keep_alive) = ollama_request_extras(env, user, max_tokens, d);
+                    // Merge, don't assign: GRAPHICLE_DISABLE_THINKING may have
+                    // set the body above (Graphify 69d87e0, #3988).
+                    let mut merged = extra
+                        .take()
+                        .and_then(|v| v.as_object().cloned())
+                        .unwrap_or_default();
+                    merged.insert("options".into(), json!({"num_ctx": n}));
+                    merged.insert("keep_alive".into(), keep_alive);
+                    extra = Some(Value::Object(merged));
                 }
                 if let Some(extra) = extra {
                     let Some(m) = extra.as_object() else {
@@ -301,10 +390,67 @@ pub fn plan(
                         request.body[k] = v.clone()
                     }
                 }
+                if ollama {
+                    request.ollama_native = Some(Box::new(ollama_native_request(
+                        &request, base, user, images, max_tokens,
+                    )));
+                }
             }
         }
     }
     Ok(request)
+}
+/// `_call_ollama_native`'s request: the planned `/v1` request's model,
+/// leading messages, options (with `num_predict`, and the temperature and
+/// seed when set) and keep-alive, sent to `<root>/api/chat`, where root is
+/// the base URL without a trailing `/v1`. Images go as base64 beside the
+/// text; `think: false` when GRAPHICLE_DISABLE_THINKING is set.
+fn ollama_native_request(
+    request: &Request,
+    base: &str,
+    user: &str,
+    images: &[ImageRef],
+    max_tokens: i64,
+) -> Request {
+    let root = base.trim_end_matches('/');
+    let root = root.strip_suffix("/v1").unwrap_or(root);
+    let body = &request.body;
+    let mut options = body["options"].as_object().cloned().unwrap_or_default();
+    options.insert("num_predict".into(), json!(max_tokens));
+    for key in ["temperature", "seed"] {
+        if let Some(v) = body.get(key) {
+            options.insert(key.into(), v.clone());
+        }
+    }
+    let mut user_message =
+        json!({"role": "user", "content": source::with_image_notes(user, images, false)});
+    let pixels: Vec<String> = images
+        .iter()
+        .filter(|r| r.raw.is_some())
+        .map(ImageRef::b64)
+        .collect();
+    if !pixels.is_empty() {
+        user_message["images"] = json!(pixels);
+    }
+    let mut messages: Vec<Value> = body["messages"].as_array().cloned().unwrap_or_default();
+    messages.pop();
+    messages.push(user_message);
+    let mut native = json!({
+        "model": body["model"],
+        "messages": messages,
+        "stream": false,
+        "options": options,
+        "keep_alive": body.get("keep_alive").cloned().unwrap_or(json!("30m")),
+    });
+    if cfg::yes(&request.env, "GRAPHICLE_DISABLE_THINKING") {
+        native["think"] = json!(false);
+    }
+    Request {
+        url: format!("{root}/api/chat"),
+        body: native,
+        ollama_native: None,
+        ..request.clone()
+    }
 }
 #[derive(Default)]
 pub struct NativeTransport {
@@ -432,12 +578,15 @@ impl NativeTransport {
                         self.sleep(retry_delay(&headers, attempt));
                         continue;
                     }
-                    return Err(Error::runtime(format!(
-                        "{} API error (HTTP {}): {}",
-                        r.backend,
+                    return Err(Error::http(
                         status.as_u16(),
-                        source::cap(&body, 4000)
-                    )));
+                        format!(
+                            "{} API error (HTTP {}): {}",
+                            r.backend,
+                            status.as_u16(),
+                            source::cap(&body, 4000)
+                        ),
+                    ));
                 }
                 Err(e) => {
                     if attempt < r.retries {

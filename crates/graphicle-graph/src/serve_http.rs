@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Streamable HTTP MCP transport with API keys and expiring sessions.
 use crate::{Result, serve::Server};
@@ -452,12 +452,20 @@ impl HttpServer {
         }
     }
 }
+/// An accepted connection, in blocking mode: Windows sockets inherit the
+/// listener's non-blocking mode, Unix ones are returned unchanged.
+fn accepted(stream: TcpStream) -> TcpStream {
+    #[cfg(windows)]
+    let _ = stream.set_nonblocking(false);
+    stream
+}
 pub fn run(listener: TcpListener, server: Arc<HttpServer>, stop: &AtomicBool) -> Result<()> {
     listener.set_nonblocking(true).map_err(crate::Error::from)?;
     let active = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((mut stream, _)) => {
+            Ok((stream, _)) => {
+                let mut stream = accepted(stream);
                 if active.load(Ordering::Relaxed) >= 64 {
                     respond(
                         &mut stream,
@@ -489,4 +497,43 @@ pub fn run(listener: TcpListener, server: Arc<HttpServer>, stop: &AtomicBool) ->
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod windows_accept_tests {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::time::Duration;
+
+    /// A request that arrives after the accept is still read: the accepted
+    /// socket blocks instead of failing with WouldBlock.
+    #[test]
+    fn accepted_connections_block_on_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let writer = std::thread::spawn(move || {
+            let mut client = TcpStream::connect(addr).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            client.write_all(b"late").unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(e) => panic!("{e}"),
+            }
+        };
+        let mut stream = super::accepted(stream);
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut buf = [0u8; 4];
+        stream.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"late");
+        writer.join().unwrap();
+    }
 }

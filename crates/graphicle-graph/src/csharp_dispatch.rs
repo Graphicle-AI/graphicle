@@ -1,8 +1,12 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/csharp_dispatch.py
 //! The `.cs` gate over [`crate::interface_dispatch`] (Graphify 0bd22d4).
 pub use crate::interface_dispatch::{DISPATCH_RELATION, method_label};
-use crate::{Result, resolver_registry::LanguageResolver};
+use crate::{
+    Result,
+    extract::per_file::PerFile,
+    resolver_registry::{LanguageResolver, Rec},
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 const CSHARP_SUFFIXES: &[&str] = &[".cs"];
@@ -14,7 +18,21 @@ pub fn resolve_csharp_interface_dispatch(
     nodes: &[Value],
     edges: &mut Vec<Value>,
 ) -> Result<()> {
-    crate::interface_dispatch::resolve_interface_dispatch(per_file, nodes, edges, CSHARP_SUFFIXES)
+    resolve_csharp_interface_dispatch_any(per_file, nodes, edges)
+}
+/// [`resolve_csharp_interface_dispatch`] over the per-file results and the
+/// edges in either form.
+pub fn resolve_csharp_interface_dispatch_any<P: PerFile, E: Rec>(
+    per_file: &[P],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+) -> Result<()> {
+    crate::interface_dispatch::resolve_interface_dispatch_any(
+        per_file,
+        nodes,
+        edges,
+        CSHARP_SUFFIXES,
+    )
 }
 pub fn resolver() -> LanguageResolver {
     LanguageResolver {

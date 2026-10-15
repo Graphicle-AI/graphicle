@@ -17,6 +17,12 @@ pub struct Environment {
     /// `CODEX_HOME`: Codex's folder instead of `~/.codex`.
     pub codex_home: Option<PathBuf>,
     pub xdg_config_home: Option<PathBuf>,
+    /// `%APPDATA%` (Windows; else `AppData\Roaming` under `home`).
+    #[cfg(windows)]
+    pub app_data: Option<PathBuf>,
+    /// `%LOCALAPPDATA%` (Windows; else `AppData\Local` under `home`).
+    #[cfg(windows)]
+    pub local_app_data: Option<PathBuf>,
 }
 
 impl Environment {
@@ -28,21 +34,39 @@ impl Environment {
                 .map(PathBuf::from)
         };
         Self {
-            home: var("HOME"),
+            home: crate::platform::home_dir().filter(|home| !home.as_os_str().is_empty()),
             path: std::env::var_os("PATH"),
             claude_config_dir: var("CLAUDE_CONFIG_DIR"),
             codex_home: var("CODEX_HOME"),
             xdg_config_home: var("XDG_CONFIG_HOME"),
+            #[cfg(windows)]
+            app_data: crate::platform::roaming_app_data(),
+            #[cfg(windows)]
+            local_app_data: crate::platform::local_app_data(),
         }
     }
 
-    /// The first executable file named `name` in `PATH`'s absolute folders.
+    /// The first executable file named `name` in `PATH`'s absolute folders
+    /// (on Windows, with each `PATHEXT` extension: npm installs `claude.cmd`).
     pub fn program(&self, name: &str) -> Option<PathBuf> {
-        let name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+        let names = crate::platform::program_names(name);
         std::env::split_paths(self.path.as_ref()?)
             .filter(|folder| folder.is_absolute())
-            .map(|folder| folder.join(&name))
+            .flat_map(|folder| names.iter().map(move |name| folder.join(name)))
             .find(|candidate| executable(candidate))
+    }
+
+    /// `%APPDATA%` and `%LOCALAPPDATA%`, else their folders under `home`.
+    #[cfg(windows)]
+    fn app_data_dirs(&self) -> (Option<PathBuf>, Option<PathBuf>) {
+        (
+            self.app_data
+                .clone()
+                .or_else(|| self.at_home(r"AppData\Roaming")),
+            self.local_app_data
+                .clone()
+                .or_else(|| self.at_home(r"AppData\Local")),
+        )
     }
 
     /// `~/<relative>`.
@@ -78,7 +102,12 @@ impl Environment {
         {
             self.at_home("Library/Application Support/Claude")
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(windows)]
+        {
+            let (roaming, local) = self.app_data_dirs();
+            crate::platform::claude_desktop_dir(roaming.as_deref(), local.as_deref())
+        }
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
         {
             self.at_home(".config/Claude")
         }
@@ -96,7 +125,19 @@ impl Environment {
         {
             self.at_home("Library/Application Support/Code")
         }
-        #[cfg(not(target_os = "macos"))]
+        // Windows: `%APPDATA%\Code`, else the Insiders build's folder.
+        #[cfg(windows)]
+        {
+            let roaming = self.app_data_dirs().0?;
+            let stable = roaming.join("Code");
+            let insiders = roaming.join("Code - Insiders");
+            Some(if !stable.is_dir() && insiders.is_dir() {
+                insiders
+            } else {
+                stable
+            })
+        }
+        #[cfg(all(not(target_os = "macos"), not(windows)))]
         {
             self.xdg_config_home
                 .as_ref()
@@ -411,6 +452,34 @@ pub fn detect_graphify(env: &Environment, folder: &Path) -> Graphify {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_clients_live_under_app_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("claude.cmd"), "@echo off\r\n").unwrap();
+        let env = Environment {
+            home: Some(dir.path().to_path_buf()),
+            path: Some(bin.clone().into_os_string()),
+            app_data: Some(dir.path().join("Roaming")),
+            local_app_data: Some(dir.path().join("Local")),
+            ..Environment::default()
+        };
+        assert_eq!(env.program("claude"), Some(bin.join("claude.cmd")));
+        assert_eq!(
+            env.claude_desktop_dir(),
+            Some(dir.path().join(r"Roaming\Claude"))
+        );
+        std::fs::create_dir_all(dir.path().join(r"Roaming\Code - Insiders")).unwrap();
+        assert_eq!(
+            env.vscode_dir(),
+            Some(dir.path().join(r"Roaming\Code - Insiders"))
+        );
+        std::fs::create_dir_all(dir.path().join(r"Roaming\Code")).unwrap();
+        assert_eq!(env.vscode_dir(), Some(dir.path().join(r"Roaming\Code")));
+    }
 
     fn home() -> (tempfile::TempDir, Environment) {
         let dir = tempfile::tempdir().unwrap();

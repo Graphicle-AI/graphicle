@@ -4,6 +4,7 @@
 //! folders, each with one unrelated server entry, and a fixture Git
 //! repository. No client program is on `PATH`, so Codex's entry is written
 //! into its `config.toml` directly.
+use graphicle_runtime::platform::CanonicalExt;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -28,11 +29,11 @@ impl Machine {
     /// A home, a data folder and a committed repository `work/app`.
     fn new() -> Self {
         let dir = TempDir::new().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dir.path().canonical().unwrap();
         let machine = Self {
             home: root.join("home"),
             data: root.join("data"),
-            repo: root.join("work/app"),
+            repo: root.join("work").join("app"),
             bin: root.join("bin"),
             root,
             _dir: dir,
@@ -61,10 +62,7 @@ impl Machine {
     /// The environment every child gets: this machine's home, no client
     /// program on `PATH`, no system or user Git configuration.
     fn environment(&self, command: &mut Command) {
-        command
-            .env_clear()
-            .env("HOME", &self.home)
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
+        crate::child_env::isolate(command, &self.home, &[&self.bin], "/usr/bin:/bin")
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_DATA_HOME", self.home.join(".local/share"))
             .env("XDG_CACHE_HOME", self.home.join(".cache"))
@@ -122,6 +120,9 @@ impl Machine {
     fn desktop(&self) -> PathBuf {
         if cfg!(target_os = "macos") {
             self.home.join("Library/Application Support/Claude")
+        } else if cfg!(windows) {
+            // `%APPDATA%\Claude`; child_env::home points APPDATA here.
+            self.home.join("AppData").join("Roaming").join("Claude")
         } else {
             self.home.join(".config/Claude")
         }
@@ -300,22 +301,33 @@ fn setup_connects_every_client_once_and_disconnect_restores_every_file() {
     // Each client file keeps its own server beside Graphicle's.
     let claude_code = read_json(&m.repo.join(".mcp.json"));
     assert_eq!(claude_code["mcpServers"]["other"], other());
-    // The one MCP server, set up for the code graph: the
-    // agent may propose memory drafts for review.
+    // The one MCP server: Claude Code gets its five essential tools; the
+    // other clients, the whole server, where the agent may propose memory
+    // drafts for review.
     let args = &claude_code["mcpServers"]["graphicle"]["args"];
     assert_eq!(
-        args.as_array().unwrap()[args.as_array().unwrap().len() - 4..],
+        args.as_array().unwrap()[args.as_array().unwrap().len() - 5..],
         [
             json!("mcp"),
             json!("--project"),
             json!("."),
-            json!("--allow-learning")
+            json!("--tools"),
+            json!("essentials")
         ],
         "{claude_code:#}"
     );
+    assert_eq!(first["clients"][0]["tools"], "essentials", "{first:#}");
     let vscode = read_json(&m.repo.join(".vscode/mcp.json"));
     assert_eq!(vscode["servers"]["graphicle"]["type"], "stdio");
     assert!(vscode["servers"].get("other").is_some());
+    assert_eq!(
+        vscode["servers"]["graphicle"]["args"]
+            .as_array()
+            .unwrap()
+            .last(),
+        Some(&json!("--allow-learning")),
+        "{vscode:#}"
+    );
     for file in [
         m.home.join(".cursor/mcp.json"),
         m.desktop().join("claude_desktop_config.json"),
@@ -339,23 +351,17 @@ fn setup_connects_every_client_once_and_disconnect_restores_every_file() {
     assert_eq!(settings["permissions"]["allow"][0], "Bash(ls)");
     assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 2);
     assert!(settings["hooks"].get("SessionStart").is_some());
-    // Claude Code's guard hooks, beside the capture hooks.
-    let guards = settings["hooks"]["PreToolUse"].to_string();
+    // No guard hooks unless asked for (--guards).
     assert!(
-        guards.contains(" hook claude-code guard-search")
-            && guards.contains(" hook claude-code guard-read"),
+        settings["hooks"].get("PreToolUse").is_none(),
         "{settings:#}"
     );
-    assert_eq!(
-        first["clients"][0]["guard"]["installed"],
-        json!(["guard-search", "guard-read"]),
-        "{first:#}"
-    );
+    assert!(first["clients"][0].get("guard").is_none(), "{first:#}");
     let codex_hooks = read_json(&m.home.join(".codex/hooks.json"));
     assert_eq!(codex_hooks["hooks"]["Stop"].as_array().unwrap().len(), 2);
     assert_eq!(first["capture"]["state"], "on", "{first:#}");
-    // AGENTS.md is created (--yes); CLAUDE.md, which exists, gets the
-    // section after its own text.
+    // Other agents than Claude Code are connected: AGENTS.md is created
+    // (--yes); CLAUDE.md, which exists, gets the section after its own text.
     let section = graphicle_runtime::agent_instructions::section();
     assert_eq!(
         std::fs::read_to_string(m.repo.join("AGENTS.md")).unwrap(),
@@ -382,7 +388,7 @@ fn setup_connects_every_client_once_and_disconnect_restores_every_file() {
             text.starts_with("#!/bin/sh\n# graphicle-sync-start "),
             "{text}"
         );
-        assert_eq!(mode(&hooks.join(name)), 0o755);
+        assert_eq!(mode(&hooks.join(name)), if cfg!(unix) { 0o755 } else { 0 });
     }
     // Every file changed is listed, and each one that existed was backed
     // up first.
@@ -473,49 +479,11 @@ fn setup_connects_every_client_once_and_disconnect_restores_every_file() {
     assert_eq!(again["files"], json!([]), "{again:#}");
 }
 
-/// The one MCP server through the easy flow, end to end: `graphicle setup` on a
-/// fixture repository connects Claude Code to the one MCP server, and one
-/// stdio session of the entry setup wrote in `.mcp.json` (its own command
-/// and arguments, started in the repository as Claude Code starts it)
-/// lists the code-graph tools under Graphify's names beside the recall and
-/// memory tools, and answers a graph tool (`query_graph`, citing the
-/// function with checked bytes), a recall tool (`recall_project`, citing the
-/// same `stable_id`) and a memory tool (`propose_memory`: a draft anchored
-/// to the function its quote lies in, which `project_memory` lists with
-/// that symbol). The guard hooks point a search in the repository to the
-/// graph tools. `disconnect --all` then leaves every file as it was.
-#[test]
-fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
-    let m = Machine::new();
-    std::fs::create_dir_all(m.home.join(".claude")).unwrap();
-    let before = m.files();
-
-    let report = m.graphicle(&["setup", "--yes", "--clients", "claude-code"]);
-    assert_eq!(report["project"]["graph"]["status"], "built", "{report:#}");
-    let client = &report["clients"][0];
-    assert_eq!(client["client"], "claude-code", "{report:#}");
-    assert_eq!(client["state"], "added", "{report:#}");
-    assert_eq!(client["guard"]["state"], "added", "{report:#}");
-    let access = client["access"].as_str().unwrap_or_default();
-    assert!(
-        access.contains("code-graph") && access.contains("memory drafts"),
-        "{report:#}"
-    );
-    let mcp_file = m.repo.join(".mcp.json");
-    let settings = m.repo.join(".claude/settings.local.json");
-    for file in [&mcp_file, &settings] {
-        assert!(
-            report["files_changed"]
-                .as_array()
-                .unwrap()
-                .contains(&json!(file)),
-            "{}: {report:#}",
-            file.display()
-        );
-    }
-
-    // One session of the entry's own command line, in the repository.
-    let entry = read_json(&mcp_file)["mcpServers"]["graphicle"].clone();
+/// One stdio session of the entry setup wrote in `.mcp.json` (its own
+/// command and arguments, started in the repository as Claude Code starts
+/// it), answering `requests`: the replies by id.
+fn session(m: &Machine, requests: &[Value]) -> impl Fn(u64) -> Value + use<> {
+    let entry = read_json(&m.repo.join(".mcp.json"))["mcpServers"]["graphicle"].clone();
     let program = entry["command"].as_str().unwrap().to_string();
     let args: Vec<String> = entry["args"]
         .as_array()
@@ -523,25 +491,11 @@ fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
         .iter()
         .map(|arg| arg.as_str().unwrap().to_string())
         .collect();
-    assert!(
-        args.ends_with(&[
-            "mcp".into(),
-            "--project".into(),
-            ".".into(),
-            "--allow-learning".into()
-        ]),
-        "{args:?}"
-    );
-    let requests = [
-        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"easy-setup-test","version":"0"}}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_graph","arguments":{"question":"settle_invoice cents"}}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":"How does settle_invoice use cents to round the amount?"}}}),
-        json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"propose_memory","arguments":{"kind":"decision","title":"Amounts are rounded to cents","body":"cents() rounds an amount to whole cents before an invoice is settled.","evidence":[{"source_id":"file:src/money.py","quote":"return round(value * 100) / 100"}],"idempotency_key":"rounding-1"}}}),
-        json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"project_memory","arguments":{}}}),
-    ]
-    .map(|request| request.to_string())
-    .join("\n")
+    let input = requests
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
         + "\n";
     let mut command = Command::new(&program);
     m.environment(&mut command);
@@ -558,7 +512,7 @@ fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
             .stdin
             .take()
             .unwrap()
-            .write_all(requests.as_bytes())
+            .write_all(input.as_bytes())
             .unwrap();
     }
     let output = child.wait_with_output().unwrap();
@@ -571,19 +525,212 @@ fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
-    let reply = |id: u64| {
+    move |id: u64| {
         replies
             .iter()
             .find(|reply| reply["id"] == id)
             .unwrap_or_else(|| panic!("no reply {id}: {replies:#?}"))["result"]
             .clone()
-    };
-    // One server: the graph tools under Graphify's names, recall and memory.
+    }
+}
+
+/// `initialize`, `tools/list`, then a graph tool and a recall tool on the
+/// fixture repository's `cents()`.
+fn graph_and_recall() -> Vec<Value> {
+    vec![
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"easy-setup-test","version":"0"}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_graph","arguments":{"question":"settle_invoice cents","structured":true}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":"How does settle_invoice use cents to round the amount?","structured":true}}}),
+    ]
+}
+
+/// The `stable_id` `query_graph` (reply 3) cites `cents()` by, checked
+/// against the file, and the same identity in `recall_project` (reply 4).
+fn cents_cited_once(reply: &dyn Fn(u64) -> Value) -> String {
+    let graph = reply(3);
+    assert_eq!(graph["isError"], false, "{graph:#}");
+    assert!(
+        graph["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("cents()"),
+        "{graph:#}"
+    );
+    let cents = graph["structuredContent"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["label"] == "cents()")
+        .unwrap_or_else(|| panic!("{:#}", graph["structuredContent"]))
+        .clone();
+    assert_eq!(cents["checked"], true, "{cents:#}");
+    assert_eq!(cents["source_id"], "file:src/money.py", "{cents:#}");
+    let stable_id = cents["stable_id"].as_str().unwrap().to_string();
+    let recall = reply(4);
+    assert_eq!(recall["isError"], false, "{recall:#}");
+    let from_recall = recall["structuredContent"]["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|window| window.get("code_graph"))
+        .find(|fact| fact["label"] == "cents()")
+        .unwrap_or_else(|| panic!("{:#}", recall["structuredContent"]["evidence"]))
+        .clone();
+    assert_eq!(
+        from_recall["stable_id"],
+        json!(stable_id),
+        "{from_recall:#}"
+    );
+    stable_id
+}
+
+/// The one MCP server through the easy flow, end to end, with Claude Code
+/// alone. `graphicle setup` gives it the five essential tools and one
+/// sentence of instructions, no guard hooks and no AGENTS.md section (the
+/// server's instructions are Claude Code's); one stdio session of the entry
+/// lists exactly those tools and answers a graph tool (`query_graph`, citing
+/// the function with checked bytes) and a recall tool (`recall_project`,
+/// citing the same `stable_id`). `--tools all --guards` brings back 0.1.0's
+/// setup for Claude Code, but for the session-start note (see the
+/// CHANGELOG): the whole server, where a memory tool (`propose_memory`)
+/// drafts a memory anchored to the function its quote lies in, the guard
+/// hooks, which point a search in the repository to the graph tools, and
+/// 0.1.0's AGENTS.md section. A later setup without them returns to the
+/// defaults, removes the guard hooks and brings the section up to date.
+/// `disconnect --all` then leaves every file as it was.
+#[test]
+fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
+    let m = Machine::new();
+    std::fs::create_dir_all(m.home.join(".claude")).unwrap();
+    let before = m.files();
+
+    let report = m.graphicle(&["setup", "--yes", "--clients", "claude-code"]);
+    assert_eq!(report["project"]["graph"]["status"], "built", "{report:#}");
+    let client = &report["clients"][0];
+    assert_eq!(client["client"], "claude-code", "{report:#}");
+    assert_eq!(client["state"], "added", "{report:#}");
+    assert_eq!(client["tools"], "essentials", "{report:#}");
+    assert!(client.get("guard").is_none(), "{report:#}");
+    let access = client["access"].as_str().unwrap_or_default();
+    assert!(
+        access.starts_with("five read-only tools") && !access.contains("memory drafts"),
+        "{report:#}"
+    );
+    // Claude Code alone: no AGENTS.md section.
+    assert_eq!(report["instructions"][0]["state"], "skipped", "{report:#}");
+    assert!(
+        report["instructions"][0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("Claude Code is the only agent connected"),
+        "{report:#}"
+    );
+    assert!(!m.repo.join("AGENTS.md").exists());
+    let mcp_file = m.repo.join(".mcp.json");
+    let settings = m.repo.join(".claude/settings.local.json");
+    for file in [&mcp_file, &settings] {
+        assert!(
+            report["files_changed"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(file)),
+            "{}: {report:#}",
+            file.display()
+        );
+    }
+    let local = read_json(&settings);
+    assert!(local["hooks"].get("PreToolUse").is_none(), "{local:#}");
+    let text = graphicle_runtime::setup::render_setup(&report);
+    assert!(
+        text.contains("one MCP server, five of its tools: query_graph, get_node, get_neighbors, recall_project, read_project_source"),
+        "{text}"
+    );
+    assert!(!text.contains("Graph guard"), "{text}");
+
+    let entry = read_json(&mcp_file)["mcpServers"]["graphicle"].clone();
+    let args: Vec<&str> = entry["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg.as_str().unwrap())
+        .collect();
+    assert!(
+        args.ends_with(&["mcp", "--project", ".", "--tools", "essentials"]),
+        "{args:?}"
+    );
+    let reply = session(&m, &graph_and_recall());
     let initialized = reply(1);
+    assert_eq!(
+        initialized["instructions"],
+        graphicle_runtime::api::ESSENTIAL_INSTRUCTIONS,
+        "{initialized:#}"
+    );
     assert!(
         initialized["capabilities"].get("resources").is_some(),
         "{initialized:#}"
     );
+    let mut listed: Vec<String> = reply(2)["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap().to_string())
+        .collect();
+    listed.sort();
+    let mut essentials = graphicle_runtime::api::ESSENTIAL_TOOLS.map(String::from);
+    essentials.sort();
+    assert_eq!(listed, essentials);
+    let stable_id = cents_cited_once(&reply);
+
+    // --tools all --guards: 0.1.0's setup for Claude Code.
+    let whole = m.graphicle(&[
+        "setup",
+        "--yes",
+        "--clients",
+        "claude-code",
+        "--tools",
+        "all",
+        "--guards",
+    ]);
+    let client = &whole["clients"][0];
+    assert_eq!(client["state"], "updated", "{whole:#}");
+    assert_eq!(client["tools"], "all", "{whole:#}");
+    assert_eq!(client["guard"]["state"], "added", "{whole:#}");
+    // 0.1.0's AGENTS.md section, with Claude Code alone too.
+    let agents = std::fs::read_to_string(m.repo.join("AGENTS.md")).unwrap();
+    assert!(
+        agents.contains("This repository is indexed by Graphicle")
+            && agents.contains("`session_timeline`"),
+        "{agents}"
+    );
+    assert!(
+        client["access"].as_str().unwrap().contains("memory drafts"),
+        "{whole:#}"
+    );
+    let args = read_json(&mcp_file)["mcpServers"]["graphicle"]["args"].clone();
+    assert_eq!(
+        args.as_array().unwrap()[args.as_array().unwrap().len() - 4..],
+        [
+            json!("mcp"),
+            json!("--project"),
+            json!("."),
+            json!("--allow-learning")
+        ],
+        "{args:#}"
+    );
+    // A plain `connect claude-code` (no --tools) keeps that entry as it is.
+    let kept = m.graphicle(&["connect", "claude-code"]);
+    assert_eq!(kept["unchanged"], true, "{kept:#}");
+    assert_eq!(kept["tools"], "all", "{kept:#}");
+    assert_eq!(
+        read_json(&mcp_file)["mcpServers"]["graphicle"]["args"],
+        args
+    );
+    let mut requests = graph_and_recall();
+    requests.push(json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"propose_memory","arguments":{"kind":"decision","title":"Amounts are rounded to cents","body":"cents() rounds an amount to whole cents before an invoice is settled.","evidence":[{"source_id":"file:src/money.py","quote":"return round(value * 100) / 100"}],"idempotency_key":"rounding-1"}}}));
+    requests.push(json!({"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"project_memory","arguments":{}}}));
+    let reply = session(&m, &requests);
+    // One server: the graph tools under Graphify's names, recall and memory.
     let listed: Vec<String> = reply(2)["tools"]
         .as_array()
         .unwrap()
@@ -604,43 +751,7 @@ fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
     ] {
         assert!(listed.contains(&name.to_string()), "{name}: {listed:?}");
     }
-    // A graph tool: the engine's text, with the function cited by checked
-    // bytes.
-    let graph = reply(3);
-    assert_eq!(graph["isError"], false, "{graph:#}");
-    assert!(
-        graph["content"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("cents()"),
-        "{graph:#}"
-    );
-    let cents = graph["structuredContent"]["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|node| node["label"] == "cents()")
-        .unwrap_or_else(|| panic!("{:#}", graph["structuredContent"]))
-        .clone();
-    assert_eq!(cents["checked"], true, "{cents:#}");
-    assert_eq!(cents["source_id"], "file:src/money.py", "{cents:#}");
-    let stable_id = cents["stable_id"].as_str().unwrap().to_string();
-    // A recall tool: the same function, the same identity.
-    let recall = reply(4);
-    assert_eq!(recall["isError"], false, "{recall:#}");
-    let from_recall = recall["structuredContent"]["evidence"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|window| window.get("code_graph"))
-        .find(|fact| fact["label"] == "cents()")
-        .unwrap_or_else(|| panic!("{:#}", recall["structuredContent"]["evidence"]))
-        .clone();
-    assert_eq!(
-        from_recall["stable_id"],
-        json!(stable_id),
-        "{from_recall:#}"
-    );
+    assert_eq!(cents_cited_once(&reply), stable_id);
     // A memory tool: a draft for review, anchored to the function its quote
     // lies in, listed with that symbol.
     let proposed = reply(5);
@@ -695,6 +806,42 @@ fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
         nudge.contains("query_graph") && nudge.contains("recall_project"),
         "{nudge}"
     );
+    let guarded = read_json(&settings)["hooks"]["PreToolUse"].to_string();
+    assert!(
+        guarded.contains(" hook claude-code guard-search"),
+        "{guarded}"
+    );
+
+    // Setup again without them: the essentials, and the guard hooks go
+    // (the capture hooks stay).
+    let back = m.graphicle(&["setup", "--yes", "--clients", "claude-code"]);
+    let client = &back["clients"][0];
+    assert_eq!(client["state"], "updated", "{back:#}");
+    assert_eq!(client["tools"], "essentials", "{back:#}");
+    assert_eq!(client["guard"]["state"], "removed", "{back:#}");
+    let agents = std::fs::read_to_string(m.repo.join("AGENTS.md")).unwrap();
+    assert!(
+        !agents.contains("This repository is indexed by Graphicle")
+            && agents.contains("When you do not yet know where the code"),
+        "{agents}"
+    );
+    assert!(
+        back["files_changed"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(settings)),
+        "{back:#}"
+    );
+    let local = read_json(&settings);
+    assert!(local["hooks"].get("PreToolUse").is_none(), "{local:#}");
+    assert!(local["hooks"].get("Stop").is_some(), "{local:#}");
+    let text = graphicle_runtime::setup::render_setup(&back);
+    assert!(
+        text.contains("graphicle setup --guards turns them on"),
+        "{text}"
+    );
+    let again = m.graphicle(&["setup", "--yes", "--clients", "claude-code"]);
+    assert_eq!(again["files_changed"], json!([]), "{again:#}");
 
     // disconnect --all: every file as it was (Git's index aside, which the
     // freshness checks' `git status` may refresh), no backup left.
@@ -746,13 +893,25 @@ fn setup_switches_from_graphify_and_disconnect_puts_it_back() {
         "--no-capture",
     ]);
     assert_eq!(report["graphify"]["switched"], true, "{report:#}");
-    assert_eq!(
-        report["graphify"]["kept"],
-        json!([
-            m.repo.join("graphify-out"),
-            m.home.join(".claude/skills/graphify")
-        ])
-    );
+    let kept = [
+        m.repo.join("graphify-out"),
+        m.home.join(".claude/skills/graphify"),
+    ];
+    if cfg!(windows) {
+        // Windows reads `\` and `/` alike, and the product joins
+        // `skills/graphify` onto the `.claude` folder: compare as paths.
+        let reported = report["graphify"]["kept"].as_array().unwrap();
+        assert_eq!(reported.len(), kept.len(), "{report:#}");
+        for (reported, kept) in reported.iter().zip(&kept) {
+            assert_eq!(
+                Path::new(reported.as_str().unwrap()),
+                kept.as_path(),
+                "{report:#}"
+            );
+        }
+    } else {
+        assert_eq!(report["graphify"]["kept"], json!(kept));
+    }
     let servers = read_json(&m.repo.join(".mcp.json"))["mcpServers"].clone();
     assert!(servers.get("graphify").is_none(), "{servers:#}");
     assert!(servers.get("graphicle").is_some() && servers.get("other").is_some());
@@ -904,7 +1063,7 @@ fn git_hooks_run_in_the_background_and_respect_core_hooks_path() {
         );
     }
 
-    let husky = m.root.join("work/husky");
+    let husky = m.root.join("work").join("husky");
     write(&husky.join("index.js"), "module.exports = 1;\n");
     m.git(&husky, &["init", "-q"]);
     m.git(&husky, &["config", "core.hooksPath", ".githooks"]);
@@ -943,8 +1102,13 @@ fn uninstall_disconnects_and_purges_only_when_confirmed() {
     // The test program is a build, or runs in a container (as `update`
     // finds it).
     let remove = report["remove_program"]["command"].as_str().unwrap();
+    let rm = if cfg!(windows) {
+        "Remove-Item -LiteralPath "
+    } else {
+        "rm "
+    };
     assert!(
-        remove.starts_with("rm ") || remove == "docker compose down --rmi all",
+        remove.starts_with(rm) || remove == "docker compose down --rmi all",
         "{report:#}"
     );
 }

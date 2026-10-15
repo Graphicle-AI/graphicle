@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/solidity.py
 //! Port of graphify/extractors/solidity.py (Graphify 0.9.69, #3716):
 //! contracts, interfaces and libraries with their state, events, errors,
@@ -6,7 +6,11 @@
 //! references bind across imported files through
 //! [`resolve_solidity_type_references`].
 use super::base::{file_stem, make_id, read_text};
-use crate::{fsutil, io_compat, path_syntax, python_compat};
+use crate::{
+    extract::per_file::PerFile,
+    fsutil, io_compat, path_syntax, python_compat,
+    resolver_registry::{Rec, at},
+};
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -528,7 +532,16 @@ pub fn extract_solidity(path: &Path) -> Value {
 
 /// Point `solidity_type:<name>` inheritance and `using` edges at the one type
 /// of that name declared in the same file or a file it imports.
-pub fn resolve_solidity_type_references(_per: &[Value], nodes: &[Value], edges: &mut [Value]) {
+pub fn resolve_solidity_type_references(per: &[Value], nodes: &[Value], edges: &mut [Value]) {
+    resolve_solidity_type_references_any(per, nodes, edges);
+}
+/// [`resolve_solidity_type_references`] over the edges in either form (the
+/// per-file results are not read).
+pub fn resolve_solidity_type_references_any<P: PerFile, E: Rec>(
+    _per: &[P],
+    nodes: &[Value],
+    edges: &mut [E],
+) {
     let text = |v: &Value| python_compat::string(v);
     let node_by_id = nodes
         .iter()
@@ -559,10 +572,13 @@ pub fn resolve_solidity_type_references(_per: &[Value], nodes: &[Value], edges: 
         source_by_file_id.insert(id.to_string(), source.clone());
     }
     let mut imported: HashMap<String, BTreeSet<String>> = HashMap::new();
-    for edge in edges.iter().filter(|e| e["relation"] == "imports_from") {
+    for edge in edges
+        .iter()
+        .filter(|e| at(*e, "relation") == "imports_from")
+    {
         if let (Some(from), Some(to)) = (
-            source_by_file_id.get(&edge["source"].to_string()),
-            source_by_file_id.get(&edge["target"].to_string()),
+            source_by_file_id.get(&at(edge, "source").to_string()),
+            source_by_file_id.get(&at(edge, "target").to_string()),
         ) {
             imported.entry(from.clone()).or_default().insert(to.clone());
         }
@@ -582,7 +598,7 @@ pub fn resolve_solidity_type_references(_per: &[Value], nodes: &[Value], edges: 
             .push(n["id"].clone());
     }
     for edge in edges.iter_mut() {
-        let Some(name) = edge["context"]
+        let Some(name) = at(edge, "context")
             .as_str()
             .and_then(|c| c.strip_prefix("solidity_type:"))
             .map(str::to_string)
@@ -590,7 +606,7 @@ pub fn resolve_solidity_type_references(_per: &[Value], nodes: &[Value], edges: 
             continue;
         };
         let Some(source_node) = node_by_id
-            .get(&edge["source"].to_string())
+            .get(&at(edge, "source").to_string())
             .filter(|n| crate::build::truthy(&n["source_file"]))
         else {
             continue;
@@ -610,7 +626,7 @@ pub fn resolve_solidity_type_references(_per: &[Value], nodes: &[Value], edges: 
             );
         }
         if let [target] = candidates.as_slice() {
-            edge["target"] = target.clone();
+            edge.rec_set("target", target.clone());
         }
     }
 }

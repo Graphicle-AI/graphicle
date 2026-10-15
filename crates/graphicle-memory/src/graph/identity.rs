@@ -165,6 +165,17 @@ fn sha256_hex(parts: &[&[u8]]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Whether a checkout root names an absolute folder on any host: a graph
+/// built on Linux or macOS (`/work/repo`) is read the same way on Windows,
+/// where `Path::is_absolute` needs a drive. On Unix a leading `/` is exactly
+/// `is_absolute`; on Windows a leading `\` (a rooted or UNC path) counts too.
+fn absolute_root(root: &str) -> bool {
+    root.starts_with('/')
+        || (cfg!(windows) && root.starts_with('\\'))
+        || Path::new(root).is_absolute()
+        || root.as_bytes().get(1) == Some(&b':')
+}
+
 fn relpath(source_file: &str, strip_prefix: Option<&str>) -> String {
     let normalized = source_file.replace('\\', "/");
     match strip_prefix {
@@ -244,7 +255,9 @@ impl Loader<'_> {
                 let source = match options.sources.get(relpath) {
                     Some(text) => std::borrow::Cow::Borrowed(text.as_str()),
                     None => {
-                        let bytes = std::fs::read(options.root.as_ref()?.join(relpath)).ok()?;
+                        let path =
+                            super::cross_repo_imports::join_below(options.root.as_ref()?, relpath)?;
+                        let bytes = std::fs::read(path).ok()?;
                         std::borrow::Cow::Owned(String::from_utf8_lossy(&bytes).into_owned())
                     }
                 };
@@ -264,7 +277,7 @@ pub fn annotate(graph: &mut Graph, options: &IdentityOptions) -> Result<Identity
         .strip_prefix
         .as_deref()
         .or_else(|| options.root.as_ref().and_then(|p| p.to_str()))
-        .filter(|p| Path::new(p).is_absolute() || p.as_bytes().get(1) == Some(&b':'))
+        .filter(|p| absolute_root(p))
         .map(graphicle::ids::normalize_id)
         .filter(|p| !p.is_empty())
         .map(|p| format!("{p}_"));
@@ -605,6 +618,26 @@ pub fn dispatch(request: &Value) -> Result<Value> {
 mod tests {
     use super::*;
     use crate::graph::attributes;
+
+    #[test]
+    fn posix_and_drive_roots_are_absolute_on_every_host() {
+        for root in ["/work/one/repo", "/", "C:/repo", r"C:\repo"] {
+            assert!(absolute_root(root), "{root}");
+        }
+        for root in ["repo", "work/repo", "./repo", ""] {
+            assert!(!absolute_root(root), "{root}");
+        }
+        // A leading backslash is a file name on Linux and macOS.
+        assert_eq!(absolute_root(r"\work\repo"), cfg!(windows));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn rooted_and_unc_roots_are_absolute_on_windows() {
+        for root in [r"\work\repo", r"\\server\share\repo", r"\\?\C:\repo"] {
+            assert!(absolute_root(root), "{root}");
+        }
+    }
 
     #[test]
     fn indexed_revision_keeps_exact_line_bytes_and_empty_ranges() {

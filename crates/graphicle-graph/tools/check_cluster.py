@@ -78,16 +78,24 @@ def sigs(communities):
 @functools.wraps(reference.score_all)
 def scores(graph,communities):
     return compare('cluster.scores',lambda:oracle.score_all(graph,communities),mapping,graph=graph_data(graph),communities=communities)
-@functools.wraps(reference.remap_communities_to_previous)
+@functools.wraps(reference.label_still_applies)
+def still(cid,current_members,previous_node_community,saved_sig,current_sig):
+    # 0.9.91 (#2298): a saved label stays on an equal signature or a strict majority of both member sets.
+    return compare('cluster.label_still_applies',lambda:oracle.label_still_applies(cid,current_members,previous_node_community,saved_sig,current_sig),
+        cid=cid,members=list(current_members),previous={str(k):v for k,v in previous_node_community.items()},saved_sig=saved_sig,current_sig=current_sig)
 def remap(communities,previous):
     return compare('cluster.remap',lambda:oracle.remap_communities_to_previous(communities,previous),mapping,communities=communities,previous=list(previous.items()))
 
 try:
     functions={'cluster':cluster,'_partition':partition,'_native_leiden':native_leiden,'_split_community':split,
         'cohesion_score':cohesion,'label_communities_by_hub':labels,'community_member_sigs':sigs,
-        'score_all':scores,'remap_communities_to_previous':remap}
+        'score_all':scores,'remap_communities_to_previous':remap,'label_still_applies':still}
     selected=[]
-    for path in ['tests/test_cluster.py','tests/test_community_hub_labels.py','tests/test_cluster_exclude_hubs.py','tests/test_cluster_ambiguous_scale.py']:
+    # 0.9.91 (#2298): test_labeling's cluster-only cases reach label_still_applies,
+    # community_member_sigs and the hub labels through the substitutes above (the
+    # reference CLI imports them from graphify.cluster per run); its LLM labelling
+    # cases drive the reference with mocked backends.
+    for path in ['tests/test_cluster.py','tests/test_community_hub_labels.py','tests/test_cluster_exclude_hubs.py','tests/test_cluster_ambiguous_scale.py','tests/test_labeling.py']:
         for node in ast.parse((SOURCE/path).read_text()).body:
             if isinstance(node,ast.FunctionDef) and node.name.startswith('test_') and node.name!='test_native_leiden_returns_none_when_binding_absent':
                 selected.append(path+'::'+node.name)
@@ -133,6 +141,10 @@ try:
     for resolution in [-1,0,0.01,1,10]:
         graph=nx.Graph([('a','b'),('b','c')]);native_leiden(graph,resolution);partition(graph,resolution)
     for labels_in in [{0:[]},{0:['a','a','b']},{-4:[2,10,1]},{2:['é','中','x\x00y']}]:sigs(labels_in);remap(labels_in,{})
+    for _ in range(600):
+        ids=[f'n{i}' for i in range(rng.randrange(1,12))]
+        previous={node:rng.randrange(0,3) for node in rng.sample(ids,rng.randrange(len(ids)+1))}
+        still(rng.randrange(-1,3),rng.sample(ids,rng.randrange(len(ids)+1)),previous,rng.choice([None,'a','b']),rng.choice([None,'a','b']))
     native.receipt('graphify/cluster.py',['src/cluster.rs'],upstream_tests=tests,operations=counts,
         reference_backends={'leiden':'graspologic-native 1.2.5; byte-identical native kernel source','louvain':'NetworkX 3.7'},
         adaptations=['Statically linked Rust Leiden dependency replaces optional Python imports; absent-Python-binding loader test is excluded.',

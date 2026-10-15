@@ -45,13 +45,13 @@ enum Command {
     ///
     /// Syncs the folder and builds its code graph, connects the agent
     /// clients found on this machine to the one MCP server (the code graph,
-    /// recall, and memory drafts for review), with session capture for
-    /// Claude Code and Codex and Claude Code's graph guard hooks, adds a
-    /// Graphicle section to AGENTS.md (and CLAUDE.md when it exists), and
-    /// adds Git hooks that keep the project fresh. Every
-    /// file it changes outside the data folder is listed, backed up once as
-    /// <file>.graphicle-bak, and undone by `graphicle disconnect`. Running
-    /// it again is safe.
+    /// recall, and memory drafts for review; Claude Code gets its five
+    /// essential tools), with session capture for Claude Code and Codex,
+    /// adds a two-line Graphicle section to AGENTS.md (and CLAUDE.md when it
+    /// exists) unless Claude Code is the only agent, and adds Git hooks that
+    /// keep the project fresh. Every file it changes outside the data folder
+    /// is listed, backed up once as <file>.graphicle-bak, and undone by
+    /// `graphicle disconnect`. Running it again is safe.
     Setup {
         /// The folder to set up (default: this folder).
         path: Option<PathBuf>,
@@ -76,6 +76,17 @@ enum Command {
         /// section with Graphicle's (asked on a terminal).
         #[arg(long)]
         switch_from_graphify: bool,
+        /// Also give Claude Code guard hooks that point its searches and
+        /// source reads here to the graph tools. Without it, setup removes
+        /// the guard hooks an earlier setup installed.
+        #[arg(long)]
+        guards: bool,
+        /// The tools each client's entry publishes: all (every tool, as in
+        /// 0.1.0), essentials (query_graph, get_node, get_neighbors,
+        /// recall_project, read_project_source), graph or memory. Default:
+        /// essentials for Claude Code, all for the other clients.
+        #[arg(long, value_name = "SET", value_parser = ["all", "essentials", "graph", "memory"])]
+        tools: Option<String>,
         /// Print the JSON report.
         #[arg(long)]
         json: bool,
@@ -122,17 +133,26 @@ enum Command {
         /// labelled unreviewed, in the session-start context.
         #[arg(long)]
         work_state: bool,
-        /// Set the agent up for the code graph as well, as setup does: the
-        /// entry lets it propose memory drafts for review (as
-        /// --allow-learning), and Claude Code gets guard hooks (this folder's
-        /// .claude/settings.local.json) that point its searches and source
-        /// reads in a synced folder to the graph and recall tools.
+        /// Set the agent up for the code graph as well, as setup does: an
+        /// entry with every tool lets it propose memory drafts for review
+        /// (as --allow-learning).
         #[arg(long)]
         graph: bool,
         /// Let the agent propose memory drafts, which a member reviews
         /// (`propose_memory` and the other learning tools).
         #[arg(long)]
         allow_learning: bool,
+        /// Claude Code: guard hooks (this folder's
+        /// .claude/settings.local.json) that point its searches and source
+        /// reads in a synced folder to the graph and recall tools.
+        #[arg(long)]
+        guards: bool,
+        /// The tools the entry publishes: all, essentials (query_graph,
+        /// get_node, get_neighbors, recall_project, read_project_source),
+        /// graph or memory. Default: essentials for Claude Code, all for the
+        /// other clients.
+        #[arg(long, value_name = "SET", value_parser = ["all", "essentials", "graph", "memory"])]
+        tools: Option<String>,
     },
     /// Remove what Graphicle added for this folder's project: client
     /// entries, capture and guard hooks, the AGENTS.md and CLAUDE.md section
@@ -185,9 +205,11 @@ enum Command {
         mcp_work_state: bool,
         /// The tools the HTTP MCP endpoint publishes: all, graph (every tool
         /// that reads the code graph: the graph engine's tools and resources
-        /// and the graph-history tools) or memory (the other tools; recall
-        /// still reads the code graph unless --mcp-set graph_retrieval=false).
-        #[arg(long, default_value = "all", value_parser = ["all", "graph", "memory"])]
+        /// and the graph-history tools), memory (the other tools; recall
+        /// still reads the code graph unless --mcp-set graph_retrieval=false)
+        /// or essentials (query_graph, get_node, get_neighbors,
+        /// recall_project, read_project_source).
+        #[arg(long, default_value = "all", value_parser = ["all", "essentials", "graph", "memory"])]
         mcp_tools: String,
         /// Fix a switch of recall_project on the HTTP MCP endpoint, for
         /// example graph_retrieval=false: no request can change it. Each
@@ -386,9 +408,12 @@ enum Command {
         work_state: bool,
         /// The tools to publish: all, graph (every tool that reads the code
         /// graph: the graph engine's tools and resources and the
-        /// graph-history tools) or memory (the other tools; recall still
-        /// reads the code graph unless --set graph_retrieval=false).
-        #[arg(long, default_value = "all", value_parser = ["all", "graph", "memory"])]
+        /// graph-history tools), memory (the other tools; recall still
+        /// reads the code graph unless --set graph_retrieval=false) or
+        /// essentials (query_graph, get_node, get_neighbors, recall_project
+        /// and read_project_source, with one sentence of instructions: what
+        /// setup gives Claude Code).
+        #[arg(long, default_value = "all", value_parser = ["all", "essentials", "graph", "memory"])]
         tools: String,
         /// Fix a switch of recall_project for the session, for example
         /// graph_retrieval=false: no request can change it. Each switch at
@@ -639,6 +664,10 @@ fn interface() -> clap::Command {
     let command = crate::extension::installed()
         .cli(core_command())
         .version(version());
+    // Usage lines name the program as it is typed: clap takes the file
+    // name, which on Windows is `graphicle.exe`.
+    #[cfg(windows)]
+    let command = command.bin_name("graphicle");
     // The short, grouped help; `graphicle help --all` lists
     // every command.
     let help = crate::terminal::help(&command, false);
@@ -829,6 +858,8 @@ where
             no_hooks,
             no_instructions,
             switch_from_graphify,
+            guards,
+            tools,
             json,
         } => crate::setup::setup(
             &store,
@@ -843,6 +874,8 @@ where
                 switch_from_graphify,
                 json,
                 config: config_path.clone(),
+                guards,
+                tools: tools.as_deref().map(api::ToolSet::parse).transpose()?,
             },
         ),
         Command::Connect {
@@ -856,9 +889,11 @@ where
             hooks,
             work_state,
             // Without a client, every agent found is set up for the code
-            // graph (`--graph`, which implies `--allow-learning`).
+            // graph, as setup does (`--graph`).
             graph: _,
             allow_learning: _,
+            guards,
+            tools,
         } => {
             if config_path.is_some() || name.is_some() {
                 return Err(Error::bad(
@@ -874,6 +909,8 @@ where
                     hooks,
                     work_state,
                     json,
+                    guards,
+                    tools: tools.as_deref().map(api::ToolSet::parse).transpose()?,
                 },
             )
         }
@@ -887,6 +924,8 @@ where
             work_state,
             graph,
             allow_learning,
+            guards,
+            tools,
             json,
             ..
         } => {
@@ -904,6 +943,8 @@ where
                         work_state,
                         graph,
                         allow_learning,
+                        tools: tools.as_deref().map(api::ToolSet::parse).transpose()?,
+                        guards,
                         cwd: &cwd,
                     },
                 )?,
@@ -1809,11 +1850,14 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
                     else {
                         return Ok(None);
                     };
-                    Ok(Some(store.session_start_context(
+                    // An empty context (nothing reviewed, open or stale)
+                    // prints nothing, so the session gets no Graphicle text.
+                    let context = store.session_start_context(
                         &session.workspace,
                         &session.capability,
                         &project,
-                    )?))
+                    )?;
+                    Ok((!context.is_empty()).then_some(context))
                 })();
                 let _ = sender.send(context);
             });
@@ -1846,12 +1890,7 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
                 .stderr(std::process::Stdio::null());
             // Its own process group: a client ending the hook's group on
             // timeout does not stop the import.
-            #[cfg(unix)]
-            {
-                use std::os::unix::process::CommandExt;
-                command.process_group(0);
-            }
-            let _ = command.spawn();
+            let _ = crate::platform::spawn_detached(&mut command);
         }
         // The guard hooks of `connect --graph`.
         "guardsearch" | "guardread" => {

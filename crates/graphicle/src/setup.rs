@@ -9,9 +9,11 @@
 //!    [`agent_setup::connect_with`] (asked on a terminal, else `--yes` or
 //!    `--clients`);
 //! 3. session-capture hooks for Claude Code and Codex (`--no-capture`
-//!    skips them);
+//!    skips them), and Claude Code's guard hooks with `--guards`;
 //! 4. the Graphicle section of AGENTS.md (created only with consent) and of
-//!    CLAUDE.md when it exists (`--no-instructions` skips it);
+//!    CLAUDE.md when it exists (`--no-instructions` skips it); not added
+//!    when Claude Code, which reads the server's instructions, is the only
+//!    client connected;
 //! 5. freshness Git hooks (`--no-hooks` skips them);
 //! 6. Graphify: what is set up, and the switch to Graphicle (asked on a
 //!    terminal, else `--switch-from-graphify`);
@@ -29,8 +31,11 @@
 //! terminal test).
 use crate::agent_detect::{self, Environment, Found};
 use crate::agent_files::{self, Change};
+use crate::platform::CanonicalExt;
 use crate::{
-    Error, Result, agent_instructions, agent_setup, codex_config, git_hooks, local, model,
+    Error, Result, agent_instructions, agent_setup,
+    api::ToolSet,
+    codex_config, git_hooks, local, model,
     store::{Store, s},
     terminal,
 };
@@ -115,6 +120,12 @@ pub struct Options {
     /// The model configuration step 7 may write (`--config`; default
     /// `models.json` in the data folder).
     pub config: Option<PathBuf>,
+    /// `--guards`: Claude Code's guard hooks (off unless asked for; a run
+    /// without it removes those an earlier setup installed).
+    pub guards: bool,
+    /// `--tools`: the tools every connected client's entry publishes;
+    /// `None` is each client's default ([`agent_setup::default_tools`]).
+    pub tools: Option<ToolSet>,
 }
 
 /// Run `graphicle setup` and print its summary. A client that could not
@@ -150,7 +161,7 @@ pub fn setup(store: &Store, config: &model::Config, options: &Options) -> Result
 fn setup_folder(store: &Store, session: &local::Session, path: Option<&Path>) -> Result<PathBuf> {
     let requested = path.unwrap_or(Path::new("."));
     let folder = requested
-        .canonicalize()
+        .canonical()
         .ok()
         .filter(|folder| folder.is_dir())
         .ok_or_else(|| Error::bad(format!("{} is not a folder", requested.display())))?;
@@ -168,13 +179,13 @@ fn setup_folder(store: &Store, session: &local::Session, path: Option<&Path>) ->
 
 /// The data folder's canonical path.
 fn data_folder(store: &Store) -> Result<PathBuf> {
-    Ok(store.directory.canonicalize()?)
+    Ok(store.directory.canonical()?)
 }
 
 /// `--data-dir` for the files setup writes: the store, unless it is the
 /// platform's default folder (as `connect` writes it).
 fn data_argument(data: &Path) -> Option<&Path> {
-    (local::default_data_dir().canonicalize().ok().as_deref() != Some(data)).then_some(data)
+    (local::default_data_dir().canonical().ok().as_deref() != Some(data)).then_some(data)
 }
 
 /// Seconds, to a tenth.
@@ -257,12 +268,21 @@ pub fn setup_report(
     }
     let mut clients = Vec::new();
     for client in &chosen {
-        let connection = agent_setup::default_connection(client, &folder, !options.no_capture);
+        let connection = agent_setup::default_connection(
+            client,
+            &folder,
+            !options.no_capture,
+            options.guards,
+            options.tools,
+        );
         clients.push(
             match agent_setup::connect_with(
                 store,
                 &connection,
-                agent_setup::Policy { refresh_ours: true },
+                agent_setup::Policy {
+                    refresh_ours: true,
+                    drop_guards: true,
+                },
             ) {
                 Ok(result) => client_report(client, &result),
                 Err(error) => json!({"client":client,"name":agent_detect::name(client),
@@ -271,12 +291,29 @@ pub fn setup_report(
         );
     }
     let capture = capture_report(&clients, &chosen, options.no_capture);
+    let connected: Vec<&str> = clients
+        .iter()
+        .filter(|client| client["state"] != "failed")
+        .filter_map(|client| client["client"].as_str())
+        .collect();
 
-    // 4. Agent instructions.
+    // 4. Agent instructions: none are added when Claude Code, which reads
+    // the server's instructions, is the only client connected.
     let instructions = if options.no_instructions {
         json!([{"state":"skipped","reason":"--no-instructions"}])
     } else {
-        instructions_step(&data, &folder, &project.id, switch, ui, options.yes)?
+        instructions_step(
+            &data,
+            &folder,
+            &project.id,
+            (
+                switch,
+                connected == ["claude-code"],
+                options.tools == Some(ToolSet::All),
+            ),
+            ui,
+            options.yes,
+        )?
     };
 
     // 5. Freshness Git hooks.
@@ -288,11 +325,6 @@ pub fn setup_report(
 
     // 6. Graphify's entries (its sections went in step 4), in the clients
     // that got Graphicle's.
-    let connected: Vec<&str> = clients
-        .iter()
-        .filter(|client| client["state"] != "failed")
-        .filter_map(|client| client["client"].as_str())
-        .collect();
     let graphify_report = graphify_step(
         &data,
         (&folder, &project.id),
@@ -326,6 +358,7 @@ pub fn setup_report(
         if client["guard"]["installed"]
             .as_array()
             .is_some_and(|installed| !installed.is_empty())
+            || client["guard"]["state"] == "removed"
         {
             add(&client["guard"]["file"]);
         }
@@ -501,18 +534,18 @@ fn client_report(client: &str, result: &Value) -> Value {
         "added"
     };
     let mut report = json!({"client":client,"name":agent_detect::name(client),"state":state,
-        "file":result["configuration"],"entry":result["entry"],"project":result["project"]["id"]});
+        "file":result["configuration"],"entry":result["entry"],"project":result["project"]["id"],
+        "tools":result["tools"]});
     if let Some(hooks) = result.get("hooks") {
         let installed = hooks["installed"].as_array().map_or(0, Vec::len);
         report["capture"] = json!({"file":hooks["configuration"],"installed":hooks["installed"],
             "state":if installed > 0 { "added" } else { "already set" },"next":hooks["next"]});
     }
-    // Claude Code's guard hooks: the entry is set up for the
-    // code graph, as `connect --graph` does.
+    // Claude Code's guard hooks (`--guards`), or those of an earlier setup
+    // that this run removed.
     if let Some(guard) = result["graph"]["guard_hooks"].as_object() {
-        let installed = guard["installed"].as_array().map_or(0, Vec::len);
-        report["guard"] = json!({"file":guard["configuration"],"installed":guard["installed"],
-            "state":if installed > 0 { "added" } else { "already set" }});
+        report["guard"] = json!({"file":guard.get("configuration"),"installed":guard.get("installed"),
+            "state":guard_state(guard)});
     }
     if let Some(access) = result.get("access") {
         report["access"] = access.clone();
@@ -521,6 +554,19 @@ fn client_report(client: &str, result: &Value) -> Value {
         report["note"] = note.clone();
     }
     report
+}
+
+/// What `connect` did with Claude Code's guard hooks: `added`, `removed`
+/// (an earlier setup's, without `--guards`) or `already set`.
+fn guard_state(guard: &serde_json::Map<String, Value>) -> &'static str {
+    let listed = |key: &str| guard.get(key).and_then(Value::as_array).map_or(0, Vec::len);
+    if listed("removed") > 0 {
+        "removed"
+    } else if listed("installed") > 0 {
+        "added"
+    } else {
+        "already set"
+    }
 }
 
 /// Step 3's report: the capture hooks of the connected clients.
@@ -566,46 +612,73 @@ pub(crate) fn native(text: String, crlf: bool) -> String {
 
 /// Step 4: the Graphicle section of AGENTS.md (created only with consent)
 /// and of CLAUDE.md when it exists and does not already read AGENTS.md.
+/// When Claude Code is the only client connected (`only_claude_code`), the
+/// server's instructions tell it when to call the tools, so no section is
+/// added: a file keeps (and brings up to date) a section an earlier setup
+/// wrote, and the switch from Graphify still replaces Graphify's section.
+/// `--tools all` (`full`) writes 0.1.0's section, as 0.1.0 did, whichever
+/// clients are connected.
 fn instructions_step(
     data: &Path,
     folder: &Path,
     project: &str,
-    switch: bool,
+    (switch, only_claude_code, full): (bool, bool, bool),
     ui: &Ui,
     yes: bool,
 ) -> Result<Value> {
+    let only_claude_code = only_claude_code && !full;
     let agents = folder.join("AGENTS.md");
     let claude = folder.join("CLAUDE.md");
     let mut written = Vec::new();
+    // With Claude Code alone, a file gets the section only where it has one
+    // or where the switch replaces Graphify's.
+    let skipped = |path: &Path| {
+        only_claude_code
+            && !std::fs::read_to_string(path).is_ok_and(|text| {
+                let text = unix(&text).0;
+                agent_instructions::present(&text)
+                    || (switch && agent_detect::graphify_section(&text).is_some())
+            })
+    };
+    let alone = |path: &Path| {
+        json!({"file":path,"state":"skipped",
+            "reason":"Claude Code is the only agent connected, and the graphicle server's instructions tell it when to use the tools"})
+    };
+    let agents_skipped = skipped(&agents);
     let agents_exists = std::fs::symlink_metadata(&agents).is_ok();
-    let create = agents_exists
-        || yes
-        || ui
-            .confirm(
-                "Create AGENTS.md with a short section that tells agents when to use Graphicle?",
-                true,
-            )
-            .unwrap_or(false);
-    if create {
+    let create = !agents_skipped
+        && (agents_exists
+            || yes
+            || ui
+                .confirm(
+                    "Create AGENTS.md with a short section that tells agents when to use Graphicle?",
+                    true,
+                )
+                .unwrap_or(false));
+    if agents_skipped {
+        written.push(alone(&agents));
+    } else if create {
         written.push(write_instructions(
             data,
             (folder, project),
             &agents,
-            switch,
+            (switch, full),
         )?);
     } else {
         written.push(json!({"file":agents,"state":"skipped",
             "reason":"AGENTS.md does not exist; graphicle setup --yes creates it"}));
     }
     if std::fs::symlink_metadata(&claude).is_ok() {
-        let same = agents.canonicalize().ok().is_some()
-            && agents.canonicalize().ok() == claude.canonicalize().ok();
+        let same =
+            agents.canonical().ok().is_some() && agents.canonical().ok() == claude.canonical().ok();
         let text = std::fs::read_to_string(&claude).unwrap_or_default();
         let graphify_here = switch && agent_detect::graphify_section(&text).is_some();
         if same {
             written.push(
                 json!({"file":claude,"state":"skipped","reason":"the same file as AGENTS.md"}),
             );
+        } else if skipped(&claude) {
+            written.push(alone(&claude));
         } else if agent_instructions::imports_agents(&text)
             && create
             && !graphify_here
@@ -619,7 +692,7 @@ fn instructions_step(
                 data,
                 (folder, project),
                 &claude,
-                switch,
+                (switch, full),
             )?);
         }
     }
@@ -632,10 +705,10 @@ fn write_instructions(
     data: &Path,
     (folder, project): (&Path, &str),
     path: &Path,
-    switch: bool,
+    (switch, full): (bool, bool),
 ) -> Result<Value> {
     let target = if path.is_symlink() {
-        match path.canonicalize() {
+        match path.canonical() {
             Ok(target) if target.starts_with(folder) => target,
             _ => {
                 return Ok(json!({"file":path,"state":"skipped",
@@ -662,7 +735,12 @@ fn write_instructions(
         .then(|| agent_detect::graphify_section(&text))
         .flatten()
         .filter(|_| !agent_instructions::present(&text));
-    let upserted = agent_instructions::upsert(&text, switch);
+    let section = if full {
+        agent_instructions::section_0_1_0()
+    } else {
+        agent_instructions::section()
+    };
+    let upserted = agent_instructions::upsert_section(&text, switch, &section);
     if let Some(new) = upserted.text {
         agent_files::backup_in(data, &target)?;
         agent_files::write(&target, native(new, crlf).as_bytes(), 0o644)?;
@@ -1207,9 +1285,27 @@ pub fn render_setup(report: &Value) -> String {
             client["name"].as_str().unwrap_or_default()
         ));
     }
-    // Each entry runs the one MCP server.
-    if clients.iter().any(|client| client["state"] != "failed") {
+    // Each entry runs the one MCP server; Claude Code's, its five
+    // essential tools unless --tools says otherwise.
+    let connected: Vec<&Value> = clients
+        .iter()
+        .filter(|client| client["state"] != "failed")
+        .collect();
+    let essentials: Vec<&str> = connected
+        .iter()
+        .filter(|client| client["tools"] == "essentials")
+        .filter_map(|client| client["name"].as_str())
+        .collect();
+    if !connected.is_empty() && essentials.len() == connected.len() {
+        line("                one MCP server, five of its tools: query_graph, get_node, get_neighbors, recall_project, read_project_source (--tools all for every tool)".into());
+    } else if !connected.is_empty() {
         line("                one MCP server each: the code graph, recall and memory; memory drafts wait for your review".into());
+        if !essentials.is_empty() {
+            line(format!(
+                "                {} gets five of its tools (--tools all for every tool)",
+                essentials.join(" and ")
+            ));
+        }
     }
     let capture = &report["capture"];
     match capture["state"].as_str() {
@@ -1257,8 +1353,17 @@ pub fn render_setup(report: &Value) -> String {
             show(&client["guard"]["file"])
         ));
     }
-    if !guarded.is_empty() {
+    if guarded
+        .iter()
+        .any(|client| client["guard"]["state"] != "removed")
+    {
         line("                Before a search or a source read here, Claude Code is pointed to the graph tools".into());
+    }
+    if guarded
+        .iter()
+        .any(|client| client["guard"]["state"] == "removed")
+    {
+        line("                The guard hooks are off unless asked for: graphicle setup --guards turns them on".into());
     }
     for (index, written) in report["instructions"]
         .as_array()
@@ -1445,6 +1550,10 @@ pub struct ConnectFound {
     pub hooks: bool,
     pub work_state: bool,
     pub json: bool,
+    /// `--guards`, as for setup.
+    pub guards: bool,
+    /// `--tools`, as for setup.
+    pub tools: Option<ToolSet>,
 }
 
 pub fn connect_found(store: &Store, options: &ConnectFound) -> Result<()> {
@@ -1467,14 +1576,23 @@ pub fn connect_found(store: &Store, options: &ConnectFound) -> Result<()> {
     let mut connected = Vec::new();
     let mut failed = Vec::new();
     for client in &chosen {
-        let mut connection = agent_setup::default_connection(client, &cwd, options.hooks);
+        let mut connection = agent_setup::default_connection(
+            client,
+            &cwd,
+            options.hooks,
+            options.guards,
+            options.tools,
+        );
         connection.project = options.project.as_deref();
         connection.replace = options.replace;
         connection.work_state = options.work_state;
         match agent_setup::connect_with(
             store,
             &connection,
-            agent_setup::Policy { refresh_ours: true },
+            agent_setup::Policy {
+                refresh_ours: true,
+                drop_guards: true,
+            },
         ) {
             Ok(result) => connected.push(result),
             Err(error) => failed.push(json!({"client":client,"error":error.message})),
@@ -1559,16 +1677,16 @@ fn render_connect(result: &Value, cwd: &Path, env: &Environment) -> String {
     if let Some(guard) = result["graph"]["guard_hooks"].as_object() {
         out.push_str(&format!(
             "  graph guard hooks: {} ({})\n",
-            if guard["installed"].as_array().is_some_and(|i| !i.is_empty()) {
-                "added"
-            } else {
-                "already set"
-            },
-            guard["configuration"]
-                .as_str()
+            guard_state(guard),
+            guard
+                .get("configuration")
+                .and_then(Value::as_str)
                 .map(|file| shown(Path::new(file), Some(cwd), env))
                 .unwrap_or_default()
         ));
+    }
+    if result["tools"] == "essentials" {
+        out.push_str("  tools: query_graph, get_node, get_neighbors, recall_project, read_project_source (--tools all for every tool)\n");
     }
     if let Some(note) = result["note"].as_str() {
         out.push_str(&format!("  {note}\n"));

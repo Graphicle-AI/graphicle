@@ -1667,6 +1667,115 @@ fn conversation_hit(identity: &str, id: &str, date: &str, start: u64, text: &str
         "line":1,"sha256":format!("{id}-hash"),"recorded_at":date}})
 }
 
+/// Hits marked `last` (the runtime's test files) are presented after the
+/// others, each group in rank order, while the budget still goes by rank:
+/// at a budget that leaves windows out, the packet holds exactly the
+/// excerpts of the unmarked packet.
+#[test]
+fn hits_marked_last_follow_the_others_with_the_same_excerpts() {
+    let hits: Vec<Value> = (0..12)
+        .map(|n| {
+            let path = if n % 3 == 0 {
+                format!("tests/test_m{n}.py")
+            } else {
+                format!("src/m{n}.py")
+            };
+            let text = format!("def f{n}(value):\n    return value + {n}\n\n").repeat(60);
+            json!({"identity":format!("h{n}"),"text":text,"source":{"id":format!("file:{path}"),
+                "path":path,"source_kind":"repository_file","byte_start":0,"line":1,
+                "sha256":format!("h{n}-hash")}})
+        })
+        .collect();
+    let request = |marked: bool| {
+        let mut hits = hits.clone();
+        for hit in hits
+            .iter_mut()
+            .filter(|h| marked && s(h, "path").contains("tests/"))
+        {
+            hit["last"] = json!(true);
+        }
+        json!({"repo":{"id":"r","name":"Repo","snapshot":"one"},"question":"what does f1 return",
+            "hits":hits,"memories":[],"max_tokens":1500,"max_chars":6000})
+    };
+    fn s<'a>(hit: &'a Value, key: &str) -> &'a str {
+        hit["source"][key].as_str().unwrap()
+    }
+    let ranked = packing::pack(&request(false)).unwrap();
+    let marked = packing::pack(&request(true)).unwrap();
+    assert!(ranked.get("moved_last").is_none());
+    assert!(
+        ranked["omitted"]["sources"].as_u64().unwrap() > 0,
+        "the budget leaves windows out: {}",
+        ranked["omitted"]
+    );
+    let excerpts = |packet: &Value| {
+        packet["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| {
+                format!(
+                    "{}@{}-{}",
+                    s["id"].as_str().unwrap(),
+                    s["byte_start"],
+                    s["byte_end"]
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let (ranked_excerpts, marked_excerpts) = (excerpts(&ranked), excerpts(&marked));
+    assert!(ranked_excerpts.iter().any(|e| e.contains("tests/")));
+    // The same excerpts, the test files after the others, each group in
+    // rank order.
+    let (mut others, tests): (Vec<String>, Vec<String>) = ranked_excerpts
+        .iter()
+        .cloned()
+        .partition(|e| !e.contains("tests/"));
+    let moved = ranked_excerpts
+        .iter()
+        .enumerate()
+        .filter(|(i, e)| {
+            e.contains("tests/")
+                && ranked_excerpts[i + 1..]
+                    .iter()
+                    .any(|x| !x.contains("tests/"))
+        })
+        .count();
+    others.extend(tests);
+    assert_eq!(marked_excerpts, others);
+    assert!(moved > 0);
+    assert_eq!(marked["moved_last"], json!(moved));
+    assert_eq!(marked["omitted"], ranked["omitted"]);
+    assert_eq!(marked["characters"], ranked["characters"]);
+    assert_eq!(marked["tokens"], ranked["tokens"]);
+    // The Markdown follows the same order.
+    let markdown = marked["markdown"].as_str().unwrap();
+    let at = |e: &String| {
+        let path = e.split('@').next().unwrap().trim_start_matches("file:");
+        markdown.find(&format!(": {path}:")).unwrap()
+    };
+    let positions: Vec<usize> = marked_excerpts.iter().map(at).collect();
+    assert!(positions.windows(2).all(|w| w[0] < w[1]), "{positions:?}");
+    // Nothing to move: the order stands and nothing moved.
+    let mut tail = request(true);
+    tail["hits"] = json!(
+        hits.iter()
+            .filter(|h| !s(h, "path").contains("tests/"))
+            .cloned()
+            .collect::<Vec<_>>()
+    );
+    tail["hits"][0]["last"] = json!(false);
+    let unmoved = packing::pack(&tail).unwrap();
+    assert!(unmoved.get("moved_last").is_none());
+    tail["hits"][0]["last"] = json!("yes");
+    assert!(
+        packing::pack(&tail)
+            .unwrap_err()
+            .to_string()
+            .contains("last must be true or false")
+    );
+}
+
 #[test]
 fn chronological_packing_spends_by_rank_and_presents_by_date_with_gap_markers() {
     let hits = json!([

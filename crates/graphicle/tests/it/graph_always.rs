@@ -1026,7 +1026,8 @@ fn mcp_recall_honours_the_switches_and_include() {
         )
         .unwrap()
     };
-    let recall = |arguments: Value| {
+    let recall = |mut arguments: Value| {
+        arguments["structured"] = json!(true);
         let reply = request(
             "tools/call",
             json!({"name":"recall_project","arguments":arguments}),
@@ -1179,8 +1180,8 @@ fn a_synced_folder_serves_its_code_graph_over_stdio_without_a_worker() {
     let question = "Which helper does settle_invoice depend on?";
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"i3","version":"0"}}}),
-        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":question}}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":question,"graph_retrieval":false}}}),
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":question,"structured":true}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":question,"graph_retrieval":false,"structured":true}}}),
     ]
     .map(|request| request.to_string())
     .join("\n")
@@ -1398,7 +1399,7 @@ fn mcp_builds_a_waiting_graph_at_start_and_leaves_no_job_running() {
         std::thread::sleep(Duration::from_millis(50));
     }
     let reply = session.call(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
-        "params":{"name":"recall_project","arguments":{"question":"who calls beta"}}}));
+        "params":{"name":"recall_project","arguments":{"question":"who calls beta","structured":true}}}));
     let arm = &reply["result"]["structuredContent"]["code_graph"];
     assert_eq!(arm["status"], "fused", "{reply}");
     assert_eq!(arm["episode"], episode.as_str(), "{arm}");

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/affected.py, graphify/paths.py
 //! Port of graphify/paths.py: durable identity spelling and atomic output helpers.
 pub use crate::security::{DEFAULT_OUT_DIR, OUT_DIR};
@@ -36,7 +36,25 @@ static TEST_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .map(|pattern| regex_compat::compile(pattern))
     .collect()
 });
+/// `os.path.normpath` in the engine's `/` spelling. On Windows it is
+/// `ntpath.normpath`: a drive or UNC share is kept and `..` stops at it.
 pub fn normpath(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        windows_normpath(path)
+    }
+    #[cfg(not(windows))]
+    {
+        posix_normpath(path)
+    }
+}
+#[cfg(any(windows, test))]
+fn windows_normpath(path: &str) -> String {
+    let path = path_syntax::strip_verbatim(path);
+    crate::detect_manifest::ntpath_normpath(&path).replace('\\', "/")
+}
+#[cfg_attr(windows, allow(dead_code))]
+fn posix_normpath(path: &str) -> String {
     let mut parts = Vec::<String>::new();
     for part in path_syntax::posix_parts(path) {
         if part == ".." {
@@ -402,6 +420,9 @@ pub fn atomic_replace_with(
         #[cfg(windows)]
         if let Ok(metadata) = fs::metadata(&temp) {
             let mut permissions = metadata.permissions();
+            // Windows only: clears the read-only attribute (the lint's
+            // world-writable concern is Unix's).
+            #[allow(clippy::permissions_set_readonly_false)]
             permissions.set_readonly(false);
             let _ = fs::set_permissions(&temp, permissions);
         }
@@ -721,5 +742,40 @@ mod tests {
             &SystemReplace,
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod windows_normpath_tests {
+    use super::*;
+
+    #[test]
+    fn windows_normpath_keeps_drives_and_shares() {
+        assert_eq!(windows_normpath("C:/repo/src/../a.py"), "C:/repo/a.py");
+        assert_eq!(windows_normpath(r"C:\repo\..\.."), "C:/");
+        assert_eq!(windows_normpath(r"\\?\C:\repo\.\a.py"), "C:/repo/a.py");
+        assert_eq!(
+            windows_normpath("//server/share/repo/../.."),
+            "//server/share/"
+        );
+        assert_eq!(
+            windows_normpath(r"\\wsl.localhost\Ubuntu\home\u\..\v"),
+            "//wsl.localhost/Ubuntu/home/v"
+        );
+        assert_eq!(windows_normpath("a/./b/../c"), "a/c");
+        assert_eq!(windows_normpath(""), ".");
+    }
+
+    #[test]
+    fn normpath_is_posixpath_normpath_off_windows() {
+        #[cfg(not(windows))]
+        {
+            assert_eq!(normpath("//a/../b"), "//b");
+            assert_eq!(normpath("/a/../../b"), "/b");
+            assert_eq!(normpath("C:/a/../.."), ".");
+            assert_eq!(normpath(r"a\..\b"), r"a\..\b");
+        }
+        #[cfg(windows)]
+        assert_eq!(normpath(r"C:\a\..\.."), "C:/");
     }
 }

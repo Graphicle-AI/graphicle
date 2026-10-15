@@ -24,6 +24,7 @@
 //! the folder's project ([`Store::pr_scratch_for`]), so the folder's project
 //! keeps its heads and its episodes.
 use crate::graph_projection::{PR_SCRATCH, repo_readable};
+use crate::platform::CanonicalExt;
 use crate::store::{Principal, Store, one, repo, s};
 use crate::{Error, Result, digest, id, now};
 use rusqlite::{Connection, params};
@@ -33,6 +34,8 @@ use std::path::{Path, PathBuf};
 /// The key of the local project of `folder` (a canonical path), and the key
 /// its aliases are recorded under.
 pub fn folder_key(folder: &Path) -> String {
+    // Windows: a verbatim spelling (`\\?\C:\...`) shares its plain form's key.
+    let folder = crate::platform::simplified(folder.to_path_buf());
     format!("local:{}", digest(&json!(folder.to_string_lossy())))
 }
 
@@ -127,7 +130,7 @@ fn at_folder(
 /// The nearest registered ancestor of `path` (itself included) whose project
 /// holds a snapshot, and whether `p` may read that project.
 pub fn lookup(db: &Connection, p: &Principal, path: &Path) -> Result<Lookup> {
-    let Ok(path) = path.canonicalize() else {
+    let Ok(path) = path.canonical() else {
         return Ok(Lookup::Nothing);
     };
     for folder in path.ancestors() {
@@ -209,7 +212,7 @@ pub fn requested(
         ));
     }
     if exact {
-        let folder = path.canonicalize()?;
+        let folder = path.canonical()?;
         return match at_folder(db, p, &folder, false)? {
             Some((found, true)) => Ok(found.id),
             Some((found, false)) => Err(unreadable(&found.folder)),
@@ -474,4 +477,18 @@ pub fn is_pr_scratch(db: &Connection, repository: &str) -> Result<bool> {
         params![repository, PR_SCRATCH],
     )?
     .is_some())
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::folder_key;
+    use std::path::Path;
+
+    #[test]
+    fn verbatim_and_plain_folders_share_a_key() {
+        assert_eq!(
+            folder_key(Path::new(r"\\?\C:\work\app")),
+            folder_key(Path::new(r"C:\work\app"))
+        );
+    }
 }

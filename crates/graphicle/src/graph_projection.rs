@@ -1,5 +1,6 @@
 //! Projection of a repository head set into the typed code graph and its
 //! bi-temporal `gf_*` tables. One resident graph per `(repository_id, episode)`.
+use crate::platform::CanonicalExt;
 use crate::{
     Error, Result, digest, now,
     store::{Principal, Store, one, repo, rows, s},
@@ -127,7 +128,7 @@ pub fn build_graph_with_report(
     })?;
     // Canonical root: node identities derive from paths relative to it, and a
     // root that crosses a symlink would make cached and fresh records diverge.
-    let root = std::fs::canonicalize(dir.path())?;
+    let root = dir.path().canonical()?;
     let files: Vec<PathBuf> = heads.keys().map(|p| root.join(p)).collect();
     // A contended cross-process cache gets an isolated uncached tree.
     let cache = cache.filter(|_| dir.report.cached);
@@ -1461,7 +1462,7 @@ impl Store {
                 let mut fields = edge.attributes.clone();
                 fields.insert("source".into(), nodes[source].id.clone());
                 fields.insert("target".into(), nodes[target].id.clone());
-                fields.insert("key".into(), edge.key.clone());
+                fields.insert("key".into(), edge.key.to_value());
                 edges.push(Value::Object(fields.into()));
             }
             let labels: Vec<Value> = labels(db, workspace, identifier)?

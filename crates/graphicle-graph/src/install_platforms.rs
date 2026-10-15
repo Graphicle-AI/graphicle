@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 use crate::{Result, install::*, install_fs as f};
 use serde_json::{Value, json};
@@ -299,6 +299,8 @@ pub(crate) fn print_banner() {
     if !stdout.is_terminal() {
         return;
     }
+    #[cfg(windows)]
+    let _ = crate::win::enable_virtual_terminal();
     let (green, dim, reset) = ("\x1b[38;2;17;141;79m", "\x1b[2m", "\x1b[0m");
     let mut lines: Vec<String> = BANNER_LOGO
         .iter()

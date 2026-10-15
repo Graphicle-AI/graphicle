@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Graph traversal, precise symbol lookup, and budgeted text context.
 
@@ -64,7 +64,7 @@ pub fn filtered_contexts<'a>(
             h.add_edge(
                 g.nodes[u].id.clone(),
                 g.nodes[v].id.clone(),
-                g.multigraph.then(|| e.key.clone()),
+                g.multigraph.then(|| e.key.to_value()),
                 e.attributes.clone(),
             )?;
         }

@@ -8,6 +8,7 @@
 //! git hooks run, prints nothing and does nothing when nothing changed; two
 //! processes never sync one folder twice; projects without a folder are never
 //! touched.
+use graphicle_runtime::platform::CanonicalExt;
 use graphicle_runtime::{
     graph_projection,
     store::{Store, s},
@@ -36,7 +37,7 @@ struct Home {
 impl Home {
     fn new() -> Self {
         let dir = TempDir::new().unwrap();
-        let home = dir.path().canonicalize().unwrap();
+        let home = dir.path().canonical().unwrap();
         for client in [
             ".claude",
             ".cursor",
@@ -69,7 +70,7 @@ impl Home {
 
     fn git(&self, args: &[&str]) {
         let mut command = Command::new("git");
-        command
+        crate::child_env::home(&mut command, &self.home)
             .arg("-C")
             .arg(&self.app)
             .args([
@@ -81,7 +82,6 @@ impl Home {
                 "commit.gpgsign=false",
             ])
             .args(args)
-            .env("HOME", &self.home)
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -101,9 +101,8 @@ impl Home {
     /// `GRAPHICLE_FRESHNESS` only when `env` sets it).
     fn command(&self, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_graphicle"));
-        command
+        crate::child_env::home(&mut command, &self.home)
             .current_dir(cwd)
-            .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_DATA_HOME", self.home.join(".local/share"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -176,6 +175,22 @@ impl Home {
             .unwrap()
     }
 
+    /// Record the project's last sync as quick (100 ms), as an idle machine
+    /// times it. The tests that expect a refresh pin this input of the
+    /// slow-sync rule, which a busy machine (a build beside the tests) trips
+    /// by itself; the rule has its own test below.
+    fn quick_sync(&self, project: &str) {
+        self.store()
+            .transaction(|db| {
+                db.execute(
+                    "UPDATE repo_folders SET freshness=json_set(freshness,'$.scan_ms',100) WHERE repository_id=?",
+                    [project],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
     /// Sync the repository and return its project.
     fn sync(&self) -> String {
         let synced = self.json(&["sync", "."]);
@@ -213,6 +228,7 @@ impl Home {
 fn context_and_status_sync_a_few_changed_files_first() {
     let h = Home::new();
     let project = h.sync();
+    h.quick_sync(&project);
     let quiet = h.json(&["context", "what does run call"]);
     assert!(quiet.get("folder_freshness").is_none(), "{quiet:#}");
     assert!(quiet["freshness"].is_object(), "the packet's own freshness");
@@ -295,12 +311,15 @@ fn many_changes_or_a_slow_sync_give_a_stale_note_and_leave_the_store() {
         "201 files changed since the last sync; run graphicle sync"
     );
     let elsewhere = h.json_in(&h.home, &["status", "--project", &project], &[]);
+    // The folder is quoted for the shell when it needs it (a Windows path
+    // does), as `graphicle sync` prints it.
+    let mut folder = h.app.display().to_string();
+    if folder.contains(|c: char| !(c.is_ascii_alphanumeric() || "/._-+".contains(c))) {
+        folder = format!("'{}'", folder.replace('\'', r"'\''"));
+    }
     assert_eq!(
         elsewhere["folder_freshness"]["note"],
-        format!(
-            "201 files changed since the last sync; run graphicle sync {}",
-            h.app.display()
-        ),
+        format!("201 files changed since the last sync; run graphicle sync {folder}"),
         "{elsewhere:#}"
     );
     assert_eq!(h.state(&project).0, before);
@@ -334,6 +353,7 @@ fn many_changes_or_a_slow_sync_give_a_stale_note_and_leave_the_store() {
 fn freshness_off_leaves_the_folder_alone() {
     let h = Home::new();
     let project = h.sync();
+    h.quick_sync(&project);
     let (before, _, _) = h.state(&project);
     std::fs::write(h.app.join("a.py"), A_V2).unwrap();
     std::fs::write(
@@ -474,9 +494,8 @@ fn mcp_tool_calls_sync_changed_files_before_answering() {
         .map(|arg| arg.as_str().unwrap().to_string())
         .collect();
     let mut command = Command::new(env!("CARGO_BIN_EXE_graphicle"));
-    command
+    crate::child_env::home(&mut command, &h.home)
         .current_dir(&h.app)
-        .env("HOME", &h.home)
         .env_remove("GRAPHICLE_FRESHNESS")
         .args(&args)
         .stdin(Stdio::piped())
@@ -502,8 +521,7 @@ fn mcp_tool_calls_sync_changed_files_before_answering() {
         "initialize",
         json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fresh","version":"0"}}),
     );
-    let recall =
-        json!({"name":"recall_project","arguments":{"question":"where is gamma_helper defined"}});
+    let recall = json!({"name":"recall_project","arguments":{"question":"where is gamma_helper defined","structured":true}});
     let first = call(2, "tools/call", recall.clone());
     assert!(
         first["result"]["structuredContent"]
@@ -604,7 +622,7 @@ async fn http_mcp_tool_calls_sync_changed_files_before_answering() {
             .header("content-type", "application/json")
             .body(Body::from(
                 json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":
-                    {"name":"recall_project","arguments":{"question":"where is gamma_helper defined"}}})
+                    {"name":"recall_project","arguments":{"question":"where is gamma_helper defined","structured":true}}})
                 .to_string(),
             ))
             .unwrap();
@@ -669,7 +687,7 @@ async fn http_mcp_tool_calls_sync_changed_files_before_answering() {
 #[test]
 fn an_unchanged_sync_converts_no_document_again() {
     let dir = TempDir::new().unwrap();
-    let root = dir.path().canonicalize().unwrap().join("docs");
+    let root = dir.path().canonical().unwrap().join("docs");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("a.py"), A_V1).unwrap();
     std::fs::write(
@@ -834,6 +852,7 @@ fn a_folder_the_repository_ignores_is_scanned() {
     std::fs::write(scratch.join("plan.md"), "# Plan\n\nShip it.\n").unwrap();
     let synced = h.json_in(&scratch, &["sync"], &[]);
     let project = s(&synced, "repository_id").to_string();
+    h.quick_sync(&project);
     std::fs::write(
         scratch.join("risks.md"),
         "# Risks\n\nThe canary may fail.\n",
@@ -847,6 +866,22 @@ fn a_folder_the_repository_ignores_is_scanned() {
     assert_eq!(h.state(&project).2, ["plan.md", "risks.md"]);
 }
 
+/// Windows: wait until `folder` can be renamed, which it cannot while it is
+/// a running process's current folder (a detached build a refresh started).
+#[cfg(windows)]
+fn wait_until_renamable(folder: &Path) {
+    let probe = folder.with_extension("probe");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < deadline {
+        if std::fs::rename(folder, &probe).is_ok() {
+            std::fs::rename(&probe, folder).unwrap();
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    panic!("{} stayed in use", folder.display());
+}
+
 /// A plain folder (no git) is checked by a scan; a project without a folder
 /// (created by `call register`, as over HTTP) and a project whose folder is
 /// gone are never touched.
@@ -858,6 +893,7 @@ fn plain_folders_are_scanned_and_projects_without_a_folder_are_left_alone() {
     std::fs::write(plain.join("notes.md"), "# Plain\n\nNo repository here.\n").unwrap();
     let synced = h.json_in(&plain, &["sync"], &[]);
     let project = s(&synced, "repository_id").to_string();
+    h.quick_sync(&project);
     std::thread::sleep(Duration::from_millis(50));
     std::fs::write(plain.join("more.md"), "# More\n\nA second note.\n").unwrap();
     let packet = h.json_in(&plain, &["context", "second note"], &[]);
@@ -895,7 +931,11 @@ fn plain_folders_are_scanned_and_projects_without_a_folder_are_left_alone() {
     );
     assert!(packet.get("folder_freshness").is_none(), "{packet:#}");
 
-    // The folder moved away: nothing to sync from.
+    // The folder moved away: nothing to sync from. Windows refuses to rename
+    // a folder that is a running process's current folder (the detached
+    // graph build the refresh above started), so wait for it there first.
+    #[cfg(windows)]
+    wait_until_renamable(&plain);
     let (before, _, _) = h.state(&project);
     std::fs::rename(&plain, h.home.join("moved")).unwrap();
     let packet = h.json_in(

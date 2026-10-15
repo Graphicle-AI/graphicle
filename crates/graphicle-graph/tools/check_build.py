@@ -117,7 +117,9 @@ try:
         'tests/test_no_cluster_undeclared_endpoints.py::test_finalize_raw_graph_endpoints_matches_build_from_json',
         # First run here on 14 October 2026: non-string ids, the
         # semantic id remap root, merging over a corrupt graph.json, --no-dedup.
-        'tests/test_non_string_node_ids.py','tests/test_semantic_id_remap_root.py','tests/test_corrupt_graph_json.py','tests/test_no_dedup_flag.py']
+        'tests/test_non_string_node_ids.py','tests/test_semantic_id_remap_root.py','tests/test_corrupt_graph_json.py','tests/test_no_dedup_flag.py',
+        # 0.9.89 (#4399): the merge's orphan sweep after re-extraction.
+        'tests/test_merge_sweeps_reextract_orphans.py']
     with upstream_naming.isolated(files,'check_build') as (_,copies):status=pytest.main(['-q','-p','no:cacheprovider',*copies],plugins=[reports])
     assert status==0,status
     for name,fn in originals.items():setattr(reference,name,fn)

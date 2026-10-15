@@ -480,7 +480,10 @@ fn bare_ids_that_dropped_the_directory_are_path_qualified_per_file() {
             .any(|m| m.contains("minted by two different files"))
     );
 
-    // protocol.md exists: the bare id may name it, so the group collapses.
+    // protocol.md exists and the other two files have only a bare
+    // `protocol`: neither has a page of its own, so the bare id is their page.
+    // protocol.md keeps `protocol`, the others are path-qualified and nothing
+    // is dropped (Graphify 0.9.91, #4281; 0.9.88 collapsed the three).
     let (nodes, _, stderr) = dedup(
         vec![
             doc("protocol", "protocol", "protocol.md"),
@@ -493,9 +496,30 @@ fn bare_ids_that_dropped_the_directory_are_path_qualified_per_file() {
         ],
         vec![],
     );
-    assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0]["source_file"], "protocol.md");
-    assert!(stderr.iter().any(|m| m.contains("WARNING")));
+    let kept: BTreeSet<_> = nodes
+        .iter()
+        .map(|n| {
+            (
+                n["id"].as_str().unwrap().to_owned(),
+                n["source_file"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kept,
+        [
+            ("docs_firmware_protocol", "docs/firmware/protocol.md"),
+            ("docs_protocol", "docs/protocol.md"),
+            ("protocol", "protocol.md"),
+        ]
+        .map(|(a, b)| (a.to_owned(), b.to_owned()))
+        .into()
+    );
+    assert!(
+        !stderr
+            .iter()
+            .any(|m| m.contains("minted by two different files"))
+    );
 
     // Each file's edges follow its own renamed node.
     let path_dropped = || {
@@ -656,9 +680,20 @@ fn touch(root: &Path, rels: &[&str]) {
     }
 }
 
+/// `canonicalize` in the engine's plain spelling: on Windows without the
+/// verbatim prefix (`\\?\C:\x` is `C:\x`), under which `/` in a joined
+/// relative path is a literal character; elsewhere `canonicalize` itself.
+fn canonical(path: &Path) -> PathBuf {
+    let path = path.canonicalize().unwrap();
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => plain.into(),
+        _ => path,
+    }
+}
+
 fn ignored_among(ignore_text: &str, ignored: &[&str], kept: &[&str]) -> BTreeSet<String> {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = canonical(dir.path());
     touch(&root, ignored);
     touch(&root, kept);
     fs::write(root.join(".graphicleignore"), ignore_text).unwrap();
@@ -842,7 +877,7 @@ fn copy_tree(from: &Path, to: &Path) {
 fn a_full_save_drops_the_previous_checkouts_absolute_keys() {
     for scan in [true, false] {
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().canonicalize().unwrap();
+        let base = canonical(dir.path());
         let (a, b) = (base.join("checkout-a"), base.join("checkout-b"));
         let files_a = checkout_files(&a);
         save_checkout(&a, &files_a, None, false);
@@ -865,7 +900,7 @@ fn a_full_save_drops_the_previous_checkouts_absolute_keys() {
     }
     // One include row that shares a basename with a project file stays.
     let dir = tempfile::tempdir().unwrap();
-    let base = dir.path().canonicalize().unwrap();
+    let base = canonical(dir.path());
     let (root, outside) = (base.join("proj"), base.join("proj-include"));
     fs::create_dir_all(&root).unwrap();
     fs::create_dir_all(&outside).unwrap();
@@ -883,7 +918,7 @@ fn a_full_save_drops_the_previous_checkouts_absolute_keys() {
 #[test]
 fn a_declared_extension_is_classified_stamped_and_invalidated() {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = canonical(dir.path());
     fs::write(root.join("view.tpl"), "export const view = () => 1;\n").unwrap();
     fs::write(
         root.join("lib.inc"),
@@ -1206,7 +1241,7 @@ fn raw_rebuilds_write_one_compact_line_and_rewrite_a_legacy_layout() {
 #[test]
 fn an_unscanned_import_placeholder_survives_an_unrelated_change() {
     let dir = tempfile::tempdir().unwrap();
-    let corpus = dir.path().canonicalize().unwrap();
+    let corpus = canonical(dir.path());
     fs::write(
         corpus.join("app.ts"),
         "export async function load() {\n  return import('./queue.js');\n}\n",

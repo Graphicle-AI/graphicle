@@ -432,6 +432,9 @@ fn failures_retry_with_exponential_backoff() {
 
     let leased = f.store.lease_job().unwrap().unwrap();
     assert_eq!(leased.id, id);
+    // The seconds from finishing to reading the row, which a loaded host
+    // takes off the delay left.
+    let finished = std::time::Instant::now();
     f.store
         .finish_job(&leased, Err(Error::bad("boom")))
         .unwrap();
@@ -439,9 +442,10 @@ fn failures_retry_with_exponential_backoff() {
     assert_eq!(row["state"], "retry", "{row}");
     assert_eq!(row["attempt"], 1);
     let delay = seconds_from_now(s(&row, "not_before"));
+    let late = finished.elapsed().as_secs() as i64;
     assert!(
-        (27..=30).contains(&delay),
-        "first backoff ≈30 s, got {delay}"
+        (27 - late..=30).contains(&delay),
+        "first backoff ≈30 s, got {delay} ({late} s late)"
     );
     // A backed-off job is not leased before `not_before`; only the
     // repository's pending projection is offered, and it is drained here.
@@ -453,6 +457,7 @@ fn failures_retry_with_exponential_backoff() {
     f.make_ready(&id);
     let leased = f.store.lease_job().unwrap().unwrap();
     assert_eq!(leased.id, id);
+    let finished = std::time::Instant::now();
     f.store
         .finish_job(&leased, Err(Error::bad("boom again")))
         .unwrap();
@@ -460,9 +465,10 @@ fn failures_retry_with_exponential_backoff() {
     assert_eq!(row["state"], "retry", "{row}");
     assert_eq!(row["attempt"], 2);
     let delay = seconds_from_now(s(&row, "not_before"));
+    let late = finished.elapsed().as_secs() as i64;
     assert!(
-        (57..=60).contains(&delay),
-        "second backoff ≈60 s, got {delay}"
+        (57 - late..=60).contains(&delay),
+        "second backoff ≈60 s, got {delay} ({late} s late)"
     );
 
     f.make_ready(&id);

@@ -11,7 +11,15 @@ pub fn enabled() -> bool {
     })
 }
 
+/// Peak resident set size of this process in bytes (0 when unavailable, as
+/// on Windows, where the engine's profile also reports 0).
+#[cfg(not(unix))]
+pub fn peak_rss() -> u64 {
+    0
+}
+
 /// Peak resident set size of this process in bytes (0 when unavailable).
+#[cfg(unix)]
 pub fn peak_rss() -> u64 {
     let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
     if unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) } != 0 {

@@ -117,6 +117,9 @@
   ],
   "DOC_EXTENSIONS": [
     ".html",
+    ".j2",
+    ".jinja",
+    ".jinja2",
     ".md",
     ".mdx",
     ".qmd",

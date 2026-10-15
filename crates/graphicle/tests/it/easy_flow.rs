@@ -10,6 +10,7 @@
 //! `doctor` (no problem), `disconnect --all` (everything Graphicle added is
 //! gone and nothing else changed, in bytes and modes) and `uninstall`
 //! without `--purge` (the data stays).
+use graphicle_runtime::platform::CanonicalExt;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,11 +35,11 @@ impl Flow {
     /// committed repository `code/shop`.
     fn new() -> Self {
         let dir = TempDir::new().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dir.path().canonical().unwrap();
         let flow = Self {
             home: root.join("home"),
             data: root.join("data"),
-            repo: root.join("home/code/shop"),
+            repo: root.join("home").join("code").join("shop"),
             bin: root.join("bin"),
             _dir: dir,
         };
@@ -47,10 +48,13 @@ impl Flow {
         // engine beside it when the environment names one.
         link(
             Path::new(env!("CARGO_BIN_EXE_graphicle")),
-            &flow.bin.join("graphicle"),
+            &flow.bin.join(crate::child_env::program("graphicle")),
         );
         if let Some(engine) = std::env::var_os("GRAPHICLE_GRAPH_BIN") {
-            link(Path::new(&engine), &flow.bin.join("graphicle-graph"));
+            link(
+                Path::new(&engine),
+                &flow.bin.join(crate::child_env::program("graphicle-graph")),
+            );
         }
         // The clients: Claude Code and VS Code by their folders, the others
         // with a settings file holding another server.
@@ -98,6 +102,9 @@ impl Flow {
     fn desktop(&self) -> PathBuf {
         if cfg!(target_os = "macos") {
             self.home.join("Library/Application Support/Claude")
+        } else if cfg!(windows) {
+            // `%APPDATA%\Claude`; child_env::home points APPDATA here.
+            self.home.join("AppData").join("Roaming").join("Claude")
         } else {
             self.home.join(".config/Claude")
         }
@@ -106,10 +113,7 @@ impl Flow {
     /// Every child's environment: this machine's HOME and XDG folders, no
     /// client program and no model key, no system or user Git settings.
     fn environment(&self, command: &mut Command) {
-        command
-            .env_clear()
-            .env("HOME", &self.home)
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
+        crate::child_env::isolate(command, &self.home, &[&self.bin], "/usr/bin:/bin")
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_DATA_HOME", self.home.join(".local/share"))
             .env("XDG_CACHE_HOME", self.home.join(".cache"))
@@ -533,7 +537,13 @@ fn the_easy_flow_from_setup_to_uninstall() {
     let written = std::fs::read_to_string(&codex).unwrap();
     // The program on PATH (the link an upgrade keeps), not the file it
     // leads to.
-    let program = flow.bin.join("graphicle").display().to_string();
+    let program = flow
+        .bin
+        .join(crate::child_env::program("graphicle"))
+        .display()
+        .to_string();
+    // As a TOML basic string spells it (a Windows path's `\` doubled).
+    let program = program.replace('\\', "\\\\");
     assert!(written.contains(&format!("\"{program}\"")), "{written}");
     std::fs::write(&codex, written.replace(&program, "/gone/graphicle")).unwrap();
     let broken = flow.run(&["doctor"], false);

@@ -3,6 +3,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use graphicle_runtime::platform::CanonicalExt;
 use graphicle_runtime::{
     api::{App, router},
     graph_projection::{self, graph_ref},
@@ -294,7 +295,7 @@ fn extraction_cache_persists_across_builds_and_leaves_the_graph_unchanged() {
     ]);
     let db = f.db();
     let cache = graph_projection::cache_root(&db, &f.repo).unwrap();
-    assert!(cache.starts_with(std::fs::canonicalize(f._dir.path()).unwrap()));
+    assert!(cache.starts_with(f._dir.path().canonical().unwrap()));
     let (episode, cold, summary) = graph_projection::build_graph_with_report(&db, &f.repo).unwrap();
     assert_eq!(summary["cached"], true);
     assert_eq!(summary["changed"], 3);

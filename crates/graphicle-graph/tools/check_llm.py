@@ -228,7 +228,11 @@ def run():
            # compares those contracts natively (null token counts, CLI model env).
            'test_claude_cli_backend.py','test_llm_null_token_counts.py',
            # First run here on 14 October 2026 (their cases that reach the pure helpers).
-           'test_injection_sentinel_coverage.py','test_evidence_binding.py']
+           'test_injection_sentinel_coverage.py','test_evidence_binding.py',
+           # 0.9.91 (#4413): Ollama's native /api/chat; their cases drive the mocked
+           # OpenAI client and are deselected like the rest (the native request,
+           # fallback and reply are compared in tests/compat_0_9_91_cli.rs).
+           'test_ollama_native_chat.py','test_ollama_retry_cap.py']
     status=pytest.main(['-q','-p','no:cacheprovider',*[str(SOURCE/'tests'/n) for n in names]],plugins=[reports]);assert status==0,status
     for name,original in saved.items():setattr(reference,name,original)
     check_configuration();check_seed_and_origin();check_parser()

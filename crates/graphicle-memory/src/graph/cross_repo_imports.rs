@@ -2070,8 +2070,26 @@ pub fn sources_below(root: &Path) -> impl Fn(&str) -> Option<String> + '_ {
         if relpath.split('/').any(|seg| seg == "..") {
             return None;
         }
-        std::fs::read_to_string(root.join(relpath)).ok()
+        std::fs::read_to_string(join_below(root, relpath)?).ok()
     }
+}
+
+/// `root.join(relpath)` for a relpath from graph JSON. On Windows only when
+/// every component is a plain name (a leading `./` aside), so that a drive or
+/// UNC prefix (`C:/x`, `//host/share`), a rooted path or `..` (also spelt with
+/// `\`) cannot leave `root`. On Linux and macOS it is `root.join(relpath)`.
+pub(crate) fn join_below(root: &Path, relpath: &str) -> Option<std::path::PathBuf> {
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        let below = Path::new(relpath)
+            .components()
+            .all(|part| matches!(part, Component::Normal(_) | Component::CurDir));
+        if !below {
+            return None;
+        }
+    }
+    Some(root.join(relpath))
 }
 
 struct Importer<'a> {
@@ -2656,6 +2674,44 @@ pub fn dispatch(request: &Value) -> Result<Value> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn sources_join_relpaths_below_the_root() {
+        let root = Path::new("repo");
+        for inside in ["a.py", "src/a.py", "./src/a.py", "a/./b.py"] {
+            assert_eq!(
+                join_below(root, inside),
+                Some(root.join(inside)),
+                "{inside}"
+            );
+        }
+    }
+
+    /// On Windows a relpath that could leave the root is not joined: a drive,
+    /// UNC, rooted or absolute path, or `..`. On Linux and macOS `join_below`
+    /// is `root.join`, and `sources_below` refuses `..` segments as before.
+    #[cfg(windows)]
+    #[test]
+    fn windows_prefixed_relpaths_stay_unjoined() {
+        let root = Path::new(r"C:\repo");
+        for outside in [
+            "C:/x.py",
+            "C:x.py",
+            "//host/share/x.py",
+            r"\\host\share\x.py",
+            r"\x.py",
+            "/abs/a.py",
+            "../a.py",
+            r"src\..\..\a.py",
+            "..",
+        ] {
+            assert_eq!(join_below(root, outside), None, "{outside}");
+        }
+        assert_eq!(
+            join_below(root, r"src\a.py"),
+            Some(Path::new(r"C:\repo\src\a.py").to_path_buf())
+        );
+    }
 
     fn node(id: &str, label: &str, relpath: &str, extra: Value) -> Value {
         let mut node = json!({"id": id, "label": label, "source_file": relpath, "relpath": relpath, "stable_id": format!("sid:{id}")});

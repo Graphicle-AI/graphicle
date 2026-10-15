@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/dedup.py
 //! Source-aware entity deduplication, preserving incremental and provenance rules.
 
@@ -14,8 +14,12 @@ pub use crate::dedup_strings::{
     same_word_variant, shingles, short_label_blocked,
 };
 use crate::{
-    Result, dedup_strings as strings, extractors::resolution::field, fsutil, ids,
-    minhash::MinHashLsh, python_compat,
+    Result, dedup_strings as strings,
+    extractors::resolution::field,
+    fsutil, ids,
+    minhash::MinHashLsh,
+    python_compat,
+    record::{EdgeItem, Record},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -208,30 +212,43 @@ fn collision_key(source_file: Option<&Value>, root: Option<&Path>) -> String {
 }
 /// Apply `(old id, file key) -> new id` renames to edge endpoints and
 /// hyperedge members, matched by each item's own `source_file`.
-fn rename_references(
-    items: &mut [Value],
+fn rename_references<R: Record, E: EdgeItem<Record = R>>(
+    items: &mut [E],
     renames: &HashMap<(String, String), String>,
     root: Option<&Path>,
 ) {
-    for item in items.iter_mut().filter(|item| item.is_object()) {
-        let k = collision_key(field(item, "source_file"), root);
+    for item in items.iter_mut() {
+        let Some(item) = item.record_mut() else {
+            continue;
+        };
+        let k = collision_key(item.get("source_file"), root);
         for end in ["source", "target"] {
-            if let Some(new) = field(item, end)
+            if let Some(new) = item
+                .get(end)
                 .and_then(Value::as_str)
                 .and_then(|old| renames.get(&(old.to_owned(), k.clone())))
             {
-                item[end] = json!(new);
+                item.put(end, json!(new));
             }
         }
-        if let Some(members) = item.get_mut("nodes").and_then(Value::as_array_mut) {
-            for member in members.iter_mut() {
-                if let Some(new) = member
-                    .as_str()
-                    .and_then(|old| renames.get(&(old.to_owned(), k.clone())))
-                {
-                    *member = json!(new);
+        // Members are renamed in a copy that replaces the list in place.
+        let renamed = match item.get("nodes") {
+            Some(Value::Array(members)) => {
+                let mut renamed: Option<Vec<Value>> = None;
+                for (i, member) in members.iter().enumerate() {
+                    if let Some(new) = member
+                        .as_str()
+                        .and_then(|old| renames.get(&(old.to_owned(), k.clone())))
+                    {
+                        renamed.get_or_insert_with(|| members.clone())[i] = json!(new);
+                    }
                 }
+                renamed
             }
+            _ => None,
+        };
+        if let Some(members) = renamed {
+            item.put("nodes", Value::Array(members));
         }
     }
 }
@@ -243,6 +260,15 @@ fn rename_references(
 pub fn disambiguate_defining_collisions(
     nodes: &mut [Value],
     edges: &mut [Value],
+    hyperedges: Option<&mut [Value]>,
+    root: Option<&Path>,
+) {
+    disambiguate_defining_collisions_in(nodes, edges, hyperedges, root);
+}
+/// [`disambiguate_defining_collisions`] over edges of either form.
+fn disambiguate_defining_collisions_in<R: Record, E: EdgeItem<Record = R>>(
+    nodes: &mut [Value],
+    edges: &mut [E],
     hyperedges: Option<&mut [Value]>,
     root: Option<&Path>,
 ) {
@@ -330,6 +356,14 @@ pub fn disambiguate_defining_collisions(
 /// `references` edge of that file, and its id is a path slice of that file.
 /// Inferred from the edges an extractor chose to emit, not stated by the source.
 pub fn mentions(nodes: &[Value], edges: &[Value], root: Option<&Path>) -> Mentions {
+    mentions_in(nodes, edges, root)
+}
+/// [`mentions`] over edges of either form.
+fn mentions_in<R: Record, E: EdgeItem<Record = R>>(
+    nodes: &[Value],
+    edges: &[E],
+    root: Option<&Path>,
+) -> Mentions {
     let mut own: HashMap<String, HashSet<&str>> = HashMap::new();
     for node in nodes {
         let nid = id(node);
@@ -341,15 +375,16 @@ pub fn mentions(nodes: &[Value], edges: &[Value], root: Option<&Path>) -> Mentio
     }
     let mut found = Mentions::new();
     for edge in edges {
-        if !edge.is_object()
-            || field(edge, "relation").and_then(Value::as_str) != Some("references")
-        {
+        let Some(edge) = edge.record() else {
+            continue;
+        };
+        if edge.get("relation").and_then(Value::as_str) != Some("references") {
             continue;
         }
-        let k = collision_key(field(edge, "source_file"), root);
+        let k = collision_key(edge.get("source_file"), root);
         let (Some(source), Some(target)) = (
-            field(edge, "source").and_then(Value::as_str),
-            field(edge, "target").and_then(Value::as_str),
+            edge.get("source").and_then(Value::as_str),
+            edge.get("target").and_then(Value::as_str),
         ) else {
             continue;
         };
@@ -365,6 +400,77 @@ pub fn mentions(nodes: &[Value], edges: &[Value], root: Option<&Path>) -> Mentio
     }
     found
 }
+/// The non-empty string `id` and `source_file` of a node, else None.
+fn id_and_source(node: &Value) -> Option<(&str, &str)> {
+    let nid = field(node, "id")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    let sf = field(node, "source_file")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?;
+    Some((nid, sf))
+}
+/// `(rank path, full stem)` of a stored `source_file`, memoized per call
+/// (many nodes share a file).
+fn ranked_file<'a>(
+    memo: &mut HashMap<&'a str, (String, String)>,
+    sf: &'a str,
+    root: Option<&Path>,
+) -> (String, String) {
+    memo.entry(sf)
+        .or_insert_with(|| {
+            let k = rank_path(sf, root);
+            let full = full_stem(&k);
+            (k, full)
+        })
+        .clone()
+}
+/// `_own_page_files` (0.9.91, #4281): root-relative files that have a node
+/// spelled with their own full stem. Such a file already has its page, so a
+/// shorter path-slice id it also mints (`protocol` inside docs/protocol.md,
+/// next to `docs_protocol`) may be a reference to another file.
+pub fn own_page_files(nodes: &[Value], root: Option<&Path>) -> HashSet<String> {
+    let mut memo = HashMap::new();
+    let mut files = HashSet::new();
+    for node in nodes {
+        let Some((nid, sf)) = id_and_source(node) else {
+            continue;
+        };
+        let (k, full) = ranked_file(&mut memo, sf, root);
+        if crate::paths::is_absolute_any_platform(Some(&k)) {
+            continue;
+        }
+        if nid == full
+            || nid
+                .strip_prefix(full.as_str())
+                .is_some_and(|rest| rest.starts_with('_'))
+        {
+            files.insert(k);
+        }
+    }
+    files
+}
+/// `_slice_references` (0.9.91, #4281): `(id, file)` of nodes whose id is a
+/// SHORTER path slice of a file that has its own page. They rank as
+/// references, like a [`mentions`] entry.
+pub fn slice_references(nodes: &[Value], root: Option<&Path>) -> Mentions {
+    let own_page = own_page_files(nodes, root);
+    let mut found = Mentions::new();
+    if own_page.is_empty() {
+        return found;
+    }
+    let mut memo = HashMap::new();
+    for node in nodes {
+        let Some((nid, sf)) = id_and_source(node) else {
+            continue;
+        };
+        let (k, full) = ranked_file(&mut memo, sf, root);
+        if own_page.contains(&k) && nid != full && id_prefixes(&k).contains(nid) {
+            found.insert((nid.to_owned(), k));
+        }
+    }
+    found
+}
 /// `str(node.get("id") or "")`.
 fn id_text(node: &Value) -> String {
     match field(node, "id") {
@@ -372,17 +478,31 @@ fn id_text(node: &Value) -> String {
         _ => String::new(),
     }
 }
-/// `_path_qualify_dropped_collisions` (0.9.88, #4281/#4362): a semantic id
-/// minted from a SHORTER-than-full path stem by files of different full stems
-/// (`a/x.md` and `b/x.md` both emitting `x`) is renamed per file to
+/// `_path_qualify_dropped_collisions` (0.9.88-0.9.91, #4281/#4362): a
+/// semantic id minted from a SHORTER-than-full path stem by files of different
+/// full stems (`a/x.md` and `b/x.md` both emitting `x`) is renamed per file to
 /// `<full path stem><rest of id>`; no file keeps the bare id. AST nodes, an
-/// id already carrying the full stem, a path that stays absolute, a group
-/// whose shorter prefix is itself a scanned file's stem, and a mention (see
-/// [`mentions`]) are left alone. A reference to the bare id from another file
-/// cannot be attributed and is left unresolved, with one warning per id.
+/// id already carrying the full stem, a path that stays absolute and a mention
+/// (see [`mentions`]) are left alone. The file whose full stem IS the id
+/// (`protocol.md` for `protocol`) defines it, keeps the bare id and counts
+/// toward the collision (0.9.91), so `docs/protocol.md` next to it is still
+/// renamed; a candidate whose bare id names another input file is renamed
+/// only if its own file has no other node spelled with its own full stem
+/// ([`own_page_files`]). A reference to the bare id from another file cannot
+/// be attributed and is left unresolved, with one warning per id.
 pub fn path_qualify_dropped_collisions(
     nodes: &mut [Value],
     edges: &mut [Value],
+    hyperedges: Option<&mut [Value]>,
+    root: Option<&Path>,
+    stderr: &mut Vec<String>,
+) {
+    path_qualify_dropped_collisions_in(nodes, edges, hyperedges, root, stderr);
+}
+/// [`path_qualify_dropped_collisions`] over edges of either form.
+fn path_qualify_dropped_collisions_in<R: Record, E: EdgeItem<Record = R>>(
+    nodes: &mut [Value],
+    edges: &mut [E],
     hyperedges: Option<&mut [Value]>,
     root: Option<&Path>,
     stderr: &mut Vec<String>,
@@ -419,7 +539,7 @@ pub fn path_qualify_dropped_collisions(
         .filter(|s| !s.is_empty())
         .map(|s| full_stem(&rank_path(s, root)))
         .collect();
-    let mentioned = mentions(nodes, edges, root);
+    let mentioned = mentions_in(nodes, edges, root);
     let mut by_id: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
     let mut owners: HashMap<String, HashSet<String>> = HashMap::new();
     let mut kept_bare: HashSet<(String, String)> = HashSet::new();
@@ -441,34 +561,34 @@ pub fn path_qualify_dropped_collisions(
             by_id.entry(nid.to_owned()).or_default().push(i);
         }
     }
+    // Files with a node spelled with their own full stem: their page already
+    // exists, so a shorter-prefix id from such a file may be a reference.
+    let own_page = own_page_files(nodes, root);
     let mut renames: HashMap<(String, String), String> = HashMap::new();
     let mut claimed: HashMap<String, String> = HashMap::new();
     for (nid, members) in &by_id {
-        if members
+        // The file whose full stem IS the id defines it: it keeps the bare id
+        // and counts toward the collision although it is not a candidate.
+        let definers = owners.get(nid).into_iter().flatten().filter(|o| {
+            !o.is_empty()
+                && !crate::paths::is_absolute_any_platform(Some(o.as_str()))
+                && full_stem(o) == *nid
+        });
+        let files: HashSet<String> = members
             .iter()
             .map(|&i| key(&nodes[i]))
-            .collect::<HashSet<_>>()
-            .len()
-            < 2
-        {
+            .chain(definers.cloned())
+            .collect();
+        if files.len() < 2 {
             continue;
         }
-        if members
+        if files
             .iter()
-            .map(|&i| full_stem(&key(&nodes[i])))
+            .map(|f| full_stem(f))
             .collect::<HashSet<_>>()
             .len()
             < 2
         {
-            continue;
-        }
-        if members.iter().any(|&i| {
-            named_files.contains(
-                &qualified_id(&nodes[i])
-                    .map(|(_, prefix)| prefix)
-                    .unwrap_or_default(),
-            )
-        }) {
             continue;
         }
         let mut sorted = members.clone();
@@ -477,6 +597,19 @@ pub fn path_qualify_dropped_collisions(
             let k = key(&nodes[i]);
             let pair = (nid.clone(), k.clone());
             if renames.contains_key(&pair) || kept_bare.contains(&pair) {
+                continue;
+            }
+            // The bare id names another input file (`protocol` while
+            // protocol.md exists): it is this file's own page only if the file
+            // has no other page node; otherwise it may be a reference, so it
+            // is left to the collapse.
+            if named_files.contains(
+                &qualified_id(&nodes[i])
+                    .map(|(_, prefix)| prefix)
+                    .unwrap_or_default(),
+            ) && own_page.contains(&k)
+            {
+                kept_bare.insert(pair);
                 continue;
             }
             let new_id = qualified_id(&nodes[i]).map(|(new_id, _)| new_id);
@@ -503,28 +636,15 @@ pub fn path_qualify_dropped_collisions(
     }
     let renamed_ids: HashSet<&str> = renames.keys().map(|(nid, _)| nid.as_str()).collect();
     let mut unattributed: std::collections::BTreeMap<String, usize> = Default::default();
-    let mut count = |items: &[Value]| {
-        for item in items.iter().filter(|item| item.is_object()) {
-            let k = collision_key(field(item, "source_file"), root);
-            let members = item.get("nodes").and_then(Value::as_array);
-            let refs = [field(item, "source"), field(item, "target")]
-                .into_iter()
-                .flatten()
-                .chain(members.into_iter().flatten());
-            for reference in refs.filter_map(Value::as_str) {
-                let pair = (reference.to_owned(), k.clone());
-                if renamed_ids.contains(reference)
-                    && !renames.contains_key(&pair)
-                    && !kept_bare.contains(&pair)
-                {
-                    *unattributed.entry(reference.to_owned()).or_default() += 1;
-                }
-            }
-        }
+    let unattributed_ids = Unattributed {
+        root,
+        renamed_ids: &renamed_ids,
+        renames: &renames,
+        kept_bare: &kept_bare,
     };
-    count(edges);
+    unattributed_ids.count(edges, &mut unattributed);
     if let Some(hyperedges) = &hyperedges {
-        count(hyperedges);
+        unattributed_ids.count(hyperedges, &mut unattributed);
     }
     rename_references(edges, &renames, root);
     if let Some(hyperedges) = hyperedges {
@@ -532,6 +652,42 @@ pub fn path_qualify_dropped_collisions(
     }
     for (nid, n) in unattributed {
         stderr.push(format!("[graphicle] WARNING: node '{nid}' was minted by several files and renamed per file; {n} reference(s) from other files could not be attributed and were left unresolved."));
+    }
+}
+/// References to a renamed id that [`path_qualify_dropped_collisions`]
+/// cannot attribute to one file, counted per id.
+struct Unattributed<'a> {
+    root: Option<&'a Path>,
+    renamed_ids: &'a HashSet<&'a str>,
+    renames: &'a HashMap<(String, String), String>,
+    kept_bare: &'a HashSet<(String, String)>,
+}
+impl Unattributed<'_> {
+    fn count<R: Record, E: EdgeItem<Record = R>>(
+        &self,
+        items: &[E],
+        unattributed: &mut std::collections::BTreeMap<String, usize>,
+    ) {
+        for item in items {
+            let Some(item) = item.record() else {
+                continue;
+            };
+            let k = collision_key(item.get("source_file"), self.root);
+            let members = item.get("nodes").and_then(Value::as_array);
+            let refs = [item.get("source"), item.get("target")]
+                .into_iter()
+                .flatten()
+                .chain(members.into_iter().flatten());
+            for reference in refs.filter_map(Value::as_str) {
+                let pair = (reference.to_owned(), k.clone());
+                if self.renamed_ids.contains(reference)
+                    && !self.renames.contains_key(&pair)
+                    && !self.kept_bare.contains(&pair)
+                {
+                    *unattributed.entry(reference.to_owned()).or_default() += 1;
+                }
+            }
+        }
     }
 }
 pub fn same_source_entity(survivor: &Value, duplicate: &Value) -> bool {
@@ -905,9 +1061,23 @@ pub fn deduplicate_entities_owned(
     nodes: Vec<Value>,
     edges: Vec<Value>,
     options: &DedupOptions,
+    hyperedges: Option<&mut [Value]>,
+    client: Option<&mut dyn TiebreakClient>,
+) -> Result<DedupOutput> {
+    let (mut output, edges) = deduplicate_records(nodes, edges, options, hyperedges, client)?;
+    output.edges = edges;
+    Ok(output)
+}
+/// [`deduplicate_entities_owned`] over edges of either form: the build's
+/// compact edge records are read and rewritten in place, never copied as
+/// JSON. The output's `edges` stay empty; the edges come back beside it.
+pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
+    nodes: Vec<Value>,
+    edges: Vec<E>,
+    options: &DedupOptions,
     mut hyperedges: Option<&mut [Value]>,
     mut client: Option<&mut dyn TiebreakClient>,
-) -> Result<DedupOutput> {
+) -> Result<(DedupOutput, Vec<E>)> {
     let repos: BTreeSet<_> = nodes
         .iter()
         .filter_map(|n| n["repo"].as_str())
@@ -927,8 +1097,7 @@ pub fn deduplicate_entities_owned(
     };
     if nodes.len() <= 1 {
         output.nodes = nodes;
-        output.edges = edges;
-        return Ok(output);
+        return Ok((output, edges));
     }
     let root = options
         .root
@@ -940,20 +1109,21 @@ pub fn deduplicate_entities_owned(
     // before the one-node-per-ID pass; the mention reading ranks survivors.
     let mut nodes = nodes;
     let mut edges = edges;
-    disambiguate_defining_collisions(
+    disambiguate_defining_collisions_in(
         &mut nodes,
         &mut edges,
         hyperedges.as_deref_mut(),
         root.as_deref(),
     );
-    path_qualify_dropped_collisions(
+    path_qualify_dropped_collisions_in(
         &mut nodes,
         &mut edges,
         hyperedges.as_deref_mut(),
         root.as_deref(),
         &mut output.stderr,
     );
-    let mentioned = mentions(&nodes, &edges, root.as_deref());
+    let mut mentioned = mentions_in(&nodes, &edges, root.as_deref());
+    mentioned.extend(slice_references(&nodes, root.as_deref()));
     // The tables below are looked up, not iterated in any order that reaches
     // the output, so they use hashbrown's faster (still randomly seeded) hasher.
     let mut unique = Vec::<Value>::with_capacity(nodes.len());
@@ -1002,8 +1172,7 @@ pub fn deduplicate_entities_owned(
     }
     if unique.len() <= 1 {
         output.nodes = unique;
-        output.edges = edges;
-        return Ok(output);
+        return Ok((output, edges));
     }
     // Each non-code node's normalised label and its entropy: both passes below
     // read them, and they are computed once, on all cores.
@@ -1199,8 +1368,7 @@ pub fn deduplicate_entities_owned(
     }
     if remap.is_empty() {
         output.nodes = unique;
-        output.edges = edges;
-        return Ok(output);
+        return Ok((output, edges));
     }
     let mut message = format!("[graphicle] Deduplicated {} node(s)", remap.len());
     let mut parts = Vec::new();
@@ -1222,10 +1390,15 @@ pub fn deduplicate_entities_owned(
         .filter(|n| !remap.contains_key(id(n)))
         .map(|n| enriched.remove(id(&n)).unwrap_or(n))
         .collect();
-    output.edges.reserve(edges.len());
-    for mut e in edges {
-        let Some(object) = e.as_object_mut() else {
-            return Err("Expected edge object".into());
+    // An edge that is no object fails the run (the output is discarded, so
+    // failing before the others are rewritten changes nothing); the rest are
+    // rewritten and filtered in place.
+    if edges.iter().any(|e| e.record().is_none()) {
+        return Err("Expected edge object".into());
+    }
+    edges.retain_mut(|e| {
+        let Some(object) = e.record_mut() else {
+            unreachable!("every edge is an object");
         };
         let src = object
             .get("source")
@@ -1238,7 +1411,7 @@ pub fn deduplicate_entities_owned(
             .cloned()
             .unwrap_or(Value::Null);
         if src.is_null() || tgt.is_null() {
-            continue;
+            return false;
         }
         // Recursive calls and self-referencing FKs survive an unrelated merge.
         // Only a new loop formed by collapsing distinct endpoints is removed.
@@ -1247,15 +1420,13 @@ pub fn deduplicate_entities_owned(
             Value::String(ref s) if remap.contains_key(s) => json!(remap[s]),
             other => other,
         };
-        object.insert("source".into(), mapped(src));
-        object.insert("target".into(), mapped(tgt));
-        object.shift_remove("from");
-        object.shift_remove("to");
-        if object["source"] != object["target"] || was_self_loop {
-            output.edges.push(e);
-        }
-    }
-    Ok(output)
+        object.put("source", mapped(src));
+        object.put("target", mapped(tgt));
+        object.take_key("from");
+        object.take_key("to");
+        object.get("source") != object.get("target") || was_self_loop
+    });
+    Ok((output, edges))
 }
 fn llm_tiebreak_inner(
     candidates: &[Value],

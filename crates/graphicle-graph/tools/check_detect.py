@@ -82,7 +82,9 @@ lifecycle=['tests/test_language_override_lifecycle.py::'+name for name in ('test
 files=['tests/test_detect.py','tests/test_ignore_file_encoding.py','tests/test_office_limits.py','tests/test_office_incremental.py','tests/test_incremental_mtime_collision.py','tests/test_docx_to_markdown.py','tests/test_pdf_extra_warning.py',
        # First run here on 14 October 2026: long paths, non-regular files, the output
        # folder's evidence and the persisted scan options.
-       'tests/test_long_path_hashing.py','tests/test_non_regular_files.py','tests/test_out_dir_evidence.py','tests/test_skill_persisted_scan_options.py']
+       'tests/test_long_path_hashing.py','tests/test_non_regular_files.py','tests/test_out_dir_evidence.py','tests/test_skill_persisted_scan_options.py',
+       # 0.9.91 (#3427): Jinja templates are documents.
+       'tests/test_detect_jinja.py']
 # These cases monkeypatch a Python process/parser/counter that a Rust library
 # cannot invoke. Exercise those contracts with actual native IO below instead.
 excluded={

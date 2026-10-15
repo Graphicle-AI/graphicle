@@ -31,10 +31,23 @@ works.
 Setup, and `connect` without an agent, set each agent up for the code graph,
 as `connect <agent> --graph` does:
 
-- **Memory drafts.** The entry runs `graphicle mcp --allow-learning`, so the
-  agent can propose a memory: a decision, a procedure or a note, quoting
-  current sources word for word. A draft is only a draft. Recall and session
-  start use it only after a person approves it in the app (**Memory**).
+- **Five tools for Claude Code.** Claude Code shows the agent the names of an
+  MCP server's tools and the server's instructions in every request, and
+  loads a tool only when the agent searches for it. Its entry runs
+  `graphicle mcp --tools essentials`: `query_graph`, `get_node`,
+  `get_neighbors`, `recall_project` and `read_project_source`, with one
+  sentence of instructions on when to call them; each tool's description
+  says how its answers cite code. `--tools all` gives it every tool, as
+  0.1.0 did.
+- **Memory drafts.** The other agents' entries run the whole server with
+  `--allow-learning`, so the agent can propose a memory: a decision, a
+  procedure or a note, quoting current sources word for word. A draft is
+  only a draft. Recall and session start use it only after a person
+  approves it in the app (**Memory**).
+
+The graph guard is off unless you ask for it with `--guards` (setup or
+`connect`):
+
 - **The graph guard (Claude Code).** Two hooks in
   `.claude/settings.local.json` run before Claude Code searches (Grep, or a
   shell command such as `grep`, `rg` or `find`) or reads a source file in a
@@ -45,10 +58,22 @@ as `connect <agent> --graph` does:
   nudges a session (a subagent counts on its own, and the first nudge always
   comes); the environment variable `GRAPHICLE_HOOK_NUDGE_CAP` sets another
   limit, and `0` lifts it. The other agents' hooks cannot add context before
-  a tool call, so they get the entry only.
+  a tool call, so they get the entry only. Setup or `connect` without an
+  agent, run without `--guards`, removes the guard hooks an earlier setup
+  installed.
 
 A plain `graphicle connect <agent>` writes the entry without `--allow-learning`
-and adds no guard hooks; run after setup, it keeps setup's entry as it is.
+and adds no guard hooks; run after setup (0.1.0's too, or `setup --tools
+all`), it keeps setup's entry as it is.
+
+`graphicle setup --tools all --guards` brings back 0.1.0's setup for Claude
+Code: every tool, with 0.1.0's server instructions and replies (recall at
+the budget asked for and in 0.1.0's order), the guard hooks, and 0.1.0's
+`AGENTS.md` section. Two things stay as in 0.1.1: the session-start hook
+prints nothing when the project has no reviewed memory, no open work and no
+stale memory (0.1.0 printed the last captured turns), and `graphicle
+context` in a terminal puts test files last unless a call asks otherwise
+(`include_tests: true` through `graphicle call context`).
 
 ## How Graphicle edits your files
 
@@ -84,8 +109,8 @@ the folder they start in. Agents with one settings file for your user account
 |---|---|---|
 | MCP server `graphicle` | `.mcp.json` in the project folder | setup, `connect claude-code` |
 | Session capture hooks | `.claude/settings.local.json` in the project folder | setup (unless `--no-capture`), `connect claude-code --hooks` |
-| Graph guard hooks | `.claude/settings.local.json` in the project folder | setup, `connect claude-code --graph` |
-| Graphicle section | `CLAUDE.md`, if the project has one | setup (unless `--no-instructions`) |
+| Graph guard hooks | `.claude/settings.local.json` in the project folder | `setup --guards`, `connect claude-code --guards` |
+| Graphicle section | `CLAUDE.md`, if the project has one and another agent is connected too | setup (unless `--no-instructions`) |
 
 - Claude Code asks you to approve the servers in a project's `.mcp.json`
   the first time it starts there.
@@ -160,16 +185,21 @@ Graphicle. [mcp.md](mcp.md#other-clients) shows the entry to add by hand.
 
 ### Agent instructions
 
-Setup adds a short Graphicle section to `AGENTS.md` in the project folder, and
-to `CLAUDE.md` if it exists. Many agents read these files. The section tells
-them to use Graphicle's tools for questions about the code, earlier decisions
-and earlier sessions.
+Setup adds a two-line Graphicle section to `AGENTS.md` in the project folder,
+and to `CLAUDE.md` if it exists. Many agents read these files with every
+request. The section tells them when to call Graphicle's tools, and what to
+run in a terminal without them.
 
 - The section sits between the lines
   `<!-- graphicle:start (added by graphicle setup; graphicle disconnect removes it) -->`
   and `<!-- graphicle:end -->`, under the heading `## Graphicle`.
 - If `AGENTS.md` does not exist, setup asks before it creates it. `--yes`
   answers yes.
+- When Claude Code is the only agent connected, setup adds no section: the
+  server's instructions already tell Claude Code when to call the tools. A
+  section an earlier setup wrote is kept and brought up to date.
+- `setup --tools all` writes 0.1.0's longer section instead, which names the
+  whole server's tools, whichever agents are connected.
 - `--no-instructions` skips this step.
 - Undo: `graphicle disconnect` removes the section. By hand, delete the
   lines between Graphicle's markers.
@@ -225,7 +255,10 @@ graphicle doctor --fix
 `doctor` finds entries, capture hooks and guard hooks that start a program
 that no longer exists, entries Graphicle wrote that no longer run
 `graphicle mcp` or are gone, and capture hooks that lack an event; `--fix`
-rewrites them, and keeps each entry's `--allow-learning` and `--work-state`.
+rewrites them, and keeps each entry's `--tools`, `--allow-learning` and
+`--work-state`. An entry that names no `--tools` is the whole server, and an
+entry that is gone from its file comes back as the whole server, since
+nothing is left to say which set it had.
 For anything else it reports, run the command it prints.
 
 ## Optional: the graph-only server and the graph skill

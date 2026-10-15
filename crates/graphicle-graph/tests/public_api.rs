@@ -105,14 +105,21 @@ fn incremental_extraction_reports_cache_traffic_and_equals_a_full_rebuild() {
         "from pkg.core import compute_total\n\n\ndef start(values):\n    return compute_total(values)\n",
     );
     let (incremental, report) = extract_with_report(&paths, &options).unwrap();
+    // Compared as text: `/`-separated on Windows, as the engine reports paths.
     let mut changed: Vec<_> = report
         .changed
         .iter()
         .map(|p| {
-            p.strip_prefix(&root)
+            let rel = p
+                .strip_prefix(&root)
                 .unwrap()
                 .to_string_lossy()
-                .into_owned()
+                .into_owned();
+            if cfg!(windows) {
+                rel.replace('\\', "/")
+            } else {
+                rel
+            }
         })
         .collect();
     changed.sort();

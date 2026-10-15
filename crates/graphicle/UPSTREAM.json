@@ -2,7 +2,7 @@
   "schema": "graphicle.native-service.provenance.v1",
   "version": "0.7.0",
   "source_downloads": "Each entry of `projects` names its pinned commit and the SHA-256 of the source archive that was read; the download receipts are kept with the maintainers' records.",
-  "linked_core_receipt_sha256": "0141572b1aaaf92807c66f0610226763595746723cc4392caafb6baae8353161",
+  "linked_core_receipt_sha256": "4830bf156e1f9566e375f75eafc95ddda547d64029b4c2629a5e07488d8aa95a",
   "projects": [
     {
       "repository": "Graphify-Labs/graphify",
@@ -235,6 +235,57 @@
             "../graphicle-graph/src/resolver_registry.rs"
           ],
           "adaptation": "Ported in graphicle, not in the native structure layer. The service builds and queries its code graph with graphicle (graphicle::incremental::extract, src/graph_projection.rs), whose default output matches Graphify 0.9.88 (the eleven releases 0.9.78 to 0.9.88 ported and qualified against the release), so these changes apply to the service's code graph. The per-file structure analyses of graphicle-memory (structure.rs) only feed legacy_graph, the fallback for repositories without a recorded episode (src/query.rs), and keep their 20a20d30 scope.",
+          "full_application_port": false
+        },
+        {
+          "commit": "10130e79ed9caf8f60d998073e097531eaa1a395",
+          "committed_at": "2026-10-14T23:09:54+01:00",
+          "review": "Reviewed 2026-10-15 at the v0.9.91 release tag (GitHub archive and the PyPI wheel of 0.9.91); the graph engine qualifies against this release.",
+          "url": "https://github.com/Graphify-Labs/graphify/tree/10130e79ed9caf8f60d998073e097531eaa1a395",
+          "selected_files": [
+            {
+              "path": "graphify/cache.py",
+              "sha256": "77a0fbec2d1612c201e4f2da71fd3426a8e099dd7bb34844cd5d69383925c8e9",
+              "inspection": "0.9.89 to 0.9.91: the AST cache schema moves on with each release, and scope_semantic_result keeps an edge between two kept nodes even when its own source file was not dispatched in the run (#2276). graphicle ports them in src/cache.rs (schema 9) and src/cache_api.rs."
+            },
+            {
+              "path": "graphify/extract.py",
+              "sha256": "f4a3d705ea66ed0938e713c7dc3a52197f649805c001565cba2d2063fe0b7e38",
+              "inspection": "0.9.89 to 0.9.91: receiver-typed member calls of Go, PHP, TypeScript, Kotlin and Objective-C parked by name for binding across repositories (#3152); C# member calls bound only through a typed receiver, and the partial-class merge run after colliding ids are separated (#4411); a module symbol whose id spells another file's file id keeps its own node (#4449); Python module member calls from methods and nested functions (#2447); Rust `use` edges onto the imported declaration (#4439). graphicle ports them in src/extract*.rs, src/cross_repo_calls.rs and the language extractors."
+            },
+            {
+              "path": "graphify/extractors/engine.py",
+              "sha256": "a7b4bf4f9ab03cc03ac1f3c40e7fcd76ecc6fa2d909df90422677072e87896d8",
+              "inspection": "Changes from v0.9.88 to v0.9.91 (0.9.89 to 0.9.91): C# member calls bound only through a typed receiver (nameless and `new X()` receivers), `foreach` loop variables typed from the collection's element type, and ids that keep names differing only by `_` or case apart (#4415); generic and template type parameters of Kotlin, Scala, C++ and Swift no longer referenced as types (#4406 to #4409); TypeScript class-field receiver types scoped to their class (#4294); JavaScript file-scope callback parameters shadowed (#4448). graphicle ports them in src/extractors/engine.rs and its engine_* modules."
+            },
+            {
+              "path": "graphify/extractors/resolution.py",
+              "sha256": "d0ce3a0c6bd28fb2b503b7983e58492610a29590fc104da9f9ad1d4209a72eab",
+              "inspection": "0.9.89: a `.js` import resolves to a `.tsx` source when no `.js` file exists (#3486), and a Go package type declared across several files folds into one node (#3399). graphicle ports them in src/extractors/resolution_js.rs and src/extractors/resolution_types.rs. base.py, models.py and resolver_registry.py are unchanged since v0.9.88."
+            }
+          ],
+          "rust_files": [
+            "src/graph_projection.rs",
+            "src/query.rs",
+            "../graphicle-graph/src/cache.rs",
+            "../graphicle-graph/src/cache_api.rs",
+            "../graphicle-graph/src/cross_repo_calls.rs",
+            "../graphicle-graph/src/extract.rs",
+            "../graphicle-graph/src/extract_members.rs",
+            "../graphicle-graph/src/extract_normalize.rs",
+            "../graphicle-graph/src/extractors/engine.rs",
+            "../graphicle-graph/src/extractors/engine_calls.rs",
+            "../graphicle-graph/src/extractors/engine_declarations.rs",
+            "../graphicle-graph/src/extractors/engine_extra.rs",
+            "../graphicle-graph/src/extractors/engine_scope.rs",
+            "../graphicle-graph/src/extractors/engine_types.rs",
+            "../graphicle-graph/src/extractors/go.rs",
+            "../graphicle-graph/src/extractors/objc.rs",
+            "../graphicle-graph/src/extractors/resolution_js.rs",
+            "../graphicle-graph/src/extractors/resolution_types.rs",
+            "../graphicle-graph/src/extractors/rust.rs"
+          ],
+          "adaptation": "Ported in graphicle, not in the native structure layer. The service builds and queries its code graph with graphicle (graphicle::incremental::extract, src/graph_projection.rs), whose default output matches Graphify 0.9.91 (the three releases 0.9.89 to 0.9.91 ported and qualified against the release), so these changes apply to the service's code graph. The per-file structure analyses of graphicle-memory (structure.rs) only feed legacy_graph, the fallback for repositories without a recorded episode (src/query.rs), and keep their 20a20d30 scope.",
           "full_application_port": false
         }
       ]

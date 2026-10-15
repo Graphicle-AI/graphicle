@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/affected.py, graphify/ids.py
 //! Native translation of graphify/affected.py: reverse dependency traversal.
 use crate::{Result, graph::Graph, path_syntax, python_compat::string, unicode15::CASEFOLD};
@@ -75,8 +75,18 @@ pub fn bare_name(label: &str) -> String {
     normalized.strip_suffix("()").unwrap_or(&normalized).into()
 }
 pub fn as_repo_relative(query: &str, root: Option<&Path>) -> Result<String> {
+    // Windows: `C:\repo\a.py` (or `\\?\C:\...`) is absolute as well; it is
+    // compared in the engine's `/` spelling (`C:/repo/a.py`).
+    #[cfg(windows)]
+    let spelled = if Path::new(query).is_absolute() {
+        path_syntax::windows_posix(query)
+    } else {
+        query.to_string()
+    };
+    #[cfg(windows)]
+    let query = spelled.as_str();
     let path = path_syntax::posix_parts(query);
-    if query.starts_with('/') {
+    if query.starts_with('/') || (cfg!(windows) && Path::new(query).is_absolute()) {
         let cwd;
         let anchor = match root {
             Some(path) => path,
@@ -88,7 +98,7 @@ pub fn as_repo_relative(query: &str, root: Option<&Path>) -> Result<String> {
         if !anchor.is_absolute() {
             return Ok(query.into());
         }
-        let anchor = path_syntax::posix_parts(&anchor.to_string_lossy());
+        let anchor = path_syntax::posix_parts(&crate::fsutil::path_string(anchor));
         if path.starts_with(&anchor) {
             return Ok(path_syntax::posix_join(&path[anchor.len()..]));
         }

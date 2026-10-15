@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/resolution.py
 //! Cross-file Python, Java, PHP and Go type binding and declaration merging.
 
@@ -28,9 +28,12 @@ use super::{
     resolution::{is_type_like_definition, resolved, s},
     resolution_facts::{parse_python_tree, walk},
 };
+use crate::resolver_registry::rs;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
+    ffi::OsString,
     path::{Path, PathBuf},
 };
 use tree_sitter::{Language, Node};
@@ -46,6 +49,92 @@ pub fn prune_repointed(nodes: &mut Vec<Value>, edges: &[Value], old: &BTreeSet<S
         .flat_map(|e| [s(e, "source"), s(e, "target")])
         .collect::<BTreeSet<_>>();
     nodes.retain(|n| !old.contains(s(n, "id")) || refs.contains(s(n, "id")));
+}
+/// `_merge_go_package_types` (#3399): a Go package's type declared in one
+/// file and the copies minted by the other files that declare methods on it
+/// share one id (the extractor keys a type on its package directory), so they
+/// fold into the declaring file's node before disambiguation would split
+/// them. Only `.go` nodes of one directory fold (the id holds only the
+/// directory's name), and never with a `_test.go` member (its package clause
+/// may be the separate `_test` package). Edges already point at the shared id.
+pub fn merge_go_package_types(nodes: &mut Vec<Value>, edges: &[Value]) {
+    let mut by_id: FxHashMap<&str, Vec<usize>> = FxHashMap::default();
+    for (i, n) in nodes.iter().enumerate() {
+        let id = s(n, "id");
+        let label = s(n, "label");
+        if id.is_empty() || s(n, "file_type") != "code" {
+            continue;
+        }
+        // A Go type name holds neither character; every other label the
+        // extractor mints does (`Run()`, `.Close()`, the file's `a.go`).
+        if label.is_empty() || label.contains('.') || label.contains('(') {
+            continue;
+        }
+        let go = Path::new(s(n, "source_file"))
+            .extension()
+            .is_some_and(|e| e.to_string_lossy().to_lowercase() == "go");
+        if go {
+            by_id.entry(id).or_default().push(i);
+        }
+    }
+    by_id.retain(|_, group| group.len() >= 2);
+    if by_id.is_empty() {
+        return;
+    }
+    let mut declaring: FxHashMap<&str, FxHashSet<&str>> = FxHashMap::default();
+    for e in edges {
+        if s(e, "relation") == "contains" && by_id.contains_key(s(e, "target")) {
+            declaring
+                .entry(s(e, "target"))
+                .or_default()
+                .insert(s(e, "source_file"));
+        }
+    }
+    let mut dropped = FxHashSet::default();
+    for (id, group) in &by_id {
+        let files = group
+            .iter()
+            .map(|&i| Path::new(s(&nodes[i], "source_file")))
+            .collect::<Vec<_>>();
+        if files.iter().any(|f| f.parent() != files[0].parent()) {
+            continue;
+        }
+        if files.iter().any(|f| {
+            f.file_name()
+                .is_some_and(|n| n.to_string_lossy().ends_with("_test.go"))
+        }) {
+            continue;
+        }
+        // A type whose declaring file is outside the corpus leaves the group
+        // method-only; it still folds, onto the lowest path.
+        let declared = declaring.get(id);
+        let mut candidates = group
+            .iter()
+            .copied()
+            .filter(|&i| declared.is_some_and(|d| d.contains(s(&nodes[i], "source_file"))))
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            candidates = group.clone();
+        }
+        let keeper = candidates
+            .into_iter()
+            .min_by(|&a, &b| {
+                (s(&nodes[a], "source_file"), s(&nodes[a], "source_location"))
+                    .cmp(&(s(&nodes[b], "source_file"), s(&nodes[b], "source_location")))
+            })
+            .unwrap();
+        dropped.extend(group.iter().copied().filter(|&i| i != keeper));
+    }
+    drop(declaring);
+    drop(by_id);
+    if !dropped.is_empty() {
+        let mut index = 0;
+        nodes.retain(|_| {
+            let keep = !dropped.contains(&index);
+            index += 1;
+            keep
+        });
+    }
 }
 pub fn merge_decl_def_classes(nodes: &mut Vec<Value>, edges: &mut Vec<Value>) {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
@@ -756,39 +845,43 @@ fn java_syntaxes(paths: &[PathBuf], take: bool) -> Vec<Option<JavaSyntax>> {
         })
     })
 }
-pub fn cross_file_java_imports(per_file: &[Value], paths: &[PathBuf]) -> Vec<Value> {
+/// Cross-file Java `imports` edges, from each file's import declarations to
+/// the declared types they name. The per-file results are read in the form
+/// assembly holds them (no JSON copy), and the label table borrows them.
+pub fn cross_file_java_imports<P: crate::extract::per_file::PerFile>(
+    per_file: &[P],
+    paths: &[PathBuf],
+) -> Vec<Value> {
     let mut trees = BTreeMap::new();
     let mut packages = BTreeMap::new();
     for ((p, r), syntax) in paths.iter().zip(per_file).zip(java_syntaxes(paths, true)) {
         if let Some(parsed) = syntax {
             let (pkg, _) = java_info(&parsed);
             packages.insert(p.to_string_lossy().into_owned(), pkg.clone());
-            for n in r["nodes"].as_array().into_iter().flatten() {
-                if !s(n, "source_file").is_empty() {
-                    packages
-                        .entry(s(n, "source_file").to_string())
-                        .or_insert(pkg.clone());
+            for n in r.nodes().into_iter().flatten() {
+                let source = rs(n, "source_file");
+                if !source.is_empty() && !packages.contains_key(source) {
+                    packages.insert(source.to_string(), pkg.clone());
                 }
             }
             trees.insert(p.clone(), parsed);
         }
     }
-    let mut labels: BTreeMap<String, Vec<(String, String)>> = BTreeMap::new();
+    let mut labels: BTreeMap<&str, Vec<(&str, &str)>> = BTreeMap::new();
     for r in per_file {
-        for n in r["nodes"].as_array().into_iter().flatten() {
-            let label = s(n, "label");
+        for n in r.nodes().into_iter().flatten() {
+            let label = rs(n, "label");
             if upper(label)
                 && !label.ends_with(')')
                 && !label.ends_with(".java")
-                && !s(n, "source_file").is_empty()
-                && !s(n, "id").is_empty()
+                && !rs(n, "source_file").is_empty()
+                && !rs(n, "id").is_empty()
             {
-                labels.entry(label.into()).or_default().push((
-                    s(n, "id").into(),
+                labels.entry(label).or_default().push((
+                    rs(n, "id"),
                     packages
-                        .get(s(n, "source_file"))
-                        .cloned()
-                        .unwrap_or_default(),
+                        .get(rs(n, "source_file"))
+                        .map_or("", String::as_str),
                 ));
             }
         }
@@ -809,8 +902,8 @@ pub fn cross_file_java_imports(per_file: &[Value], paths: &[PathBuf]) -> Vec<Val
                 last = parts.pop().unwrap_or(last);
             }
             let pkg = parts.join(".");
-            for (target, target_pkg) in labels.get(last).into_iter().flatten() {
-                let matches = pkg == *target_pkg
+            for &(target, target_pkg) in labels.get(last).into_iter().flatten() {
+                let matches = pkg == target_pkg
                     || pkg
                         .strip_prefix(&if target_pkg.is_empty() {
                             String::new()
@@ -818,7 +911,7 @@ pub fn cross_file_java_imports(per_file: &[Value], paths: &[PathBuf]) -> Vec<Val
                             format!("{target_pkg}.")
                         })
                         .is_some_and(|s| !s.is_empty() && s.split('.').all(upper));
-                if target != &file && matches && seen.insert((file.clone(), target.clone())) {
+                if target != file && matches && seen.insert((file.clone(), target.to_string())) {
                     out.push(json!({"source":file,"target":target,"relation":"imports","confidence":"EXTRACTED","confidence_score":1.0,"source_file":p,"source_location":format!("L{line}"),"weight":1.0}));
                 }
             }
@@ -826,8 +919,13 @@ pub fn cross_file_java_imports(per_file: &[Value], paths: &[PathBuf]) -> Vec<Val
     }
     out
 }
-pub fn resolve_java_type_references(
-    per_file: &[Value],
+/// Bind the Java `implements`, `inherits`, `extends`, `imports` and
+/// `references` edges that end at a stub to the declared type the stub's name
+/// means. The per-file results are read in the form assembly holds them (no
+/// JSON copy), and the node tables borrow the node list instead of copying
+/// it: nothing changes `nodes` until the pass adds its new stubs.
+pub fn resolve_java_type_references<P: crate::extract::per_file::PerFile>(
+    per_file: &[P],
     paths: &[PathBuf],
     nodes: &mut Vec<Value>,
     edges: &mut Vec<Value>,
@@ -839,173 +937,276 @@ pub fn resolve_java_type_references(
             continue;
         };
         let (pkg, imps) = java_info(&parsed);
-        for n in r["nodes"].as_array().into_iter().flatten() {
-            let source = s(n, "source_file");
-            if !source.is_empty() {
+        // Every node of the file gives its source the same facts, so a source
+        // repeated in a row is stored once.
+        let mut last = None;
+        for n in r.nodes().into_iter().flatten() {
+            let source = rs(n, "source_file");
+            if !source.is_empty() && last != Some(source) {
                 packages.insert(source.to_string(), pkg.clone());
                 imports.insert(source.to_string(), imps.clone());
+                last = Some(source);
             }
         }
     }
-    let by_id = nodes
-        .iter()
-        .map(|n| (s(n, "id").to_string(), n.clone()))
-        .collect::<BTreeMap<_, _>>();
-    let mut parents = BTreeMap::new();
-    for e in edges.iter().filter(|e| s(e, "relation") == "contains") {
-        if let (Some(child), Some(parent)) = (by_id.get(s(e, "target")), by_id.get(s(e, "source")))
-            && !s(child, "source_file").is_empty()
-            && s(parent, "source_file") == s(child, "source_file")
-            && upper(s(parent, "label"))
-            && !s(parent, "label").ends_with(".java")
-        {
-            parents.insert(s(child, "id").to_string(), s(parent, "id").to_string());
-        }
-    }
-    let mut fqns = BTreeMap::new();
-    for n in nodes.iter() {
-        let (label, src, id) = (s(n, "label"), s(n, "source_file"), s(n, "id"));
-        if !upper(label)
-            || label.ends_with(')')
-            || label.ends_with(".java")
-            || id.is_empty()
-            || !packages.contains_key(src)
-        {
-            continue;
-        }
-        let pkg = &packages[src];
-        let prefix = if pkg.is_empty() {
-            String::new()
-        } else {
-            format!("{pkg}.")
-        };
-        fqns.entry(format!("{prefix}{label}"))
-            .or_insert(id.to_string());
-        let mut names = vec![label.to_string()];
-        let mut seen = BTreeSet::from([id.to_string()]);
-        let mut parent = parents.get(id);
-        while let Some(p) = parent {
-            if !seen.insert(p.clone()) {
-                break;
-            }
-            if let Some(n) = by_id.get(p) {
-                names.push(s(n, "label").into());
-            }
-            parent = parents.get(p);
-        }
-        if names.len() > 1 {
-            names.reverse();
-            fqns.entry(format!("{prefix}{}", names.join(".")))
-                .or_insert(id.into());
-        }
-    }
-    let stubs = nodes
-        .iter()
-        .filter(|n| {
-            s(n, "source_file").is_empty() && (upper(s(n, "label")) || s(n, "label").contains('.'))
-        })
-        .map(|n| (s(n, "id").to_string(), s(n, "label").to_string()))
-        .collect::<BTreeMap<_, _>>();
     let mut added = vec![];
-    let mut ids = by_id.keys().cloned().collect::<BTreeSet<_>>();
     let mut old = BTreeSet::new();
-    for e in edges.iter_mut() {
-        if !["implements", "inherits", "extends", "imports", "references"]
-            .contains(&s(e, "relation"))
-        {
-            continue;
+    {
+        // Each id's node (the last of equal ids, as collecting a map keeps it).
+        let mut by_id = FxHashMap::default();
+        for n in nodes.iter() {
+            by_id.insert(s(n, "id"), n);
         }
-        let target = s(e, "target").to_string();
-        let Some(label) = stubs.get(&target) else {
-            continue;
-        };
-        let src = s(e, "source_file");
-        let mut explicit = false;
-        let fqn = if label.contains('.') {
-            label.clone()
-        } else if let Some(fqn) = imports.get(src).and_then(|m| m.get(label)) {
-            explicit = true;
-            fqn.clone()
-        } else {
-            let pkg = packages.get(src).map(String::as_str).unwrap_or("");
-            if pkg.is_empty() {
-                label.clone()
+        let mut parents = FxHashMap::default();
+        for e in edges.iter().filter(|e| s(e, "relation") == "contains") {
+            if let (Some(child), Some(parent)) = (
+                by_id.get(s(e, "target")).copied(),
+                by_id.get(s(e, "source")).copied(),
+            ) && !s(child, "source_file").is_empty()
+                && s(parent, "source_file") == s(child, "source_file")
+                && upper(s(parent, "label"))
+                && !s(parent, "label").ends_with(".java")
+            {
+                parents.insert(s(child, "id"), s(parent, "id"));
+            }
+        }
+        let mut fqns = FxHashMap::default();
+        for n in nodes.iter() {
+            let (label, src, id) = (s(n, "label"), s(n, "source_file"), s(n, "id"));
+            if !upper(label) || label.ends_with(')') || label.ends_with(".java") || id.is_empty() {
+                continue;
+            }
+            let Some(pkg) = packages.get(src) else {
+                continue;
+            };
+            let prefix = if pkg.is_empty() {
+                String::new()
             } else {
-                format!("{pkg}.{label}")
+                format!("{pkg}.")
+            };
+            fqns.entry(format!("{prefix}{label}")).or_insert(id);
+            let mut names = vec![label];
+            let mut seen = BTreeSet::from([id]);
+            let mut parent = parents.get(id).copied();
+            while let Some(p) = parent {
+                if !seen.insert(p) {
+                    break;
+                }
+                if let Some(n) = by_id.get(p) {
+                    names.push(s(n, "label"));
+                }
+                parent = parents.get(p).copied();
             }
-        };
-        let mut bound = fqns.get(&fqn).cloned();
-        if explicit && bound.is_none() {
-            let mut head = fqn.split('.').map(str::to_string).collect::<Vec<_>>();
-            head.pop();
-            while head.last().is_some_and(|s| upper(s)) && bound.is_none() {
+            if names.len() > 1 {
+                names.reverse();
+                fqns.entry(format!("{prefix}{}", names.join(".")))
+                    .or_insert(id);
+            }
+        }
+        drop(parents);
+        let mut stubs = FxHashMap::default();
+        for n in nodes.iter().filter(|n| {
+            s(n, "source_file").is_empty() && (upper(s(n, "label")) || s(n, "label").contains('.'))
+        }) {
+            stubs.insert(s(n, "id"), s(n, "label"));
+        }
+        // The ids of the stubs this pass adds (the nodes' own are `by_id`'s).
+        let mut new_ids = BTreeSet::new();
+        for e in edges.iter_mut() {
+            if !["implements", "inherits", "extends", "imports", "references"]
+                .contains(&s(e, "relation"))
+            {
+                continue;
+            }
+            let Some(&label) = stubs.get(s(e, "target")) else {
+                continue;
+            };
+            let target = s(e, "target").to_string();
+            let src = s(e, "source_file");
+            let mut explicit = false;
+            let fqn = if label.contains('.') {
+                label.to_string()
+            } else if let Some(fqn) = imports.get(src).and_then(|m| m.get(label)) {
+                explicit = true;
+                fqn.clone()
+            } else {
+                let pkg = packages.get(src).map(String::as_str).unwrap_or("");
+                if pkg.is_empty() {
+                    label.to_string()
+                } else {
+                    format!("{pkg}.{label}")
+                }
+            };
+            let mut bound = fqns.get(&fqn).map(|id: &&str| id.to_string());
+            if explicit && bound.is_none() {
+                let mut head = fqn.split('.').collect::<Vec<_>>();
                 head.pop();
-                let mut p = head.clone();
-                p.push(label.clone());
-                bound = fqns.get(&p.join(".")).cloned();
+                while head.last().is_some_and(|s| upper(s)) && bound.is_none() {
+                    head.pop();
+                    let mut p = head.clone();
+                    p.push(label);
+                    bound = fqns.get(&p.join(".")).map(|id: &&str| id.to_string());
+                }
             }
-        }
-        if explicit && bound.is_none() {
-            let id = make_id([fqn.as_str()]);
-            if ids.insert(id.clone()) {
-                added.push(json!({"id":id,"label":fqn,"file_type":"code","source_file":"","source_location":""}));
+            if explicit && bound.is_none() {
+                let id = make_id([fqn.as_str()]);
+                if !by_id.contains_key(id.as_str()) && new_ids.insert(id.clone()) {
+                    added.push(json!({"id":id,"label":fqn,"file_type":"code","source_file":"","source_location":""}));
+                }
+                bound = Some(id);
             }
-            bound = Some(id);
-        }
-        if let Some(id) = bound.filter(|id| *id != target) {
-            e["target"] = json!(id);
-            old.insert(target);
+            if let Some(id) = bound.filter(|id| *id != target) {
+                e["target"] = json!(id);
+                old.insert(target);
+            }
         }
     }
+    drop(imports);
     nodes.extend(added);
-    let mut seen = BTreeSet::new();
-    edges.retain(|e| {
-        !(s(e, "relation") == "references"
-            && s(e, "context") == "attribute"
-            && packages.contains_key(s(e, "source_file")))
-            || seen.insert(
-                [
-                    "source",
-                    "target",
-                    "relation",
-                    "context",
-                    "source_file",
-                    "source_location",
-                ]
-                .map(|k| s(e, k).to_string()),
-            )
-    });
+    // Each Java attribute reference is kept once: the first of equal ones.
+    let keep = {
+        let mut seen = FxHashSet::default();
+        edges
+            .iter()
+            .map(|e| {
+                !(s(e, "relation") == "references"
+                    && s(e, "context") == "attribute"
+                    && packages.contains_key(s(e, "source_file")))
+                    || seen.insert(
+                        [
+                            "source",
+                            "target",
+                            "relation",
+                            "context",
+                            "source_file",
+                            "source_location",
+                        ]
+                        .map(|k| s(e, k)),
+                    )
+            })
+            .collect::<Vec<_>>()
+    };
+    drop(packages);
+    let mut keep = keep.into_iter();
+    edges.retain(|_| keep.next().unwrap_or(true));
+    drop(keep);
     prune_repointed(nodes, edges, &old);
 }
+/// The import path of the Go package that holds `source` (relative paths
+/// are taken from `root`): the nearest `go.mod` above the resolved file
+/// names the module. A `go.mod` that cannot be read, or that has no `module`
+/// line, gives `None` and the search goes no higher.
+///
+/// A pass that asks for many files keeps one [`GoModules`] instead.
 pub fn go_import_path_for_file(source: &Path, root: &Path) -> Option<String> {
-    static MODULE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?m)^\s*module\s+([^\s]+)").expect("constant Go module regex")
-    });
-    let p = if source.is_absolute() {
-        source.to_path_buf()
-    } else {
-        root.join(source)
-    };
-    let p = resolved(&p);
-    let dir = p.parent()?;
-    for base in dir.ancestors() {
-        let gm = base.join("go.mod");
-        if !gm.is_file() {
-            continue;
-        }
-        let raw = std::fs::read_to_string(gm).ok()?;
-        let cap = MODULE.captures(&raw)?;
-        let sub = dir.strip_prefix(base).ok()?.to_string_lossy();
-        return Some(if sub.is_empty() {
-            cap[1].into()
-        } else {
-            format!("{}/{sub}", &cap[1])
-        });
-    }
-    None
+    GoModules::new(root).import_path(source).map(str::to_owned)
 }
-pub fn resolve_go_type_references(
-    per_file: &[Value],
+/// One directory's `go.mod`, as [`go_import_path_for_file`] reads it.
+enum GoMod {
+    /// No `go.mod` file here: the search goes on to the parent directory.
+    Absent,
+    /// A `go.mod` that cannot be read or names no module: no import path.
+    Unusable,
+    /// The module path it declares.
+    Module(String),
+}
+impl GoMod {
+    fn probe(dir: &Path) -> Self {
+        static MODULE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+            regex::Regex::new(r"(?m)^\s*module\s+([^\s]+)").expect("constant Go module regex")
+        });
+        let gm = dir.join("go.mod");
+        if !gm.is_file() {
+            return GoMod::Absent;
+        }
+        let Ok(raw) = std::fs::read_to_string(gm) else {
+            return GoMod::Unusable;
+        };
+        MODULE
+            .captures(&raw)
+            .map_or(GoMod::Unusable, |cap| GoMod::Module(cap[1].into()))
+    }
+}
+/// [`go_import_path_for_file`] for one pass over a corpus: each directory's
+/// `go.mod` is probed and read at most once and each source path resolved
+/// once, where the plain function does both on every call. Bind calls ask
+/// once per candidate of every Go call, so without it the same `go.mod`
+/// files are read millions of times on a large module tree.
+///
+/// Build one per pass and drop it with the pass: it never sees a change made
+/// on disk after it read a file, so an update or a watch rebuild must start
+/// from a new one.
+pub struct GoModules<'r> {
+    root: &'r Path,
+    /// The `go.mod` of every directory probed so far.
+    mods: FxHashMap<PathBuf, GoMod>,
+    /// The import path of every resolved source directory seen so far.
+    dirs: FxHashMap<PathBuf, Option<String>>,
+    /// The import path of every source path asked for, by its exact bytes:
+    /// bind calls ask once per candidate (12.8 million times on kubernetes),
+    /// and hashing the bytes is several times cheaper than hashing a `Path`
+    /// component by component. Spellings that differ only in separators get
+    /// separate entries with the same answer.
+    files: FxHashMap<OsString, Option<String>>,
+}
+impl<'r> GoModules<'r> {
+    pub fn new(root: &'r Path) -> Self {
+        Self {
+            root,
+            mods: FxHashMap::default(),
+            dirs: FxHashMap::default(),
+            files: FxHashMap::default(),
+        }
+    }
+    /// The import path of the package holding `source`, as
+    /// [`go_import_path_for_file`] gives it for this pass's root.
+    pub fn import_path(&mut self, source: &Path) -> Option<&str> {
+        let key = source.as_os_str();
+        if !self.files.contains_key(key) {
+            let path = self.file(source);
+            self.files.insert(key.to_owned(), path);
+        }
+        self.files[key].as_deref()
+    }
+    fn file(&mut self, source: &Path) -> Option<String> {
+        let p = if source.is_absolute() {
+            source.to_path_buf()
+        } else {
+            self.root.join(source)
+        };
+        let p = resolved(&p);
+        let dir = p.parent()?;
+        if let Some(path) = self.dirs.get(dir) {
+            return path.clone();
+        }
+        let path = self.directory(dir);
+        self.dirs.insert(dir.to_path_buf(), path.clone());
+        path
+    }
+    /// The import path of the package in the resolved directory `dir`.
+    fn directory(&mut self, dir: &Path) -> Option<String> {
+        for base in dir.ancestors() {
+            let module = match self
+                .mods
+                .entry(base.to_path_buf())
+                .or_insert_with(|| GoMod::probe(base))
+            {
+                GoMod::Absent => continue,
+                GoMod::Unusable => return None,
+                GoMod::Module(module) => module,
+            };
+            let sub = crate::fsutil::rel_string(dir.strip_prefix(base).ok()?);
+            return Some(if sub.is_empty() {
+                module.clone()
+            } else {
+                format!("{module}/{sub}")
+            });
+        }
+        None
+    }
+}
+pub fn resolve_go_type_references<P: crate::extract::per_file::PerFile>(
+    per_file: &[P],
     paths: &[PathBuf],
     nodes: &mut Vec<Value>,
     edges: &mut [Value],
@@ -1016,10 +1217,10 @@ pub fn resolve_go_type_references(
     let mut imports = BTreeMap::new();
     let mut actual = BTreeMap::new();
     for (p, r) in paths.iter().zip(per_file) {
-        for n in r["nodes"].as_array().into_iter().flatten() {
-            let sf = s(n, "source_file");
+        for n in r.nodes().into_iter().flatten() {
+            let sf = crate::resolver_registry::rs(n, "source_file");
             if !sf.is_empty() {
-                imports.insert(sf.to_string(), r["go_imports"].clone());
+                imports.insert(sf.to_string(), r.at("go_imports").clone());
                 actual.insert(sf.to_string(), p.clone());
             }
         }
@@ -1034,6 +1235,7 @@ pub fn resolve_go_type_references(
         .map(|e| s(e, "target").to_string())
         .collect::<BTreeSet<_>>();
     let mut fqns: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut go_modules = GoModules::new(root);
     for n in nodes.iter().chain(context_nodes) {
         let sf = s(n, "source_file");
         if sf.is_empty()
@@ -1043,12 +1245,11 @@ pub fn resolve_go_type_references(
         {
             continue;
         }
-        if let Some(pkg) = go_import_path_for_file(
+        if let Some(pkg) = go_modules.import_path(
             actual
                 .get(sf)
                 .map(PathBuf::as_path)
                 .unwrap_or(Path::new(sf)),
-            root,
         ) {
             fqns.entry(format!("{pkg}.{}", s(n, "label")))
                 .or_default()
@@ -1709,5 +1910,337 @@ mod python_syntax_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod go_module_tests {
+    use super::*;
+    use std::fs;
+
+    /// The lookup before `GoModules`: every call resolves the path, probes
+    /// each parent directory and reads `go.mod` again.
+    fn uncached(source: &Path, root: &Path) -> Option<String> {
+        let module = regex::Regex::new(r"(?m)^\s*module\s+([^\s]+)").unwrap();
+        let p = if source.is_absolute() {
+            source.to_path_buf()
+        } else {
+            root.join(source)
+        };
+        let p = resolved(&p);
+        let dir = p.parent()?;
+        for base in dir.ancestors() {
+            let gm = base.join("go.mod");
+            if !gm.is_file() {
+                continue;
+            }
+            let raw = std::fs::read_to_string(gm).ok()?;
+            let cap = module.captures(&raw)?;
+            let sub = dir.strip_prefix(base).ok()?.to_string_lossy();
+            return Some(if sub.is_empty() {
+                cap[1].into()
+            } else {
+                format!("{}/{sub}", &cap[1])
+            });
+        }
+        None
+    }
+
+    /// `module` plus the package directory below it, as the lookup spells
+    /// it on this platform.
+    fn import(module: &str, parts: &[&str]) -> Option<String> {
+        let sub = parts.iter().collect::<PathBuf>();
+        Some(if parts.is_empty() {
+            module.into()
+        } else {
+            format!("{module}/{}", sub.to_string_lossy())
+        })
+    }
+
+    fn write(path: &Path, body: &[u8]) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    /// A tree shaped like kubernetes: a root module, nested modules under
+    /// staging/ and a vendor/ symlink onto one, plus a go.mod that cannot be
+    /// read, one without a module line and a directory named go.mod.
+    fn layout() -> (tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("work").join("kubernetes");
+        let staging = root.join("staging/src/k8s.io");
+        write(
+            &root.join("go.mod"),
+            b"module k8s.io/kubernetes\n\ngo 1.25.0\n",
+        );
+        for file in [
+            "cmd/kubelet/app/server.go",
+            "pkg/api/v1/types.go",
+            "main.go",
+        ] {
+            write(&root.join(file), b"package x\n");
+        }
+        write(
+            &staging.join("api/go.mod"),
+            b"// This is a generated file. Do not edit directly.\n\nmodule k8s.io/api\n\ngo 1.25.0\n",
+        );
+        write(&staging.join("api/doc.go"), b"package api\n");
+        write(&staging.join("api/core/v1/types.go"), b"package v1\n");
+        write(
+            &staging.join("client-go/go.mod"),
+            b"\t module   k8s.io/client-go // comment\n",
+        );
+        write(
+            &staging.join("client-go/tools/cache/store.go"),
+            b"package cache\n",
+        );
+        // Not UTF-8, so it cannot be read: the search ends with no path.
+        write(&staging.join("broken/go.mod"), b"module k8s.io/\xff\xfe\n");
+        write(&staging.join("broken/sub/x.go"), b"package sub\n");
+        // No module line: the search ends with no path too.
+        write(&staging.join("nomodule/go.mod"), b"go 1.25.0\n");
+        write(&staging.join("nomodule/y.go"), b"package nomodule\n");
+        // A directory named go.mod is no go.mod file: the search goes on up.
+        fs::create_dir_all(staging.join("dirmod/go.mod")).unwrap();
+        write(&staging.join("dirmod/z.go"), b"package dirmod\n");
+        write(&tmp.path().join("elsewhere/w.go"), b"package w\n");
+        #[cfg(unix)]
+        {
+            fs::create_dir_all(root.join("vendor/k8s.io")).unwrap();
+            std::os::unix::fs::symlink(
+                "../../staging/src/k8s.io/api",
+                root.join("vendor/k8s.io/api"),
+            )
+            .unwrap();
+        }
+        (tmp, root)
+    }
+
+    fn sources(root: &Path) -> Vec<PathBuf> {
+        let relative = [
+            "cmd/kubelet/app/server.go",
+            "pkg/api/v1/types.go",
+            "main.go",
+            "go.mod",
+            "staging/src/k8s.io/api/doc.go",
+            "staging/src/k8s.io/api/core/v1/types.go",
+            "staging/src/k8s.io/api/core/v1/missing.go",
+            "staging/src/k8s.io/api",
+            "staging/src/k8s.io/client-go/tools/cache/store.go",
+            "staging/src/k8s.io/broken/sub/x.go",
+            "staging/src/k8s.io/broken/go.mod",
+            "staging/src/k8s.io/nomodule/y.go",
+            "staging/src/k8s.io/dirmod/z.go",
+            "vendor/k8s.io/api/core/v1/types.go",
+            "staging/src/k8s.io/../k8s.io/api/doc.go",
+            // The same Path as earlier entries, spelled with other bytes.
+            "staging/src/k8s.io/api//core/v1/types.go",
+            "staging/src/k8s.io/api/./core/v1/types.go",
+            "staging/src/k8s.io/api/core/v1/",
+            "../../elsewhere/w.go",
+            "",
+        ]
+        .map(PathBuf::from);
+        let absolute = relative
+            .iter()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(|p| root.join(p));
+        relative.iter().cloned().chain(absolute).collect()
+    }
+
+    #[test]
+    fn cached_lookup_matches_the_uncached_one_on_nested_modules() {
+        let (_tmp, root) = layout();
+        let all = sources(&root);
+        // One cache across three passes over the files, in both orders.
+        let mut shared = GoModules::new(&root);
+        for pass in 0..3 {
+            let order: Vec<&PathBuf> = if pass == 1 {
+                all.iter().rev().collect()
+            } else {
+                all.iter().collect()
+            };
+            for source in order {
+                let want = uncached(source, &root);
+                let shown = source.display();
+                assert_eq!(go_import_path_for_file(source, &root), want, "{shown}");
+                assert_eq!(
+                    shared.import_path(source).map(str::to_owned),
+                    want,
+                    "{shown}"
+                );
+            }
+        }
+        let path = |s: &str| go_import_path_for_file(Path::new(s), &root);
+        let kubernetes = "k8s.io/kubernetes";
+        assert_eq!(
+            path("cmd/kubelet/app/server.go"),
+            import(kubernetes, &["cmd", "kubelet", "app"])
+        );
+        assert_eq!(path("main.go"), import(kubernetes, &[]));
+        assert_eq!(path("go.mod"), import(kubernetes, &[]));
+        assert_eq!(
+            path("staging/src/k8s.io/api/doc.go"),
+            import("k8s.io/api", &[])
+        );
+        assert_eq!(
+            path("staging/src/k8s.io/api/core/v1/types.go"),
+            import("k8s.io/api", &["core", "v1"])
+        );
+        assert_eq!(
+            path("staging/src/k8s.io/api/core/v1/missing.go"),
+            import("k8s.io/api", &["core", "v1"])
+        );
+        assert_eq!(
+            path("staging/src/k8s.io/client-go/tools/cache/store.go"),
+            import("k8s.io/client-go", &["tools", "cache"])
+        );
+        assert_eq!(path("staging/src/k8s.io/broken/sub/x.go"), None);
+        assert_eq!(path("staging/src/k8s.io/broken/go.mod"), None);
+        assert_eq!(path("staging/src/k8s.io/nomodule/y.go"), None);
+        assert_eq!(
+            path("staging/src/k8s.io/dirmod/z.go"),
+            import(kubernetes, &["staging", "src", "k8s.io", "dirmod"])
+        );
+        #[cfg(unix)]
+        assert_eq!(
+            path("vendor/k8s.io/api/core/v1/types.go"),
+            import("k8s.io/api", &["core", "v1"])
+        );
+    }
+
+    /// A cache answers from what it read; the next pass reads the files again,
+    /// as an update or a watch rebuild must.
+    #[test]
+    fn a_new_pass_reads_go_mod_again() {
+        let (_tmp, root) = layout();
+        let types = Path::new("staging/src/k8s.io/api/core/v1/types.go");
+        let doc = Path::new("staging/src/k8s.io/api/doc.go");
+        let y = Path::new("staging/src/k8s.io/nomodule/y.go");
+        let mut pass = GoModules::new(&root);
+        assert_eq!(
+            pass.import_path(types).map(str::to_owned),
+            import("k8s.io/api", &["core", "v1"])
+        );
+        assert_eq!(pass.import_path(y), None);
+        fs::write(
+            root.join("staging/src/k8s.io/api/go.mod"),
+            "module k8s.io/api/v2\n",
+        )
+        .unwrap();
+        fs::remove_file(root.join("staging/src/k8s.io/nomodule/go.mod")).unwrap();
+        // Each go.mod is read once per pass, also for a file not asked before.
+        assert_eq!(
+            pass.import_path(types).map(str::to_owned),
+            import("k8s.io/api", &["core", "v1"])
+        );
+        assert_eq!(pass.import_path(doc), Some("k8s.io/api"));
+        assert_eq!(pass.import_path(y), None);
+        let mut next = GoModules::new(&root);
+        assert_eq!(
+            next.import_path(types).map(str::to_owned),
+            import("k8s.io/api/v2", &["core", "v1"])
+        );
+        assert_eq!(next.import_path(doc), Some("k8s.io/api/v2"));
+        assert_eq!(
+            next.import_path(y).map(str::to_owned),
+            import(
+                "k8s.io/kubernetes",
+                &["staging", "src", "k8s.io", "nomodule"]
+            )
+        );
+        for source in [types, doc, y] {
+            assert_eq!(
+                go_import_path_for_file(source, &root),
+                uncached(source, &root)
+            );
+        }
+    }
+}
+#[cfg(test)]
+mod java_pass_tests {
+    use crate::extract::{ExtractOptions, extract};
+    use serde_json::Value;
+
+    /// The Java type and import passes read the per-file results in place:
+    /// over compact records they give byte for byte the extraction they give
+    /// over JSON (the form they read before), cold and from the cache.
+    #[test]
+    fn java_passes_on_records_extract_exactly_like_json() {
+        let _serial = crate::extractors::parse_cache::test_serial();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let mut paths = vec![
+            write(
+                "j/p/Base.java",
+                "package p;\n\npublic class Base {\n    public static class Inner {\n        public static class Leaf {}\n    }\n    public static void helper() {}\n}\n",
+            ),
+            write("j/p/Api.java", "package p;\n\npublic interface Api {}\n"),
+            write(
+                "j/q/Impl.java",
+                "package q;\n\nimport p.Base;\nimport p.Api;\nimport p.Base.Inner;\nimport org.lib.Missing;\nimport org.lib.Outer.Gone;\nimport static p.Base.helper;\nimport java.util.*;\n\n@Deprecated\npublic class Impl extends Base implements Api, Missing {\n    @Deprecated Inner inner;\n    @Deprecated Missing missing;\n    Local local;\n    Gone gone;\n    @Override public String toString() { return \"\"; }\n    @Override public int hashCode() { return 1; }\n}\n",
+            ),
+            write(
+                "j/q/Local.java",
+                "package q;\n\nclass Local extends Impl {}\n",
+            ),
+            write(
+                "j/r/Nested.java",
+                "package r;\n\nimport p.Base.Inner;\nimport p.Base.Inner.Leaf;\n\npublic class Nested {\n    class Deep {\n        class Deeper extends Inner implements p.Api {}\n        class Deepest extends Leaf {}\n    }\n}\n",
+            ),
+            write("j/Plain.java", "public class Plain extends Nested {}\n"),
+        ];
+        paths.sort();
+        let run = |json_only: bool, use_cache: bool| {
+            crate::resolver_registry::JSON_ONLY.with(|f| f.set(json_only));
+            let out = extract(
+                &paths,
+                &ExtractOptions {
+                    root: Some(root.clone()),
+                    cache_root: Some(root.join(if json_only { "cache-json" } else { "cache-rec" })),
+                    use_cache,
+                    parallel: false,
+                    ..Default::default()
+                },
+            );
+            crate::resolver_registry::JSON_ONLY.with(|f| f.set(false));
+            serde_json::to_string(&out.unwrap()).unwrap()
+        };
+        for use_cache in [false, true, true] {
+            assert_eq!(
+                run(false, use_cache),
+                run(true, use_cache),
+                "cache {use_cache}"
+            );
+        }
+        // The fixture reaches both passes: a file's import bound to the class
+        // it names in another file.
+        let out: Value = serde_json::from_str(&run(false, false)).unwrap();
+        let file_of = |id: &Value| {
+            out["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["id"] == *id)
+                .and_then(|n| n["source_file"].as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        assert!(
+            out["edges"].as_array().unwrap().iter().any(|e| {
+                e["relation"] == "imports"
+                    && e["source_file"]
+                        .as_str()
+                        .is_some_and(|f| f.ends_with("Impl.java"))
+                    && file_of(&e["target"]).ends_with("Base.java")
+            }),
+            "no import bound across files"
+        );
     }
 }

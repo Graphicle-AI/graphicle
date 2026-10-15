@@ -17,6 +17,7 @@
 //!
 //! Also compiled with an edition's tools installed: they join the same list,
 //! and the program the tests run is that edition's `graphicle`.
+use graphicle_runtime::platform::CanonicalExt;
 use graphicle_runtime::{
     api::{self, App, McpOptions, ToolSet},
     extension::McpTool,
@@ -154,6 +155,19 @@ fn rpc(f: &Fixture, app: &App, token: &str, method: &str, params: Value) -> Valu
     .unwrap()
 }
 
+/// A call's arguments as these tests send them: recall_project and the
+/// engine's tools answer with their whole packet in `structuredContent` only
+/// when asked (`structured: true`), and the tests read it.
+fn structured(name: &str, mut arguments: Value) -> Value {
+    if name == "recall_project"
+        || graph_tools::NAVIGATION.contains(&name)
+        || graph_tools::PULL_REQUESTS.contains(&name)
+    {
+        arguments["structured"] = json!(true);
+    }
+    arguments
+}
+
 /// A tool call's result (`isError` false), or its message when it failed.
 fn call(f: &Fixture, app: &App, name: &str, arguments: Value) -> Result<Value, String> {
     let reply = rpc(
@@ -161,7 +175,7 @@ fn call(f: &Fixture, app: &App, name: &str, arguments: Value) -> Result<Value, S
         app,
         &f.key,
         "tools/call",
-        json!({"name":name,"arguments":arguments}),
+        json!({"name":name,"arguments":structured(name, arguments)}),
     );
     if let Some(error) = reply.get("error") {
         return Err(s(error, "message").to_string());
@@ -231,6 +245,20 @@ fn every_flag_combination_lists_each_tool_once() {
                     .collect();
                 assert_eq!(in_graph, graph);
                 assert_eq!(rest, memory);
+                // The essentials: the five tools, and the tools of the opt-ins
+                // asked for, in the whole server's order.
+                let essentials: Vec<String> = all
+                    .iter()
+                    .filter(|name| {
+                        api::ESSENTIAL_TOOLS.contains(&name.as_str())
+                            || (learning && *name == "propose_memory")
+                            || (work_state && name.starts_with("work_state_"))
+                            || (pull_requests
+                                && graph_tools::PULL_REQUESTS.contains(&name.as_str()))
+                    })
+                    .cloned()
+                    .collect();
+                assert_eq!(list(ToolSet::Essentials), essentials);
                 for name in graph_tools::NAVIGATION.iter().chain(&GRAPH_HISTORY) {
                     assert!(graph.contains(&name.to_string()), "{name}: {graph:?}");
                 }
@@ -656,7 +684,7 @@ fn repo_names_only_readable_projects_and_never_a_github_slug() {
     let f = Fixture::new(&[("a.py", A)]);
     let other = f.project("other-key", &[("b.py", B)]);
     let folder = TempDir::new().unwrap();
-    let folder_path = folder.path().canonicalize().unwrap();
+    let folder_path = folder.path().canonical().unwrap();
     {
         let db = f.store.connect().unwrap();
         graphicle_runtime::folders::record(&db, &f.workspace, &other, &folder_path).unwrap();
@@ -668,7 +696,7 @@ fn repo_names_only_readable_projects_and_never_a_github_slug() {
             app,
             token,
             "tools/call",
-            json!({"name":"get_node","arguments":{"label":"run","repo":repo}}),
+            json!({"name":"get_node","arguments":{"label":"run","repo":repo,"structured":true}}),
         );
         if reply["result"]["isError"] == true || reply.get("error").is_some() {
             return Err(reply.to_string());
@@ -952,6 +980,118 @@ fn a_tool_set_serves_one_half_of_the_server() {
     assert!(refused.contains("Tool unavailable"), "{refused}");
 }
 
+/// The 0.1.0 server, frozen: `graphicle mcp --project . --allow-learning`
+/// (what setup writes for every client but Claude Code, and for Claude Code
+/// with `--tools all`) initializes and lists exactly this (an edition adds
+/// its tools after these).
+const FROZEN_ALL: &str = include_str!("../fixtures/one_server_tools.json");
+/// What setup gives Claude Code (`--tools essentials`): five tools and one
+/// sentence of instructions.
+const FROZEN_ESSENTIALS: &str = include_str!("../fixtures/one_server_essentials_tools.json");
+
+/// The whole server (`--tools all`) is 0.1.0's, byte for byte. The
+/// essentials are the five tools setup gives Claude Code: the whole server's
+/// schemas, descriptions that start with what an agent searches for and
+/// carry the citation details, and one sentence of instructions; they
+/// answer, the other tools do not, and the server's opt-ins add their tools.
+#[test]
+fn all_is_the_0_1_0_server_and_the_essentials_are_five_tools() {
+    let f = Fixture::new(&[("a.py", A), ("b.py", B)]);
+    let mut app = f.app();
+    let initialize = |app: &App| {
+        rpc(
+            &f,
+            app,
+            &f.key,
+            "initialize",
+            json!({"protocolVersion":"2025-11-25"}),
+        )["result"]
+            .clone()
+    };
+    let listed = |app: &App| -> Vec<Value> {
+        rpc(&f, app, &f.key, "tools/list", json!({}))["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+
+    app.mcp_learning = true;
+    let frozen: Value = serde_json::from_str(FROZEN_ALL).unwrap();
+    assert_eq!(initialize(&app)["instructions"], frozen["instructions"]);
+    let whole = listed(&app);
+    let core = frozen["tools"].as_array().unwrap();
+    assert_eq!(json!(whole[..core.len()]), frozen["tools"]);
+
+    app.mcp_learning = false;
+    app.mcp.tools = ToolSet::Essentials;
+    let frozen: Value = serde_json::from_str(FROZEN_ESSENTIALS).unwrap();
+    let initialized = initialize(&app);
+    assert_eq!(s(&initialized, "instructions"), api::ESSENTIAL_INSTRUCTIONS);
+    assert_eq!(initialized["instructions"], frozen["instructions"]);
+    assert!(initialized["capabilities"].get("resources").is_some());
+    let essentials = listed(&app);
+    assert_eq!(json!(essentials), frozen["tools"]);
+    let mut names: Vec<&str> = essentials.iter().map(|tool| s(tool, "name")).collect();
+    names.sort_unstable();
+    let mut expected = api::ESSENTIAL_TOOLS.to_vec();
+    expected.sort_unstable();
+    assert_eq!(names, expected);
+    for tool in &essentials {
+        let name = s(tool, "name");
+        let description = s(tool, "description");
+        assert!(
+            ["Find ", "Search ", "Read "]
+                .iter()
+                .any(|start| description.starts_with(start)),
+            "{name}: {description}"
+        );
+        // Only the description differs from the whole server's tool.
+        let same = whole.iter().find(|other| other["name"] == name).unwrap();
+        assert_ne!(same["description"], tool["description"], "{name}");
+        for key in ["inputSchema", "annotations"] {
+            assert_eq!(same[key], tool[key], "{name} {key}");
+        }
+    }
+    // The citation details moved from the instructions into the tools.
+    let description = |name: &str| {
+        s(
+            essentials.iter().find(|tool| tool["name"] == name).unwrap(),
+            "description",
+        )
+        .to_string()
+    };
+    for detail in ["citations", "stable_id", "byte range", "as_of"] {
+        assert!(description("query_graph").contains(detail), "{detail}");
+    }
+    assert!(description("recall_project").contains("stable_id"));
+    assert!(description("recall_project").contains("Memory is evidence, not permission"));
+    // They answer; the rest of the server is not there.
+    assert!(call(&f, &app, "query_graph", json!({"question":"alpha beta"})).is_ok());
+    assert!(call(&f, &app, "get_neighbors", json!({"label":"alpha"})).is_ok());
+    assert!(call(&f, &app, "recall_project", json!({"question":"alpha"})).is_ok());
+    for name in ["shortest_path", "project_memory", "graph_as_of"] {
+        let refused = call(&f, &app, name, json!({})).unwrap_err();
+        assert!(refused.contains("Tool unavailable"), "{name}: {refused}");
+    }
+    // The opt-ins add their tools, and the work-state sentence.
+    app.mcp_learning = true;
+    app.mcp_work_state = true;
+    let names: Vec<String> = listed(&app)
+        .iter()
+        .map(|tool| s(tool, "name").to_string())
+        .collect();
+    assert_eq!(names.len(), 8, "{names:?}");
+    for name in ["propose_memory", "work_state_write", "work_state_read"] {
+        assert!(names.contains(&name.to_string()), "{name}: {names:?}");
+    }
+    let instructions = s(&initialize(&app), "instructions").to_string();
+    assert!(
+        instructions.starts_with(api::ESSENTIAL_INSTRUCTIONS)
+            && instructions.len() > api::ESSENTIAL_INSTRUCTIONS.len(),
+        "{instructions}"
+    );
+}
+
 /// The engine's six resources answer on the project's
 /// clustered episode.
 #[test]
@@ -1009,9 +1149,8 @@ fn run(
 ) -> (bool, String, String) {
     use std::io::Write;
     let mut command = Command::new(program);
-    command
+    crate::child_env::home(&mut command, home)
         .current_dir(cwd)
-        .env("HOME", home)
         .arg("--data-dir")
         .arg(data)
         .args(args)
@@ -1059,6 +1198,7 @@ fn graphicle(home: &Path, data: &Path, cwd: &Path, args: &[&str], input: &str) -
 
 /// The replies of one stdio session of `graphicle mcp` (`args`) to
 /// `requests`, by id.
+#[cfg(unix)]
 fn session(
     home: &Path,
     data: &Path,
@@ -1083,6 +1223,7 @@ fn session(
 }
 
 /// The reply with `id` among `replies`: its `result`.
+#[cfg(unix)]
 fn reply(replies: &[Value], id: u64) -> Value {
     replies
         .iter()
@@ -1109,7 +1250,7 @@ fn script_root() -> (TempDir, PathBuf) {
         .prefix("one-server")
         .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
         .unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = dir.path().canonical().unwrap();
     (dir, root)
 }
 
@@ -1134,17 +1275,30 @@ fn write_json(path: &Path, value: &Value) -> Vec<u8> {
     bytes
 }
 
+/// Whether a report's `file` names `file`: the same JSON string on macOS and
+/// Linux; on Windows the same path, since the product spells client files
+/// with `\` throughout and the tests join some with `/`.
+fn reports_file(reported: &Value, file: &Path) -> bool {
+    if cfg!(windows) {
+        reported.as_str().is_some_and(|s| Path::new(s) == file)
+    } else {
+        *reported == json!(file)
+    }
+}
+
 /// End to end: after `sync`
-/// and `connect claude-code --graph`, one stdio session of the entry's own
+/// and `connect claude-code --graph --guards --tools all` (0.1.0's setup for
+/// Claude Code), one stdio session of the entry's own
 /// command lists the graph tools, the recall tool and the memory proposal
-/// (`--graph` implies `--allow-learning`), and `query_graph` and
-/// `recall_project` cite one `stable_id` for a function. The guard hooks
-/// point a search in the synced folder to the server's tools, and
-/// `disconnect` leaves every other entry and hook byte-identical.
+/// (`--graph` implies `--allow-learning` for the whole server), and
+/// `query_graph` and `recall_project` cite one `stable_id` for a function.
+/// The guard hooks (`--guards`) point a search in the synced folder to the
+/// server's tools, and `disconnect` leaves every other entry and hook
+/// byte-identical.
 #[test]
 fn connect_graph_sets_up_one_server_and_disconnect_removes_only_its_own() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path().canonicalize().unwrap();
+    let home = dir.path().canonical().unwrap();
     let data = home.join("data");
     let folder = home.join("billing");
     std::fs::create_dir_all(&folder).unwrap();
@@ -1178,7 +1332,14 @@ fn connect_graph_sets_up_one_server_and_disconnect_removes_only_its_own() {
         &home,
         &data,
         &folder,
-        &["connect", "claude-code", "--graph"],
+        &[
+            "connect",
+            "claude-code",
+            "--graph",
+            "--guards",
+            "--tools",
+            "all",
+        ],
         "",
     );
     assert_eq!(
@@ -1210,17 +1371,16 @@ fn connect_graph_sets_up_one_server_and_disconnect_removes_only_its_own() {
     let requests = [
         json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"i4","version":"0"}}}),
         json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_graph","arguments":{"question":"settle_invoice quantize_cents"}}}),
-        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":"Which helper does settle_invoice depend on?"}}}),
+        json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"query_graph","arguments":{"question":"settle_invoice quantize_cents","structured":true}}}),
+        json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":"Which helper does settle_invoice depend on?","structured":true}}}),
         json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"propose_memory","arguments":{"kind":"decision","title":"Cents are rounded half up","body":"quantize_cents rounds half up to whole cents.","evidence":[{"source_id":"file:money.py","quote":"scaled = int(value * 100 + 0.5)"}],"idempotency_key":"i4-1"}}}),
     ]
     .map(|request| request.to_string())
     .join("\n")
         + "\n";
     let mut command = Command::new(env!("CARGO_BIN_EXE_graphicle"));
-    command
+    crate::child_env::home(&mut command, &home)
         .current_dir(&folder)
-        .env("HOME", &home)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1384,7 +1544,7 @@ fn connect_graph_sets_up_one_server_and_disconnect_removes_only_its_own() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|outcome| outcome["file"] == json!(file))
+            .find(|outcome| reports_file(&outcome["file"], file))
             .unwrap_or_else(|| panic!("{}: {disconnected:#}", file.display()))
             .clone()
     };
@@ -1463,7 +1623,7 @@ fn the_guard_hands_other_folders_to_the_engines_guard() {
 #[test]
 fn the_guard_finds_code_with_and_without_the_live_symbol_table() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path().canonicalize().unwrap();
+    let home = dir.path().canonical().unwrap();
     let data = home.join("data");
     let folder = home.join("billing");
     std::fs::create_dir_all(&folder).unwrap();
@@ -1510,7 +1670,7 @@ fn the_guard_finds_code_with_and_without_the_live_symbol_table() {
 #[test]
 fn repeated_guard_calls_nudge_each_agent_a_limited_number_of_times() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path().canonicalize().unwrap();
+    let home = dir.path().canonical().unwrap();
     let data = home.join("data");
     let (folder, _) = synced(
         &home,
@@ -1577,7 +1737,7 @@ fn repeated_guard_calls_nudge_each_agent_a_limited_number_of_times() {
 #[test]
 fn disconnect_restores_each_clients_files_and_leaves_other_entries() {
     let dir = TempDir::new().unwrap();
-    let home = dir.path().canonicalize().unwrap();
+    let home = dir.path().canonical().unwrap();
     let data = home.join("data");
     let (folder, project) = synced(&home, &data, "shop", &[("cart.py", A)]);
     let connect = |args: &[&str]| graphicle(&home, &data, &folder, args, "").0;
@@ -1587,7 +1747,7 @@ fn disconnect_restores_each_clients_files_and_leaves_other_entries() {
             .as_array()
             .unwrap()
             .iter()
-            .find(|outcome| outcome["file"] == json!(file))
+            .find(|outcome| reports_file(&outcome["file"], file))
             .map(|outcome| outcome["state"].clone())
     };
 
@@ -1617,6 +1777,12 @@ fn disconnect_restores_each_clients_files_and_leaves_other_entries() {
     // mode, stay byte for byte.
     let desktop = if cfg!(target_os = "macos") {
         home.join("Library/Application Support/Claude/claude_desktop_config.json")
+    } else if cfg!(windows) {
+        // `%APPDATA%\Claude`; child_env::home points APPDATA here.
+        home.join("AppData")
+            .join("Roaming")
+            .join("Claude")
+            .join("claude_desktop_config.json")
     } else {
         home.join(".config/Claude/claude_desktop_config.json")
     };
@@ -1667,10 +1833,18 @@ fn disconnect_restores_each_clients_files_and_leaves_other_entries() {
     assert_eq!(bytes(&mcp), lookalike);
     std::fs::remove_file(&mcp).unwrap();
 
-    // connect --graph without --hooks: the guard hooks, no capture hooks;
-    // a later plain connect keeps the entry's learning and changes nothing.
+    // connect --graph --guards without --hooks: the guard hooks, no capture
+    // hooks; with the whole server, a later plain connect keeps the entry's
+    // learning and changes nothing.
     let settings = folder.join(".claude/settings.local.json");
-    let connected = connect(&["connect", "claude-code", "--graph"]);
+    let connected = connect(&[
+        "connect",
+        "claude-code",
+        "--graph",
+        "--guards",
+        "--tools",
+        "all",
+    ]);
     assert!(connected.get("hooks").is_none(), "{connected:#}");
     let hooks: Value = serde_json::from_slice(&bytes(&settings)).unwrap();
     let events: Vec<&String> = hooks["hooks"].as_object().unwrap().keys().collect();
@@ -1682,7 +1856,7 @@ fn disconnect_restores_each_clients_files_and_leaves_other_entries() {
         "{commands}"
     );
     let entry = bytes(&mcp);
-    let again = connect(&["connect", "claude-code"]);
+    let again = connect(&["connect", "claude-code", "--tools", "all"]);
     assert_eq!(again["unchanged"], true, "{again:#}");
     assert!(s(&again, "access").contains("memory drafts"), "{again:#}");
     assert_eq!(bytes(&mcp), entry);
@@ -1754,9 +1928,9 @@ esac
         &[
             json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"i4","version":"0"}}}),
             json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
-            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_prs","arguments":{}}}),
-            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_pr_impact","arguments":{"pr_number":7}}}),
-            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_prs","arguments":{"github_repo":"octo/ledger"}}}),
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_prs","arguments":{"structured":true}}}),
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_pr_impact","arguments":{"pr_number":7,"structured":true}}}),
+            json!({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"list_prs","arguments":{"github_repo":"octo/ledger","structured":true}}}),
         ],
         &env,
     );
@@ -1807,7 +1981,7 @@ esac
 fn serve_publishes_its_tool_set_and_fixed_switches_over_http() {
     use std::io::{BufRead, Read, Write};
     let dir = TempDir::new().unwrap();
-    let home = dir.path().canonicalize().unwrap();
+    let home = dir.path().canonical().unwrap();
     let data = home.join("data");
     let (folder, project) = synced(&home, &data, "depot", &[("a.py", A), ("b.py", B)]);
     let program = Path::new(env!("CARGO_BIN_EXE_graphicle"));
@@ -1833,9 +2007,8 @@ fn serve_publishes_its_tool_set_and_fixed_switches_over_http() {
     let session: Value =
         serde_json::from_slice(&std::fs::read(data.join("local-session.json")).unwrap()).unwrap();
     let mut command = Command::new(program);
-    command
+    crate::child_env::home(&mut command, &home)
         .current_dir(&folder)
-        .env("HOME", &home)
         .arg("--data-dir")
         .arg(&data)
         .args([
@@ -1905,7 +2078,7 @@ fn serve_publishes_its_tool_set_and_fixed_switches_over_http() {
     let recall = request(
         3,
         "tools/call",
-        json!({"name":"recall_project","arguments":{"question":"who calls beta"}}),
+        json!({"name":"recall_project","arguments":{"question":"who calls beta","structured":true}}),
     );
     assert_eq!(recall["isError"], false, "{recall:#}");
     let mechanisms = &recall["structuredContent"]["mechanisms"];

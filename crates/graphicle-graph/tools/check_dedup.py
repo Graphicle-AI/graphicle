@@ -36,7 +36,8 @@ def wrap(name):
             for line in result:print(line,file=sys.stderr)
             return None
         if name in ('_shingles','_id_prefixes'):return set(result)
-        if name=='_mentions':return {tuple(pair) for pair in result}
+        if name in ('_mentions','_slice_references'):return {tuple(pair) for pair in result}
+        if name=='_own_page_files':return set(result)
         if name in ('_disambiguate_defining_collisions','_path_qualify_dropped_collisions'):
             # The reference rewrites edges and hyperedges in place.
             for key in ('edges','hyperedges'):
@@ -47,7 +48,7 @@ def wrap(name):
         if name=='_collision_rank':return (*result[:4],tuple(result[4]))
         return result
     return invoke
-names=['_full_stem','_extension_qualified_id','_mentions','_disambiguate_defining_collisions','_path_qualify_dropped_collisions','_norm','_entropy','_shingles','_is_variant_pair','_short_label_blocked','_numeric_tokens_differ','_same_word_variant','_content_token_swap','_crossfile_fileanchored_blocked','_is_code','_id_prefixes','_defines_id','_reads_as_file_entity','_lifecycle_penalty','_rank_path','_collision_rank','_same_source_entity','_merge_missing_attributes','_report_id_collision','_remap_hyperedge_members','_content_richness','_pick_winner','deduplicate_entities']
+names=['_full_stem','_extension_qualified_id','_mentions','_own_page_files','_slice_references','_disambiguate_defining_collisions','_path_qualify_dropped_collisions','_norm','_entropy','_shingles','_is_variant_pair','_short_label_blocked','_numeric_tokens_differ','_same_word_variant','_content_token_swap','_crossfile_fileanchored_blocked','_is_code','_id_prefixes','_defines_id','_reads_as_file_entity','_lifecycle_penalty','_rank_path','_collision_rank','_same_source_entity','_merge_missing_attributes','_report_id_collision','_remap_hyperedge_members','_content_richness','_pick_winner','deduplicate_entities']
 class Reports:
     passed=0;skipped=0;deselected=[]
     def pytest_collection_modifyitems(self,config,items):
@@ -61,7 +62,8 @@ def compare(name,**kwargs):
     global comparisons
     expected=getattr(oracle,name)(**kwargs)
     if name=='_make_minhash':expected=expected.hashvalues.tolist()
-    if name=='_mentions':expected=sorted(list(pair) for pair in expected)
+    if name in ('_mentions','_slice_references'):expected=sorted(list(pair) for pair in expected)
+    if name=='_own_page_files':expected=sorted(expected)
     actual=call(name,**kwargs);comparisons+=1
     if isinstance(expected,float):equal=math.isclose(expected,actual,rel_tol=2e-15,abs_tol=2e-15)
     else:equal=plain(expected)==actual
@@ -134,9 +136,11 @@ try:
         edges=[{'source':rng.choice(ids_),'target':rng.choice(ids_),'relation':rng.choice(['references','references','calls']),'source_file':rng.choice(files_)} for _ in range(rng.randrange(0,6))]
         compare_graph(nodes,edges,hyperedges=[{'nodes':[n['id'] for n in nodes[:3]],'source_file':nodes[0]['source_file']}])
         compare('_mentions',nodes=nodes,edges=edges,root=None)
+        # 0.9.91 (#4281): files with their own page, and shorter path slices from them.
+        compare('_own_page_files',nodes=nodes,root=None);compare('_slice_references',nodes=nodes,root=None)
         for n in nodes:
             compare('_full_stem',source_file=n['source_file']);compare('_extension_qualified_id',node=n)
-            compare('_collision_rank',node=n,root=None,mentions=reference._mentions(nodes,edges,None))
+            compare('_collision_rank',node=n,root=None,mentions=reference._mentions(nodes,edges,None)|reference._slice_references(nodes,None))
     # Exercise the native callback path with recorded responses. No model call
     # or external account is involved in a source-code compatibility check.
     import graphify.llm as llm

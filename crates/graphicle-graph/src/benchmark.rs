@@ -1,6 +1,12 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/benchmark.py
 //! The upstream character-count context estimate; this is not an accuracy benchmark.
+//!
+//! It divides the size of the whole corpus by the size of one graph answer,
+//! both estimated from words and characters, with no model or agent: a size
+//! ratio, not what an agent saves (an agent searches and reads a few lines,
+//! it never pastes the whole corpus into a question). The printed report says
+//! so ([`format_benchmark`]); its JSON keeps Graphify's field names.
 use crate::{
     Result, graph::Graph, paths, python_compat, query_terms, security, serve,
     serve_search::SearchIndex, serve_text,
@@ -128,12 +134,22 @@ fn commas(value: &Value) -> String {
     }
     output
 }
+/// The report's title: what the ratio compares (the parity checks map it
+/// back to Graphify's `graphify token reduction benchmark`).
+pub const REPORT_TITLE: &str = "graphicle graph benchmark: whole corpus vs one graph answer";
+/// The ratio's label and what follows the number (mapped back to Graphify's
+/// `Reduction:` and `x fewer tokens per query`).
+pub const RATIO_LABEL: &str = "Size ratio:      ";
+pub const RATIO_NOTE: &str = "x (a size ratio, not an agent saving)";
+/// The printed report: the corpus and answer estimates and their ratio,
+/// labelled as a size ratio, not a saving. Graphify's report, which this one
+/// follows line for line, calls the same ratio a token reduction.
 pub fn format_benchmark(result: &Value, encoding: &str) -> String {
     if let Some(e) = result.get("error") {
         return format!("Benchmark error: {}\n", python_compat::string(e));
     }
     let mut out = format!(
-        "\ngraphicle token reduction benchmark\n{}\n  Corpus:          {} words {} ~{} tokens (naive)\n  Graph:           {} nodes, {} edges\n  Avg query cost:  ~{} tokens\n  Reduction:       {}x fewer tokens per query\n\n  Per question:\n",
+        "\n{REPORT_TITLE}\n{}\n  Corpus:          {} words {} ~{} tokens (naive)\n  Graph:           {} nodes, {} edges\n  Avg query cost:  ~{} tokens\n  {RATIO_LABEL}{}{RATIO_NOTE}\n\n  Per question:\n",
         horizontal_rule(50, encoding),
         commas(&result["corpus_words"]),
         safe("→", "->", encoding),
@@ -200,4 +216,31 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         _ => return Err("Unknown benchmark function".into()),
     };
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The printed report names the ratio for what it is; its JSON keeps
+    /// Graphify's field names.
+    #[test]
+    fn the_report_calls_the_ratio_a_size_ratio_not_a_saving() {
+        let result = json!({"corpus_tokens":123488,"corpus_words":92616,"nodes":285,"edges":340,
+            "avg_query_tokens":1726,"reduction_ratio":71.5,
+            "per_question":[{"question":"how does authentication work","query_tokens":1726,"reduction":71.5}]});
+        let report = format_benchmark(&result, "utf-8");
+        assert!(
+            report.starts_with("\ngraphicle graph benchmark: whole corpus vs one graph answer\n"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\n  Size ratio:      71.5x (a size ratio, not an agent saving)\n"),
+            "{report}"
+        );
+        assert!(report.contains("\n    [71.5x] how does authentication work\n"));
+        for claim in ["fewer tokens", "reduction", "Reduction"] {
+            assert!(!report.contains(claim), "{claim}: {report}");
+        }
+    }
 }

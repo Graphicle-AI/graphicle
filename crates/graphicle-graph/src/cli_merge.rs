@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 use crate::{
     Result, build,
@@ -24,7 +24,7 @@ pub fn compose(left: &mut Graph, right: &Graph) -> Result<()> {
         left.add_edge(
             right.nodes[u].id.clone(),
             right.nodes[v].id.clone(),
-            right.multigraph.then(|| e.key.clone()),
+            right.multigraph.then(|| e.key.to_value()),
             e.attributes.clone(),
         )?;
     }

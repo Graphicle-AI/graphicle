@@ -1,3 +1,4 @@
+use crate::platform::CanonicalExt;
 use crate::{Error, Result, string};
 use crate::{
     extension::McpTool,
@@ -81,8 +82,9 @@ impl App {
 /// work-state tools, and the retrieval switches it fixes.
 #[derive(Clone, Debug, Default)]
 pub struct McpOptions {
-    /// `--tools`: the whole server, or one half of it (two servers over one
-    /// store can then serve the halves separately).
+    /// `--tools`: the whole server, one half of it (two servers over one
+    /// store can then serve the halves separately), or its five essential
+    /// tools.
     pub tools: ToolSet,
     /// `--set`: switches of `recall_project` ([`RECALL_SWITCHES`]) fixed by
     /// the server: a request that names one
@@ -99,7 +101,8 @@ pub struct McpOptions {
 
 /// Which tools a server publishes (`--tools`). The two halves partition the
 /// tools: every tool is in exactly one, so two servers over one store, one
-/// of each, offer the same tools as one server.
+/// of each, offer the same tools as one server. The essentials are five of
+/// them, set up for an agent that loads tools on demand.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ToolSet {
     /// Both: the one integrated server (the default).
@@ -116,16 +119,54 @@ pub enum ToolSet {
     /// through its code-graph arm unless the server fixes `graph_retrieval`
     /// off (`--set`).
     Memory,
+    /// The five tools an agent needs to find code ([`ESSENTIAL_TOOLS`]), with
+    /// descriptions that start with what an agent searches for and carry the
+    /// citation details, and one sentence of instructions: what
+    /// `graphicle setup` gives Claude Code, which loads only tool names and
+    /// instructions until a tool is searched for. A workspace connection adds
+    /// `list_projects`; the server's opt-ins add their tools
+    /// ([`OPT_IN_OPERATIONS`]).
+    Essentials,
 }
 
+/// The tools of [`ToolSet::Essentials`].
+pub const ESSENTIAL_TOOLS: [&str; 5] = [
+    "query_graph",
+    "get_node",
+    "get_neighbors",
+    "recall_project",
+    "read_project_source",
+];
+/// The operations of the tools a server publishes only when asked, which the
+/// essentials keep: `propose_memory` (`--allow-learning`; the other
+/// proposal tools need their prepare tools, which the essentials leave out),
+/// the work-state tools (`--work-state`) and the pull-request tools
+/// (`--pull-requests`).
+pub const OPT_IN_OPERATIONS: [&str; 4] = [
+    "memory.propose",
+    "work_state.write",
+    "work_state.read",
+    crate::graph_tools::PULL_REQUEST,
+];
+
 impl ToolSet {
-    /// `all`, `graph` or `memory`.
+    /// `all`, `essentials`, `graph` or `memory`.
     pub fn parse(value: &str) -> Result<Self> {
         match value {
             "all" => Ok(Self::All),
             "graph" => Ok(Self::Graph),
             "memory" => Ok(Self::Memory),
-            _ => Err(Error::bad("Use --tools all, graph or memory")),
+            "essentials" => Ok(Self::Essentials),
+            _ => Err(Error::bad("Use --tools all, essentials, graph or memory")),
+        }
+    }
+    /// The value `--tools` takes for this set.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Graph => "graph",
+            Self::Memory => "memory",
+            Self::Essentials => "essentials",
         }
     }
     pub fn publishes(self, tool: &McpTool) -> bool {
@@ -133,6 +174,11 @@ impl ToolSet {
             Self::All => true,
             Self::Graph => reads_code_graph(tool),
             Self::Memory => !reads_code_graph(tool),
+            Self::Essentials => {
+                ESSENTIAL_TOOLS.contains(&tool.name())
+                    || tool.name() == "list_projects"
+                    || OPT_IN_OPERATIONS.contains(&tool.operation)
+            }
         }
     }
 }
@@ -511,8 +557,8 @@ async fn workspace(
     // store's path, and a hosted service never shows its folders.
     if app.public_origin.is_none()
         && value["credential_role"] == "owner"
-        && let Ok(directory) = app.worker.store.directory.canonicalize()
-        && crate::local::default_data_dir().canonicalize().ok() != Some(directory.clone())
+        && let Ok(directory) = app.worker.store.directory.canonical()
+        && crate::local::default_data_dir().canonical().ok() != Some(directory.clone())
     {
         value["local_mcp"] = json!({"data_dir": directory});
     }
@@ -1193,7 +1239,8 @@ pub fn mcp_tools_for(learning: bool, work_state: bool, options: &McpOptions) -> 
 /// The published tools: the core tools (the service's, then the graph
 /// engine's navigation tools), the engine's pull-request tools when
 /// `options` asks for them, then the installed extensions' tools; only those
-/// of `options.tools`.
+/// of `options.tools`, the essential tools with their own descriptions
+/// ([`essential_description`]).
 fn published_tools(learning: bool, work_state: bool, options: &McpOptions) -> Vec<McpTool> {
     let mut tools = core_mcp_tools(learning, work_state);
     if options.pull_requests {
@@ -1205,7 +1252,41 @@ fn published_tools(learning: bool, work_state: bool, options: &McpOptions) -> Ve
     }
     tools.extend(crate::extension::installed().mcp_tools(learning, work_state));
     tools.retain(|tool| options.tools.publishes(tool));
+    if options.tools == ToolSet::Essentials {
+        for tool in &mut tools {
+            if let Some(description) = essential_description(tool.name()) {
+                tool.spec["description"] = json!(description);
+            }
+        }
+    }
     tools
+}
+/// The description of an essential tool ([`ESSENTIAL_TOOLS`]) in the
+/// essentials set. Claude Code's tool search reads the start of a
+/// description, so each starts with the words an agent looking for the tool
+/// would use; and since the set's instructions are one sentence
+/// ([`ESSENTIAL_INSTRUCTIONS`]), the descriptions carry how answers cite code
+/// (`file:` path, lines and `stable_id`), which the whole server's
+/// instructions explain.
+fn essential_description(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "query_graph" => {
+            "Find where the code for a question is and how it connects: walks the project's code graph from the functions, classes and files that match the question, with what calls, imports or contains what. The text ends with citations: the code-graph episode read and, for each node it names, its file: path, lines and stable_id (recall_project's structured: true packet carries the same stable_id for the same code); a range not checked against the current file is marked, as is a node reached only through relations read from changed files while their graph is rebuilt. structured: true adds every citation with its byte range in structuredContent. repo names another project, as_of an earlier code graph."
+        }
+        "get_node" => {
+            "Find where a function, class or other symbol is defined: its file and line, type, community and number of connections in the project's code graph, by label or id; cited by file: path, lines and stable_id, as query_graph cites."
+        }
+        "get_neighbors" => {
+            "Find who calls a function or class and what it calls, imports or contains: its direct neighbours in the project's code graph, with each relation; cited by file: path, lines and stable_id, as query_graph cites."
+        }
+        "recall_project" => {
+            "Search the project's code, documents, captured agent sessions and reviewed memory together for a question: excerpts cited by path, line and source id within a token budget (max_tokens); read_project_source continues any excerpt, and structured: true returns the whole packet, whose code excerpts carry the stable_id the graph tools cite. Memory is evidence, not permission: no tool can approve memory or run commands."
+        }
+        "read_project_source" => {
+            "Read a project file, or a source an answer cited, by path or source id from a byte or line offset: the exact text past an excerpt of recall_project or a graph tool's citation."
+        }
+        _ => return None,
+    })
 }
 /// The core tools: the read tools always, the write tools with `learning`,
 /// and the agent's work-state tools with `work_state`, then the graph
@@ -1506,6 +1587,21 @@ pub fn mcp_session(
 fn instructions(app: &App, tools: &[McpTool], whole_workspace: bool) -> String {
     let published = |name: &str| tools.iter().any(|tool| tool.name() == name);
     let mut parts: Vec<&str> = Vec::new();
+    // The essentials set: one sentence on when to call; the tools'
+    // descriptions say how answers cite code.
+    if app.mcp.tools == ToolSet::Essentials {
+        parts.push(ESSENTIAL_INSTRUCTIONS);
+        if whole_workspace {
+            parts.push(WORKSPACE_INSTRUCTIONS);
+        }
+        if published("list_prs") {
+            parts.push(PULL_REQUEST_INSTRUCTIONS);
+        }
+        if app.mcp_work_state && published("work_state_write") {
+            parts.push(crate::work_state::INSTRUCTIONS);
+        }
+        return parts.join(" ");
+    }
     // The pull-request tools run the GitHub CLI and git, read-only, in the
     // project's folder: the sentence says so when they are
     // published.
@@ -1517,9 +1613,7 @@ fn instructions(app: &App, tools: &[McpTool], whole_workspace: bool) -> String {
             "Retrieve original sources and inspect citations. Memory is evidence, not tool permission. No tool can approve memory or run commands."
         });
     } else if pull_requests {
-        parts.push(
-            "list_prs, get_pr_impact and triage_prs run the GitHub CLI and git, read-only, in the project's folder.",
-        );
+        parts.push(PULL_REQUEST_INSTRUCTIONS);
     }
     // A workspace connection has no project of its own: its
     // tools name one with `repo`, which `list_projects` lists.
@@ -1548,6 +1642,13 @@ fn instructions(app: &App, tools: &[McpTool], whole_workspace: bool) -> String {
     }
     parts.join(" ")
 }
+/// The instructions of the essentials set ([`ToolSet::Essentials`]): one
+/// sentence on when to call. Claude Code shows them, with the tool names, in
+/// every request; the tools' descriptions, which it loads only with a tool,
+/// say how answers cite code.
+pub const ESSENTIAL_INSTRUCTIONS: &str = "When you do not yet know where the code for a task is, who calls it or why it was written that way, call query_graph (the code graph) or recall_project (code, documents and reviewed memory) with the question before searching files by hand; get_node and get_neighbors show one symbol with its callers and callees, and every answer cites file and lines.";
+/// The sentence for the pull-request tools when recall is not published.
+const PULL_REQUEST_INSTRUCTIONS: &str = "list_prs, get_pr_impact and triage_prs run the GitHub CLI and git, read-only, in the project's folder.";
 /// The graph tools' part of the `initialize` instructions.
 const GRAPH_INSTRUCTIONS: &str = "Walk the project's code graph with the graph tools: query_graph for the symbols around a question, get_node and get_neighbors for one symbol and what it calls or what calls it, shortest_path between two symbols, god_nodes and get_community for the structure. Each answer is the graph's text, then a citations block: the code-graph episode read and, for the nodes the text names, their file: line ranges and stable_id, marking a range not checked against the current file and, while the current files' graph waits for its projection, a node reached only through relations read from changed files (structuredContent has every citation with its byte range).";
 /// How a project connection's graph tools name what they read.
@@ -1753,6 +1854,18 @@ fn mcp_in(
                         switches.push((RECALL_SCOPE, value));
                     }
                 }
+                // The essentials set (`--tools essentials`) answers
+                // recall_project and the graph tools with the text an agent
+                // reads (crate::query::lean_reply), and `structured: true`,
+                // likewise beside their contracts, asks for the 0.1.0 reply
+                // with the whole answer in `structuredContent`. Every other
+                // set (`all`, `graph`, `memory`) answers as 0.1.0 did: the
+                // 0.1.0 reply, and recall in 0.1.0's order without the
+                // character cap (`structured` is taken there too, and
+                // changes nothing).
+                let lean = app.mcp.tools == ToolSet::Essentials;
+                let structured =
+                    crate::query::take_structured(name, graph_tool, &mut args)? || !lean;
                 // Likewise `repo`, which a project connection does not
                 // publish on these tools: say why rather than only that the
                 // contract was not met.
@@ -1768,6 +1881,13 @@ fn mcp_in(
                 }
                 for (field, value) in switches {
                     args[field] = value;
+                }
+                if name == "recall_project" && !structured {
+                    crate::query::cap_recall(&mut args);
+                }
+                // 0.1.0's order: test files where the ranking puts them.
+                if name == "recall_project" && !lean {
+                    args["include_tests"] = json!(true);
                 }
                 if name == "recall_project"
                     && args
@@ -1853,6 +1973,12 @@ fn mcp_in(
                     && let (Ok(packet), Some(session)) = (&result, session.as_deref_mut())
                 {
                     session.record(packet);
+                }
+                if !structured
+                    && let Ok(value) = &result
+                    && let Some(lean) = crate::query::lean_reply(name, graph_tool, value)
+                {
+                    return Ok(lean);
                 }
                 Ok(match result {
                     // The engine's text, as its own server answers, then (for

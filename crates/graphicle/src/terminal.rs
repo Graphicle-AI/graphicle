@@ -20,6 +20,7 @@
 //! behave. The only file this module writes on its own is the data folder's
 //! version stamp ([`note_data_version`]); `config set` writes the model
 //! configuration file, after a first backup.
+use crate::platform::CanonicalExt;
 use crate::{
     Error, Result, local, model,
     store::{Store, s},
@@ -77,11 +78,12 @@ impl Style {
     /// Colour on a terminal, unless `NO_COLOR` is set or `TERM` is `dumb`.
     pub fn detect() -> Self {
         Self {
+            // On Windows, colour also needs virtual-terminal output.
             color: color_with(
                 std::env::var_os("NO_COLOR").as_deref(),
                 std::env::var("TERM").ok().as_deref(),
                 std::io::stdout().is_terminal(),
-            ),
+            ) && crate::platform::ansi_output(),
         }
     }
     /// No colour.
@@ -207,7 +209,7 @@ pub fn ago(seconds: i64) -> String {
 /// `/private/var`).
 pub fn tilde(path: &Path) -> String {
     if let Some(home) = home_dir() {
-        let canonical = home.canonicalize().ok();
+        let canonical = home.canonical().ok();
         if let Some(rest) = path.strip_prefix(&home).ok().or_else(|| {
             canonical
                 .as_deref()
@@ -216,17 +218,29 @@ pub fn tilde(path: &Path) -> String {
             return if rest.as_os_str().is_empty() {
                 "~".into()
             } else {
-                format!("~/{}", rest.display())
+                format!("~/{}", after_tilde(rest))
             };
         }
     }
     path.display().to_string()
 }
 
+/// The part of a path after `~/`: as it is on macOS and Linux; with `/`
+/// separators on Windows, so a shown path never mixes `/` and `\`
+/// (`~/AppData/Local/Graphicle`).
+fn after_tilde(rest: &Path) -> String {
+    #[cfg(windows)]
+    {
+        rest.to_string_lossy().replace('\\', "/")
+    }
+    #[cfg(not(windows))]
+    {
+        rest.display().to_string()
+    }
+}
+
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
+    crate::platform::home_dir().filter(|h| !h.as_os_str().is_empty())
 }
 
 /// `path` relative to `folder` when it is inside it, else [`tilde`].
@@ -239,7 +253,7 @@ pub fn place(path: &Path, folder: Option<&Path>) -> String {
 
 /// The canonical form of `path`, or `path` itself when it does not exist.
 fn canonical(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+    path.canonical().unwrap_or_else(|_| path.to_path_buf())
 }
 
 // ------------------------------------------------------------------ help
@@ -820,7 +834,8 @@ pub fn headless_with(var: &dyn Fn(&str) -> Option<OsString>) -> bool {
     if var(NO_BROWSER_ENV).is_some_and(|v| v == "1") {
         return true;
     }
-    if cfg!(target_os = "macos") {
+    // Windows, like macOS, always has a desktop unless the session is remote.
+    if cfg!(target_os = "macos") || cfg!(windows) {
         set("SSH_CONNECTION") || set("SSH_TTY")
     } else {
         !set("DISPLAY") && !set("WAYLAND_DISPLAY")
@@ -911,13 +926,15 @@ pub fn install_method(
         && folder
             .parent()
             .is_some_and(|target| target.join("CACHEDIR.TAG").is_file());
+    // Windows PowerShell 5.1 has no `&&`.
+    let then = if cfg!(windows) { ";" } else { " &&" };
     if cargo_target && components.iter().rposition(|c| c == "target").is_none() {
         return Install {
             method: "source",
             how: format!("from source ({})", tilde(folder)),
             commands: vec![
                 "git pull   # in your clone of graphicle-ai/graphicle".into(),
-                "cd runtime && cargo build --release --locked".into(),
+                format!("cd runtime{then} cargo build --release --locked"),
             ],
         };
     }
@@ -928,15 +945,18 @@ pub fn install_method(
     {
         let target: PathBuf = exe.components().take(at + 1).collect();
         let crate_dir = target.parent().unwrap_or(Path::new("."));
+        // PowerShell does not expand `~` in a program's arguments.
+        let place = if cfg!(windows) {
+            powershell_quote(&crate_dir.to_string_lossy())
+        } else {
+            shell_quote(&tilde(crate_dir))
+        };
         return Install {
             method: "source",
             how: format!("from source ({})", tilde(crate_dir)),
             commands: vec![
-                format!("git -C {} pull", shell_quote(&tilde(crate_dir))),
-                format!(
-                    "cd {} && cargo build --release --locked",
-                    shell_quote(&tilde(crate_dir))
-                ),
+                format!("git -C {place} pull"),
+                format!("cd {place}{then} cargo build --release --locked"),
             ],
         };
     }
@@ -950,22 +970,58 @@ pub fn install_method(
             ],
         };
     }
-    let script =
-        "curl -fsSL https://github.com/graphicle-ai/graphicle/releases/latest/download/install.sh";
+    // The install script's default folder: `~/.local/bin` for install.sh,
+    // `%LOCALAPPDATA%\Programs\Graphicle\bin` for install.ps1.
+    #[cfg(not(windows))]
     let default_bin = home.map(|home| home.join(".local/bin"));
-    let command = if default_bin.as_deref() == Some(folder) {
+    #[cfg(windows)]
+    let default_bin = {
+        let _ = home;
+        crate::platform::local_app_data().map(|local| local.join(r"Programs\Graphicle\bin"))
+    };
+    Install {
+        method: "script",
+        how: format!("with the install script ({})", tilde(folder)),
+        commands: vec![script_command(
+            folder,
+            default_bin.as_deref(),
+            cfg!(windows),
+        )],
+    }
+}
+
+/// The install script's command that updates the program in `folder`:
+/// install.sh through `sh` on macOS and Linux; on Windows (`powershell`)
+/// install.ps1 through PowerShell, with `-InstallDir` unless `folder` is
+/// the script's default.
+fn script_command(folder: &Path, default_bin: Option<&Path>, powershell: bool) -> String {
+    const RELEASES: &str = "https://github.com/graphicle-ai/graphicle/releases/latest/download";
+    let default = default_bin == Some(folder);
+    if powershell {
+        let script = format!("irm {RELEASES}/install.ps1");
+        return if default {
+            format!("{script} | iex")
+        } else {
+            format!(
+                "& ([scriptblock]::Create(({script}))) -InstallDir {}",
+                powershell_quote(&folder.to_string_lossy())
+            )
+        };
+    }
+    let script = format!("curl -fsSL {RELEASES}/install.sh");
+    if default {
         format!("{script} | sh")
     } else {
         format!(
             "{script} | sh -s -- --bin-dir {}",
             shell_quote(&folder.to_string_lossy())
         )
-    };
-    Install {
-        method: "script",
-        how: format!("with the install script ({})", tilde(folder)),
-        commands: vec![command],
     }
+}
+
+/// `value` as a PowerShell literal string: single quotes, a quote doubled.
+fn powershell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 /// `value` quoted for a POSIX shell when it needs quoting.
@@ -1102,7 +1158,16 @@ pub fn free_bytes(path: &Path) -> Option<u64> {
         let free = stat.f_bavail as u64 * stat.f_frsize as u64;
         Some(free)
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        let folder = if existing.is_dir() {
+            existing
+        } else {
+            existing.parent()?
+        };
+        crate::platform::free_bytes(folder)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = existing;
         None
@@ -1172,9 +1237,16 @@ impl ClientEntry {
         self.args.iter().any(|arg| arg == "--work-state")
     }
     /// Whether the entry lets the agent propose memory drafts for review
-    /// (`--allow-learning`; setup and `connect --graph` add it).
+    /// (`--allow-learning`; setup and `connect --graph` add it to an entry of
+    /// the whole server).
     pub fn allow_learning(&self) -> bool {
         self.args.iter().any(|arg| arg == "--allow-learning")
+    }
+    /// The tools the entry names with `--tools`; an entry without it serves
+    /// the whole server.
+    pub fn tools(&self) -> Option<crate::api::ToolSet> {
+        self.after("--tools")
+            .and_then(|set| crate::api::ToolSet::parse(set).ok())
     }
     /// For an entry that follows its folder: the folder it is written in.
     pub fn folder(&self) -> Option<PathBuf> {
@@ -1208,10 +1280,22 @@ fn codex_home(home: &Path) -> PathBuf {
 
 /// Claude Desktop's configuration file under `home`.
 fn claude_desktop_file(home: &Path) -> PathBuf {
-    if cfg!(target_os = "macos") {
-        home.join("Library/Application Support/Claude/claude_desktop_config.json")
-    } else {
-        home.join(".config/Claude/claude_desktop_config.json")
+    #[cfg(windows)]
+    {
+        crate::platform::claude_desktop_dir(
+            crate::platform::roaming_app_data().as_deref(),
+            crate::platform::local_app_data().as_deref(),
+        )
+        .unwrap_or_else(|| home.join(r"AppData\Roaming\Claude"))
+        .join("claude_desktop_config.json")
+    }
+    #[cfg(not(windows))]
+    {
+        if cfg!(target_os = "macos") {
+            home.join("Library/Application Support/Claude/claude_desktop_config.json")
+        } else {
+            home.join(".config/Claude/claude_desktop_config.json")
+        }
     }
 }
 
@@ -1540,13 +1624,15 @@ pub fn resolve_program(command: &str) -> Option<PathBuf> {
     if path.is_absolute() {
         return runnable(path).then(|| path.to_path_buf());
     }
-    if command.contains('/') {
+    if command.contains('/') || (cfg!(windows) && command.contains('\\')) {
         return None;
     }
     let search = std::env::var_os("PATH")?;
+    // On Windows, with each `PATHEXT` extension.
+    let names = crate::platform::program_names(command);
     std::env::split_paths(&search)
         .filter(|folder| folder.is_absolute())
-        .map(|folder| folder.join(command))
+        .flat_map(|folder| names.iter().map(move |name| folder.join(name)))
         .find(|candidate| runnable(candidate))
 }
 
@@ -1678,7 +1764,7 @@ fn codex_cli() -> bool {
 }
 
 /// Rewrite a broken client entry with this program, through `connect` (its
-/// name, project, work-state and learning tools and folder kept): one whose
+/// name, project, tools, work-state and learning tools and folder kept): one whose
 /// program is gone, one Graphicle wrote that no longer runs `graphicle … mcp`,
 /// or one it wrote that is gone from its file (from the record). A Codex
 /// entry is rewritten only when `connect` wrote it into `config.toml` (no
@@ -1716,9 +1802,17 @@ pub fn repair_entry(store: &Store, check: &EntryCheck) -> Result<Value> {
                 work_state: entry.work_state(),
                 graph: false,
                 allow_learning: entry.allow_learning(),
+                // The set it names; an entry that names none is the whole
+                // server (0.1.0's entries, `setup --tools all`), and so is
+                // one that is gone, since nothing is left to say otherwise.
+                tools: Some(entry.tools().unwrap_or_default()),
+                guards: false,
                 cwd: &cwd,
             },
-            crate::agent_setup::Policy { refresh_ours: true },
+            crate::agent_setup::Policy {
+                refresh_ours: true,
+                drop_guards: false,
+            },
         );
     }
     if entry.client == "codex" {
@@ -1740,9 +1834,14 @@ pub fn repair_entry(store: &Store, check: &EntryCheck) -> Result<Value> {
                 work_state: entry.work_state(),
                 graph: false,
                 allow_learning: entry.allow_learning(),
+                tools: Some(entry.tools().unwrap_or_default()),
+                guards: false,
                 cwd: &cwd,
             },
-            crate::agent_setup::Policy { refresh_ours: true },
+            crate::agent_setup::Policy {
+                refresh_ours: true,
+                drop_guards: false,
+            },
         );
     }
     let cwd = match entry.folder() {
@@ -1765,6 +1864,8 @@ pub fn repair_entry(store: &Store, check: &EntryCheck) -> Result<Value> {
             work_state: entry.work_state(),
             graph: false,
             allow_learning: entry.allow_learning(),
+            tools: Some(entry.tools().unwrap_or_default()),
+            guards: false,
             cwd: &cwd,
         },
     )
@@ -1960,9 +2061,10 @@ fn graphicle_hooks(folder: Option<&Path>, home: Option<&Path>, guard: bool) -> V
 /// ([`crate::git_hooks`]) or a line of their own running `graphicle ...
 /// sync`. `None` outside a Git repository.
 pub fn git_hooks(folder: &Path) -> Option<Vec<String>> {
+    // Git refuses Windows' verbatim `\\?\` paths.
     let output = std::process::Command::new("git")
         .arg("-C")
-        .arg(folder)
+        .arg(crate::platform::simplified(folder.to_path_buf()))
         .args(["rev-parse", "--git-path", "hooks"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -3845,19 +3947,27 @@ pub fn status_text(view: &Overview, style: Style) -> String {
             .clients
             .iter()
             .any(|check| check.entry.allow_learning());
-        let _ = writeln!(
-            out,
-            "{}{}",
-            label(""),
-            style.dim(&format!(
-                "one MCP server, graphicle mcp: the code graph, recall and memory{}",
-                if learning {
-                    "; memory drafts for review"
-                } else {
-                    ""
-                }
-            ))
-        );
+        let _ =
+            writeln!(
+                out,
+                "{}{}",
+                label(""),
+                style.dim(&format!(
+                    "one MCP server, graphicle mcp: {}{}",
+                    if view.clients.iter().all(|check| {
+                        check.entry.tools() == Some(crate::api::ToolSet::Essentials)
+                    }) {
+                        "its five essential tools, the code graph and recall"
+                    } else {
+                        "the code graph, recall and memory"
+                    },
+                    if learning {
+                        "; memory drafts for review"
+                    } else {
+                        ""
+                    }
+                ))
+            );
     }
     let capture: Vec<String> = view
         .capture
@@ -4336,7 +4446,7 @@ fn connected_without_store(directory: &Path, folders: &[PathBuf], home: &Path) -
 fn normalized(path: &Path) -> PathBuf {
     let path = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     for ancestor in path.ancestors() {
-        if let Ok(real) = ancestor.canonicalize() {
+        if let Ok(real) = ancestor.canonical() {
             let rest = path.strip_prefix(ancestor).unwrap_or(Path::new(""));
             return if rest.as_os_str().is_empty() {
                 real
@@ -4732,7 +4842,12 @@ fn checks(options: &Doctor<'_>) -> Vec<Check> {
                         State::Ok,
                         "Agent",
                         format!(
-                            "{what}: graphicle mcp, with the code-graph, recall and memory tools{}",
+                            "{what}: graphicle mcp, with {}{}",
+                            if check.entry.tools() == Some(crate::api::ToolSet::Essentials) {
+                                "its five essential tools (code graph and recall)"
+                            } else {
+                                "the code-graph, recall and memory tools"
+                            },
                             if check.entry.allow_learning() {
                                 " and memory drafts for review"
                             } else {
@@ -4901,9 +5016,8 @@ fn checks(options: &Doctor<'_>) -> Vec<Check> {
                 "instructions",
                 State::Info,
                 "Agent instructions",
-                "no Graphicle section in AGENTS.md or CLAUDE.md, so agents are not told when to use its tools",
+                "no Graphicle section in AGENTS.md or CLAUDE.md: Claude Code gets the server's instructions, and setup adds the section when it connects another agent, or with --tools all",
             )
-            .with_fix("graphicle setup")
         } else {
             Check::new(
                 "instructions",
@@ -5347,8 +5461,9 @@ mod tests {
             false,
         );
         assert_eq!(script.method, "script");
+        // On Windows the script is install.ps1 (`script_command` below).
         assert!(
-            script.commands[0].ends_with("install.sh | sh"),
+            cfg!(windows) || script.commands[0].ends_with("install.sh | sh"),
             "{script:?}"
         );
         let elsewhere = install_method(
@@ -5358,7 +5473,7 @@ mod tests {
             false,
         );
         assert!(
-            elsewhere.commands[0].ends_with("--bin-dir /opt/tools"),
+            cfg!(windows) || elsewhere.commands[0].ends_with("--bin-dir /opt/tools"),
             "{elsewhere:?}"
         );
         let built = install_method(
@@ -5368,9 +5483,12 @@ mod tests {
             false,
         );
         assert_eq!(built.method, "source");
+        // `~/src/...` or the full folder; `~\src/...` on Windows.
         assert!(
-            built.commands[1].contains("~/src/graphicle/runtime")
-                || built.commands[1].contains("/src/graphicle/runtime")
+            built.commands[1]
+                .replace('\\', "/")
+                .contains("/src/graphicle/runtime"),
+            "{built:?}"
         );
         let cargo_install = install_method(
             Path::new("/home/me/.cargo/bin/graphicle"),
@@ -5381,6 +5499,33 @@ mod tests {
         assert_eq!(cargo_install.method, "cargo");
         let docker = install_method(Path::new("/usr/local/bin/graphicle"), None, None, true);
         assert_eq!(docker.method, "docker");
+    }
+
+    /// The install script's update line: install.sh on macOS and Linux,
+    /// install.ps1 in PowerShell on Windows, whatever the host.
+    #[test]
+    fn script_updates_name_the_platforms_script() {
+        let releases = "https://github.com/graphicle-ai/graphicle/releases/latest/download";
+        let bin = Path::new("/home/me/.local/bin");
+        assert_eq!(
+            script_command(bin, Some(bin), false),
+            format!("curl -fsSL {releases}/install.sh | sh")
+        );
+        assert_eq!(
+            script_command(Path::new("/opt/my tools"), Some(bin), false),
+            format!("curl -fsSL {releases}/install.sh | sh -s -- --bin-dir '/opt/my tools'")
+        );
+        let programs = Path::new(r"C:\Users\me\AppData\Local\Programs\Graphicle\bin");
+        assert_eq!(
+            script_command(programs, Some(programs), true),
+            format!("irm {releases}/install.ps1 | iex")
+        );
+        assert_eq!(
+            script_command(Path::new(r"D:\O'Brien\tools"), Some(programs), true),
+            format!(
+                "& ([scriptblock]::Create((irm {releases}/install.ps1))) -InstallDir 'D:\\O''Brien\\tools'"
+            )
+        );
     }
 
     #[test]
@@ -5864,7 +6009,7 @@ args = ["-y", "thing"]
             (NO_BROWSER_ENV, "1"),
             ("DISPLAY", ":0")
         ])));
-        if cfg!(target_os = "macos") {
+        if cfg!(target_os = "macos") || cfg!(windows) {
             assert!(!headless_with(&env(&[])));
             assert!(headless_with(&env(&[("SSH_CONNECTION", "1 2 3 4")])));
         } else {

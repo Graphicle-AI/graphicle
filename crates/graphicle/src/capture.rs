@@ -1033,6 +1033,12 @@ impl Store {
     /// any (labelled as unreviewed), reviewed, current memories (title and
     /// id), the stale count and the last captured turns, within
     /// [`START_CONTEXT_CHARS`]. Drafts and observer notes never appear.
+    ///
+    /// Empty when there is nothing to report: no reviewed memory, no open
+    /// work and no stale memory. Captured turns alone do not make a note
+    /// (recall reads them), so a session starts with no Graphicle text until
+    /// the project holds something reviewed or open; the session-start hook
+    /// then prints nothing.
     pub fn session_start_context(
         &self,
         workspace: &str,
@@ -1080,6 +1086,9 @@ impl Store {
                 turns.truncate(5);
                 Ok((open_work, reviewed, stale, turns))
             })?;
+        if open_work.is_none() && memories.is_empty() && stale == 0 {
+            return Ok(String::new());
+        }
         let mut out = String::from(
             "Graphicle project memory. Reviewed memories are current; cite sources with read_project_source before relying on them.\n",
         );
@@ -1179,7 +1188,7 @@ pub fn transcripts(
 
 /// Default transcript root of a client.
 pub fn default_root(client: Client) -> Option<std::path::PathBuf> {
-    let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+    let home = crate::platform::home_dir();
     match client {
         Client::ClaudeCode => std::env::var_os("CLAUDE_CONFIG_DIR")
             .map(|d| std::path::PathBuf::from(d).join("projects"))

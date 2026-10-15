@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cargo_introspect.py
 //! Port of graphify/cargo_introspect.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 //! Reads manifests only; does not execute Cargo or project build scripts.
@@ -106,6 +106,7 @@ pub fn discover_root_manifest(root: &Path) -> Option<PathBuf> {
 pub fn introspect_cargo(root: &Path) -> Result<Value> {
     let root = root
         .canonicalize()
+        .map(|root| crate::fsutil::plain(&root))
         .map_err(|error| format!("OSError: {}: {error}", root.display()))?;
     let mut root_manifest = root.join("Cargo.toml");
     // #3678: discover a manifest below the scan root when none sits at it.

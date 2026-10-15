@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py
 //! Schema recovery, portable source identities, and legacy graph identifiers.
 use crate::{
@@ -9,6 +9,7 @@ use crate::{
     },
     fsutil, ids, paths,
     python_compat::{self, scalar_key},
+    record::Record,
 };
 use serde_json::{Value, json};
 use std::{
@@ -215,32 +216,42 @@ pub fn fold_node_aliases(node: &mut Value) {
     }
 }
 pub fn fold_edge_aliases(edge: &mut Value) {
-    let Some(e) = edge.as_object_mut() else {
-        return;
-    };
+    if let Some(e) = edge.as_object_mut() {
+        fold_edge_record_aliases(e);
+    }
+}
+/// [`fold_edge_aliases`] on an edge record of either form.
+pub(crate) fn fold_edge_record_aliases<R: Record>(e: &mut R) {
     for alias in ["type", "relationship"] {
-        if !map_field(e, "relation").is_some_and(truthy)
-            && map_field(e, alias)
+        if !e.get("relation").is_some_and(truthy)
+            && e.get(alias)
                 .and_then(Value::as_str)
                 .is_some_and(|s| !s.is_empty())
         {
-            let v = e.shift_remove(alias).unwrap();
-            e.insert("relation".into(), v);
+            let v = e.take_key(alias).unwrap();
+            e.put("relation", v);
         }
     }
-    if let Some(v) = map_field(e, "confidence")
-        .filter(|v| v.is_number())
-        .cloned()
-    {
-        if map_field(e, "confidence_score").is_none_or(Value::is_null) {
-            e.insert("confidence_score".into(), json!(v.as_f64().unwrap_or(1.0)));
+    if let Some(v) = e.get("confidence").filter(|v| v.is_number()).cloned() {
+        if e.get("confidence_score").is_none_or(Value::is_null) {
+            e.put("confidence_score", json!(v.as_f64().unwrap_or(1.0)));
         }
-        e.insert("confidence".into(), json!("INFERRED"));
+        e.put("confidence", json!("INFERRED"));
     }
-    if !map_field(e, "confidence").is_some_and(truthy)
-        && map_field(e, "confidence_score").is_some_and(|v| !v.is_null())
+    if !e.get("confidence").is_some_and(truthy)
+        && e.get("confidence_score").is_some_and(|v| !v.is_null())
     {
-        e.insert("confidence".into(), json!("INFERRED"));
+        e.put("confidence", json!("INFERRED"));
+    }
+}
+/// The edge part of [`coerce_non_string_ids`], on an edge record of either
+/// form: a numeric endpoint becomes its text, in place.
+pub(crate) fn coerce_edge_record_ids<R: Record>(e: &mut R) {
+    for key in ["source", "target", "from", "to"] {
+        if let Some(v) = e.get(key).filter(|v| v.is_number()) {
+            let text = json!(python_compat::string(v));
+            e.put(key, text);
+        }
     }
 }
 pub fn coerce_id(value: &Value) -> Value {

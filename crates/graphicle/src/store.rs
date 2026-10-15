@@ -165,6 +165,9 @@ pub fn path(value: &str) -> Result<&str> {
         || value.len() > 1000
         || value.starts_with('/')
         || value.contains(['\\', '\0', '\r', '\n'])
+        // Windows: a drive (`C:`) or a stream name never names a file
+        // under the root.
+        || (cfg!(windows) && value.contains(':'))
         || value
             .split('/')
             .any(|v| v.is_empty() || v == "." || v == "..")
@@ -172,6 +175,19 @@ pub fn path(value: &str) -> Result<&str> {
         return Err(Error::bad("Use a relative source path without traversal"));
     }
     Ok(value)
+}
+
+/// [`path`] for a path an MCP or HTTP client sends. On Windows `\` is
+/// accepted as a separator and becomes `/`; traversal, drives and UNC paths
+/// (`\\server\share` becomes `//server/share`) are still refused.
+pub fn client_path(value: &str) -> Result<std::borrow::Cow<'_, str>> {
+    #[cfg(windows)]
+    if value.contains('\\') {
+        let converted = value.replace('\\', "/");
+        path(&converted)?;
+        return Ok(std::borrow::Cow::Owned(converted));
+    }
+    path(value).map(std::borrow::Cow::Borrowed)
 }
 pub fn hash(value: &str) -> Result<&str> {
     if value.len() != 64
@@ -1144,16 +1160,57 @@ mod lock_site_tests {
 
     #[test]
     fn lock_report_sites_are_relative_to_their_crate() {
-        let absolute = format!("{}/src/jobs.rs", env!("CARGO_MANIFEST_DIR"));
-        assert_eq!(crate_relative(&absolute), "src/jobs.rs");
+        // Paths as rustc gives them on this system: from `/`, or `C:\`.
+        let separator = std::path::MAIN_SEPARATOR_STR;
+        let root = if cfg!(windows) { r"C:\" } else { "/" };
+        let absolute = |parts: &[&str]| format!("{root}{}", parts.join(separator));
+        let relative = |parts: &[&str]| parts.join(separator);
+        let manifest = format!("{}/src/jobs.rs", env!("CARGO_MANIFEST_DIR"));
+        assert_eq!(crate_relative(&manifest), "src/jobs.rs");
         assert_eq!(crate_relative("src/jobs.rs"), "src/jobs.rs");
         assert_eq!(
-            crate_relative("/builds/pro/src/service/team/oidc.rs"),
-            "src/service/team/oidc.rs"
+            crate_relative(&absolute(&[
+                "builds", "pro", "src", "service", "team", "oidc.rs"
+            ])),
+            relative(&["src", "service", "team", "oidc.rs"])
         );
+        let registry = [
+            "home",
+            "ci",
+            ".cargo",
+            "registry",
+            "src",
+            "index.example-1",
+            "dep-1.0",
+            "src",
+            "lib.rs",
+        ];
         assert_eq!(
-            crate_relative("/home/ci/.cargo/registry/src/index.example-1/dep-1.0/src/lib.rs"),
-            "src/lib.rs"
+            crate_relative(&absolute(&registry)),
+            relative(&["src", "lib.rs"])
         );
+    }
+}
+
+#[cfg(test)]
+mod client_path_tests {
+    use super::client_path;
+
+    #[test]
+    fn client_paths_keep_the_relative_path_rules() {
+        assert_eq!(client_path("src/app.py").unwrap(), "src/app.py");
+        assert!(client_path("../x").is_err() && client_path("/etc/passwd").is_err());
+        #[cfg(windows)]
+        {
+            assert_eq!(client_path(r"src\app.py").unwrap(), "src/app.py");
+            for refused in [r"..\x", r"C:\x", "C:x", r"\\server\share\x", r"\x", r"a\\b"] {
+                assert!(client_path(refused).is_err(), "{refused}");
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            assert!(client_path(r"src\app.py").is_err());
+            assert_eq!(client_path("C:x").unwrap(), "C:x");
+        }
     }
 }

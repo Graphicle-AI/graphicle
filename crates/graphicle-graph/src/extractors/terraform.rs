@@ -1,8 +1,14 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/terraform.py
 //! Terraform/HCL extraction, portable directory IDs and incremental module topology.
 use super::base::{make_id, read_text, ts_index};
-use crate::{Result, fsutil, io_compat, path_syntax, python_compat, security};
+use crate::{
+    Result,
+    extract::per_file::PerFile,
+    fsutil, io_compat, path_syntax, python_compat,
+    resolver_registry::{Rec, append_edges, at, edge_record},
+    security,
+};
 use serde_json::{Map, Number, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -172,6 +178,17 @@ pub fn resolve_terraform_modules(
     nodes: &mut Vec<Value>,
     edges: &mut Vec<Value>,
 ) {
+    resolve_terraform_modules_any(per_file, nodes, edges);
+}
+/// [`resolve_terraform_modules`] over the per-file results and the edges in
+/// either form. The pass only reads the per-file nodes and only adds edges,
+/// which it appends after its loops (they read none of them).
+pub fn resolve_terraform_modules_any<P: PerFile, E: Rec>(
+    per_file: &[P],
+    nodes: &mut Vec<Value>,
+    edges: &mut Vec<E>,
+) {
+    let mut added: Vec<E> = vec![];
     let mut files: BTreeMap<String, Vec<Value>> = BTreeMap::new();
     let mut anchors: HashMap<String, String> = HashMap::new();
     for node in nodes.iter() {
@@ -193,9 +210,9 @@ pub fn resolve_terraform_modules(
     }
     let fresh_files: HashSet<_> = per_file
         .iter()
-        .flat_map(|r| r["nodes"].as_array().into_iter().flatten())
-        .filter(|n| n["type"] == "terraform_file")
-        .filter_map(|n| n["id"].as_str())
+        .flat_map(|r| r.nodes().into_iter().flatten())
+        .filter(|n| at(*n, "type") == "terraform_file")
+        .filter_map(|n| at(n, "id").as_str())
         .collect();
     let mut known: HashSet<String> = nodes
         .iter()
@@ -214,15 +231,15 @@ pub fn resolve_terraform_modules(
         }
         for member in members {
             if fresh_files.contains(member["id"].as_str().unwrap_or("")) {
-                edges.push(json!({"source":anchor,"target":member["id"],"relation":"contains","confidence":"EXTRACTED","weight":1.0,"source_file":member["source_file"],"source_location":null}));
+                added.push(edge_record(json!({"source":anchor,"target":member["id"],"relation":"contains","confidence":"EXTRACTED","weight":1.0,"source_file":member["source_file"],"source_location":null})));
             }
         }
     }
     let fresh_calls: HashSet<_> = per_file
         .iter()
-        .flat_map(|r| r["nodes"].as_array().into_iter().flatten())
-        .filter(|n| n.get("module_source").is_some())
-        .filter_map(|n| n["id"].as_str())
+        .flat_map(|r| r.nodes().into_iter().flatten())
+        .filter(|n| n.rec_get("module_source").is_some())
+        .filter_map(|n| at(n, "id").as_str())
         .collect();
     for node in nodes.iter() {
         if !fresh_calls.contains(node["id"].as_str().unwrap_or("")) {
@@ -233,9 +250,10 @@ pub fn resolve_terraform_modules(
             .and_then(Value::as_str)
             .and_then(|d| anchors.get(d))
         {
-            edges.push(json!({"source":node["id"],"target":target,"relation":"module_source","confidence":"EXTRACTED","weight":1.0,"source_file":node["source_file"],"source_location":node["module_source_location"]}));
+            added.push(edge_record(json!({"source":node["id"],"target":target,"relation":"module_source","confidence":"EXTRACTED","weight":1.0,"source_file":node["source_file"],"source_location":node["module_source_location"]})));
         }
     }
+    append_edges(edges, added);
 }
 
 pub fn refresh_terraform_paths(

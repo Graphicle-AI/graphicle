@@ -61,6 +61,11 @@ _FIXED = ("repository_id", "workspace_id")
 # publishes them on a project connection.
 _WORKSPACE_TOOLS = ("list_projects",)
 _REPO_TOOLS = ("recall_project", "read_project_source")
+# Tools whose MCP reply is the text an agent reads unless the call asks for the whole packet in
+# ``structuredContent`` (``structured``, beside the published contract); :meth:`Tools.call`
+# returns structured results, so it asks.
+_STRUCTURED_TOOLS = ("recall_project", "query_graph", "get_node", "get_neighbors", "get_community",
+                     "god_nodes", "graph_stats", "shortest_path")
 
 
 def _field(value: Any, name: str) -> Any:
@@ -189,6 +194,8 @@ class Tools:
             given["repo"] = self.project.id
             if name == "recall_project":
                 given.setdefault("scope", "workspace")
+        if name in _STRUCTURED_TOOLS:
+            given["structured"] = True
         result = self._rpc("tools/call", {"name": name, "arguments": given}) or {}
         parts = [part.get("text", "") for part in result.get("content") or [] if isinstance(part, Mapping)]
         if result.get("isError"):

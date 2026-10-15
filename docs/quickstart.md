@@ -42,14 +42,18 @@ order:
    entry that starts Graphicle's MCP server: the code graph's tools (with
    Graphify's names, such as `query_graph`), search over your code, documents
    and memory, and tools that propose memory drafts for you to review. Claude
-   Code also gets two hooks that point its searches to the graph tools.
+   Code gets five of the tools (`query_graph`, `get_node`, `get_neighbors`,
+   `recall_project`, `read_project_source`); `--tools all` gives it every
+   tool.
 3. **Turns on session capture** for Claude Code and Codex. After each answer,
    the conversation is saved in the project, so later sessions can search what
    was said and decided. Text inside `<private>…</private>` and credentials
    are removed first.
-4. **Adds agent instructions.** A short Graphicle section in the repository's
-   `AGENTS.md` (and in `CLAUDE.md`, if there is one) tells agents when to use
-   Graphicle. If `AGENTS.md` does not exist, setup asks before it creates it.
+4. **Adds agent instructions.** A two-line Graphicle section in the
+   repository's `AGENTS.md` (and in `CLAUDE.md`, if there is one) tells agents
+   when to use Graphicle. If `AGENTS.md` does not exist, setup asks before it
+   creates it. When Claude Code is the only agent, setup adds no section: the
+   server's own instructions tell Claude Code when to use the tools.
 5. **Adds Git hooks** that update the project in the background after each
    commit, merge and checkout. Your own hooks are kept.
 6. **Offers to switch from Graphify**, if it finds a Graphify setup. It never
@@ -79,6 +83,8 @@ undo it.
 | `--no-capture` | Skip session capture |
 | `--no-instructions` | Leave `AGENTS.md` and `CLAUDE.md` alone |
 | `--no-hooks` | Add no Git hooks |
+| `--tools all` | Give Claude Code every tool of the server, not five (`essentials`, the default for Claude Code) |
+| `--guards` | Add hooks that point Claude Code's searches and source reads to the graph tools (off by default) |
 | `--switch-from-graphify` | Switch from Graphify without asking |
 | `--json` | Print the result as JSON, for scripts |
 

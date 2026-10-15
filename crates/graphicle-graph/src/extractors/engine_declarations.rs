@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Class, field and signature traversal for the shared engine.
 use super::{
@@ -39,21 +39,17 @@ impl<'a, 't> Engine<'a, 't> {
         // #4249); the label is unchanged.
         let mut name_for_id = name.clone();
         if self.is("c_sharp") {
-            let arity = children(n)
-                .into_iter()
-                .filter(|c| c.kind_name() == "type_parameter_list")
-                .flat_map(children)
-                .filter(|p| matches!(p.kind_name(), "type_parameter" | "identifier"))
-                .count();
-            if arity > 0 {
-                name_for_id = format!("{name}`{arity}");
-            }
+            name_for_id = csharp_type_name_for_id(n, &name);
         }
         let mut id = make_id([
             self.stem.as_str(),
             self.namespace.join(".").as_str(),
             name_for_id.as_str(),
         ]);
+        if self.is("c_sharp") {
+            // `Pair` / `_Pair` in one file share an id otherwise (#4415).
+            id = python_underscore_salted_nid(&id, &name, &self.csharp_type_groups);
+        }
         // Python nested classes are qualified by their class (0.9.81, #4228).
         if self.is("python")
             && let Some(parent) = parent
@@ -371,11 +367,15 @@ impl<'a, 't> Engine<'a, 't> {
                         } else {
                             0
                         };
-                        let generic = make_id([
-                            self.stem.as_str(),
-                            self.namespace.join(".").as_str(),
-                            format!("{name}`{arity}").as_str(),
-                        ]);
+                        let generic = python_underscore_salted_nid(
+                            &make_id([
+                                self.stem.as_str(),
+                                self.namespace.join(".").as_str(),
+                                format!("{name}`{arity}").as_str(),
+                            ]),
+                            &name,
+                            &self.csharp_type_groups,
+                        );
                         let target = if arity > 0 && self.seen.contains(&generic) {
                             generic
                         } else {
@@ -1014,7 +1014,11 @@ impl<'a, 't> Engine<'a, 't> {
             {
                 let name = self.text(name);
                 if !name.is_empty() {
-                    let id = make_id([parent, name.as_str()]);
+                    let id = python_underscore_salted_nid(
+                        &make_id([parent, name.as_str()]),
+                        &name,
+                        &self.csharp_member_groups,
+                    );
                     if !self.seen.contains(&id) {
                         self.add_node(&id, &name, line, None, Value::Null);
                         self.edge(parent, &id, "defines", line, Some("field"), Value::Null);
@@ -1049,12 +1053,18 @@ impl<'a, 't> Engine<'a, 't> {
                     } else {
                         vec![]
                     };
-                    // `name[]` types an element, for `_items[i].M()` (#4246).
+                    // `name[]` types an element, for `_items[i].M()` (#4246);
+                    // `name{}` (`name.Values{}`, `name.Keys{}`) what a
+                    // `foreach` over it yields (0.9.90).
                     let elem = csharp_element_type_name(Some(ty), self.source);
+                    let loops = csharp_loop_element_types(Some(ty), self.source);
                     for name in names {
                         let table = self.field_table(parent);
                         if let Some(elem) = &elem {
                             table.insert(format!("{name}[]"), elem.clone());
+                        }
+                        for (suffix, elem) in &loops {
+                            table.insert(format!("{name}{suffix}{{}}"), elem.clone());
                         }
                         table.insert(name, recv.clone());
                     }

@@ -55,7 +55,7 @@ operations through the extension registry (`src/extension.rs`).
   provider permission mode ("is not part of Graphicle Core"), while it still enforces
   the provider permissions an existing store holds.
 - `build.info` reports the edition and its capabilities, and
-  `graphicle --version` prints it (`graphicle 0.1.0 (core)`).
+  `graphicle --version` prints it (`graphicle 0.1.1 (core)`).
 - A store keeps every table when either edition opens it, and Core keeps the
   other edition's guarantees on a store it has used (`src/store_compat.rs`).
 
@@ -121,8 +121,9 @@ The one server also answers the graph engine's navigation tools under
 Graphify's names (`query_graph`, `get_node`, `get_neighbors`, `get_community`,
 `god_nodes`, `graph_stats`, `shortest_path`) and its six resources, on the
 project's recorded code graph, with the engine's text followed by a short
-citations block and, in `structuredContent`, the `stable_id`, episode and
-checked `file:` range of each node an answer names. The service's own
+citations block; `structuredContent` adds the `stable_id`, episode and
+checked `file:` range of each node an answer names (with `--tools
+essentials`, only for a call that passes `structured: true`). The service's own
 statistics tool is `graph_history_stats`. `mcp --tools graph|memory` serves one
 half (graph: every tool that reads the code graph), `--set
 graph_retrieval=false` fixes a recall switch for the session, and

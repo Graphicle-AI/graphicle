@@ -21,17 +21,24 @@ def response(backend,answer,inp=23,out=31,finish='stop',null_usage=False):
         return {'content':[{'type':'thinking','thinking':'untrusted reasoning'}, {'type':'text','text':text}],'usage':{'input_tokens':inp,'output_tokens':out},'stop_reason':'max_tokens' if finish=='length' else 'end_turn'}
     if backend=='bedrock':
         return {'output':{'message':{'role':'assistant','content':[{'reasoningContent':{'reasoningText':{'text':'reasoning','signature':'fixture'}}},{'text':text}]}},'usage':{'inputTokens':inp,'outputTokens':out,'totalTokens':None if null_usage else inp+out},'stopReason':'max_tokens' if finish=='length' else 'end_turn','metrics':{'latencyMs':1}}
+    if backend=='ollama-native':
+        # 0.9.91 (#4413): Ollama's native /api/chat reply.
+        return {'message':{'role':'assistant','content':text},'prompt_eval_count':inp,'eval_count':out,'done_reason':'length' if finish=='length' else 'stop'}
     if backend=='claude-cli':
         return {'type':'result','result':text,'usage':{'input_tokens':inp-5,'cache_read_input_tokens':3,'cache_creation_input_tokens':2,'output_tokens':out},'modelUsage':{'fixture-cli-model':{}},'stop_reason':'max_tokens' if finish=='length' else 'end_turn'}
     return {'choices':[{'message':{'role':'assistant','content':text},'finish_reason':finish}], 'usage':{'prompt_tokens':inp,'completion_tokens':out}}
 
 def python_provider(backend,env,backends,answer,*,plain,model,root,files,prompt,null_usage=False):
     import openai,anthropic,boto3,botocore.config
-    captured={};resp=response(backend,answer,null_usage=null_usage)
+    # 0.9.91 (#4413): Ollama goes to /api/chat through the OpenAI client's post()
+    # unless the provider sets its own extra_body.
+    native_chat=backend=='ollama' and backends[backend].get('extra_body') is None
+    captured={};resp=response('ollama-native' if native_chat else backend,answer,null_usage=null_usage)
     def create(**kwargs):captured['body']=kwargs;return obj(resp)
+    def post(path,*,body,cast_to):captured['url']=path;captured['body']=body;return copy.deepcopy(resp)
     def factory(**kwargs):
         captured['client']=kwargs
-        return types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)),messages=types.SimpleNamespace(create=create))
+        return types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)),messages=types.SimpleNamespace(create=create),post=post)
     def session(**kwargs):
         captured['session']=kwargs
         def client(*args,**kwargs):
@@ -88,6 +95,9 @@ def check_providers(root):
                 else:
                     body=copy.deepcopy(captured['body']);body.update(body.pop('extra_body',{}))
                     if encode(body)!=sent['body']:native.fail(function='provider_request',backend=backend,plain=plain,variant=variant,expected=encode(body),actual=sent)
+                    if 'url' in captured:
+                        if sent.get('url')!=captured['url']:native.fail(function='ollama_native_url',plain=plain,variant=variant,expected=captured['url'],actual=sent)
+                        counts['ollama_native_requests']=counts.get('ollama_native_requests',0)+1
                     if backend=='bedrock':
                         config=captured['aws_client']['config']
                         if sent['timeout']!=config.read_timeout or sent['retries']!=config.retries['max_attempts']:native.fail(function='bedrock_configuration',actual=sent)
@@ -179,9 +189,12 @@ def check_http(root):
             body=json.loads(self.rfile.read(int(self.headers['content-length'])));logs.append({'path':self.path,'body':body,'headers':dict(self.headers)})
             if control['delay']:time.sleep(control['delay'])
             status=control['status']
+            native_chat=self.path.endswith('/api/chat')
+            if native_chat and control.get('no_native_chat'):status=404
             if control['remaining_failures']:
                 control['remaining_failures']-=1;status=429
-            value=response(control['backend'],answer) if status==200 else {'error':{'message':'fixture refusal'},'message':'fixture refusal'}
+            value=response('ollama-native' if native_chat else control['backend'],answer) if status==200 else {'error':{'message':'fixture refusal'},'message':'fixture refusal'}
+            if status==404:value={'error':'404 page not found'}
             data=json.dumps(value).encode();self.send_response(status);self.send_header('content-type','application/json');self.send_header('content-length',str(len(data)))
             if status==429:self.send_header('retry-after-ms','1')
             self.end_headers()
@@ -200,7 +213,18 @@ def check_http(root):
             assert not actual.get('error'),actual
             assert len(logs)==before+1,(backend,logs[before:])
             if backend=='bedrock':assert logs[-1]['path']=='/model/fixture-model/converse' and any(k.lower()=='authorization' for k in logs[-1]['headers'])
+            # 0.9.91 (#4413): num_ctx and num_predict reach Ollama through /api/chat.
+            if backend=='ollama':assert logs[-1]['path']=='/api/chat' and logs[-1]['body']['options']['num_ctx']>=8192 and logs[-1]['body']['stream'] is False,logs[-1]
             counts['native_http_calls']=counts.get('native_http_calls',0)+1
+        # A /v1-only server 404s on /api/chat: one fallback to /v1, then /v1 straight away.
+        control.update(backend='ollama',status=200,no_native_chat=True)
+        env={**KEYS,'GRAPHIFY_MAX_RETRIES':'0'};backends=copy.deepcopy(BASE);backends['ollama']['base_url']=endpoint+'/v1'
+        for expected_paths in [['/api/chat','/v1/chat/completions'],['/v1/chat/completions']]:
+            before=len(logs)
+            actual=raw('send_plan',backend='ollama',user_message='Fallback fixture',model='fixture-model',env=env,backends=backends,execute=True)
+            assert not actual.get('error') and [entry['path'] for entry in logs[before:]]==expected_paths,(actual,logs[before:])
+            counts['native_http_calls']+=len(expected_paths)
+        control['no_native_chat']=False
         control.update(backend='openai',remaining_failures=1,status=200)
         env={**KEYS,'GRAPHIFY_MAX_RETRIES':'1'};backends=copy.deepcopy(BASE);backends['openai']['base_url']=endpoint
         before=len(logs);actual=raw('send_plan',backend='openai',user_message='Retry fixture',env=env,backends=backends,execute=True)

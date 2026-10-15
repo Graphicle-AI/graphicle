@@ -3,6 +3,176 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.1 - unreleased
+
+Every crate is at 0.1.1, and `graphicle --version` prints
+`graphicle 0.1.1 (core)`.
+
+### Code graph
+
+- The engine follows Graphify 0.9.91 (0.1.0 followed 0.9.88): the three
+  releases 0.9.89 to 0.9.91 are ported, and the comparison checks pass
+  against 0.9.91. What changes in the graph:
+  - Go: a package type whose methods span several files is one node, and
+    the methods of a generic receiver (`func (b *Box[T])`) attach to `Box`.
+    Member calls on a typed receiver are bound; when the receiver's type is
+    declared in another repository (Go, PHP, TypeScript and JavaScript,
+    Kotlin, Objective-C), the call is bound by `merge-graphs` and
+    `global add`.
+  - C#: `foreach` loop variables are typed; member calls bind only through a
+    typed receiver; names that differ only by `_` or by case keep separate
+    nodes; partial classes merge after colliding ids are separated; `new X()`
+    no longer binds to a method named `X`.
+  - Generic and template type parameters of Kotlin, Scala, C++ and Swift no
+    longer create stub nodes. Objective-C `NS_ENUM` and `NS_OPTIONS` give an
+    enum type with its members. An interface member links to every
+    implementer.
+  - JavaScript and TypeScript: a `.js` import resolves to a `.tsx` source
+    when no `.js` file exists; a file-scope callback's parameters shadow
+    same-named functions; a class field's type is scoped to its class.
+    Python module calls (`mod.func()`) resolve inside methods and nested
+    functions. A Rust `use crate::…::Name` edge lands on the declaration it
+    imports. A symbol whose id spells another file's id keeps its own node.
+  - Jinja templates (`.j2`, `.jinja`, `.jinja2`) are documents. An
+    incremental build keeps an edge between two kept nodes even when its
+    source file was not re-extracted, and sweeps orphaned placeholder nodes.
+    Dedup keeps a document beside a same-named top-level file. A community
+    keeps its curated or LLM label when its members mostly stay, and
+    fallback labels go to `.graphicle_labels.pending.json`.
+  - `hook install` also installs a `post-merge` hook; a read or search nudge
+    names the graph nodes behind it; `pi guard install` adds a Pi guard
+    extension; Ollama requests go to `/api/chat` (with a fallback for
+    servers without it); colliding downloaded captures get numbered names.
+  - The AST cache schema moves to 9, so the first build after upgrading
+    re-extracts. The writer stamp in `graph.json` names 0.9.91.
+- Go call binding reads each `go.mod` once per pass instead of once for
+  every candidate of every Go call.
+
+### How the engine holds its data
+
+- During assembly, the per-file results, their raw calls and the edges are
+  compact records, each value stored once in a table they share, instead of
+  one JSON object each. The resolvers, the build, `graph.json`'s writer and
+  the update path read them in place; the Java type passes borrow them
+  instead of copying them.
+- Community detection runs on the graph itself instead of on two copies of
+  it; call binding and the member-call resolvers keep compact pair tables;
+  the graph's indices and adjacency rows are compact; an update keeps its
+  stored graph out of memory once it has read it; the per-file records are
+  freed after the last pass that reads them, and freed pages go back to the
+  system at stage boundaries.
+- None of this changes the graph: on the repositories checked, `graph.json`
+  is byte-identical with and without these changes. The graph changes under
+  Code graph come from following Graphify 0.9.91.
+
+### Agents and setup
+
+Less fixed text in every agent request. In a pre-registered test of 0.1.0
+(100 SWE-bench Verified tasks, Claude Code), the agents never called
+Graphicle's tools, and setup's text was in every request. 0.1.1 makes no
+token or accuracy claim; it trims that text.
+
+- `graphicle setup` gives Claude Code five tools instead of 25:
+  `query_graph`, `get_node`, `get_neighbors`, `recall_project` and
+  `read_project_source` (`graphicle mcp --tools essentials`). Claude Code
+  shows the names of a server's tools and its instructions in every request,
+  and loads a tool only when the agent searches for it. The five come with
+  one sentence of instructions on when to call them; their descriptions
+  start with what an agent looks for and say how answers cite code.
+  `setup --tools all` gives Claude Code every tool, as 0.1.0 did; the other
+  clients keep every tool.
+- The guard hooks that point Claude Code's searches to the graph tools are
+  off unless asked for: `setup --guards` (or `connect --guards`). Running
+  setup again without it removes the guard hooks an earlier setup installed.
+- The Graphicle section of `AGENTS.md` and `CLAUDE.md` is two lines. Setup
+  adds none when Claude Code is the only agent connected; a section an
+  earlier setup wrote is kept and brought up to date. `setup --tools all`
+  writes 0.1.0's section, whichever agents are connected.
+- `graphicle graph benchmark` calls its figure what it is: the size of the
+  whole corpus over the size of one graph answer, a size ratio, not what an
+  agent saves. Its JSON keeps Graphify's field names.
+- Claude Code's session-start hook prints nothing when the project has no
+  reviewed memory, no open work and no stale memory.
+- `graphicle connect claude-code` without `--tools` keeps an existing entry
+  of the same store and project whatever its tool set, such as 0.1.0's
+  setup's or `setup --tools all`'s, instead of refusing it. `doctor --fix`
+  brings back an entry that names no `--tools`, or is gone, as the whole
+  server.
+- `setup --tools all --guards` restores 0.1.0's setup for Claude Code (every
+  tool, 0.1.0's instructions and replies, the guard hooks, 0.1.0's
+  `AGENTS.md` section) except for two things: the session-start hook still
+  prints nothing when there is nothing reviewed, open or stale (0.1.0
+  printed the last captured turns), and `graphicle context` in a terminal
+  still puts test files last by default (`include_tests: true` through
+  `graphicle call context` gives 0.1.0's order). A call that passes
+  `structured` to recall or a graph tool, which 0.1.0 refused, is
+  accepted and changes nothing.
+
+### Context and recall
+
+- `context`, and `recall_project` in the essentials set, present excerpts
+  of test files after the other excerpts unless the question names a test
+  file or a test identifier (`tests/...`, `test_x`, `x_test.py`,
+  `conftest.py`, `TestX`). A test file is one in a `test`, `tests` or
+  `testing` folder, or a `test_*`, `*_test.py`, `*_tests.py` or
+  `conftest.py` file; other languages' test names (`x_test.go`,
+  `x.spec.ts`) are not moved. Only the order changes: the budget goes to
+  the excerpts in rank order first, so a packet holds the same excerpts as
+  0.1.0's. The new `include_tests` argument of `context` (`graphicle call
+  context --arguments`, the HTTP API) sets this per call: `"auto"` (the
+  default), `false` (always after) or `true` (0.1.0's order), and the
+  packet's `test_files` says what applied.
+- With `--tools essentials`, `recall_project` answers with the packet's
+  Markdown only, at most 12,000 characters (room is kept for the line that
+  lists the `needs` the excerpts do not cover), and the graph tools with
+  their text and citations, without a `structuredContent` copy.
+  `structured: true` returns 0.1.0's reply; the Python SDK asks for it.
+  Every other set (`--tools all`, which the other clients and `graphicle
+  serve` get by default, `graph` and `memory`) answers exactly as 0.1.0
+  did: the same reply, recall at the budget asked for and in 0.1.0's
+  order.
+
+### Security
+
+- rustls 0.23.46, which fixes RUSTSEC-2026-0346, RUSTSEC-2026-0347,
+  RUSTSEC-2026-0348 and RUSTSEC-2026-0349 (TLS, published on 14 October
+  2026). Only the lock files change.
+
+### Windows (preview)
+
+- Release archives for Windows on x86-64,
+  `graphicle-<version>-x86_64-pc-windows-msvc.zip`, with `graphicle.exe` and
+  `graphicle-graph.exe`. The programs link the C runtime statically, so they
+  run without the Visual C++ runtime; the release build checks that they
+  import Windows system libraries only.
+- `install.ps1` installs both programs from PowerShell (Windows PowerShell 5.1
+  or PowerShell 7) into `%LOCALAPPDATA%\Programs\Graphicle\bin`, checks the
+  archive's SHA-256 first, adds the folder to the user `PATH` and needs no
+  administrator rights. Run again, it replaces programs that are running.
+- Continuous integration builds and lints each crate on Windows and runs its
+  tests.
+- `docs/install.md` covers installing and building on Windows, what the
+  preview leaves out, and troubleshooting. Without Python 3.14 or the
+  `zstd` program, `prepare_parser_sources.py` on Windows suggests
+  `py -m pip install zstandard`.
+- The engine and the `graphicle` program on Windows: one path spelling with
+  `/` in the paths the engine reports, path comparisons that ignore case and
+  `\\?\` prefixes, network-share (UNC) roots, Graphify's Windows lock for
+  rebuilds started by Git hooks, Ctrl+C and Ctrl+Break handling, and colour
+  only where the console supports it.
+- On Windows, `graphicle` keeps its data in `%LOCALAPPDATA%\Graphicle`, finds
+  the settings of Claude Desktop (including its Microsoft Store build) and
+  VS Code in their Windows folders, finds programs with the extensions in
+  `PATHEXT`, and starts background work without a console window.
+- On Windows, the memory library reads a source named in a graph only when
+  its path stays inside the project folder: no drive, network-share, rooted
+  or `..` paths.
+
+### Other changes
+
+- The repository's `.gitattributes` checks text files out with LF line
+  endings on every system.
+
 ## 0.1.0 - 2026-10-14
 
 The first public release. Every crate is at 0.1.0, and

@@ -1,6 +1,7 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cache.py, graphify/extract.py
 //! Portable source and identifier transforms from graphify/cache.py.
+#[cfg_attr(windows, allow(unused_imports))]
 use crate::{Result, fsutil, ids, paths, python_compat};
 use serde_json::{Value, json};
 use std::{
@@ -28,15 +29,7 @@ pub fn resolve(p: &Path) -> Result<PathBuf> {
     fsutil::resolve_missing(p).map_err(crate::Error::from)
 }
 pub fn normalize(p: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        let s = p.to_string_lossy().replace('/', "\\");
-        PathBuf::from(s.strip_prefix("\\\\?\\").unwrap_or(&s).to_lowercase())
-    }
-    #[cfg(not(windows))]
-    {
-        p.into()
-    }
+    fsutil::path_key(p)
 }
 pub fn absolute(p: &Path) -> Result<PathBuf> {
     let p = if p.is_absolute() {
@@ -51,7 +44,7 @@ pub fn absolute(p: &Path) -> Result<PathBuf> {
     #[cfg(windows)]
     {
         let mut out = PathBuf::new();
-        for part in p.components() {
+        for part in fsutil::plain(&p).components() {
             match part {
                 std::path::Component::CurDir => (),
                 std::path::Component::ParentDir => {
@@ -68,10 +61,21 @@ pub fn relative(path: &Path, base: &Path) -> Result<String> {
     let b = absolute(base)?;
     let p = p.components().collect::<Vec<_>>();
     let b = b.components().collect::<Vec<_>>();
-    if p.first() != b.first() {
+    // Windows compares components case-insensitively, as `PureWindowsPath` does.
+    #[cfg(windows)]
+    let same = |a: &std::path::Component, b: &std::path::Component| {
+        fsutil::path_key(Path::new(a.as_os_str())) == fsutil::path_key(Path::new(b.as_os_str()))
+    };
+    #[cfg(not(windows))]
+    let same = |a: &std::path::Component, b: &std::path::Component| a == b;
+    let same_root = match (p.first(), b.first()) {
+        (Some(x), Some(y)) => same(x, y),
+        (x, y) => x.is_none() && y.is_none(),
+    };
+    if !same_root {
         return Err("Paths are on different roots".into());
     }
-    let common = p.iter().zip(&b).take_while(|(a, b)| a == b).count();
+    let common = p.iter().zip(&b).take_while(|(a, b)| same(a, b)).count();
     let mut out = PathBuf::new();
     for _ in common..b.len() {
         out.push("..")
@@ -102,6 +106,11 @@ pub fn stat_absolute(key: &str, anchor: &Path) -> String {
     })
 }
 pub fn normalize_source(src: &str, root: &Path) -> String {
+    // `\\?\C:\x` would become `//?/C:/x`, a UNC path on Windows.
+    #[cfg(windows)]
+    let stripped = crate::path_syntax::strip_verbatim(src);
+    #[cfg(windows)]
+    let src: &str = &stripped;
     let s = src.replace('\\', "/");
     if !Path::new(&s).is_absolute() {
         return s;
@@ -485,6 +494,18 @@ pub fn scope(
             {
                 let display = matcher.normalized(src);
                 if !allowed.contains(&matcher.identity(&display)?) {
+                    // An edge whose own file is out of scope stays when both
+                    // endpoints are kept nodes (#2276); nodes are processed
+                    // first, so kept_ids is complete here.
+                    if bucket == "edges"
+                        && hash_key(item.get("source").unwrap_or(&Value::Null))
+                            .is_some_and(|k| kept_ids.contains(&k))
+                        && hash_key(item.get("target").unwrap_or(&Value::Null))
+                            .is_some_and(|k| kept_ids.contains(&k))
+                    {
+                        kept.push(item.clone());
+                        continue;
+                    }
                     dropped_files.insert(display);
                     dropped += 1;
                     if bucket == "nodes"

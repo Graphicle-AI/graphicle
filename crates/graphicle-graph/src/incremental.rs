@@ -1194,11 +1194,9 @@ mod tests {
             let mut expected = extract::extract(&paths, &options).unwrap();
             order(&mut expected);
             assert_eq!(actual, expected);
-            assert!(
-                actual
-                    .to_string()
-                    .contains(&root.path().to_string_lossy().to_string())
-            );
+            // As JSON text spells it: Windows backslashes are escaped there.
+            let literal = Value::from(root.path().to_string_lossy()).to_string();
+            assert!(actual.to_string().contains(literal.trim_matches('"')));
         }
     }
     #[test]

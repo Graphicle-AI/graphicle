@@ -10,11 +10,19 @@ target, packages them with `release_build.py` and publishes the GitHub release.
 | `x86_64-apple-darwin` | macos-15-intel | macOS 11 or later, Intel |
 | `x86_64-unknown-linux-gnu` | ubuntu-22.04 | Linux with glibc 2.35 or later |
 | `aarch64-unknown-linux-gnu` | ubuntu-22.04-arm | Linux with glibc 2.35 or later |
+| `x86_64-pc-windows-msvc` | windows-2022 | Windows on x86-64 (preview) |
 
 Each archive, `graphicle-<version>-<target>.tar.gz`, holds a folder of the same
 name with both programs, `LICENSE`, `NOTICE`, `README.md`, `CHANGELOG.md`,
 `NOTICE.md` and `licenses/`. The release also carries a `.sha256` file per archive,
-`SHA256SUMS`, `install.sh` and the Homebrew formula `graphicle.rb`.
+`SHA256SUMS`, `install.sh`, `install.ps1` and the Homebrew formula `graphicle.rb`.
+
+For Windows the archive is a `.zip` (`graphicle-<version>-x86_64-pc-windows-msvc.zip`)
+with `graphicle.exe` and `graphicle-graph.exe`. The workflow builds them with
+`RUSTFLAGS="-C target-feature=+crt-static"`, so they need no Visual C++ runtime,
+and `release_build.py` fails if a program imports anything but Windows system
+libraries. `python3 packaging/test_release_build.py` tests that check and the
+`.zip` writer on any system.
 
 ## Steps
 

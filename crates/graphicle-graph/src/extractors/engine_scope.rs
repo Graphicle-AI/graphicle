@@ -1,7 +1,8 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Binding and receiver scopes from graphify/extractors/engine.py.
 use super::{base::read_text, engine_types::*, models::LanguageConfig};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::Node;
 pub fn python_collect_assignment_targets(
@@ -788,6 +789,106 @@ pub fn csharp_element_type_name(type_node: Option<Node<'_>>, source: &[u8]) -> O
     }
     Some(name)
 }
+const CSHARP_LOOP_SEQUENCES: &[&str] = &[
+    "List",
+    "IList",
+    "IReadOnlyList",
+    "IEnumerable",
+    "ICollection",
+    "IReadOnlyCollection",
+    "HashSet",
+    "ISet",
+    "SortedSet",
+    "Queue",
+    "Stack",
+    "LinkedList",
+];
+const CSHARP_LOOP_DICTIONARIES: &[&str] = &[
+    "Dictionary",
+    "IDictionary",
+    "IReadOnlyDictionary",
+    "SortedDictionary",
+    "SortedList",
+    "ConcurrentDictionary",
+];
+/// `_csharp_loop_element_types` (0.9.90): what a `foreach` over a field or
+/// property of this type yields, by iterated suffix: `""` for `T[]` or a
+/// sequence of T, `.Keys`/`.Values` for a dictionary's keys and values.
+/// Iterating a dictionary itself (`KeyValuePair`), nested collections, type
+/// parameters and primitives are left out.
+pub fn csharp_loop_element_types(
+    type_node: Option<Node<'_>>,
+    source: &[u8],
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(node) = type_node else { return out };
+    let (args, suffixes): (Vec<Option<Node<'_>>>, &[&str]) = match node.kind_name() {
+        "array_type" => (vec![node.child_by_field_name("type")], &[""]),
+        "generic_name" => {
+            let info = read_csharp_type_name(Some(node), source);
+            let args = first_child(node, &["type_argument_list"])
+                .map(named)
+                .unwrap_or_default()
+                .into_iter()
+                .map(Some)
+                .collect::<Vec<_>>();
+            let name = info.map(|(name, _, _)| name).unwrap_or_default();
+            if CSHARP_LOOP_SEQUENCES.contains(&name.as_str()) && args.len() == 1 {
+                (args, &[""])
+            } else if CSHARP_LOOP_DICTIONARIES.contains(&name.as_str()) && args.len() == 2 {
+                (args, &[".Keys", ".Values"])
+            } else {
+                return out;
+            }
+        }
+        _ => return out,
+    };
+    let params = csharp_type_parameters_in_scope(node, source);
+    for (suffix, arg) in suffixes.iter().zip(args) {
+        let Some(arg) = arg.filter(|a| {
+            matches!(
+                a.kind_name(),
+                "identifier" | "qualified_name" | "generic_name"
+            )
+        }) else {
+            continue;
+        };
+        if let Some(name) = csharp_receiver_type_name(Some(arg), source).filter(|name| {
+            !params.contains(name)
+                && !CSHARP_LOOP_SEQUENCES.contains(&name.as_str())
+                && !CSHARP_LOOP_DICTIONARIES.contains(&name.as_str())
+        }) {
+            out.insert(suffix.to_string(), name);
+        }
+    }
+    out
+}
+/// `_csharp_loop_source`: `(field, suffix)` for a `foreach` over `f`,
+/// `this.f`, `f.Values` or `f.Keys`; None for anything else.
+pub fn csharp_loop_source(expr: Option<Node<'_>>, source: &[u8]) -> Option<(String, String)> {
+    let expr = expr?;
+    if expr.kind_name() == "identifier" {
+        return Some((read_text(expr, source), String::new()));
+    }
+    if expr.kind_name() != "member_access_expression" {
+        return None;
+    }
+    let inner = expr.child_by_field_name("expression")?;
+    let name = expr
+        .child_by_field_name("name")
+        .filter(|n| n.kind_name() == "identifier")?;
+    let member = read_text(name, source);
+    if matches!(inner.kind_name(), "this" | "this_expression") {
+        return Some((member, String::new()));
+    }
+    if matches!(member.as_str(), "Values" | "Keys")
+        && let Some((root, suffix)) = csharp_loop_source(Some(inner), source)
+        && suffix.is_empty()
+    {
+        return Some((root, format!(".{member}")));
+    }
+    None
+}
 /// `_csharp_return_info` (0.9.87, #4266): `[return type, type-parameter
 /// count]` of a C# method. The return type is the class a receiver of that
 /// type would carry, `"#i"` for the method's own i-th type parameter, or null
@@ -918,6 +1019,10 @@ pub fn csharp_method_receiver_types(
         poisoned: BTreeSet::new(),
         fields,
     };
+    // `foreach (var x in field)` loops, typed once every local is bound, so a
+    // local or parameter shadowing the field is seen wherever it is declared
+    // (0.9.90): (loop variable, field, suffix, foreach node).
+    let mut pending_loops = vec![];
     let body = method.child_by_field_name("body");
     let param_scope = body.unwrap_or(method);
     if let Some(params) = method.child_by_field_name("parameters") {
@@ -1018,6 +1123,34 @@ pub fn csharp_method_receiver_types(
                     }
                 }
             }
+            "foreach_statement" => {
+                // The loop variable is visible inside the loop: its explicit
+                // type, or for `var` the element type of the field or
+                // property it iterates (typed after the walk).
+                if let Some(left) = n
+                    .child_by_field_name("left")
+                    .filter(|l| l.kind_name() == "identifier")
+                {
+                    let loop_type =
+                        csharp_receiver_type_name(n.child_by_field_name("type"), source);
+                    let loop_source = if loop_type.is_some() {
+                        None
+                    } else {
+                        csharp_loop_source(n.child_by_field_name("right"), source)
+                    };
+                    match loop_source {
+                        Some((field, suffix)) => {
+                            pending_loops.push((read_text(left, source), field, suffix, n))
+                        }
+                        None => out.bind(
+                            read_text(left, source),
+                            loop_type.map(CsharpBinding::Type),
+                            n,
+                            None,
+                        ),
+                    }
+                }
+            }
             "declaration_expression" | "declaration_pattern" => {
                 if let Some(name) = n
                     .child_by_field_name("name")
@@ -1043,6 +1176,22 @@ pub fn csharp_method_receiver_types(
             scope
         };
         stack.extend(children(n).into_iter().map(|c| (c, child_scope)));
+    }
+    for (name, field, suffix, node) in pending_loops {
+        let shadowed = out.bindings.get(&field).is_some_and(|scopes| {
+            scopes
+                .iter()
+                .any(|(start, end, _)| *start <= node.start_byte() && node.start_byte() < *end)
+        });
+        let ty = if shadowed {
+            None
+        } else {
+            fields
+                .get(&format!("{field}{suffix}{{}}"))
+                .cloned()
+                .map(CsharpBinding::Type)
+        };
+        out.bind(name, ty, node, None);
     }
     let base = fields
         .iter()
@@ -1078,7 +1227,14 @@ pub fn csharp_scoped_receiver_type(
         winner.2.clone()
     }
 }
-pub fn ts_receiver_type_table(root: Node<'_>, source: &[u8], table: &mut BTreeMap<String, String>) {
+/// TS class field types by `(class name, static)`: name -> type.
+pub type TsFieldTable = BTreeMap<(String, bool), BTreeMap<String, String>>;
+pub fn ts_receiver_type_table(
+    root: Node<'_>,
+    source: &[u8],
+    table: &mut BTreeMap<String, String>,
+    mut field_table: Option<&mut TsFieldTable>,
+) {
     // `: T`: only a single type_identifier names a class.
     let bare = |ann: Node<'_>| {
         let names = named(ann);
@@ -1103,8 +1259,194 @@ pub fn ts_receiver_type_table(root: Node<'_>, source: &[u8], table: &mut BTreeMa
         (idents.len() == 1 && idents.len() + empties == members.len())
             .then(|| read_text(*idents[0], source))
     };
+    // `class Foo { .. }` -> Foo; an unnamed class expression -> None.
+    let class_name = |body: Option<Node<'_>>| {
+        body.filter(|b| b.kind_name() == "class_body")
+            .and_then(|b| b.parent())
+            .and_then(|owner| owner.child_by_field_name("name"))
+            .map(|name| read_text(name, source))
+    };
+    let new_type = |value: Node<'_>| {
+        value
+            .child_by_field_name("constructor")
+            .filter(|c| matches!(c.kind_name(), "identifier" | "type_identifier"))
+            .map(|c| read_text(c, source))
+    };
+    let annotated = |ann: Node<'_>| bare(ann).or_else(|| optional(ann));
+    // Constructor `this.x = ...` assignments, merged after the walk: a
+    // declared field type wins over an assignment.
+    let mut assigned: TsFieldTable = BTreeMap::new();
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
+        if let Some(fields) = field_table.as_deref_mut() {
+            match n.kind_name() {
+                // A class field (`protected repo: Repo`, `#root: Node = new
+                // Node()`, `private logger = new Logger()`) is what
+                // `this.repo.m()` reads, recorded under its own class only;
+                // static fields apart (0.9.91).
+                "public_field_definition" | "field_definition" => {
+                    let owner = class_name(n.parent());
+                    let is_static = children(n).iter().any(|c| c.kind_name() == "static");
+                    if let Some(name_n) = n
+                        .child_by_field_name("name")
+                        .or_else(|| n.child_by_field_name("property"))
+                        .filter(|name| {
+                            matches!(
+                                name.kind_name(),
+                                "property_identifier" | "private_property_identifier"
+                            )
+                        })
+                    {
+                        let ty = match (
+                            n.child_by_field_name("type"),
+                            n.child_by_field_name("value"),
+                        ) {
+                            (Some(ann), _) => annotated(ann),
+                            (None, Some(value)) if value.kind_name() == "new_expression" => {
+                                new_type(value)
+                            }
+                            _ => None,
+                        };
+                        let name = read_text(name_n, source);
+                        if let Some(ty) = ty.filter(|t| !t.is_empty())
+                            && !name.is_empty()
+                        {
+                            match owner {
+                                Some(owner) => {
+                                    fields
+                                        .entry((owner, is_static))
+                                        .or_default()
+                                        .entry(name)
+                                        .or_insert(ty);
+                                }
+                                // An unnamed class has no node to key its
+                                // fields by: keep the file table.
+                                None => {
+                                    table.entry(name).or_insert(ty);
+                                }
+                            }
+                        }
+                    }
+                    stack.extend(children(n));
+                    continue;
+                }
+                "method_definition" => {
+                    let mname = n.child_by_field_name("name");
+                    let owner = class_name(n.parent());
+                    let accessor = children(n)
+                        .into_iter()
+                        .map(|c| c.kind_name())
+                        .find(|k| matches!(*k, "get" | "set"));
+                    if let (Some(mname), Some(owner), Some(accessor)) =
+                        (mname, owner.clone(), accessor)
+                    {
+                        // `get repo(): Repo` / `set repo(r: Repo)` type `this.repo`.
+                        let ty = if accessor == "get" {
+                            n.child_by_field_name("return_type").and_then(annotated)
+                        } else {
+                            n.child_by_field_name("parameters")
+                                .and_then(|ps| {
+                                    named(ps).into_iter().find(|p| {
+                                        matches!(
+                                            p.kind_name(),
+                                            "required_parameter" | "optional_parameter"
+                                        )
+                                    })
+                                })
+                                .and_then(|p| p.child_by_field_name("type"))
+                                .and_then(annotated)
+                        };
+                        if let Some(ty) = ty.filter(|t| !t.is_empty()) {
+                            fields
+                                .entry((owner, false))
+                                .or_default()
+                                .entry(read_text(mname, source))
+                                .or_insert(ty);
+                        }
+                    }
+                    if let (Some(mname), Some(owner)) = (mname, owner)
+                        && read_text(mname, source) == "constructor"
+                    {
+                        // Parameter properties (`constructor(private repo:
+                        // Repo)`) and `this.repo = repo` / `= new Repo()`.
+                        let mut typed: BTreeMap<String, String> = BTreeMap::new();
+                        for p in n
+                            .child_by_field_name("parameters")
+                            .map(named)
+                            .unwrap_or_default()
+                        {
+                            if !matches!(p.kind_name(), "required_parameter" | "optional_parameter")
+                            {
+                                continue;
+                            }
+                            let (Some(pat), Some(ann)) = (
+                                p.child_by_field_name("pattern"),
+                                p.child_by_field_name("type"),
+                            ) else {
+                                continue;
+                            };
+                            if pat.kind_name() != "identifier" {
+                                continue;
+                            }
+                            let Some(ty) = annotated(ann).filter(|t| !t.is_empty()) else {
+                                continue;
+                            };
+                            let pname = read_text(pat, source);
+                            typed.insert(pname.clone(), ty.clone());
+                            if children(p).iter().any(|c| {
+                                matches!(c.kind_name(), "accessibility_modifier" | "readonly")
+                            }) {
+                                fields
+                                    .entry((owner.clone(), false))
+                                    .or_default()
+                                    .entry(pname)
+                                    .or_insert(ty);
+                            }
+                        }
+                        for stmt in n.child_by_field_name("body").map(named).unwrap_or_default() {
+                            let expr = (stmt.kind_name() == "expression_statement")
+                                .then(|| named(stmt).into_iter().next())
+                                .flatten()
+                                .filter(|e| e.kind_name() == "assignment_expression");
+                            let Some(expr) = expr else { continue };
+                            let (Some(left), Some(right)) = (
+                                expr.child_by_field_name("left"),
+                                expr.child_by_field_name("right"),
+                            ) else {
+                                continue;
+                            };
+                            if left.kind_name() != "member_expression" {
+                                continue;
+                            }
+                            let (Some(obj), Some(prop)) = (
+                                left.child_by_field_name("object"),
+                                left.child_by_field_name("property"),
+                            ) else {
+                                continue;
+                            };
+                            if obj.kind_name() != "this" {
+                                continue;
+                            }
+                            let ty = match right.kind_name() {
+                                "identifier" => typed.get(&read_text(right, source)).cloned(),
+                                "new_expression" => new_type(right),
+                                _ => None,
+                            };
+                            if let Some(ty) = ty.filter(|t| !t.is_empty()) {
+                                assigned
+                                    .entry((owner.clone(), false))
+                                    .or_default()
+                                    .entry(read_text(prop, source))
+                                    .or_insert(ty);
+                            }
+                        }
+                    }
+                    stack.extend(children(n));
+                    continue;
+                }
+                _ => {}
+            }
+        }
         let binding = match n.kind_name() {
             "variable_declarator" => n
                 .child_by_field_name("name")
@@ -1158,6 +1500,135 @@ pub fn ts_receiver_type_table(root: Node<'_>, source: &[u8], table: &mut BTreeMa
         }
         stack.extend(children(n));
     }
+    if let Some(fields) = field_table {
+        for (class, names) in assigned {
+            let table = fields.entry(class).or_default();
+            for (name, ty) in names {
+                table.entry(name).or_insert(ty);
+            }
+        }
+    }
+}
+/// `_ts_attach_class_fields` (0.9.91): each class's field types on its node
+/// as `_ts_fields` / `_ts_static_fields`. Node ids are case-folded, so a
+/// class and a same-named binding are one node; classes are matched by the
+/// folded name, and two classes folding together keep only the fields they
+/// type alike.
+pub fn ts_attach_class_fields(nodes: &mut [Value], fields: &TsFieldTable, path: &str) {
+    let fold = |label: &str| {
+        label
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_lowercase()
+    };
+    let mut by_key: BTreeMap<(String, bool), BTreeMap<String, String>> = BTreeMap::new();
+    for ((class, is_static), names) in fields {
+        let merged = by_key.entry((fold(class), *is_static)).or_default();
+        for (name, ty) in names {
+            let keep = merged.get(name).is_none_or(|t| t == ty);
+            merged.insert(name.clone(), if keep { ty.clone() } else { String::new() });
+        }
+    }
+    if by_key.is_empty() {
+        return;
+    }
+    for node in nodes.iter_mut() {
+        if node["source_file"].as_str() != Some(path) {
+            continue;
+        }
+        let label = fold(node["label"].as_str().unwrap_or(""));
+        for (is_static, attr) in [(false, "_ts_fields"), (true, "_ts_static_fields")] {
+            let kept = by_key
+                .get(&(label.clone(), is_static))
+                .into_iter()
+                .flatten()
+                .filter(|(_, ty)| !ty.is_empty())
+                .map(|(name, ty)| (name.clone(), Value::String(ty.clone())))
+                .collect::<serde_json::Map<_, _>>();
+            if !kept.is_empty() {
+                node[attr] = Value::Object(kept);
+            }
+        }
+    }
+}
+const TS_FUNCTION_NODES: &[&str] = &[
+    "arrow_function",
+    "method_definition",
+    "function_declaration",
+    "function_expression",
+    "generator_function_declaration",
+    "generator_function",
+];
+/// `_ts_in_static_method`: whether `node` runs in a `static` method, where
+/// `this` is the class. Arrow functions keep the enclosing `this`.
+pub fn ts_in_static_method(node: Node<'_>) -> bool {
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if n.kind_name() == "method_definition" {
+            return children(n).iter().any(|c| c.kind_name() == "static");
+        }
+        if TS_FUNCTION_NODES.contains(&n.kind_name()) && n.kind_name() != "arrow_function" {
+            return false;
+        }
+        current = n.parent();
+    }
+    false
+}
+/// `_ts_field_destructured_from_this`: the `this` field `name` was
+/// destructured from (`const { creator } = this`, `const { creator: c } =
+/// this`) in the function around the call, or around an arrow function
+/// holding it; the search stops at the first function binding its own `this`.
+pub fn ts_field_destructured_from_this(
+    ident: Node<'_>,
+    name: &str,
+    source: &[u8],
+) -> Option<String> {
+    let mut current = ident.parent();
+    while let Some(node) = current {
+        if TS_FUNCTION_NODES.contains(&node.kind_name()) {
+            let mut stack = node
+                .child_by_field_name("body")
+                .into_iter()
+                .collect::<Vec<_>>();
+            while let Some(n) = stack.pop() {
+                if n.kind_name() == "variable_declarator"
+                    && let (Some(pattern), Some(value)) = (
+                        n.child_by_field_name("name"),
+                        n.child_by_field_name("value"),
+                    )
+                    && pattern.kind_name() == "object_pattern"
+                    && value.kind_name() == "this"
+                {
+                    for p in named(pattern) {
+                        if p.kind_name() == "shorthand_property_identifier_pattern"
+                            && read_text(p, source) == name
+                        {
+                            return Some(name.to_string());
+                        }
+                        if p.kind_name() == "pair_pattern"
+                            && let (Some(key), Some(val)) =
+                                (p.child_by_field_name("key"), p.child_by_field_name("value"))
+                            && val.kind_name() == "identifier"
+                            && read_text(val, source) == name
+                        {
+                            return Some(read_text(key, source));
+                        }
+                    }
+                }
+                stack.extend(
+                    children(n)
+                        .into_iter()
+                        .filter(|c| !TS_FUNCTION_NODES.contains(&c.kind_name())),
+                );
+            }
+            if node.kind_name() != "arrow_function" {
+                return None;
+            }
+        }
+        current = node.parent();
+    }
+    None
 }
 /// `_ts_mark_public_twins` (0.9.87, #4298): a class's `foo` and `#foo` share
 /// one member node (ids drop `#`). The node is marked `_ts_public_twin` only

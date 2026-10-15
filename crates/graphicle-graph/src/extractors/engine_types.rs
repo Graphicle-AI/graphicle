@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Type, annotation and receiver helpers from the pinned generic engine.
 use super::base::{make_id, read_text};
@@ -182,6 +182,134 @@ pub fn python_collect_type_refs(
             }
         }
     }
+}
+/// Declared-name groups: plain id -> the distinct names minting it.
+pub type NameGroups = BTreeMap<String, BTreeSet<String>>;
+const CSHARP_TYPE_DECLARATIONS: &[&str] = &[
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "struct_declaration",
+    "record_declaration",
+];
+/// `_csharp_type_name_for_id` (#4249): a generic type's id folds its arity
+/// in (`` Effect`1 ``); arity 0 is the bare name.
+pub fn csharp_type_name_for_id(node: Node<'_>, class_name: &str) -> String {
+    let arity = children(node)
+        .into_iter()
+        .filter(|c| c.kind_name() == "type_parameter_list")
+        .flat_map(children)
+        .filter(|p| matches!(p.kind_name(), "type_parameter" | "identifier"))
+        .count();
+    if arity > 0 {
+        format!("{class_name}`{arity}")
+    } else {
+        class_name.to_string()
+    }
+}
+/// `_csharp_namespace_name`.
+fn csharp_namespace_name(node: Node<'_>, source: &[u8]) -> String {
+    if let Some(name) = node.child_by_field_name("name") {
+        return read_text(name, source).trim().to_string();
+    }
+    children(node)
+        .into_iter()
+        .find(|c| matches!(c.kind_name(), "identifier" | "qualified_name"))
+        .map(|c| read_text(c, source).trim().to_string())
+        .unwrap_or_default()
+}
+/// `_csharp_pre_scan_name_collisions` (0.9.90, #4415): C# names that differ
+/// only by `_` or case (`Action()`/`_Action()`, `Pair`/`_Pair`) mint one id,
+/// so the second declaration was dropped. Returns `(type_groups,
+/// member_groups)` for the ids two or more distinct names share; types keyed
+/// as the walk mints them, members (methods, properties, enum members) under
+/// their type's final (already salted) id. Overloads are one name.
+pub fn csharp_pre_scan_name_collisions(
+    root: Node<'_>,
+    source: &[u8],
+    stem: &str,
+) -> (NameGroups, NameGroups) {
+    fn visit<'a>(
+        n: Node<'a>,
+        ns: &[String],
+        source: &[u8],
+        stem: &str,
+        types: &mut NameGroups,
+        decls: &mut Vec<(Node<'a>, String, String)>,
+    ) {
+        let mut scoped = ns.to_vec();
+        for c in children(n) {
+            let kind = c.kind_name();
+            if kind == "namespace_declaration" {
+                let name = csharp_namespace_name(c, source);
+                if let Some(body) = c.child_by_field_name("body") {
+                    let mut inner = scoped.clone();
+                    if !name.is_empty() {
+                        inner.push(name);
+                    }
+                    visit(body, &inner, source, stem, types, decls);
+                }
+            } else if kind == "file_scoped_namespace_declaration" {
+                // Applies to the rest of the file, as in the walk.
+                let name = csharp_namespace_name(c, source);
+                if !name.is_empty() {
+                    scoped.push(name);
+                }
+            } else if CSHARP_TYPE_DECLARATIONS.contains(&kind) {
+                let name = c
+                    .child_by_field_name("name")
+                    .map(|n| read_text(n, source))
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    let plain = make_id([
+                        stem,
+                        scoped.join(".").as_str(),
+                        csharp_type_name_for_id(c, &name).as_str(),
+                    ]);
+                    types.entry(plain.clone()).or_default().insert(name.clone());
+                    decls.push((c, plain, name));
+                }
+                // Nested types take the namespace, not the enclosing type.
+                visit(c, &scoped, source, stem, types, decls);
+            } else if kind == "declaration_list" || kind.starts_with("preproc_") {
+                visit(c, &scoped, source, stem, types, decls);
+            }
+        }
+    }
+    fn members(n: Node<'_>, type_id: &str, source: &[u8], out: &mut NameGroups) {
+        for c in children(n) {
+            let kind = c.kind_name();
+            if matches!(
+                kind,
+                "method_declaration" | "property_declaration" | "enum_member_declaration"
+            ) {
+                let name = c
+                    .child_by_field_name("name")
+                    .map(|n| read_text(n, source))
+                    .unwrap_or_default();
+                if !name.is_empty() {
+                    out.entry(make_id([type_id, name.as_str()]))
+                        .or_default()
+                        .insert(name);
+                }
+            } else if matches!(kind, "declaration_list" | "enum_member_declaration_list")
+                || kind.starts_with("preproc_")
+            {
+                members(c, type_id, source, out);
+            }
+        }
+    }
+    let mut types = NameGroups::new();
+    let mut decls = vec![];
+    visit(root, &[], source, stem, &mut types, &mut decls);
+    types.retain(|_, names| names.len() >= 2);
+    let mut member_names = NameGroups::new();
+    for (decl, plain, name) in decls {
+        let type_id = python_underscore_salted_nid(&plain, &name, &types);
+        members(decl, &type_id, source, &mut member_names);
+    }
+    member_names.retain(|_, names| names.len() >= 2);
+    (types, member_names)
 }
 pub fn csharp_pre_scan_interfaces(root: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -809,6 +937,84 @@ pub fn php_name_text(node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
         .to_owned();
     (!name.is_empty()).then_some(name)
 }
+/// `_php_declared_type_name` (0.9.89): the single class a PHP type
+/// annotation names (`Greeter`, `?Greeter`); a union, an intersection or a
+/// primitive names no one class.
+pub fn php_declared_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
+    let mut n = node?;
+    if n.kind_name() == "optional_type" {
+        n = named(n).into_iter().next()?;
+    }
+    if n.kind_name() != "named_type" {
+        return None;
+    }
+    php_name_text(first_child(n, &["name", "qualified_name"]), source)
+}
+/// `_php_variable_text`: the bare name a `variable_name` binds (`$g` -> `g`).
+pub fn php_variable_text(node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
+    let n = node.filter(|n| n.kind_name() == "variable_name")?;
+    first_child(n, &["name"]).map(|c| read_text(c, source))
+}
+/// `_php_first_declared_type`: the first single-class annotation among the
+/// node's direct children.
+fn php_first_declared_type(node: Node<'_>, source: &[u8]) -> Option<String> {
+    children(node)
+        .into_iter()
+        .find_map(|c| php_declared_type_name(Some(c), source).filter(|t| !t.is_empty()))
+}
+/// `_php_receiver_type_table` (0.9.89): `name -> TypeName` for every PHP
+/// receiver whose type is written down: a typed property, a constructor
+/// promotion, a typed parameter and `$g = new Greeter()`. File-scoped and
+/// flat; the first binding in source order wins.
+pub fn php_receiver_type_table(
+    root: Node<'_>,
+    source: &[u8],
+    table: &mut BTreeMap<String, String>,
+) {
+    let variable = |n: Node<'_>| {
+        first_child(n, &["variable_name"])
+            .and_then(|c| php_variable_text(Some(c), source))
+            .filter(|t| !t.is_empty())
+    };
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        match n.kind_name() {
+            "property_declaration" => {
+                if let Some(type_name) = php_first_declared_type(n, source) {
+                    for element in children(n)
+                        .into_iter()
+                        .filter(|c| c.kind_name() == "property_element")
+                    {
+                        if let Some(name) = variable(element) {
+                            table.entry(name).or_insert_with(|| type_name.clone());
+                        }
+                    }
+                }
+            }
+            "property_promotion_parameter" | "simple_parameter" => {
+                if let (Some(type_name), Some(name)) =
+                    (php_first_declared_type(n, source), variable(n))
+                {
+                    table.entry(name).or_insert(type_name);
+                }
+            }
+            "assignment_expression" => {
+                if let Some(right) = n
+                    .child_by_field_name("right")
+                    .filter(|r| r.kind_name() == "object_creation_expression")
+                    && let Some(name) = php_variable_text(n.child_by_field_name("left"), source)
+                        .filter(|t| !t.is_empty())
+                    && let Some(type_name) =
+                        php_name_text(first_child(right, &["name", "qualified_name"]), source)
+                {
+                    table.entry(name).or_insert(type_name);
+                }
+            }
+            _ => {}
+        }
+        stack.extend(children(n).into_iter().rev());
+    }
+}
 pub fn php_collect_type_refs(
     node: Option<Node<'_>>,
     source: &[u8],
@@ -1064,12 +1270,65 @@ pub fn kotlin_annotation_class_literal_refs(declaration: Node<'_>, source: &[u8]
     }
     names
 }
-fn kotlin_push(n: Node<'_>, source: &[u8], generic: bool, out: &mut TypeRefs) {
+fn kotlin_push(
+    n: Node<'_>,
+    source: &[u8],
+    generic: bool,
+    out: &mut TypeRefs,
+    skip: &BTreeSet<String>,
+) {
     let text = read_text(n, source);
-    if !set("_KOTLIN_BUILTIN_TYPES").contains(&text) && !set("_JAVA_BUILTIN_TYPES").contains(&text)
+    if !set("_KOTLIN_BUILTIN_TYPES").contains(&text)
+        && !set("_JAVA_BUILTIN_TYPES").contains(&text)
+        && !skip.contains(&text)
     {
         push(out, text, generic)
     }
+}
+/// The names of the `type_parameter`s of every `type_parameters` list on
+/// `node` and its ancestors, each the first child of one of `kinds`. The
+/// generic type parameters in scope are local bindings, not corpus symbols:
+/// a reference to one would mint a sourceless stub every `<T>` shares
+/// (Graphify 0.9.89).
+fn type_parameters_in_scope(
+    node: Node<'_>,
+    source: &[u8],
+    list: &str,
+    params: &[&str],
+    kinds: &[&str],
+) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut scope = Some(node);
+    while let Some(n) = scope {
+        for child in children(n).into_iter().filter(|c| c.kind_name() == list) {
+            for param in children(child)
+                .into_iter()
+                .filter(|p| params.contains(&p.kind_name()))
+            {
+                if let Some(sub) = children(param)
+                    .into_iter()
+                    .find(|c| kinds.contains(&c.kind_name()))
+                {
+                    let name = read_text(sub, source);
+                    if !name.is_empty() {
+                        names.insert(name);
+                    }
+                }
+            }
+        }
+        scope = n.parent();
+    }
+    names
+}
+/// `_kotlin_type_parameters_in_scope` (0.9.89): `class Box<T>` / `fun <R>`.
+pub fn kotlin_type_parameters_in_scope(node: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    type_parameters_in_scope(
+        node,
+        source,
+        "type_parameters",
+        &["type_parameter"],
+        &["identifier", "type_identifier"],
+    )
 }
 pub fn kotlin_collect_type_refs(
     node: Option<Node<'_>>,
@@ -1078,18 +1337,28 @@ pub fn kotlin_collect_type_refs(
     out: &mut TypeRefs,
 ) {
     let Some(n) = node else { return };
+    let skip = kotlin_type_parameters_in_scope(n, source);
+    kotlin_collect_type_refs_in(n, source, generic, out, &skip)
+}
+fn kotlin_collect_type_refs_in(
+    n: Node<'_>,
+    source: &[u8],
+    generic: bool,
+    out: &mut TypeRefs,
+    skip: &BTreeSet<String>,
+) {
     match n.kind_name() {
         "integral_literal" | "boolean_literal" => {}
-        "identifier" | "type_identifier" => kotlin_push(n, source, generic, out),
+        "identifier" | "type_identifier" => kotlin_push(n, source, generic, out, skip),
         "user_type" => {
             for c in children(n) {
                 if matches!(c.kind_name(), "identifier" | "type_identifier") {
-                    kotlin_push(c, source, generic, out);
+                    kotlin_push(c, source, generic, out, skip);
                     break;
                 }
                 if c.kind_name() == "simple_user_type" {
                     if let Some(s) = first_child(c, &["identifier", "type_identifier"]) {
-                        kotlin_push(s, source, generic, out)
+                        kotlin_push(s, source, generic, out, skip)
                     }
                     break;
                 }
@@ -1101,10 +1370,10 @@ pub fn kotlin_collect_type_refs(
                 for arg in children(args) {
                     if arg.kind_name() == "type_projection" {
                         for sub in named(arg) {
-                            kotlin_collect_type_refs(Some(sub), source, true, out)
+                            kotlin_collect_type_refs_in(sub, source, true, out, skip)
                         }
                     } else if arg.is_named() {
-                        kotlin_collect_type_refs(Some(arg), source, true, out)
+                        kotlin_collect_type_refs_in(arg, source, true, out, skip)
                     }
                 }
             }
@@ -1112,7 +1381,7 @@ pub fn kotlin_collect_type_refs(
         _ => {
             if n.is_named() {
                 for c in named(n) {
-                    kotlin_collect_type_refs(Some(c), source, generic, out)
+                    kotlin_collect_type_refs_in(c, source, generic, out, skip)
                 }
             }
         }
@@ -1279,6 +1548,17 @@ pub fn swift_user_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<Str
     let name = read_text(first_child(node?, &["type_identifier"])?, source);
     (!name.is_empty()).then_some(name)
 }
+/// `_swift_type_parameters_in_scope` (0.9.89): `struct Stack<Element>`,
+/// `func map<R>`; a constraint (`T: Equatable`) is a separate `user_type`.
+pub fn swift_type_parameters_in_scope(node: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    type_parameters_in_scope(
+        node,
+        source,
+        "type_parameters",
+        &["type_parameter"],
+        &["type_identifier"],
+    )
+}
 pub fn swift_collect_type_refs(
     node: Option<Node<'_>>,
     source: &[u8],
@@ -1286,11 +1566,21 @@ pub fn swift_collect_type_refs(
     out: &mut TypeRefs,
 ) {
     let Some(n) = node else { return };
+    let skip = swift_type_parameters_in_scope(n, source);
+    swift_collect_type_refs_in(n, source, generic, out, &skip)
+}
+fn swift_collect_type_refs_in(
+    n: Node<'_>,
+    source: &[u8],
+    generic: bool,
+    out: &mut TypeRefs,
+    skip: &BTreeSet<String>,
+) {
     // `Self` names the enclosing type, not a corpus symbol: a reference would
     // mint a sourceless `self` stub every `-> Self` method collapses onto
-    // (0.9.88, #4382).
+    // (0.9.88, #4382); a generic parameter in scope likewise (0.9.89).
     let push_type = |out: &mut TypeRefs, text: String| {
-        if text != "Self" {
+        if text != "Self" && !skip.contains(&text) {
             push(out, text, generic)
         }
     };
@@ -1305,14 +1595,14 @@ pub fn swift_collect_type_refs(
                 .filter(|c| c.kind_name() == "type_arguments")
             {
                 for arg in named(args) {
-                    swift_collect_type_refs(Some(arg), source, true, out)
+                    swift_collect_type_refs_in(arg, source, true, out, skip)
                 }
             }
         }
         _ => {
             if n.is_named() {
                 for c in named(n) {
-                    swift_collect_type_refs(Some(c), source, generic, out)
+                    swift_collect_type_refs_in(c, source, generic, out, skip)
                 }
             }
         }
@@ -1449,6 +1739,21 @@ pub fn c_collect_type_refs(
         }
     }
 }
+/// `_cpp_type_parameters_in_scope` (0.9.89): the type parameters of every
+/// enclosing `template<typename T, class... Us>`; a non-type parameter
+/// (`int N`) is a value and is left alone.
+pub fn cpp_type_parameters_in_scope(node: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    type_parameters_in_scope(
+        node,
+        source,
+        "template_parameter_list",
+        &[
+            "type_parameter_declaration",
+            "variadic_type_parameter_declaration",
+        ],
+        &["type_identifier"],
+    )
+}
 pub fn cpp_collect_type_refs(
     node: Option<Node<'_>>,
     source: &[u8],
@@ -1459,18 +1764,38 @@ pub fn cpp_collect_type_refs(
     if set("_C_PRIMITIVE_TYPE_NODES").contains(n.kind_name()) {
         return;
     }
+    let skip = cpp_type_parameters_in_scope(n, source);
+    cpp_collect_type_refs_in(n, source, generic, out, &skip)
+}
+fn cpp_collect_type_refs_in(
+    n: Node<'_>,
+    source: &[u8],
+    generic: bool,
+    out: &mut TypeRefs,
+    skip: &BTreeSet<String>,
+) {
+    if set("_C_PRIMITIVE_TYPE_NODES").contains(n.kind_name()) {
+        return;
+    }
+    let push_type = |out: &mut TypeRefs, text: String| {
+        if !skip.contains(&text) {
+            push(out, text, generic)
+        }
+    };
     match n.kind_name() {
-        "type_identifier" => push(out, read_text(n, source), generic),
+        "type_identifier" => push_type(out, read_text(n, source)),
         "qualified_identifier" => {
-            cpp_collect_type_refs(n.child_by_field_name("name"), source, generic, out)
+            if let Some(name) = n.child_by_field_name("name") {
+                cpp_collect_type_refs_in(name, source, generic, out, skip)
+            }
         }
         "template_type" => {
             if let Some(name) = n.child_by_field_name("name") {
-                push(out, read_text(name, source), generic)
+                push_type(out, read_text(name, source))
             }
             if let Some(args) = n.child_by_field_name("arguments") {
                 for c in named(args) {
-                    cpp_collect_type_refs(Some(c), source, true, out)
+                    cpp_collect_type_refs_in(c, source, true, out, skip)
                 }
             }
         }
@@ -1483,11 +1808,39 @@ pub fn cpp_collect_type_refs(
         | "abstract_reference_declarator"
         | "abstract_array_declarator" => {
             for c in named(n) {
-                cpp_collect_type_refs(Some(c), source, generic, out)
+                cpp_collect_type_refs_in(c, source, generic, out, skip)
             }
         }
         _ => {}
     }
+}
+/// `_scala_type_parameters_in_scope` (0.9.89): `class Box[T]`, `def map[R]`,
+/// variance-annotated `[+A]`/`[-B]` (the name one level deeper); a bound
+/// names a real type and is not a parameter.
+pub fn scala_type_parameters_in_scope(node: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut scope = Some(node);
+    while let Some(n) = scope {
+        for child in children(n)
+            .into_iter()
+            .filter(|c| c.kind_name() == "type_parameters")
+        {
+            for param in children(child) {
+                let name = match param.kind_name() {
+                    "identifier" | "type_identifier" => Some(param),
+                    "covariant_type_parameter" | "contravariant_type_parameter" => children(param)
+                        .into_iter()
+                        .find(|c| matches!(c.kind_name(), "identifier" | "type_identifier")),
+                    _ => None,
+                };
+                if let Some(name) = name.map(|c| read_text(c, source)).filter(|t| !t.is_empty()) {
+                    names.insert(name);
+                }
+            }
+        }
+        scope = n.parent();
+    }
+    names
 }
 pub fn scala_collect_type_refs(
     node: Option<Node<'_>>,
@@ -1496,29 +1849,44 @@ pub fn scala_collect_type_refs(
     out: &mut TypeRefs,
 ) {
     let Some(n) = node else { return };
+    let skip = scala_type_parameters_in_scope(n, source);
+    scala_collect_type_refs_in(n, source, generic, out, &skip)
+}
+fn scala_collect_type_refs_in(
+    n: Node<'_>,
+    source: &[u8],
+    generic: bool,
+    out: &mut TypeRefs,
+    skip: &BTreeSet<String>,
+) {
+    let push_type = |out: &mut TypeRefs, text: String| {
+        if !skip.contains(&text) {
+            push(out, text, generic)
+        }
+    };
     match n.kind_name() {
-        "type_identifier" => push(out, read_text(n, source), generic),
+        "type_identifier" => push_type(out, read_text(n, source)),
         "generic_type" => {
             if let Some(base) = n
                 .child_by_field_name("type")
                 .or_else(|| first_child(n, &["type_identifier"]))
                 && base.kind_name() == "type_identifier"
             {
-                push(out, read_text(base, source), generic)
+                push_type(out, read_text(base, source))
             }
             for args in children(n)
                 .into_iter()
                 .filter(|c| c.kind_name() == "type_arguments")
             {
                 for c in named(args) {
-                    scala_collect_type_refs(Some(c), source, true, out)
+                    scala_collect_type_refs_in(c, source, true, out, skip)
                 }
             }
         }
         "compound_type" | "infix_type" | "function_type" | "tuple_type" | "annotated_type"
         | "projected_type" | "match_type" | "type_case_clause" => {
             for c in named(n) {
-                scala_collect_type_refs(Some(c), source, generic, out)
+                scala_collect_type_refs_in(c, source, generic, out, skip)
             }
         }
         _ => {}

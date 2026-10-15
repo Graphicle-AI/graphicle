@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 use crate::{
     Result, build,
@@ -370,6 +370,26 @@ pub fn install(command: &str, a: &Args, out: &mut Output) -> Result<()> {
         if selections.len() > 1 {
             return Err(crate::Error::invalid("specify install platform only once"));
         }
+    } else if command == "pi" && a.positional(0) == Some("guard") {
+        // `pi guard install|uninstall|path` (Graphify 0.9.89).
+        let verb = a.positional(1).filter(|_| a.pos.len() == 2);
+        let Some(verb) = verb.filter(|v| ["install", "uninstall", "path"].contains(v)) else {
+            out.warn(format!(
+                "Usage: {0} pi [install|uninstall] | {0} pi guard [install|uninstall|path]",
+                crate::cli::program()
+            ));
+            out.exit_code = 1;
+            return Ok(());
+        };
+        let (lines, errors, code) = crate::install::pi_guard(verb)?;
+        for line in lines {
+            out.line(line);
+        }
+        for line in errors {
+            out.warn(line);
+        }
+        out.exit_code = code;
+        return Ok(());
     } else if a.pos.len() > 1 || a.get("platform").is_some() {
         return Err(crate::Error::invalid(
             "Unexpected platform or positional argument",
@@ -502,8 +522,28 @@ pub fn update(a: &Args, out: &mut Output) -> Result<()> {
     Ok(())
 }
 static STOP: AtomicBool = AtomicBool::new(false);
+/// Windows console control handler: Ctrl+C and Ctrl+Break stop `watch` and
+/// `serve` as SIGINT and SIGTERM do on Unix; other events keep the default.
+#[cfg(windows)]
+extern "system" fn console_stop(event: u32) -> i32 {
+    const CTRL_C_EVENT: u32 = 0;
+    const CTRL_BREAK_EVENT: u32 = 1;
+    if matches!(event, CTRL_C_EVENT | CTRL_BREAK_EVENT) {
+        STOP.store(true, Ordering::Relaxed);
+        1
+    } else {
+        0
+    }
+}
 fn stop_signals() {
     STOP.store(false, Ordering::Relaxed);
+    #[cfg(windows)]
+    {
+        static INSTALLED: std::sync::Once = std::sync::Once::new();
+        INSTALLED.call_once(|| {
+            let _ = crate::win::add_ctrl_handler(console_stop);
+        });
+    }
     #[cfg(unix)]
     {
         extern "C" fn stop(_: i32) {
@@ -1056,4 +1096,22 @@ fn clone_repo(
     }
     out.line(format!("Ready at: {}", dest.display()));
     Ok(dest)
+}
+
+#[cfg(all(test, windows))]
+mod windows_stop_tests {
+    use super::{STOP, console_stop};
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn ctrl_c_and_ctrl_break_set_stop() {
+        assert_eq!(console_stop(2), 0);
+        assert!(!STOP.load(Ordering::Relaxed));
+        assert_eq!(console_stop(0), 1);
+        assert!(STOP.load(Ordering::Relaxed));
+        STOP.store(false, Ordering::Relaxed);
+        assert_eq!(console_stop(1), 1);
+        assert!(STOP.load(Ordering::Relaxed));
+        STOP.store(false, Ordering::Relaxed);
+    }
 }

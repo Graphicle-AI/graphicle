@@ -13,7 +13,7 @@ stays as the graph-only server that matches Graphify, for a `graph.json` file.
 | Best for | Code, documents and decisions together, with citations; how the code fits together | How the code fits together, matching Graphify |
 | Transport | stdio; HTTP through `graphicle serve` | stdio; HTTP with `--transport http` |
 | Set up with | `graphicle setup`, or `graphicle connect <client>` | The client's MCP settings (below) |
-| Changes memory | Drafts for a person to review with `--allow-learning`, which `graphicle setup` and `connect --graph` turn on; the agent's own to-do lists with `--work-state` | Never |
+| Changes memory | Drafts for a person to review with `--allow-learning`, which `graphicle setup` and `connect --graph` turn on for every client but Claude Code; the agent's own to-do lists with `--work-state` | Never |
 
 Neither server calls a model. The agent's own model reads what they return.
 
@@ -22,9 +22,10 @@ Neither server calls a model. The agent's own model reads what they return.
 ### Connect a client
 
 `graphicle setup` connects every client it finds on your machine, and sets
-each one up for the code graph as `connect --graph` does (below): the agent
-may propose memory drafts, which a person reviews, and Claude Code gets the
-guard hooks. `graphicle connect` without a client does the same.
+each one up for the code graph as `connect --graph` does (below): Claude
+Code gets the five essential tools (`--tools essentials`, below), and the
+other clients the whole server, where the agent may propose memory drafts,
+which a person reviews. `graphicle connect` without a client does the same.
 [agents.md](agents.md) lists, for each client, what `setup` and `connect`
 write, where, and how to undo it with `graphicle disconnect`.
 
@@ -71,8 +72,12 @@ these options:
   agent keeps for itself. Open items appear at session start, labelled as not
   reviewed, and `graphicle work-state` shows them.
 - `--allow-learning` adds the tools that propose memory drafts (below).
-- `--graph` sets the agent up for the code graph as well. It implies
-  `--allow-learning`, and for Claude Code it adds two guard hooks to
+- `--tools SET` chooses the tools the entry publishes (as `graphicle mcp
+  --tools`, below). Without it, Claude Code gets `essentials` and the other
+  clients `all`.
+- `--graph` sets the agent up for the code graph as well. For an entry of the
+  whole server it implies `--allow-learning`.
+- `--guards` (Claude Code) adds two guard hooks to
   `.claude/settings.local.json` (with no session capture unless you add
   `--hooks`). Before the agent searches (Grep, or a shell command such as
   `grep`, `rg` or `find`) in a folder whose project's code graph holds code,
@@ -87,7 +92,11 @@ these options:
   reminders.
 
 A plain `graphicle connect <client>` after setup changes nothing: an entry
-that setup wrote keeps `--allow-learning`.
+that setup wrote keeps `--allow-learning`, and without `--tools` an entry of
+the same store and project keeps its tool set (Claude Code's whole-server
+entry from 0.1.0's setup or `setup --tools all`, for example). Setup, and `connect` without a
+client, run without `--guards`, remove the guard hooks an earlier setup
+installed.
 
 `graphicle disconnect <client>` removes what `connect` and setup wrote for
 that client: its entry (the one `--name` named, or in `--config-path`'s file,
@@ -125,6 +134,14 @@ Any client that starts an MCP server over stdio can use the Graphicle server:
   `"--data-dir", "/path/to/data"` before `"mcp"`.
 - `--allow-learning` adds the tools that propose memory, and `--work-state`
   adds the work-state tools.
+- `--tools essentials` serves five tools: `query_graph`, `get_node`,
+  `get_neighbors`, `recall_project` and `read_project_source`, with one
+  sentence of instructions on when to call them. Their descriptions start
+  with what an agent looks for and say how answers cite code (file, lines
+  and `stable_id`). `--allow-learning`, `--work-state` and
+  `--pull-requests` add `propose_memory`, the work-state tools and the
+  pull-request tools. This is what setup gives Claude Code, which shows the
+  agent every tool's name and the instructions in each request.
 - `--tools graph` serves every tool that reads the code graph: the graph
   tools and resources and the graph-history tools (`graph_episodes`,
   `graph_as_of`, `graph_history_stats`, `graph_link`). `--tools memory`
@@ -270,7 +287,9 @@ the project's recorded code graph. They take two more arguments: `repo` reads
 another project of the workspace (its id or key, or with `graphicle mcp` a
 synced folder), and `as_of` reads an earlier graph (an episode id, a label
 such as a commit sha, `latest` or `working`). They do not take
-`project_path`. Their `structuredContent` adds the episode read and the nodes
+`project_path`. Their `structuredContent` (with `--tools essentials`, only
+for a call that passes `structured: true`, an argument the tool schema does
+not list) adds the episode read and the nodes
 the answer names (up to 100), each with its `stable_id`, `revision` and line
 range, and, when the file's current bytes are the ones the graph recorded,
 its checked `file:` byte range and the file's sha256: the same `stable_id`
@@ -313,6 +332,19 @@ which are whole-file dependencies; a path that is not in the project is
 refused. With `--work-state`, `work_state_write` and `work_state_read` are added
 to project connections; a workspace connection has no project to keep them
 in.
+
+With `--tools essentials` (what setup gives Claude Code), `recall_project`
+answers with the packet's Markdown, which cites every excerpt, in at most
+12,000 characters (room is kept for the line that lists the `needs` its
+excerpts do not cover), and the graph tools answer with their text and the
+citations block; neither sends a `structuredContent` copy. A call that
+passes `structured: true` (not in the schemas) gets the whole packet or
+answer in `structuredContent`, as 0.1.0 sent it; the Python SDK's
+`Tools.call` asks for it. Every other set (`--tools all`, the default for the
+other clients and for `graphicle serve`, and `graph` and `memory`) answers
+as 0.1.0 did: the whole answer in `structuredContent` and again as JSON text,
+recall at the budget asked for and in 0.1.0's order (test files are not
+moved); `structured` changes nothing there.
 
 `recall_project` uses the same retrieval defaults as `graphicle context`
 ([configuration.md](configuration.md#retrieval)). Its `skip_shown` option

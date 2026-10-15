@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Generic, statically linked AST extraction engine.
 use super::{
@@ -45,6 +45,9 @@ pub(crate) struct Engine<'a, 't> {
     pub protocols: BTreeSet<String>,
     pub swift_classes: BTreeSet<String>,
     pub underscore: BTreeMap<String, BTreeSet<String>>,
+    /// C# names that differ only by `_` or case (#4415): types, members.
+    pub csharp_type_groups: BTreeMap<String, BTreeSet<String>>,
+    pub csharp_member_groups: BTreeMap<String, BTreeSet<String>>,
     pub labels: Table,
     pub labels_ci: Table,
     pub seen_calls: BTreeSet<(String, String)>,
@@ -259,7 +262,10 @@ impl<'a, 't> Engine<'a, 't> {
         self.edges.push(e);
     }
     pub fn ensure(&mut self, name: &str, origin: bool) -> String {
-        let local = make_id([self.stem.as_str(), self.namespace.join(".").as_str(), name]);
+        let mut local = make_id([self.stem.as_str(), self.namespace.join(".").as_str(), name]);
+        if self.is("c_sharp") {
+            local = python_underscore_salted_nid(&local, name, &self.csharp_type_groups);
+        }
         if self.seen.contains(&local) {
             return local;
         }
@@ -555,6 +561,9 @@ impl<'a, 't> Engine<'a, 't> {
         let mut id = make_id([parent.unwrap_or(&self.stem), &sanitized]);
         if self.is("python") {
             id = python_underscore_salted_nid(&id, &sanitized, &self.underscore);
+        } else if self.is("c_sharp") && parent.is_some() {
+            // `Put()` / `_Put()` are two C# methods (#4415).
+            id = python_underscore_salted_nid(&id, &sanitized, &self.csharp_member_groups);
         }
         let mut meta = Value::Null;
         if self.is("ruby") && parent.is_some() {
@@ -804,6 +813,8 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         protocols: BTreeSet::new(),
         swift_classes: BTreeSet::new(),
         underscore: BTreeMap::new(),
+        csharp_type_groups: BTreeMap::new(),
+        csharp_member_groups: BTreeMap::new(),
         labels: Table::new(),
         labels_ci: Table::new(),
         seen_calls: BTreeSet::new(),
@@ -843,6 +854,8 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
     };
     if e.is("c_sharp") {
         e.interfaces = csharp_pre_scan_interfaces(root, source);
+        (e.csharp_type_groups, e.csharp_member_groups) =
+            csharp_pre_scan_name_collisions(root, source, &stem);
     }
     if e.is("swift") {
         (e.protocols, e.swift_classes) = swift_pre_scan(root, source);

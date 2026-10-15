@@ -1,11 +1,16 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/ruby_resolution.py
 //! Native translation of graphify/ruby_resolution.py.
+//!
+//! The pass reads the edges and the per-file raw calls in whichever form
+//! assembly holds them ([`Rec`], [`PerFile`]), so neither list converts for
+//! it; the JSON forms give what they always gave.
 use crate::{
     Result,
     build_labels::is_file_node_label,
+    extract::per_file::PerFile,
     python_compat::{ScalarKey, scalar_key, string},
-    resolver_registry::LanguageResolver,
+    resolver_registry::{LanguageResolver, Rec, append_edges, at, edge_record},
 };
 use serde_json::{Value, json};
 use std::{
@@ -27,6 +32,10 @@ fn truthy(value: &Value) -> bool {
 }
 fn text(node: &Value, field: &str) -> String {
     node.get(field).map(string).unwrap_or_default()
+}
+/// [`text`] of an edge or raw-call record.
+fn rtext<R: Rec>(record: &R, field: &str) -> String {
+    record.rec_get(field).map(string).unwrap_or_default()
 }
 fn id(value: &Value) -> Result<ScalarKey> {
     scalar_key(value).ok_or_else(|| "unhashable identifier".into())
@@ -69,20 +78,27 @@ pub fn ruby_lookup_unsafe(node: &Value) -> bool {
         })
 }
 pub fn ruby_raw_calls(per_file: &[Value]) -> Result<Vec<&Value>> {
+    ruby_raw_calls_any(per_file)
+}
+/// The raw calls of Ruby sources, in result order, from the per-file results
+/// in either form. A result that is no object, or has no `raw_calls`, a
+/// string or an object there, adds none; any other non-array is an error
+/// (Python iterates it). A call that is no object has no `source_file` and
+/// is skipped.
+pub fn ruby_raw_calls_any<P: PerFile>(per_file: &[P]) -> Result<Vec<&P::R>> {
     let mut calls = vec![];
-    for result in per_file.iter().filter(|v| v.is_object()) {
-        let Some(value) = result.get("raw_calls") else {
-            continue;
-        };
-        let Some(raw) = value.as_array() else {
-            if value.is_string() || value.is_object() {
-                continue;
+    for result in per_file {
+        let Some(raw) = result.raw_calls() else {
+            match result.raw_calls_other() {
+                Some(value) if !value.is_string() && !value.is_object() => {
+                    return Err("raw_calls is not iterable".into());
+                }
+                _ => continue,
             }
-            return Err("raw_calls is not iterable".into());
         };
         calls.extend(
             raw.iter()
-                .filter(|v| v.is_object() && ruby_source(&text(v, "source_file"))),
+                .filter(|v| ruby_source(&rtext(*v, "source_file"))),
         );
     }
     Ok(calls)
@@ -99,8 +115,10 @@ fn path_parts(label: &str) -> Vec<&str> {
     label.split("::").filter(|s| !s.is_empty()).collect()
 }
 type StringSet = BTreeSet<String>;
-struct Lookup {
-    nodes: BTreeMap<String, Value>,
+/// The tables of the pass. Nodes are borrowed (the last of equal ids, as a
+/// dict collects them), not copied.
+struct Lookup<'a> {
+    nodes: BTreeMap<String, &'a Value>,
     context_complete: bool,
     unsafe_files: StringSet,
     external_owners: StringSet,
@@ -115,12 +133,12 @@ struct Lookup {
     fq: BTreeMap<Vec<String>, Vec<String>>,
     last: BTreeMap<String, Vec<String>>,
 }
-impl Lookup {
-    fn new(nodes: &[Value], edges: &[Value]) -> Self {
+impl<'a> Lookup<'a> {
+    fn new<E: Rec>(nodes: &'a [Value], edges: &[E]) -> Self {
         let node_map: BTreeMap<_, _> = nodes
             .iter()
             .filter(|n| truthy(&n["id"]))
-            .map(|n| (string(&n["id"]), n.clone()))
+            .map(|n| (string(&n["id"]), n))
             .collect();
         let file_nodes: Vec<_> = nodes
             .iter()
@@ -171,13 +189,14 @@ impl Lookup {
         };
         let mut inheritance_edges = vec![];
         for edge in edges {
-            if edge["relation"] == "inherits" {
-                if truthy(&edge["source"]) && truthy(&edge["target"]) {
-                    let raw = edge["metadata"]
+            if at(edge, "relation") == "inherits" {
+                if truthy(at(edge, "source")) && truthy(at(edge, "target")) {
+                    let metadata = at(edge, "metadata");
+                    let raw = metadata
                         .get("ruby_superclass_ref")
                         .and_then(Value::as_str)
                         .map(str::to_string);
-                    let scopes = edge["metadata"]
+                    let scopes = metadata
                         .get("ruby_lexical_scopes")
                         .and_then(Value::as_array)
                         .and_then(|a| {
@@ -186,21 +205,23 @@ impl Lookup {
                                 .collect::<Option<Vec<_>>>()
                         });
                     inheritance_edges.push((
-                        text(edge, "source"),
-                        text(edge, "target"),
+                        rtext(edge, "source"),
+                        rtext(edge, "target"),
                         raw,
                         scopes,
                     ));
                 }
                 continue;
             }
-            if edge["relation"] != "method" || !truthy(&edge["source"]) || !truthy(&edge["target"])
+            if at(edge, "relation") != "method"
+                || !truthy(at(edge, "source"))
+                || !truthy(at(edge, "target"))
             {
                 continue;
             }
-            let source = text(edge, "source");
-            let target = text(edge, "target");
-            if let Some(class) = out.nodes.get(&source) {
+            let source = rtext(edge, "source");
+            let target = rtext(edge, "target");
+            if let Some(class) = out.nodes.get(&source).copied() {
                 if !ruby_source(&text(class, "source_file"))
                     || !ruby_source(
                         &out.nodes
@@ -279,7 +300,7 @@ impl Lookup {
         }
         for (method, owners) in &out.method_owners {
             let name = method_name(&out.nodes[method]["label"]);
-            let kind = ruby_method_kind(&out.nodes[method]);
+            let kind = ruby_method_kind(out.nodes[method]);
             if owners.len() != 1 || kind.is_none() {
                 for owner in owners {
                     out.ambiguous.insert((owner.clone(), name.clone()));
@@ -369,7 +390,7 @@ impl Lookup {
         let mut seen = StringSet::new();
         let mut first = true;
         while seen.insert(current.clone()) {
-            let node = self.nodes.get(&current).unwrap_or(&Value::Null);
+            let node = self.nodes.get(&current).copied().unwrap_or(&Value::Null);
             let label = text(node, "label");
             if !self.class_ids.contains(&current)
                 || self.class_labels.get(&label).map_or(0, BTreeSet::len) != 1
@@ -420,12 +441,16 @@ impl Lookup {
         (hits.len() == 1).then(|| hits.first().unwrap().clone())
     }
 }
-fn emit(
-    edges: &mut Vec<Value>,
+/// Add the edge `caller` -> `target` for `call` unless the pair has one.
+/// New edges collect in `added` (appended after the pass): no pass step reads
+/// them back, as only `promote` scans the list and it matches `INFERRED`
+/// `calls` edges, which this pass never adds.
+fn emit<E: Rec, C: Rec>(
+    added: &mut Vec<E>,
     pairs: &mut BTreeSet<(ScalarKey, ScalarKey)>,
     caller: &str,
     target: &str,
-    call: &Value,
+    call: &C,
     relation: &str,
     context: &str,
 ) {
@@ -439,35 +464,38 @@ fn emit(
     {
         return;
     }
-    edges.push(json!({"source":caller,"target":target,"relation":relation,"context":context,"confidence":"EXTRACTED","confidence_score":1.0,"source_file":call.get("source_file").cloned().unwrap_or(json!("")),"source_location":call["source_location"],"weight":1.0}));
+    added.push(edge_record(json!({"source":caller,"target":target,"relation":relation,"context":context,"confidence":"EXTRACTED","confidence_score":1.0,"source_file":call.rec_get("source_file").cloned().unwrap_or(json!("")),"source_location":at(call, "source_location"),"weight":1.0})));
 }
-fn promote(
-    edges: &mut [Value],
+fn promote<E: Rec, C: Rec>(
+    edges: &mut [E],
     lookup: &Lookup,
     caller: &str,
     target: &str,
     callee: &str,
-    call: &Value,
+    call: &C,
 ) {
+    let empty = json!("");
+    let call_file = call.rec_get("source_file").unwrap_or(&empty);
+    let call_location = at(call, "source_location");
     let matches: Vec<_> = edges
         .iter()
         .enumerate()
         .filter(|(_, e)| {
-            e["source"] == caller
-                && e["target"] == target
-                && e["relation"] == "calls"
-                && e["context"] == "call"
-                && e["confidence"] == "INFERRED"
-                && e.get("source_file").unwrap_or(&Value::Null)
-                    == call.get("source_file").unwrap_or(&json!(""))
-                && e["source_location"] == call["source_location"]
-                && method_name(&lookup.nodes.get(target).unwrap_or(&Value::Null)["label"]) == callee
+            at(*e, "source") == caller
+                && at(*e, "target") == target
+                && at(*e, "relation") == "calls"
+                && at(*e, "context") == "call"
+                && at(*e, "confidence") == "INFERRED"
+                && at(*e, "source_file") == call_file
+                && at(*e, "source_location") == call_location
+                && method_name(&lookup.nodes.get(target).copied().unwrap_or(&Value::Null)["label"])
+                    == callee
         })
         .map(|(i, _)| i)
         .collect();
     if matches.len() == 1 {
-        edges[matches[0]]["confidence"] = json!("EXTRACTED");
-        edges[matches[0]]["confidence_score"] = json!(1.0);
+        edges[matches[0]].rec_set("confidence", json!("EXTRACTED"));
+        edges[matches[0]].rec_set("confidence_score", json!(1.0));
     }
 }
 pub fn resolve_ruby_member_calls(
@@ -475,21 +503,31 @@ pub fn resolve_ruby_member_calls(
     nodes: &[Value],
     edges: &mut Vec<Value>,
 ) -> Result<()> {
+    resolve_ruby_member_calls_any(per_file, nodes, edges)
+}
+/// [`resolve_ruby_member_calls`] over the per-file results and the edges in
+/// either form.
+pub fn resolve_ruby_member_calls_any<P: PerFile, E: Rec>(
+    per_file: &[P],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+) -> Result<()> {
     let lookup = Lookup::new(nodes, edges);
-    let calls = ruby_raw_calls(per_file)?;
+    let calls = ruby_raw_calls_any(per_file)?;
     let mut pairs: BTreeSet<_> = edges
         .iter()
-        .map(|e| Ok((id(&e["source"])?, id(&e["target"])?)))
+        .map(|e| Ok((id(at(e, "source"))?, id(at(e, "target"))?)))
         .collect::<Result<_>>()?;
-    for call in &calls {
-        if !truthy(&call["is_mixin"]) {
+    let mut added: Vec<E> = vec![];
+    for &call in &calls {
+        if !truthy(at(call, "is_mixin")) {
             continue;
         }
-        let caller = text(call, "caller_nid");
-        if caller.is_empty() || !truthy(&call["callee"]) {
+        let caller = rtext(call, "caller_nid");
+        if caller.is_empty() || !truthy(at(call, "callee")) {
             continue;
         }
-        let raw = string(&call["callee"]);
+        let raw = string(at(call, "callee"));
         let absolute = raw.starts_with("::");
         let parts = segments(&raw);
         let caller_parts = if absolute {
@@ -526,18 +564,18 @@ pub fn resolve_ruby_member_calls(
         }
         if let Some(target) = target {
             emit(
-                edges, &mut pairs, &caller, &target, call, "mixes_in", "mixin",
+                &mut added, &mut pairs, &caller, &target, call, "mixes_in", "mixin",
             );
         }
     }
     if lookup.context_complete {
-        for call in &calls {
-            if truthy(&call["is_mixin"]) || call["is_member_call"] != Value::Bool(false) {
+        for &call in &calls {
+            if truthy(at(call, "is_mixin")) || *at(call, "is_member_call") != Value::Bool(false) {
                 continue;
             }
-            let caller = text(call, "caller_nid");
-            let callee = text(call, "callee");
-            let node = lookup.nodes.get(&caller).unwrap_or(&Value::Null);
+            let caller = rtext(call, "caller_nid");
+            let callee = rtext(call, "callee");
+            let node = lookup.nodes.get(&caller).copied().unwrap_or(&Value::Null);
             let kind = ruby_method_kind(node);
             let owners = lookup.method_owners.get(&caller);
             if caller.is_empty()
@@ -557,15 +595,15 @@ pub fn resolve_ruby_member_calls(
         }
     }
     for call in calls {
-        if !truthy(&call["is_member_call"]) {
+        if !truthy(at(call, "is_member_call")) {
             continue;
         }
-        let caller = text(call, "caller_nid");
-        if caller.is_empty() || !truthy(&call["callee"]) {
+        let caller = rtext(call, "caller_nid");
+        if caller.is_empty() || !truthy(at(call, "callee")) {
             continue;
         }
-        let callee = string(&call["callee"]);
-        let receiver = &call["receiver"];
+        let callee = string(at(call, "callee"));
+        let receiver = at(call, "receiver");
         if truthy(receiver)
             && string(receiver)
                 .trim_start_matches(':')
@@ -589,14 +627,16 @@ pub fn resolve_ruby_member_calls(
                         .cloned()
                         .unwrap_or(class)
                 };
-                emit(edges, &mut pairs, &caller, &target, call, "calls", "call");
+                emit(
+                    &mut added, &mut pairs, &caller, &target, call, "calls", "call",
+                );
             }
             continue;
         }
-        if !truthy(&call["receiver_type"]) {
+        if !truthy(at(call, "receiver_type")) {
             continue;
         }
-        let Some(class) = lookup.unique_class(&string(&call["receiver_type"])) else {
+        let Some(class) = lookup.unique_class(&string(at(call, "receiver_type"))) else {
             continue;
         };
         let mut method = lookup
@@ -611,9 +651,13 @@ pub fn resolve_ruby_member_calls(
             method = lookup.inherited_method(&class, &callee, "instance");
         }
         if let Some(target) = method {
-            emit(edges, &mut pairs, &caller, &target, call, "calls", "call");
+            emit(
+                &mut added, &mut pairs, &caller, &target, call, "calls", "call",
+            );
         }
     }
+    drop((lookup, pairs));
+    append_edges(edges, added);
     Ok(())
 }
 pub fn resolver() -> LanguageResolver {

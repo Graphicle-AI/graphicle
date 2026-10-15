@@ -286,6 +286,8 @@ struct Placed {
     payload: String,
     held: bool,
     index: usize,
+    /// The hit asked to be presented after the hits that did not (`last`).
+    last: bool,
 }
 /// What chronological presentation sorts a placed source by.
 type PlacedKey<'a> = (
@@ -449,6 +451,10 @@ pub fn pack(request: &Value) -> Result<Value> {
             .ok_or("Source reference missing")?;
         let source = &item["source"];
         let body = crate::string(item, "text")?;
+        let last = match item.get("last") {
+            None | Some(Value::Null) => false,
+            Some(value) => value.as_bool().ok_or("last must be true or false")?,
+        };
         let source_start = source
             .get("byte_start")
             .and_then(Value::as_u64)
@@ -614,6 +620,7 @@ pub fn pack(request: &Value) -> Result<Value> {
             payload,
             held,
             index,
+            last,
         };
         // An excerpt the caller already holds becomes a one-line reference;
         // what it would have spent stays with the hits after it.
@@ -786,6 +793,53 @@ pub fn pack(request: &Value) -> Result<Value> {
     } else if chronological {
         order_applied = "chronological";
     }
+    // Hits marked `last` (the caller's test files, say) are presented after
+    // the others, each group in rank order. The budget went to the hits in
+    // rank order above, so these are the excerpts of the unmarked packet,
+    // re-laid: none is left out for the move. `moved_last` counts the
+    // placed sources that had an unmarked one after them. Chronological
+    // presentation, when asked for, decides the order instead.
+    let mut moved_last = None;
+    if !chronological && hits.iter().any(|h| h.get("last") == Some(&json!(true))) {
+        let mut moved = 0;
+        if let Some(final_other) = placed.iter().rposition(|p| !p.last) {
+            moved = placed[..final_other].iter().filter(|p| p.last).count();
+        }
+        if moved > 0 {
+            let mut order: Vec<usize> = (0..placed.len()).collect();
+            order.sort_by_key(|&index| placed[index].last);
+            let mut candidate = header.clone();
+            for &index in &order {
+                candidate.push_str(&placed[index].payload);
+            }
+            if fits(
+                &candidate,
+                max_tokens.saturating_sub(100),
+                max_chars.saturating_sub(350),
+            ) {
+                rendered = candidate;
+                let mut by_rank = std::mem::take(&mut sources)
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>();
+                let mut held_by_rank = std::mem::take(&mut held_references)
+                    .into_iter()
+                    .map(Some)
+                    .collect::<Vec<_>>();
+                for &index in &order {
+                    let item = &placed[index];
+                    if item.held {
+                        held_references.extend(held_by_rank[item.index].take());
+                    } else {
+                        sources.extend(by_rank[item.index].take());
+                    }
+                }
+            } else {
+                moved = 0;
+            }
+        }
+        moved_last = Some(moved);
+    }
     for item in memories {
         let value = item.get("memory").ok_or("Missing memory record")?;
         let body = crate::string(value, "body")?;
@@ -859,6 +913,9 @@ pub fn pack(request: &Value) -> Result<Value> {
     if chronological {
         result["pack_order"] = json!(order_applied);
         result["gap_markers"] = json!(gap_markers);
+    }
+    if let Some(moved) = moved_last {
+        result["moved_last"] = json!(moved);
     }
     if !shown.is_empty() {
         result["already_shown"] = json!(held_references);

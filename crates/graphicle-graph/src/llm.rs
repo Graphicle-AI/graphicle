@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! Native model adapters, semantic extraction and community naming.
 //!
@@ -31,31 +31,37 @@ pub enum ErrorKind {
 pub struct Error {
     pub kind: ErrorKind,
     pub message: String,
+    /// The HTTP status of a provider error response (the SDK's
+    /// `APIStatusError.status_code`), when there was one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
 }
 impl Error {
-    pub fn value(message: impl fmt::Display) -> Self {
+    fn of(kind: ErrorKind, message: impl fmt::Display) -> Self {
         Self {
-            kind: ErrorKind::Value,
+            kind,
             message: message.to_string(),
+            http_status: None,
         }
     }
+    pub fn value(message: impl fmt::Display) -> Self {
+        Self::of(ErrorKind::Value, message)
+    }
     pub fn runtime(message: impl fmt::Display) -> Self {
+        Self::of(ErrorKind::Runtime, message)
+    }
+    /// A provider's HTTP error response.
+    pub fn http(status: u16, message: impl fmt::Display) -> Self {
         Self {
-            kind: ErrorKind::Runtime,
-            message: message.to_string(),
+            http_status: Some(status),
+            ..Self::runtime(message)
         }
     }
     pub fn transport(message: impl fmt::Display) -> Self {
-        Self {
-            kind: ErrorKind::Transport,
-            message: message.to_string(),
-        }
+        Self::of(ErrorKind::Transport, message)
     }
     pub fn timeout(message: impl fmt::Display) -> Self {
-        Self {
-            kind: ErrorKind::Timeout,
-            message: message.to_string(),
-        }
+        Self::of(ErrorKind::Timeout, message)
     }
 }
 impl fmt::Display for Error {
@@ -174,7 +180,7 @@ impl Runtime {
             },
             d,
         )?;
-        let response = self.transport.send(&request)?;
+        let response = crate::llm_transport::send(&*self.transport, &request, d)?;
         let mut result = interpret_extraction(&request, &response, d)?;
         let source = self.source.lock();
         match source {
@@ -217,7 +223,7 @@ impl Runtime {
             },
             d,
         )?;
-        let response = self.transport.send(&request)?;
+        let response = crate::llm_transport::send(&*self.transport, &request, d)?;
         let (text, reported) = interpret_plain(&request, &response)?;
         usage.add(&reported);
         Ok(text)

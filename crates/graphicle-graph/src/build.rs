@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py
 //! Native graph construction and conservative normalization of extraction output.
 pub use crate::build_global::{distinct_repo_tags, prefix_graph_for_global, prune_repo_from_graph};
@@ -13,12 +13,13 @@ use crate::{
     dedup_strings,
     extractors::{
         base,
-        resolution::{field, is_python_stdlib_module, map_field, map_field_mut},
+        resolution::{is_python_stdlib_module, map_field, map_field_mut},
     },
     fsutil,
     graph::Graph,
     hyperedge_members, ids,
     python_compat::{self, scalar_key},
+    record::{Attributes, EdgeItem, Properties, Record, item_field},
     validate,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -248,10 +249,10 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
     }
 }
 /// `_fold_type_only` for a stored edge and an incoming one ([`execution_wins`]).
-fn fold_type_only(prior: &mut crate::record::Attributes, incoming: &mut Map<String, Value>) {
+fn fold_type_only<R: Record>(prior: &mut Attributes, incoming: &mut R) {
     if prior.get("type_only").is_some_and(truthy) != incoming.get("type_only").is_some_and(truthy) {
         prior.shift_remove("type_only");
-        incoming.shift_remove("type_only");
+        incoming.take_key("type_only");
     }
 }
 pub fn disambiguate_file_node_labels(graph: &mut Graph) {
@@ -349,7 +350,12 @@ fn value_string(attributes: &impl crate::record::Properties, key: &str) -> Strin
         .map(python_compat::string)
         .unwrap_or_default()
 }
-fn remap_extraction(extraction: &mut Value, remap: &BTreeMap<String, String>, remove_nodes: bool) {
+fn remap_extraction<R: Record, E: EdgeItem<Record = R>>(
+    extraction: &mut Value,
+    edges: &mut Vec<E>,
+    remap: &BTreeMap<String, String>,
+    remove_nodes: bool,
+) {
     if remap.is_empty() {
         return;
     }
@@ -364,18 +370,26 @@ fn remap_extraction(extraction: &mut Value, remap: &BTreeMap<String, String>, re
             }
         }
     }
-    if let Some(edges) = extraction.get_mut("edges").and_then(Value::as_array_mut) {
-        edges.retain_mut(|e| {
-            let mut changed = false;
-            for field in ["source", "target"] {
-                if let Some(new) = e[field].as_str().and_then(|s| remap.get(s)) {
-                    e[field] = json!(new);
-                    changed = true;
-                }
+    edges.retain_mut(|e| {
+        let Some(e) = e.record_mut() else {
+            return true;
+        };
+        let mut changed = false;
+        for field in ["source", "target"] {
+            if let Some(new) = e
+                .get(field)
+                .and_then(Value::as_str)
+                .and_then(|s| remap.get(s))
+            {
+                e.put(field, json!(new));
+                changed = true;
             }
-            !(remove_nodes && changed && e["source"] == e["target"])
-        });
-    }
+        }
+        let null = &Value::Null;
+        !(remove_nodes
+            && changed
+            && e.get("source").unwrap_or(null) == e.get("target").unwrap_or(null))
+    });
     for he in extraction
         .get_mut("hyperedges")
         .and_then(Value::as_array_mut)
@@ -430,6 +444,18 @@ pub fn build_from_json(
 ) -> Result<Graph> {
     build_from_json_with(extraction, directed, false, root, messages)
 }
+/// [`build_from_json`] of an extraction the caller no longer reads: its node
+/// and edge records move into the graph instead of being copied, so the
+/// graph is built without a second copy of them (the rebuild in `watch`).
+/// The graph is the same; the extraction is left without its records.
+pub fn build_from_json_consuming(
+    extraction: &mut Value,
+    directed: bool,
+    root: Option<&Path>,
+    messages: &mut Diagnostics,
+) -> Result<Graph> {
+    build_from_json_core(extraction, directed, false, root, messages, true, true)
+}
 /// `build_from_json` with the multigraph choice explicit: when `multigraph`
 /// is set, edges are keyed by relation so that distinct relations between the
 /// same pair survive; same-relation duplicates still fold by confidence.
@@ -474,16 +500,57 @@ fn build_from_json_core(
     if !extraction.is_object() {
         return Err("Expected extraction object".into());
     }
-    let root = root
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(fsutil::resolve_missing)
-        .transpose()
-        .map_err(crate::Error::from)?;
+    let root = resolve_root(root)?;
     if extraction.get("edges").is_none()
         && let Some(links) = extraction.get("links").cloned()
     {
         extraction["edges"] = links;
     }
+    // The passes hold the edge list beside the rest of the extraction
+    // ([`build_core`]); it goes back afterwards, emptied when consumed.
+    let mut edges = match extraction.get_mut("edges") {
+        Some(Value::Array(edges)) => std::mem::take(edges),
+        _ => Vec::new(),
+    };
+    let graph = build_core(
+        extraction,
+        &mut edges,
+        directed,
+        multigraph,
+        root.as_deref(),
+        messages,
+        consume,
+        dedup,
+    );
+    if let Some(Value::Array(slot)) = extraction.get_mut("edges") {
+        *slot = edges;
+    }
+    graph
+}
+/// A build's root, resolved; `None` for an absent or empty one.
+fn resolve_root(root: Option<&Path>) -> Result<Option<PathBuf>> {
+    root.filter(|p| !p.as_os_str().is_empty())
+        .map(fsutil::resolve_missing)
+        .transpose()
+        .map_err(crate::Error::from)
+}
+/// The build passes over an extraction whose edge list is held beside it:
+/// JSON values, or the compact records an extract assembled. Every pass reads
+/// and edits an edge record exactly as it would the same edge as a JSON
+/// object, so both forms build the same graph; records move into the graph
+/// with no JSON copy. `extraction` holds the nodes and hyperedges, and an
+/// empty `edges` array when its edges are in `edges`.
+#[allow(clippy::too_many_arguments)]
+fn build_core<R: Record, E: EdgeItem<Record = R>>(
+    extraction: &mut Value,
+    edges: &mut Vec<E>,
+    directed: bool,
+    multigraph: bool,
+    root: Option<&Path>,
+    messages: &mut Diagnostics,
+    consume: bool,
+    dedup: bool,
+) -> Result<Graph> {
     if extraction.get("hyperedges").is_none()
         && let Some(hyper) = extraction["graph"]["hyperedges"].as_array()
     {
@@ -491,43 +558,33 @@ fn build_from_json_core(
     }
     let profiled = crate::profile::span("build.core.prepare");
     coerce_non_string_ids(extraction);
-    // Only the rare `source`-instead-of-`source_file` warning needs the edge
-    // list here; take it out for the duration of the node pass rather than
-    // cloning every edge record up front.
-    let edges = extraction
-        .get_mut("edges")
-        .and_then(Value::as_array_mut)
-        .map(std::mem::take)
-        .unwrap_or_default();
-    let node_pass = (|| -> Result<()> {
-        for node in extraction
-            .get_mut("nodes")
-            .and_then(Value::as_array_mut)
-            .into_iter()
-            .flatten()
-        {
-            let Some(n) = node.as_object_mut() else {
-                continue;
-            };
-            if n.contains_key("source") && !n.contains_key("source_file") {
-                let nid = n.get("id").cloned().unwrap_or(json!("?"));
-                let affected = edges
-                    .iter()
-                    .filter(|e| e["source"] == nid || e["target"] == nid)
-                    .count();
-                messages.stderr.push(format!("[graphicle] WARNING: node '{}' uses field 'source' instead of 'source_file' — {affected} edge(s) may be misrouted. Rename the field to 'source_file' to silence this warning.",python_compat::string(&nid)));
-                let source = n.shift_remove("source").unwrap();
-                n.insert("source_file".into(), source);
-            }
-            fold_node_aliases(node);
-            node["file_type"] = normalized_file_type(&node["file_type"])?;
+    for edge in edges.iter_mut() {
+        if let Some(e) = edge.record_mut() {
+            coerce_edge_record_ids(e);
         }
-        Ok(())
-    })();
-    if let Some(slot) = extraction.get_mut("edges").and_then(Value::as_array_mut) {
-        *slot = edges;
     }
-    node_pass?;
+    for node in extraction
+        .get_mut("nodes")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        let Some(n) = node.as_object_mut() else {
+            continue;
+        };
+        if n.contains_key("source") && !n.contains_key("source_file") {
+            let nid = n.get("id").cloned().unwrap_or(json!("?"));
+            let affected = edges
+                .iter()
+                .filter(|e| *item_field(*e, "source") == nid || *item_field(*e, "target") == nid)
+                .count();
+            messages.stderr.push(format!("[graphicle] WARNING: node '{}' uses field 'source' instead of 'source_file' — {affected} edge(s) may be misrouted. Rename the field to 'source_file' to silence this warning.",python_compat::string(&nid)));
+            let source = n.shift_remove("source").unwrap();
+            n.insert("source_file".into(), source);
+        }
+        fold_node_aliases(node);
+        node["file_type"] = normalized_file_type(&node["file_type"])?;
+    }
     for he in extraction
         .get_mut("hyperedges")
         .and_then(Value::as_array_mut)
@@ -536,19 +593,16 @@ fn build_from_json_core(
     {
         messages.stderr.extend(hyperedge_members::normalize(he));
     }
-    for edge in extraction
-        .get_mut("edges")
-        .and_then(Value::as_array_mut)
-        .into_iter()
-        .flatten()
-    {
-        fold_edge_aliases(edge);
+    for edge in edges.iter_mut() {
+        if let Some(e) = edge.record_mut() {
+            fold_edge_record_aliases(e);
+        }
     }
     drop(profiled);
     let profiled = crate::profile::span("build.core.validate");
     // Dangling endpoints are expected here (they become external stubs or
     // are dropped below), so their diagnostics are not built at all.
-    let errors = validate::validate_extraction_with(extraction, false)?;
+    let errors = validate::validate_extraction_beside(extraction, edges, false)?;
     drop(profiled);
     let errors: Vec<_> = errors
         .into_iter()
@@ -592,16 +646,16 @@ fn build_from_json_core(
             .as_array()
             .map(Vec::as_slice)
             .unwrap_or(&[]),
-        root.as_deref(),
+        root,
     );
-    remap_extraction(extraction, &rekey, false);
+    remap_extraction(extraction, edges, &rekey, false);
     let twins = doc_twin_remap(
         extraction["nodes"]
             .as_array()
             .map(Vec::as_slice)
             .unwrap_or(&[]),
     );
-    remap_extraction(extraction, &twins, true);
+    remap_extraction(extraction, edges, &twins, true);
     drop(profiled);
     let profiled = crate::profile::span("build.core.add_nodes");
     let mut graph = Graph::new(directed, multigraph);
@@ -624,7 +678,7 @@ fn build_from_json_core(
         }
         for key in ["source_file", "definition_file"] {
             if let Some(value) = map_field_mut(n, key) {
-                *value = norm_source_file(value, root.as_deref())?;
+                *value = norm_source_file(value, root)?;
             }
         }
         let mut attrs = if consume {
@@ -637,6 +691,73 @@ fn build_from_json_core(
     }
     drop(profiled);
     let profiled = crate::profile::span("build.core.ghosts_aliases");
+    let norm_to_id = ghosts_and_aliases(&mut graph, dedup)?;
+    drop(profiled);
+    let profiled = crate::profile::span("build.core.edges");
+    let edges = if consume {
+        std::mem::take(edges)
+    } else {
+        edges.clone()
+    };
+    add_edges(
+        &mut graph,
+        edges,
+        &norm_to_id,
+        directed,
+        multigraph,
+        root,
+        messages,
+    )?;
+    drop(profiled);
+    if let Some(hyperedges) = extraction
+        .get_mut("hyperedges")
+        .and_then(Value::as_array_mut)
+        .filter(|h| !h.is_empty())
+    {
+        let mut kept = Vec::new();
+        for he in hyperedges.iter_mut() {
+            if let Some(sf) = he.get_mut("source_file").filter(|v| truthy(v)) {
+                *sf = norm_source_file(sf, root)?;
+            }
+            if let Some(members) = he["nodes"].as_array() {
+                let mut valid = Vec::new();
+                for raw in members {
+                    if scalar_key(raw).is_none() {
+                        continue;
+                    }
+                    let mut member = raw.clone();
+                    if graph.node_index(&member).is_none()
+                        && let Some(s) = member.as_str()
+                        && let Some(id) = norm_to_id.get(&ids::normalize_id(s))
+                    {
+                        member = json!(id);
+                    }
+                    if graph.node_index(&member).is_some() {
+                        valid.push(member);
+                    }
+                }
+                if valid.is_empty() {
+                    messages.stderr.push(format!("[graphicle] WARNING: dropping hyperedge {} — none of its members {} match built nodes.",python_compat::repr(he.get("id").unwrap_or(&json!("?"))),python_compat::repr(&he["nodes"])));
+                    continue;
+                }
+                he["nodes"] = json!(valid);
+            }
+            kept.push(he.clone());
+        }
+        if kept.is_empty() {
+            messages.stderr.push(format!("[graphicle] WARNING: all {} hyperedge(s) were dropped by member revalidation; graph.json's hyperedge set will be emptied on the next export.",hyperedges.len()));
+        }
+        graph.attributes["hyperedges"] = json!(kept);
+    }
+    let profiled = crate::profile::span("build.core.file_labels");
+    disambiguate_file_node_labels(&mut graph);
+    drop(profiled);
+    Ok(graph)
+}
+/// Fold semantic ghosts into the AST nodes they shadow (removing them from
+/// `graph`), and the table edge endpoints resolve through: normalized ids,
+/// ghost ids and file-stem aliases, each to its canonical node id.
+fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String, String>> {
     // Node indices are stable until `remove_nodes_from` below, so the
     // sorted pass can address attributes directly instead of re-hashing ids.
     let mut sorted_nodes = graph
@@ -862,47 +983,106 @@ fn build_from_json_core(
                 .or_insert_with(|| candidates.into_iter().next().unwrap());
         }
     }
-    drop(profiled);
-    let profiled = crate::profile::span("build.core.edges");
-    let mut edges = if consume {
-        extraction
-            .get_mut("edges")
-            .and_then(Value::as_array_mut)
-            .map(std::mem::take)
-            .unwrap_or_default()
-    } else {
-        extraction["edges"].as_array().cloned().unwrap_or_default()
+    Ok(norm_to_id)
+}
+/// The fields an edge is ordered by: source, target and relation, an
+/// endpoint read from its alias (`from`, `to`) when absent.
+const ORDER_FIELDS: [(&str, Option<&str>); 3] = [
+    ("source", Some("from")),
+    ("target", Some("to")),
+    ("relation", None),
+];
+/// An edge's order texts as [`python_compat::string`] gives them, borrowed
+/// from the edge (`""` for an absent field, and for an item that is no
+/// record); `None` when one is no string, whose text is not stored.
+fn order_texts<E: EdgeItem>(edge: &E) -> Option<[&str; 3]> {
+    let Some(record) = edge.record() else {
+        return Some([""; 3]);
     };
-    // Stable like `sort_by_key`, but the three-string key is built once per
-    // edge instead of on every comparison.
-    edges.sort_by_cached_key(|e| {
-        [
-            field(e, "source")
-                .or_else(|| field(e, "from"))
-                .map(python_compat::string)
-                .unwrap_or_default(),
-            field(e, "target")
-                .or_else(|| field(e, "to"))
-                .map(python_compat::string)
-                .unwrap_or_default(),
-            field(e, "relation")
-                .map(python_compat::string)
-                .unwrap_or_default(),
-        ]
-    });
-    for mut edge in edges {
-        let object = edge.as_object_mut().ok_or("Edge must be an object")?;
+    let mut texts = [""; 3];
+    for (text, (key, alias)) in texts.iter_mut().zip(ORDER_FIELDS) {
+        match record
+            .get(key)
+            .or_else(|| alias.and_then(|a| record.get(a)))
+        {
+            None => {}
+            Some(Value::String(s)) => *text = s.as_str(),
+            Some(_) => return None,
+        }
+    }
+    Some(texts)
+}
+/// The indices of `edges` in the order the build adds them: stable by the
+/// source, target and relation texts (`sorted(edges, key=...)`). Each key is
+/// built once and borrows the edge's own strings; ties keep the list order.
+fn edge_order<E: EdgeItem>(edges: &[E]) -> Vec<usize> {
+    let mut keyed = Vec::with_capacity(edges.len());
+    for (i, edge) in edges.iter().enumerate() {
+        let Some(texts) = order_texts(edge) else {
+            break;
+        };
+        keyed.push((texts, i));
+    }
+    if keyed.len() == edges.len() {
+        keyed.sort_unstable();
+        return indices(&keyed);
+    }
+    drop(keyed);
+    // Some text is no string: its Python spelling, built for every edge.
+    let mut keyed = edges
+        .iter()
+        .enumerate()
+        .map(|(i, edge)| {
+            let texts = ORDER_FIELDS.map(|(key, alias)| {
+                edge.record()
+                    .and_then(|r| r.get(key).or_else(|| alias.and_then(|a| r.get(a))))
+                    .map(python_compat::string)
+                    .unwrap_or_default()
+            });
+            (texts, i)
+        })
+        .collect::<Vec<_>>();
+    keyed.sort_unstable();
+    indices(&keyed)
+}
+/// The indices of sorted `(key, index)` pairs, in a list of their own size
+/// (collecting the pairs in place would keep the pairs' allocation).
+fn indices<K>(keyed: &[(K, usize)]) -> Vec<usize> {
+    let mut order = Vec::with_capacity(keyed.len());
+    order.extend(keyed.iter().map(|(_, i)| *i));
+    order
+}
+/// Add `edges` in the build's order ([`edge_order`]) under the endpoint,
+/// provenance and duplicate rules.
+fn add_edges<R: Record, E: EdgeItem<Record = R>>(
+    graph: &mut Graph,
+    mut edges: Vec<E>,
+    norm_to_id: &FxHashMap<String, String>,
+    directed: bool,
+    multigraph: bool,
+    root: Option<&Path>,
+    messages: &mut Diagnostics,
+) -> Result<()> {
+    let order = edge_order(&edges);
+    // Each record adds at most one edge slot, so the edge list is allocated
+    // once instead of doubling (each doubling copies every slot while the
+    // old and the new list are both live).
+    graph.reserve_edges(edges.len());
+    for i in order {
+        // Each edge is taken out of the list once: its attributes move into
+        // the graph instead of being copied.
+        let edge = std::mem::take(&mut edges[i]);
+        let mut attrs = edge.into_record().ok_or("Edge must be an object")?;
         for (key, alias) in [("source", "from"), ("target", "to")] {
-            if map_field(object, key).is_none()
-                && let Some(value) = map_field(object, alias).cloned()
+            if attrs.get(key).is_none()
+                && let Some(value) = attrs.get(alias).cloned()
             {
-                object.insert(key.into(), value);
+                attrs.put(key, value);
             }
         }
-        let (Some(mut src), Some(mut tgt)) = (
-            map_field(object, "source").cloned(),
-            map_field(object, "target").cloned(),
-        ) else {
+        let (Some(mut src), Some(mut tgt)) =
+            (attrs.get("source").cloned(), attrs.get("target").cloned())
+        else {
             continue;
         };
         if scalar_key(&src).is_none() || scalar_key(&tgt).is_none() {
@@ -920,7 +1100,8 @@ fn build_from_json_core(
                 }
             }
         }
-        let relation = map_field(object, "relation")
+        let relation = attrs
+            .get("relation")
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_owned();
@@ -931,7 +1112,7 @@ fn build_from_json_core(
                 && v.is_none()
                 && tgt.is_string()
             {
-                mint_external_stub(&mut graph, tgt.as_str().unwrap())?;
+                mint_external_stub(graph, tgt.as_str().unwrap())?;
                 v = graph.node_index(&tgt);
             } else {
                 continue;
@@ -940,21 +1121,19 @@ fn build_from_json_core(
         let (Some(u), Some(v)) = (u, v) else {
             continue;
         };
-        // `edge` is owned by this iteration: move its attributes instead of
-        // copying every record.
-        let mut attrs = std::mem::take(object);
         for key in ["source", "target", "target_file", "local_alias"] {
             // The last two are rare: skip hashing the key when absent.
-            if map_field(&attrs, key).is_some() {
-                attrs.shift_remove(key);
+            if attrs.get(key).is_some() {
+                attrs.take_key(key);
             }
         }
         for key in ["weight", "confidence_score"] {
-            if let Some(value) = map_field_mut(&mut attrs, key) {
-                *value = json!(numeric_field(value));
+            if let Some(value) = attrs.get(key) {
+                let value = json!(numeric_field(value));
+                attrs.put(key, value);
             }
         }
-        if !map_field(&attrs, "source_file").is_some_and(truthy) {
+        if !attrs.get("source_file").is_some_and(truthy) {
             let sf = graph.nodes[u]
                 .attributes
                 .get("source_file")
@@ -967,13 +1146,15 @@ fn build_from_json_core(
                 })
                 .cloned()
                 .unwrap_or(json!(""));
-            attrs.insert("source_file".into(), sf);
+            attrs.put("source_file", sf);
         }
-        if let Some(sf) = map_field_mut(&mut attrs, "source_file") {
-            *sf = norm_source_file(sf, root.as_deref())?;
+        if let Some(sf) = attrs.get("source_file") {
+            let sf = norm_source_file(sf, root)?;
+            attrs.put("source_file", sf);
         }
-        if let Some(sf) = map_field_mut(&mut attrs, "definition_file").filter(|v| truthy(v)) {
-            *sf = norm_source_file(sf, root.as_deref())?;
+        if let Some(sf) = attrs.get("definition_file").filter(|v| truthy(v)) {
+            let sf = norm_source_file(sf, root)?;
+            attrs.put("definition_file", sf);
         }
         if ["calls", "imports", "imports_from", "references"].contains(&relation) {
             let ext = |i: usize| {
@@ -988,7 +1169,7 @@ fn build_from_json_core(
             let b = ext(v);
             let (fa, fb) = (family(&a), family(&b));
             if relation == "calls" {
-                if map_field(&attrs, "confidence").is_some_and(|v| v == "INFERRED")
+                if attrs.get("confidence").is_some_and(|v| v == "INFERRED")
                     && !a.is_empty()
                     && !b.is_empty()
                     && fa != fb
@@ -1002,8 +1183,8 @@ fn build_from_json_core(
         if src == tgt && EXTERNAL_STUB_RELATIONS.contains(&relation) {
             continue;
         }
-        attrs.insert("_src".into(), src.clone());
-        attrs.insert("_tgt".into(), tgt.clone());
+        attrs.put("_src", src.clone());
+        attrs.put("_tgt", tgt.clone());
         // Before the drops below, so a runtime import that folds into a
         // type-only edge still clears its marker (0.9.80, #3159). The reverse
         // duplicate an undirected graph drops (#1061) is another file's import:
@@ -1054,7 +1235,7 @@ fn build_from_json_core(
                 parallel
                     .iter()
                     .filter(|e| is_generic(e))
-                    .map(|e| e.key.clone())
+                    .map(|e| e.key.to_value())
                     .collect()
             };
             for generic in &superseded {
@@ -1099,51 +1280,7 @@ fn build_from_json_core(
         }
         graph.add_edge(src, tgt, None, attrs)?;
     }
-    drop(profiled);
-    if let Some(hyperedges) = extraction
-        .get_mut("hyperedges")
-        .and_then(Value::as_array_mut)
-        .filter(|h| !h.is_empty())
-    {
-        let mut kept = Vec::new();
-        for he in hyperedges.iter_mut() {
-            if let Some(sf) = he.get_mut("source_file").filter(|v| truthy(v)) {
-                *sf = norm_source_file(sf, root.as_deref())?;
-            }
-            if let Some(members) = he["nodes"].as_array() {
-                let mut valid = Vec::new();
-                for raw in members {
-                    if scalar_key(raw).is_none() {
-                        continue;
-                    }
-                    let mut member = raw.clone();
-                    if graph.node_index(&member).is_none()
-                        && let Some(s) = member.as_str()
-                        && let Some(id) = norm_to_id.get(&ids::normalize_id(s))
-                    {
-                        member = json!(id);
-                    }
-                    if graph.node_index(&member).is_some() {
-                        valid.push(member);
-                    }
-                }
-                if valid.is_empty() {
-                    messages.stderr.push(format!("[graphicle] WARNING: dropping hyperedge {} — none of its members {} match built nodes.",python_compat::repr(he.get("id").unwrap_or(&json!("?"))),python_compat::repr(&he["nodes"])));
-                    continue;
-                }
-                he["nodes"] = json!(valid);
-            }
-            kept.push(he.clone());
-        }
-        if kept.is_empty() {
-            messages.stderr.push(format!("[graphicle] WARNING: all {} hyperedge(s) were dropped by member revalidation; graph.json's hyperedge set will be emptied on the next export.",hyperedges.len()));
-        }
-        graph.attributes["hyperedges"] = json!(kept);
-    }
-    let profiled = crate::profile::span("build.core.file_labels");
-    disambiguate_file_node_labels(&mut graph);
-    drop(profiled);
-    Ok(graph)
+    Ok(())
 }
 pub fn build(
     extractions: &[Value],
@@ -1153,21 +1290,21 @@ pub fn build(
 ) -> Result<Graph> {
     build_owned(extractions.to_vec(), options, messages, client)
 }
-/// [`build`] over extractions the caller no longer needs: node and edge
-/// records are moved into the graph rather than copied, which halves the peak
-/// footprint of a large build. Output is identical to [`build`].
-pub fn build_owned(
-    extractions: Vec<Value>,
-    options: &BuildOptions,
-    messages: &mut Diagnostics,
-    client: Option<&mut dyn TiebreakClient>,
-) -> Result<Graph> {
+/// The lists of the extractions a build combines, in order, apart from the
+/// edges ([`combine`]).
+struct Combined {
+    nodes: Vec<Value>,
+    hyperedges: Vec<Value>,
+    /// Receiver-resolution leftovers (`ExtractOptions::receiver_resolution`)
+    /// ride along as a graph attribute so reports can list them; the parity
+    /// extraction never carries the key.
+    unresolved_calls: Vec<Value>,
+}
+/// The extractions' lists combined in order, and their edges beside them.
+fn combine(extractions: Vec<Value>) -> Result<(Combined, Vec<Value>)> {
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     let mut hyperedges = Vec::new();
-    // Receiver-resolution leftovers (`ExtractOptions::receiver_resolution`)
-    // ride along as a graph attribute so reports can list them; the parity
-    // extraction never carries the key.
     let mut unresolved_calls: Vec<Value> = Vec::new();
     for extraction in extractions {
         let Value::Object(mut extraction) = extraction else {
@@ -1193,22 +1330,87 @@ pub fn build_owned(
             unresolved_calls.extend(values);
         }
     }
+    Ok((
+        Combined {
+            nodes,
+            hyperedges,
+            unresolved_calls,
+        },
+        edges,
+    ))
+}
+/// [`build`] over extractions the caller no longer needs: node and edge
+/// records are moved into the graph rather than copied, which halves the peak
+/// footprint of a large build. Output is identical to [`build`].
+pub fn build_owned(
+    extractions: Vec<Value>,
+    options: &BuildOptions,
+    messages: &mut Diagnostics,
+    client: Option<&mut dyn TiebreakClient>,
+) -> Result<Graph> {
+    let (combined, edges) = combine(extractions)?;
+    build_combined(combined, edges, options, messages, client)
+}
+/// [`build_owned`] of one extraction whose edges start with `records`, the
+/// compact edge records an extract assembled, held beside it: the graph is
+/// the one [`build_owned`] builds with those records as JSON objects in front
+/// of the extraction's own edges, but they move into it with no JSON copy,
+/// and the extraction's own edges convert to records too.
+pub(crate) fn build_owned_records(
+    extraction: Value,
+    records: Vec<Attributes>,
+    options: &BuildOptions,
+    messages: &mut Diagnostics,
+    client: Option<&mut dyn TiebreakClient>,
+) -> Result<Graph> {
+    let (combined, json_edges) = combine(vec![extraction])?;
+    if !json_edges.iter().all(Value::is_object) {
+        // Only the JSON form holds an edge that is not an object.
+        let mut edges = Vec::with_capacity(records.len() + json_edges.len());
+        edges.extend(records.into_iter().map(Value::from));
+        edges.extend(json_edges);
+        return build_combined(combined, edges, options, messages, client);
+    }
+    let mut edges = records;
+    edges.reserve_exact(json_edges.len());
+    edges.extend(
+        json_edges
+            .into_iter()
+            .filter_map(EdgeItem::into_record)
+            .map(Attributes::from),
+    );
+    build_combined(combined, edges, options, messages, client)
+}
+/// The body of [`build_owned`] over combined lists, with the edges in either
+/// form ([`build_core`]).
+fn build_combined<R: Record, E: EdgeItem<Record = R>>(
+    combined: Combined,
+    mut edges: Vec<E>,
+    options: &BuildOptions,
+    messages: &mut Diagnostics,
+    client: Option<&mut dyn TiebreakClient>,
+) -> Result<Graph> {
+    let Combined {
+        nodes,
+        hyperedges,
+        unresolved_calls,
+    } = combined;
     let mut combined = Map::new();
     combined.insert("nodes".into(), Value::Array(nodes));
-    combined.insert("edges".into(), Value::Array(edges));
+    // The edges are held beside the rest (`build_core`).
+    combined.insert("edges".into(), Value::Array(Vec::new()));
     combined.insert("hyperedges".into(), Value::Array(hyperedges));
     let mut combined = Value::Object(combined);
-    let root = options
-        .root
-        .as_ref()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| fsutil::resolve_missing(p))
-        .transpose()
-        .map_err(crate::Error::from)?;
+    let root = resolve_root(options.root.as_deref())?;
     let mut dedup_collapsed = 0;
     if options.dedup && !combined["nodes"].as_array().unwrap().is_empty() {
         let profiled = crate::profile::span("build.dedup_prepare");
         coerce_non_string_ids(&mut combined);
+        for edge in edges.iter_mut() {
+            if let Some(e) = edge.record_mut() {
+                coerce_edge_record_ids(e);
+            }
+        }
         for node in combined["nodes"].as_array_mut().unwrap() {
             fold_node_aliases(node);
             if node.is_object() {
@@ -1225,13 +1427,12 @@ pub fn build_owned(
         };
         let mut hyperedges = take(&mut combined, "hyperedges");
         let nodes = take(&mut combined, "nodes");
-        let edges = take(&mut combined, "edges");
         let before_dedup = nodes.len();
         drop(profiled);
         let profiled = crate::profile::span("build.dedup");
-        let result = dedup::deduplicate_entities_owned(
+        let (result, deduped) = dedup::deduplicate_records(
             nodes,
-            edges,
+            std::mem::take(&mut edges),
             &DedupOptions {
                 communities: Map::new(),
                 dedup_llm_backend: options.dedup_llm_backend.clone(),
@@ -1241,17 +1442,20 @@ pub fn build_owned(
             Some(&mut hyperedges),
             client,
         )?;
+        edges = deduped;
         dedup_collapsed = before_dedup.saturating_sub(result.nodes.len());
         combined["nodes"] = Value::Array(result.nodes);
-        combined["edges"] = Value::Array(result.edges);
         combined["hyperedges"] = Value::Array(hyperedges);
         messages.stdout.extend(result.stdout);
         messages.stderr.extend(result.stderr);
         drop(profiled);
     }
     let _profiled = crate::profile::span("build.core");
-    let mut graph = build_from_json_core(
+    // The core resolves the root again, as `build_from_json` does.
+    let root = resolve_root(root.as_deref())?;
+    let mut graph = build_core(
         &mut combined,
+        &mut edges,
         options.directed,
         options.multigraph,
         root.as_deref(),
@@ -1286,4 +1490,260 @@ pub fn take_shrink_accounting(graph: &mut Graph) -> (u64, u64) {
             .unwrap_or(0)
     };
     (take(DEDUP_COLLAPSED), take(PRUNED_NODE_COUNT))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::extract::{self, ExtractOptions};
+
+    /// A build's graph (node-link form) and messages, or its error.
+    fn outcome(result: Result<Graph>, messages: &Diagnostics) -> String {
+        let graph = match result {
+            Ok(graph) => serde_json::to_string(&graph.to_node_link("links")).unwrap(),
+            Err(e) => format!("error: {e}"),
+        };
+        format!("{graph}\n{:?}\n{:?}", messages.stdout, messages.stderr)
+    }
+
+    /// Semantic-tier nodes, edges and a hyperedge beside the AST ones, which
+    /// reach every build pass that reads or edits an edge: endpoint and
+    /// relation aliases, numeric ids and confidence, a document twin, a dedup
+    /// merge, an extension collision and a path collision (with a reference
+    /// that cannot be attributed), a schema warning, a field named `source`
+    /// and an external stub. `code` is an AST node id they point at.
+    fn semantic(code: &str) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+        let doc = |id: &str, label: &str, file: &str| json!({"id": id, "label": label, "file_type": "document", "source_file": file});
+        let refs = |source: &str, target: &str, file: &str| {
+            json!({"source": source, "target": target, "relation": "references",
+                   "confidence": "EXTRACTED", "source_file": file})
+        };
+        let nodes = vec![
+            doc("guide", "Guide", "docs/guide.md"),
+            doc("guide_doc", "Guide doc", "docs/guide.md"),
+            json!({"id": "payment_gateway", "label": "Payment Gateway Service",
+                   "file_type": "concept", "source_file": "docs/notes.md"}),
+            json!({"id": "payment_gateway_2", "label": "payment gateway service",
+                   "file_type": "concept", "source_file": "docs/notes.md", "description": "dup"}),
+            doc("x_overview", "Overview", "a/x.md"),
+            doc("x_overview", "Overview", "b/x.md"),
+            doc("site_page_intro", "Intro", "site/page.md"),
+            doc("site_page_intro", "Intro", "site/page.html"),
+            json!({"id": 42, "label": "Answer", "file_type": "concept", "source_file": "docs/notes.md"}),
+            json!({"id": "legacy", "label": "Legacy", "file_type": "concept", "source": "docs/legacy.md"}),
+        ];
+        let edges = vec![
+            refs("guide_doc", "guide", "docs/guide.md"),
+            json!({"source": "payment_gateway", "target": "payment_gateway_2",
+                   "relation": "semantically_similar_to", "confidence": "INFERRED",
+                   "confidence_score": 0.9, "source_file": "docs/notes.md"}),
+            json!({"from": "payment_gateway_2", "to": code, "type": "mentions",
+                   "confidence": 0.6, "source_file": "docs/notes.md", "weight": "2"}),
+            refs("x_overview", "guide", "a/x.md"),
+            refs("x_overview", "guide", "b/x.md"),
+            refs("guide", "x_overview", "docs/guide.md"),
+            refs("site_page_intro", "guide", "site/page.html"),
+            json!({"source": 42, "target": "guide", "relation": "references",
+                   "confidence": "EXTRACTED", "source_file": "docs/notes.md"}),
+            json!({"source": "legacy", "target": "guide", "relation": "references",
+                   "source_file": "docs/legacy.md"}),
+            json!({"source": "guide", "target": "external_mod", "relation": "imports",
+                   "confidence": "EXTRACTED", "source_file": "docs/guide.md"}),
+            json!({"source": code, "target": "guide", "relation": "references",
+                   "confidence": "INFERRED", "source_file": ""}),
+        ];
+        let hyperedges = vec![
+            json!({"id": "flow", "label": "Flow", "relation": "participate_in",
+            "confidence": "INFERRED", "source_file": "docs/guide.md",
+            "nodes": ["guide", "x_overview", "payment_gateway_2", 42]}),
+        ];
+        (nodes, edges, hyperedges)
+    }
+
+    fn with(extraction: &Value, key: &str, items: &[Value]) -> Value {
+        let mut out = extraction.clone();
+        let mut all = out[key].as_array().cloned().unwrap_or_default();
+        all.extend_from_slice(items);
+        out[key] = Value::Array(all);
+        out
+    }
+
+    /// The JSON build of `json` against the record build of `beside` with
+    /// `records` in front of its edges, under several build options.
+    fn assert_same_builds(json: &Value, beside: &Value, records: &[Attributes], root: &Path) {
+        for (dedup, directed, multigraph) in [
+            (true, false, false),
+            (false, false, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            let options = BuildOptions {
+                dedup,
+                directed,
+                multigraph,
+                root: Some(root.to_path_buf()),
+                ..Default::default()
+            };
+            let mut old = Diagnostics::default();
+            let want = build_owned(vec![json.clone()], &options, &mut old, None);
+            let mut new = Diagnostics::default();
+            let got =
+                build_owned_records(beside.clone(), records.to_vec(), &options, &mut new, None);
+            assert_eq!(
+                outcome(got, &new),
+                outcome(want, &old),
+                "dedup {dedup}, directed {directed}, multigraph {multigraph}"
+            );
+        }
+    }
+
+    /// The extract command builds the edge records assembly leaves (and the
+    /// JSON edges after them) into exactly the graph, messages and errors
+    /// that the JSON build of the same edges gives.
+    #[test]
+    fn assembled_records_build_exactly_like_json_edges() {
+        let _serial = crate::extractors::parse_cache::test_serial();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let write = |rel: &str, text: &str| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        write("go.mod", "module example.com/demo\n\ngo 1.22\n");
+        let mut native = vec![
+            write(
+                "a/a.go",
+                "package a\n\nfunc Alpha() int { return 1 }\n\ntype Thing struct{}\n\nfunc (t *Thing) Do() int { return Alpha() }\n",
+            ),
+            write(
+                "a/a2.go",
+                "package a\n\nfunc Beta() int { return Alpha() }\n",
+            ),
+            write(
+                "b/b.go",
+                "package b\n\nimport (\n\t\"fmt\"\n\t\"example.com/demo/a\"\n)\n\nfunc Bravo() { fmt.Println(a.Alpha()); Charlie() }\n\nfunc Charlie() {}\n",
+            ),
+            write(
+                "py/models.py",
+                "class Base:\n    def run(self):\n        return 1\n\n\nclass Child(Base):\n    def go(self):\n        return self.run()\n",
+            ),
+            write(
+                "py/app.py",
+                "import models\nfrom models import Child\n\n\ndef main():\n    c = Child()\n    models.Base().run()\n    return c.go()\n",
+            ),
+            write("sh/run.sh", "#!/bin/bash\nsource ./lib.sh\nhelper\n"),
+            write("sh/lib.sh", "helper() {\n  echo hi\n}\n"),
+            write(
+                "c/main.c",
+                "int util(void);\nint main(void) { return util(); }\n",
+            ),
+            write("c/util.c", "int util(void) { return 1; }\n"),
+        ];
+        native.sort();
+        let mut all = native.clone();
+        all.extend([
+            write(
+                "ts/a.ts",
+                "export class Greeter {\n  greet(): string { return this.name(); }\n  name(): string { return 'x'; }\n}\n",
+            ),
+            write(
+                "ts/b.ts",
+                "import { Greeter } from './a';\n\nexport function run(): string {\n  const g = new Greeter();\n  return g.greet();\n}\n",
+            ),
+            write(
+                "src/lib.rs",
+                "pub struct S;\n\nimpl S {\n    pub fn f(&self) -> usize { self.g() }\n    fn g(&self) -> usize { 1 }\n}\n",
+            ),
+            write(
+                "java/A.java",
+                "package demo;\n\npublic class A {\n  public int f() { return g(); }\n  int g() { return 1; }\n}\n",
+            ),
+            write(
+                "java/B.java",
+                "package demo;\n\nimport demo.A;\n\npublic class B {\n  public int h() { return new A().f(); }\n}\n",
+            ),
+            write("rb/a.rb", "class Foo\n  def bar\n    baz\n  end\n\n  def baz\n    1\n  end\nend\n"),
+            write(
+                "php/a.php",
+                "<?php\nclass P {\n  public function f() { return $this->g(); }\n  public function g() { return 1; }\n}\n",
+            ),
+            write(
+                "kt/A.kt",
+                "package demo\n\nclass K {\n  fun f(): Int = g()\n  fun g(): Int = 1\n}\n",
+            ),
+            write(
+                "cs/A.cs",
+                "namespace Demo {\n  public class C {\n    public int F() { return G(); }\n    int G() { return 1; }\n  }\n}\n",
+            ),
+            write(
+                "swift/A.swift",
+                "class W {\n  func f() -> Int { return g() }\n  func g() -> Int { return 1 }\n}\n",
+            ),
+            write(
+                "cpp/a.cpp",
+                "#include \"a.hpp\"\n\nint Q::f() { return g(); }\nint Q::g() { return 1; }\n",
+            ),
+            write("cpp/a.hpp", "class Q {\npublic:\n  int f();\n  int g();\n};\n"),
+        ]);
+        all.sort();
+        let options = ExtractOptions {
+            root: Some(root.clone()),
+            cache_root: Some(root.join("cache")),
+            use_cache: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let code_node = |extraction: &Value| {
+            extraction["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|n| {
+                    n["source_file"]
+                        .as_str()
+                        .is_some_and(|f| f.ends_with(".go"))
+                })
+                .and_then(|n| n["id"].as_str())
+                .unwrap()
+                .to_owned()
+        };
+
+        // Go, Python, Bash and C keep the record form through assembly; the
+        // other languages' JSON resolvers leave JSON edges, which convert.
+        for paths in [&native, &all] {
+            let json = extract::extract(paths, &options).unwrap();
+            assert_eq!(
+                serde_json::to_string(
+                    &extract::extract_assembled(paths, &options)
+                        .unwrap()
+                        .into_value()
+                )
+                .unwrap(),
+                serde_json::to_string(&json).unwrap()
+            );
+            let (beside, records) = extract::extract_assembled(paths, &options)
+                .unwrap()
+                .into_parts();
+            assert!(!records.is_empty());
+            assert_eq!(beside["edges"], json!([]));
+            let (nodes, edges, hyperedges) = semantic(&code_node(&json));
+            let plain = |e: &Value| with(&with(e, "nodes", &nodes), "hyperedges", &hyperedges);
+            assert_same_builds(&json, &beside, &records, &root);
+            assert_same_builds(
+                &with(&plain(&json), "edges", &edges),
+                &with(&plain(&beside), "edges", &edges),
+                &records,
+                &root,
+            );
+            // A JSON edge that is no object fails both builds the same way.
+            let broken = [edges.clone(), vec![json!("not an edge")]].concat();
+            assert_same_builds(
+                &with(&plain(&json), "edges", &broken),
+                &with(&plain(&beside), "edges", &broken),
+                &records,
+                &root,
+            );
+        }
+    }
 }

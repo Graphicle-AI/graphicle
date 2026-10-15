@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/go.py
 //! Go package-scoped types, case-stable symbols, signatures and call candidates.
 use super::base::{file_stem, is_language_builtin, make_id, read_text};
@@ -123,6 +123,87 @@ pub fn collect_type_refs(
         }
     }
 }
+/// `_go_strip_generic_args`: a generic receiver's type text without its
+/// instantiation arguments (`Box[T]` -> `Box`), so a generic type's methods
+/// attach to the type's own id (#4438).
+pub fn strip_generic_args(type_text: &str) -> &str {
+    trim(type_text.split('[').next().unwrap_or(""))
+}
+/// `_go_single_type_name`: the one declared type a Go type expression names
+/// (`Greeter`, `*Greeter`), or None for a slice, map, channel, qualified or
+/// predeclared type.
+pub fn single_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
+    let mut node = node?;
+    if node.kind() == "pointer_type" {
+        node = children(node).find(|n| n.is_named())?;
+    }
+    if node.kind() != "type_identifier" {
+        return None;
+    }
+    let name = read_text(node, source);
+    (!name.is_empty() && !PREDECLARED_TYPES.contains(&name.as_str())).then_some(name)
+}
+/// `_go_receiver_type_table`: `name -> TypeName` for every Go receiver whose
+/// type is written down (struct field, parameter incl. the method receiver,
+/// `var x T`, `x := T{}` / `x := &T{}`), flat over `root`, first binding in
+/// source order wins.
+pub fn receiver_type_table(root: Node<'_>, source: &[u8]) -> Map<String, Value> {
+    let mut table = Map::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        match n.kind() {
+            "field_declaration" | "parameter_declaration" | "var_spec" => {
+                if let Some(type_name) = single_type_name(n.child_by_field_name("type"), source) {
+                    for c in children(n)
+                        .filter(|c| matches!(c.kind(), "field_identifier" | "identifier"))
+                    {
+                        table
+                            .entry(read_text(c, source))
+                            .or_insert_with(|| json!(type_name));
+                    }
+                }
+            }
+            "short_var_declaration" => {
+                if let (Some(left), Some(right)) = (
+                    n.child_by_field_name("left"),
+                    n.child_by_field_name("right"),
+                ) {
+                    let names = children(left).filter(|c| c.kind() == "identifier");
+                    let values = children(right).filter(|c| c.is_named());
+                    for (name, mut value) in names.zip(values) {
+                        if value.kind() == "unary_expression" {
+                            value = value.child_by_field_name("operand").unwrap_or(value);
+                        }
+                        if value.kind() != "composite_literal" {
+                            continue;
+                        }
+                        if let Some(type_name) =
+                            single_type_name(value.child_by_field_name("type"), source)
+                        {
+                            table
+                                .entry(read_text(name, source))
+                                .or_insert_with(|| json!(type_name));
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+        let mut kids = children(n).collect::<Vec<_>>();
+        kids.reverse();
+        stack.extend(kids);
+    }
+    table
+}
+/// A function body to walk for calls: the caller, the body, the method's
+/// receiver name and type, and the function's own-scope type table.
+struct Body<'tree> {
+    caller: String,
+    body: Node<'tree>,
+    self_name: Option<String>,
+    self_type: Option<String>,
+    scope_types: Map<String, Value>,
+}
 struct Extractor<'source, 'tree> {
     source: &'source [u8],
     path: String,
@@ -132,7 +213,10 @@ struct Extractor<'source, 'tree> {
     nodes: Vec<Value>,
     edges: Vec<Value>,
     seen: HashSet<String>,
-    bodies: Vec<(String, Node<'tree>)>,
+    bodies: Vec<Body<'tree>>,
+    // `_callable` / `_callable_class` stamps (#2438, #3152).
+    callable: HashSet<String>,
+    callable_class: HashSet<String>,
     imports: Map<String, Value>,
     groups: HashMap<String, HashSet<String>>,
     labels: HashMap<String, String>,
@@ -244,9 +328,17 @@ impl<'tree> Extractor<'_, 'tree> {
     fn receiver(&self, node: Node<'_>) -> Option<String> {
         let receiver = node.child_by_field_name("receiver")?;
         let parameter = children(receiver).find(|n| n.kind() == "parameter_declaration")?;
+        parameter.child_by_field_name("type").map(|n| {
+            strip_generic_args(trim(read_text(n, self.source).trim_start_matches('*'))).to_string()
+        })
+    }
+    /// The method receiver's variable name (`s` in `func (s *Server)`).
+    fn receiver_name(&self, node: Node<'_>) -> Option<String> {
+        let receiver = node.child_by_field_name("receiver")?;
+        let parameter = children(receiver).find(|n| n.kind() == "parameter_declaration")?;
         parameter
-            .child_by_field_name("type")
-            .map(|n| trim(read_text(n, self.source).trim_start_matches('*')).to_string())
+            .child_by_field_name("name")
+            .map(|n| read_text(n, self.source))
     }
     fn scan(&mut self, node: Node<'_>) {
         // #3737: interface method names join the case-collision groups
@@ -311,10 +403,18 @@ impl<'tree> Extractor<'_, 'tree> {
                     let name = read_text(name, self.source);
                     let id = self.symbol(make_id([self.stem.as_str(), name.as_str()]), &name);
                     self.node(&id, &format!("{name}()"), line);
+                    self.callable.insert(id.clone());
                     self.edge(&self.file.clone(), &id, "contains", line, None);
                     self.signatures(node, &id, line, &HashSet::new());
                     if let Some(body) = node.child_by_field_name("body") {
-                        self.bodies.push((id, body));
+                        let scope_types = receiver_type_table(node, self.source);
+                        self.bodies.push(Body {
+                            caller: id,
+                            body,
+                            self_name: None,
+                            self_type: None,
+                            scope_types,
+                        });
                     }
                 }
                 return;
@@ -324,9 +424,12 @@ impl<'tree> Extractor<'_, 'tree> {
                     return;
                 };
                 let name = read_text(name, self.source);
-                let id = if let Some(receiver) = self.receiver(node).filter(|s| !s.is_empty()) {
+                let receiver_type = self.receiver(node).filter(|s| !s.is_empty());
+                let receiver_name = self.receiver_name(node);
+                let id = if let Some(receiver) = receiver_type.clone() {
                     let parent = make_id([self.scope.as_str(), receiver.as_str()]);
                     self.node(&parent, &receiver, line);
+                    self.callable_class.insert(parent.clone());
                     let id = self.symbol(make_id([parent.as_str(), name.as_str()]), &name);
                     self.node(&id, &format!(".{name}()"), line);
                     self.edge(&parent, &id, "method", line, None);
@@ -337,9 +440,17 @@ impl<'tree> Extractor<'_, 'tree> {
                     self.edge(&self.file.clone(), &id, "contains", line, None);
                     id
                 };
+                self.callable.insert(id.clone());
                 self.signatures(node, &id, line, &HashSet::new());
                 if let Some(body) = node.child_by_field_name("body") {
-                    self.bodies.push((id, body));
+                    let scope_types = receiver_type_table(node, self.source);
+                    self.bodies.push(Body {
+                        caller: id,
+                        body,
+                        self_name: receiver_name,
+                        self_type: receiver_type,
+                        scope_types,
+                    });
                 }
                 return;
             }
@@ -352,6 +463,7 @@ impl<'tree> Extractor<'_, 'tree> {
                     let line = spec.start_position().row + 1;
                     let id = make_id([self.scope.as_str(), name.as_str()]);
                     self.node(&id, &name, line);
+                    self.callable_class.insert(id.clone());
                     self.edge(&self.file.clone(), &id, "contains", line, None);
                     // A generic type's own parameters (`type Box[T any]`) are
                     // bindings for its fields and methods (#4383).
@@ -491,7 +603,7 @@ impl<'tree> Extractor<'_, 'tree> {
             }
         }
     }
-    fn calls(&mut self, node: Node<'_>, caller: &str) {
+    fn calls(&mut self, node: Node<'_>, caller: &str, scope: &Body<'_>) {
         if matches!(node.kind(), "function_declaration" | "method_declaration") {
             return;
         }
@@ -500,14 +612,16 @@ impl<'tree> Extractor<'_, 'tree> {
             let mut member = false;
             let mut bare = false;
             let mut receiver = None;
+            let mut member_receiver = None;
+            let mut member_receiver_type = None;
             let mut import_path = None;
             if let Some(function) = node.child_by_field_name("function") {
                 if function.kind() == "identifier" {
                     bare = true;
                     callee = Some(read_text(function, self.source));
                 } else if function.kind() == "selector_expression" {
-                    let operand = function
-                        .child_by_field_name("operand")
+                    let operand_node = function.child_by_field_name("operand");
+                    let operand = operand_node
                         .map(|n| read_text(n, self.source))
                         .unwrap_or_default();
                     member = !self.imports.contains_key(&operand);
@@ -518,6 +632,40 @@ impl<'tree> Extractor<'_, 'tree> {
                             .get(&operand)
                             .and_then(Value::as_str)
                             .map(str::to_string);
+                    } else if let Some(op) = operand_node {
+                        if op.kind() == "identifier" {
+                            // The method's own receiver is typed by its
+                            // declaration; other names by the function's scope.
+                            member_receiver_type = if scope
+                                .self_name
+                                .as_deref()
+                                .is_some_and(|n| !n.is_empty() && n == operand)
+                            {
+                                scope.self_type.clone()
+                            } else {
+                                scope
+                                    .scope_types
+                                    .get(&operand)
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string)
+                            };
+                            member_receiver = Some(operand.clone());
+                        } else if op.kind() == "selector_expression" {
+                            // `s.logger.Log()` names the receiver by the field
+                            // only when `s` is this method's own receiver.
+                            let inner = op.child_by_field_name("operand");
+                            if let (Some(self_name), Some(inner)) =
+                                (scope.self_name.as_deref().filter(|n| !n.is_empty()), inner)
+                                && inner.kind() == "identifier"
+                                && read_text(inner, self.source) == self_name
+                            {
+                                member_receiver = Some(
+                                    op.child_by_field_name("field")
+                                        .map(|f| read_text(f, self.source))
+                                        .unwrap_or_default(),
+                                );
+                            }
+                        }
                     }
                     callee = function
                         .child_by_field_name("field")
@@ -548,12 +696,15 @@ impl<'tree> Extractor<'_, 'tree> {
                         );
                     }
                 } else {
-                    self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":member,"language":"go","receiver":receiver,"import_path":import_path,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
+                    // `member_receiver` is a key of its own: `receiver` means
+                    // "imported package" here, and other languages' member
+                    // resolvers read `receiver`.
+                    self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":member,"language":"go","receiver":receiver,"member_receiver":member_receiver,"receiver_type":member_receiver_type,"import_path":import_path,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
                 }
             }
         }
         for n in children(node) {
-            self.calls(n, caller);
+            self.calls(n, caller, scope);
         }
     }
 }
@@ -593,6 +744,8 @@ pub fn extract_go(path: &Path) -> Value {
         edges: vec![],
         seen: HashSet::new(),
         bodies: vec![],
+        callable: HashSet::new(),
+        callable_class: HashSet::new(),
         imports: Map::new(),
         groups: HashMap::new(),
         labels: HashMap::new(),
@@ -602,6 +755,18 @@ pub fn extract_go(path: &Path) -> Value {
     ex.node(&file, &name, 1);
     ex.scan(tree.root_node());
     ex.walk(tree.root_node());
+    // A type carries both markers: `_callable_class` narrows `_callable`.
+    for n in &mut ex.nodes {
+        let id = n["id"].as_str().unwrap_or("");
+        let class = ex.callable_class.contains(id);
+        if class || ex.callable.contains(id) {
+            n["_callable"] = json!(true);
+            if class {
+                n["_callable_class"] = json!(true);
+            }
+        }
+    }
+    let type_table = receiver_type_table(tree.root_node(), &source);
     ex.labels = ex
         .nodes
         .iter()
@@ -616,15 +781,17 @@ pub fn extract_go(path: &Path) -> Value {
             ))
         })
         .collect();
-    for (caller, body) in std::mem::take(&mut ex.bodies) {
-        ex.calls(body, &caller);
+    for scope in std::mem::take(&mut ex.bodies) {
+        ex.calls(scope.body, &scope.caller, &scope);
     }
     ex.edges.retain(|e| {
         e["source"].as_str().is_some_and(|s| ex.seen.contains(s))
             && (e["target"].as_str().is_some_and(|s| ex.seen.contains(s))
                 || matches!(e["relation"].as_str(), Some("imports" | "imports_from")))
     });
-    json!({"nodes":ex.nodes,"edges":ex.edges,"raw_calls":ex.raw_calls,"go_imports":ex.imports})
+    let path = ex.path.clone();
+    json!({"nodes":ex.nodes,"edges":ex.edges,"raw_calls":ex.raw_calls,"go_imports":ex.imports,
+        "go_type_table":{"path":path,"table":type_table}})
 }
 #[cfg(test)]
 mod tests {

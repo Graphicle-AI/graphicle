@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/file_slice.py
 //! Contiguous character slices whose provenance remains the original source file.
 use crate::{Result, cache::Stat, detect, fsutil, io_compat};
@@ -20,6 +20,9 @@ pub const SPLITTABLE_TEXT_SUFFIXES: &[&str] = &[
     ".html",
     ".yaml",
     ".yml",
+    ".j2",
+    ".jinja",
+    ".jinja2",
 ];
 pub const CONVERTED_TEXT_SUFFIXES: &[&str] = &[".pdf"];
 pub const CONVERTED_TEXT_CACHE_MAX: usize = 64;

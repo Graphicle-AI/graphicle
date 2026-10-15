@@ -37,21 +37,20 @@ async fn respond(State(seen): State<Seen>, Json(request): Json<Value>) -> Json<V
 }
 
 fn graphicle(dir: &Path, args: &[&str]) -> Output {
-    crate::fork_guard::spawn(
-        Command::new(env!("CARGO_BIN_EXE_graphicle"))
-            .arg("--data-dir")
-            .arg(dir.join("data"))
-            .arg("--config")
-            .arg(dir.join("models.json"))
-            .args(args)
-            .env("HOME", dir)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped()),
-    )
-    .unwrap()
-    .wait_with_output()
-    .unwrap()
+    let mut command = Command::new(env!("CARGO_BIN_EXE_graphicle"));
+    crate::child_env::home(&mut command, dir)
+        .arg("--data-dir")
+        .arg(dir.join("data"))
+        .arg("--config")
+        .arg(dir.join("models.json"))
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    crate::fork_guard::spawn(&mut command)
+        .unwrap()
+        .wait_with_output()
+        .unwrap()
 }
 
 fn json_of(output: &Output) -> Value {

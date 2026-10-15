@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! Adaptive retry, deterministic corpus merging and incremental checkpoints.
 use crate::{
@@ -416,6 +416,7 @@ pub fn reconcile(merged: &mut Value, chunks: &[Vec<Unit>], root: &Path, d: &mut 
             })
     };
     let mut ids = BTreeSet::new();
+    let mut kept_ids = BTreeSet::new();
     let mut files = BTreeSet::new();
     let mut kept = vec![];
     let mut dropped = 0;
@@ -429,18 +430,27 @@ pub fn reconcile(merged: &mut Value, chunks: &[Vec<Unit>], root: &Path, d: &mut 
             }
             files.insert(string(&n["source_file"]));
         } else {
+            if !n["id"].is_null()
+                && let Some(k) = scalar_key(&n["id"])
+            {
+                kept_ids.insert(k);
+            }
             kept.push(n.clone())
         }
     }
     merged["out_of_scope_dropped"] = json!(dropped);
     if dropped > 0 {
         merged["nodes"] = json!(kept);
+        // An edge referencing a dropped node goes. One attributed to an
+        // undispatched file stays when both endpoints are kept nodes (#2276);
+        // hyperedges stay on the out-of-scope predicate.
         if let Some(edges) = merged["edges"].as_array_mut() {
             edges.retain(|e| {
-                !out_of_scope(e)
-                    && !["source", "target"]
-                        .iter()
-                        .any(|k| scalar_key(&e[*k]).is_some_and(|id| ids.contains(&id)))
+                let kept_end = |k: &str| scalar_key(&e[k]).is_some_and(|id| kept_ids.contains(&id));
+                !["source", "target"]
+                    .iter()
+                    .any(|k| scalar_key(&e[*k]).is_some_and(|id| ids.contains(&id)))
+                    && (!out_of_scope(e) || (kept_end("source") && kept_end("target")))
             })
         }
         if let Some(hs) = merged["hyperedges"].as_array_mut() {

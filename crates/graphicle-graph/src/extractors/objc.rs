@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/objc.py
 //! Objective-C categories, protocols, selectors and receiver-type evidence.
 use super::{
@@ -22,6 +22,266 @@ fn trim(text: &str) -> &str {
 }
 fn read(node: Node<'_>, source: &[u8]) -> String {
     String::from_utf8_lossy(&source[node.byte_range()]).into_owned()
+}
+/// Declaration markers, as the generic engine puts on every other language's
+/// definitions (#2438, #3228): `_callable` is a real callable, not a
+/// same-named data symbol; `_callable_class` narrows that to a type.
+const CALLABLE: &[&str] = &["_callable"];
+const CALLABLE_CLASS: &[&str] = &["_callable", "_callable_class"];
+/// Pre-order nodes of `kind` below and at `node`.
+fn descendants<'a>(node: Node<'a>, kind: &str, out: &mut Vec<Node<'a>>) {
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == kind {
+            out.push(n);
+        }
+        let mut kids = children(n).collect::<Vec<_>>();
+        kids.reverse();
+        stack.extend(kids);
+    }
+}
+/// Pre-order leaf tokens below `node`, comments (and their subtrees) left
+/// out.
+fn leaves(node: Node<'_>) -> Vec<Node<'_>> {
+    let mut out = vec![];
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "comment" {
+            continue;
+        }
+        if n.child_count() == 0 {
+            out.push(n);
+        } else {
+            let mut kids = children(n).collect::<Vec<_>>();
+            kids.reverse();
+            stack.extend(kids);
+        }
+    }
+    out
+}
+/// An `NS_ENUM`/`NS_OPTIONS` enum: `(name, line, [(member, line)])`.
+type MacroEnum = (String, usize, Vec<(String, usize)>);
+/// `_macro_enum_members` (0.9.89, #4400, #4401): `typedef NS_ENUM(Type,
+/// Name) { ... };` and `NS_OPTIONS`. The grammar does not parse these bodies
+/// as enums, so a declaration is selected by its macro header's tokens (one
+/// `(`, one `,`, one `)`, one underlying type, one name, after `typedef`) and
+/// only its unchanged brace-delimited body is parsed alone as `enum Name
+/// {...};`. Every member must map back to the same source bytes; a malformed
+/// or conditional body yields no enum at all. Returns `(name, line,
+/// members)`.
+fn macro_enum_members(
+    root: Node<'_>,
+    source: &[u8],
+    parser: &mut tree_sitter::Parser,
+) -> Vec<MacroEnum> {
+    let mut accepted = vec![];
+    let mut macros = vec![];
+    descendants(root, "macro_type_specifier", &mut macros);
+    if macros.is_empty() {
+        return accepted;
+    }
+    let source_leaves = leaves(root);
+    'macros: for mac in macros {
+        let Some(macro_name) = mac.child_by_field_name("name") else {
+            continue;
+        };
+        if !matches!(read(macro_name, source).as_str(), "NS_ENUM" | "NS_OPTIONS") {
+            continue;
+        }
+        // The closest preceding structural token in an enclosing node must be
+        // `typedef`: no bare macro use, no text in a definition.
+        let mut ancestor = mac.parent();
+        while let Some(a) = ancestor {
+            let preceding = leaves(a)
+                .into_iter()
+                .rfind(|t| t.end_byte() <= mac.start_byte());
+            if preceding.is_some_and(|t| t.kind() == "typedef") {
+                break;
+            }
+            ancestor = a.parent();
+        }
+        if ancestor.is_none() {
+            continue;
+        }
+        let tokens = leaves(mac);
+        let of = |kind: &str| {
+            tokens
+                .iter()
+                .filter(|t| t.kind() == kind)
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        let (opens, closes, commas) = (of("("), of(")"), of(","));
+        if opens.len() != 1 || closes.len() != 1 || commas.len() != 1 {
+            continue;
+        }
+        let (opening, closing, comma) = (opens[0], closes[0], commas[0]);
+        if !(opening.end_byte() <= comma.start_byte()
+            && comma.start_byte() < comma.end_byte()
+            && comma.end_byte() <= closing.start_byte())
+        {
+            continue;
+        }
+        let mut descriptors = vec![];
+        descendants(mac, "type_descriptor", &mut descriptors);
+        let underlying = descriptors
+            .into_iter()
+            .filter(|n| opening.end_byte() <= n.start_byte() && n.end_byte() <= comma.start_byte())
+            .collect::<Vec<_>>();
+        let outer = underlying
+            .iter()
+            .filter(|n| {
+                !underlying.iter().any(|o| {
+                    o.id() != n.id()
+                        && o.start_byte() <= n.start_byte()
+                        && n.end_byte() <= o.end_byte()
+                })
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        let names = tokens
+            .iter()
+            .filter(|t| {
+                comma.end_byte() <= t.start_byte()
+                    && t.start_byte() < closing.start_byte()
+                    && t.is_named()
+            })
+            .copied()
+            .collect::<Vec<_>>();
+        if outer.len() != 1
+            || names.len() != 1
+            || !matches!(names[0].kind(), "identifier" | "type_identifier")
+        {
+            continue;
+        }
+        // Valid headers also carry grammar ERROR wrappers: check the whole
+        // argument spans rather than ignoring extra tokens in them.
+        let (ty, name) = (outer[0], names[0]);
+        if tokens.iter().any(|t| t.is_missing())
+            || tokens.iter().any(|t| {
+                (opening.end_byte() <= t.start_byte()
+                    && t.start_byte() < comma.start_byte()
+                    && !(ty.start_byte() <= t.start_byte() && t.end_byte() <= ty.end_byte()))
+                    || (comma.end_byte() <= t.start_byte()
+                        && t.start_byte() < closing.start_byte()
+                        && !(name.start_byte() <= t.start_byte()
+                            && t.end_byte() <= name.end_byte()))
+            })
+        {
+            continue;
+        }
+        let following = source_leaves
+            .iter()
+            .filter(|t| t.start_byte() >= mac.end_byte())
+            .copied()
+            .collect::<Vec<_>>();
+        let Some(&open_brace) = following.first().filter(|t| t.kind() == "{") else {
+            continue;
+        };
+        let mut depth: i64 = 0;
+        let mut close_brace = None;
+        for t in &following {
+            if t.kind() == "{" {
+                depth += 1;
+            } else if t.kind() == "}" {
+                depth -= 1;
+                if depth == 0 {
+                    close_brace = Some(*t);
+                    break;
+                }
+            }
+            if depth < 0 {
+                break;
+            }
+        }
+        let Some(close_brace) = close_brace else {
+            continue;
+        };
+        if source_leaves
+            .iter()
+            .find(|t| t.start_byte() >= close_brace.end_byte())
+            .is_none_or(|t| t.kind() != ";")
+        {
+            continue;
+        }
+        let name_bytes = &source[name.byte_range()];
+        let body_bytes = &source[open_brace.start_byte()..close_brace.end_byte()];
+        let mut prefix = b"enum ".to_vec();
+        prefix.extend_from_slice(name_bytes);
+        prefix.push(b' ');
+        let mut fragment = prefix.clone();
+        fragment.extend_from_slice(body_bytes);
+        fragment.push(b';');
+        let Some(tree) = parser.parse(&fragment, None) else {
+            continue;
+        };
+        let fragment_root = tree.root_node();
+        let mut specs = vec![];
+        descendants(fragment_root, "enum_specifier", &mut specs);
+        if fragment_root.has_error() || specs.len() != 1 {
+            continue;
+        }
+        let spec = specs[0];
+        let (Some(enum_name), Some(body)) = (
+            spec.child_by_field_name("name"),
+            spec.child_by_field_name("body"),
+        ) else {
+            continue;
+        };
+        if &fragment[enum_name.byte_range()] != name_bytes
+            || spec.has_error()
+            || body.kind() != "enumerator_list"
+            || body.has_error()
+            || body.start_byte() != prefix.len()
+            || body.end_byte() != prefix.len() + body_bytes.len()
+        {
+            continue;
+        }
+        // Conditional members need preprocessor handling: no partial enum.
+        if children(body).any(|c| {
+            !matches!(
+                c.kind(),
+                "{" | "}" | "," | "comment" | "enumerator" | "attribute_specifier"
+            )
+        }) {
+            continue;
+        }
+        let mut members = vec![];
+        let mut previous_end: Option<usize> = None;
+        for member in children(body).filter(|c| c.kind() == "enumerator") {
+            // `Bad Other` parses as two clean enumerators: every later member
+            // needs its separator.
+            if let Some(end) = previous_end
+                && !children(body).any(|t| {
+                    t.kind() == "," && end <= t.start_byte() && t.start_byte() < member.start_byte()
+                })
+            {
+                continue 'macros;
+            }
+            let Some(ident) = member
+                .child_by_field_name("name")
+                .or_else(|| children(member).find(|c| c.kind() == "identifier"))
+            else {
+                continue 'macros;
+            };
+            if member.has_error() || ident.start_byte() < body.start_byte() {
+                continue 'macros;
+            }
+            let start = open_brace.start_byte() + ident.start_byte() - body.start_byte();
+            let end = open_brace.start_byte() + ident.end_byte() - body.start_byte();
+            let text = &fragment[ident.byte_range()];
+            if end > close_brace.end_byte() || source.get(start..end) != Some(text) {
+                continue 'macros;
+            }
+            let line = open_brace.start_position().row + ident.start_position().row
+                - body.start_position().row
+                + 1;
+            members.push((String::from_utf8_lossy(text).into_owned(), line));
+            previous_end = Some(member.end_byte());
+        }
+        accepted.push((read(name, source), mac.start_position().row + 1, members));
+    }
+    accepted
 }
 fn identifier(text: &str) -> bool {
     let mut chars = text.chars();
@@ -110,8 +370,15 @@ struct Extractor<'source, 'tree> {
 }
 impl<'tree> Extractor<'_, 'tree> {
     fn node(&mut self, id: &str, label: &str, line: usize) {
+        self.marked(id, label, line, &[]);
+    }
+    fn marked(&mut self, id: &str, label: &str, line: usize, markers: &[&str]) {
         if self.seen.insert(id.into()) {
-            self.nodes.push(json!({"id":id,"label":label,"file_type":"code","source_file":self.path,"source_location":format!("L{line}")}));
+            let mut node = json!({"id":id,"label":label,"file_type":"code","source_file":self.path,"source_location":format!("L{line}")});
+            for marker in markers {
+                node[*marker] = json!(true);
+            }
+            self.nodes.push(node);
         }
     }
     fn edge(
@@ -287,7 +554,7 @@ impl<'tree> Extractor<'_, 'tree> {
                     self.stem.clone()
                 };
                 let id = make_id([stem.as_str(), name.as_str()]);
-                self.node(&id, &name, line);
+                self.marked(&id, &name, line, CALLABLE_CLASS);
                 self.edge(&self.file.clone(), &id, "contains", line, None);
                 let mut colon = false;
                 for n in children(node) {
@@ -350,7 +617,7 @@ impl<'tree> Extractor<'_, 'tree> {
                 };
                 let id = make_id([stem.as_str(), name.as_str()]);
                 if !self.seen.contains(&id) {
-                    self.node(&id, &name, line);
+                    self.marked(&id, &name, line, CALLABLE_CLASS);
                     self.edge(&self.file.clone(), &id, "contains", line, None);
                 }
                 for n in children(node) {
@@ -371,7 +638,8 @@ impl<'tree> Extractor<'_, 'tree> {
                     .filter(|s| !s.is_empty())
                 {
                     let id = make_id([self.stem.as_str(), name.as_str()]);
-                    self.node(&id, &format!("<{name}>"), line);
+                    // A protocol is a type declaration like any interface.
+                    self.marked(&id, &format!("<{name}>"), line, CALLABLE_CLASS);
                     self.edge(&self.file.clone(), &id, "contains", line, None);
                     for base in children(node)
                         .filter(|n| n.kind() == "protocol_reference_list")
@@ -404,7 +672,7 @@ impl<'tree> Extractor<'_, 'tree> {
                     .collect::<String>();
                 if !name.is_empty() {
                     let id = make_id([container.as_str(), name.as_str()]);
-                    self.node(&id, &format!("{prefix}{name}"), line);
+                    self.marked(&id, &format!("{prefix}{name}"), line, CALLABLE);
                     self.edge(&container, &id, "method", line, None);
                     if node.kind() == "method_definition" {
                         self.bodies.push(Body {
@@ -419,7 +687,7 @@ impl<'tree> Extractor<'_, 'tree> {
             "type_definition" => {
                 // `typedef enum [Tag] { ... } Name;` is referenced through its
                 // alias (the trailing type_identifier), else the tag. NS_ENUM /
-                // NS_OPTIONS parse as ERROR subtrees and stay unsupported.
+                // NS_OPTIONS go through `macro_enum_members`.
                 if let Some(spec) = children(node).find(|c| c.kind() == "enum_specifier")
                     && children(spec).any(|c| c.kind() == "enumerator_list")
                     && let Some(alias) = children(node)
@@ -456,25 +724,32 @@ impl<'tree> Extractor<'_, 'tree> {
     /// A C-style enum: a type node plus one `case_of` member per enumerator
     /// (0.9.77, mirroring the other languages' enum model).
     fn emit_enum(&mut self, spec: Node<'_>, name: &str, line: usize) {
+        let Some(body) = children(spec).find(|c| c.kind() == "enumerator_list") else {
+            self.emit_enum_members(name, line, &[]);
+            return;
+        };
+        let members = children(body)
+            .filter(|c| c.kind() == "enumerator")
+            .filter_map(|member| {
+                children(member)
+                    .find(|c| c.kind() == "identifier")
+                    .map(|c| read(c, self.source))
+                    .filter(|s| !s.is_empty())
+                    .map(|name| (name, member.start_position().row + 1))
+            })
+            .collect::<Vec<_>>();
+        self.emit_enum_members(name, line, &members);
+    }
+    /// The enum type node, then its members as `(name, line)`.
+    fn emit_enum_members(&mut self, name: &str, line: usize, members: &[(String, usize)]) {
         let id = make_id([self.stem.as_str(), name]);
         self.node(&id, name, line);
         let file = self.file.clone();
         self.edge(&file, &id, "contains", line, None);
-        let Some(body) = children(spec).find(|c| c.kind() == "enumerator_list") else {
-            return;
-        };
-        for member in children(body).filter(|c| c.kind() == "enumerator") {
-            let Some(member_name) = children(member)
-                .find(|c| c.kind() == "identifier")
-                .map(|c| read(c, self.source))
-                .filter(|s| !s.is_empty())
-            else {
-                continue;
-            };
-            let member_line = member.start_position().row + 1;
+        for (member_name, member_line) in members {
             let member_id = make_id([id.as_str(), member_name.as_str()]);
-            self.node(&member_id, &member_name, member_line);
-            self.edge(&id, &member_id, "case_of", member_line, None);
+            self.node(&member_id, member_name, *member_line);
+            self.edge(&id, &member_id, "case_of", *member_line, None);
         }
     }
     fn call_edge(&mut self, caller: &str, target: &str, line: usize, access: bool) {
@@ -652,7 +927,11 @@ pub fn extract_objc(path: &Path) -> Result<Value> {
         calls: HashSet::new(),
     };
     ex.node(&file, &name, 1);
+    let macro_enums = macro_enum_members(tree.root_node(), &source, &mut parser);
     ex.walk(tree.root_node(), None)?;
+    for (name, line, members) in &macro_enums {
+        ex.emit_enum_members(name, *line, members);
+    }
     ex.all_methods = ex.seen.iter().filter(|n| **n != file).cloned().collect();
     for body in &ex.bodies {
         ex.siblings

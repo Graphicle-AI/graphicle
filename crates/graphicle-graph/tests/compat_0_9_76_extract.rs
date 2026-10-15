@@ -3,7 +3,20 @@
 use graphicle::api::{ExtractOptions, extract};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// A path as the engine reports it: on Windows `/`-separated and without the
+/// verbatim prefix; elsewhere `to_string_lossy` itself.
+fn spelled(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.strip_prefix(r"\\?\")
+            .unwrap_or(&text)
+            .replace('\\', "/")
+    } else {
+        text.into_owned()
+    }
+}
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -885,9 +898,10 @@ fn svelte_unreadable_file_reports_error() {
     for (name, language) in [("Gone.svelte", "svelte"), ("gone.py", "python")] {
         let path = fx.root.join("missing").join(name);
         let result = graphicle::extract_languages::extract_language(&path, language);
+        // The path as the engine spells it, quoted as Python's repr quotes it.
         let expected = format!(
-            "[Errno 2] No such file or directory: '{}'",
-            path.to_string_lossy()
+            "[Errno 2] No such file or directory: {}",
+            graphicle::python_compat::repr_string(&spelled(&path))
         );
         assert_eq!(
             result["error"].as_str(),

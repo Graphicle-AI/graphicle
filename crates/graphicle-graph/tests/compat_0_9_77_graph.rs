@@ -391,6 +391,16 @@ fn merge_driver_keeps_stored_direction_in_arc_order() {
 }
 
 // 79b7a84 (#3785): a subfolder run ignores other folders' manifest entries.
+/// `canonicalize` in the engine's plain spelling: on Windows without the
+/// verbatim prefix (`\\?\C:\x` is `C:\x`), as the command line resolves a
+/// root; elsewhere `canonicalize` itself.
+fn canonical(path: &Path) -> PathBuf {
+    let path = path.canonicalize().unwrap();
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => plain.into(),
+        _ => path,
+    }
+}
 struct Workspace {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -402,7 +412,7 @@ struct Workspace {
 fn workspace() -> Workspace {
     let dir = tempfile::tempdir().unwrap();
     // A non-hidden root: tempfile names its directories `.tmpXXXX`.
-    let root = dir.path().canonicalize().unwrap().join("workspace");
+    let root = canonical(dir.path()).join("workspace");
     let (sub_a, sub_b) = (root.join("workflows"), root.join("experts"));
     fs::create_dir_all(&sub_a).unwrap();
     fs::create_dir_all(&sub_b).unwrap();

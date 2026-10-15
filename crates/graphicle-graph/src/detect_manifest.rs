@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/detect.py
 //! Portable manifests with separate AST/semantic stamps and conservative mtimes.
 use crate::{Result, cache, fsutil, paths, python_compat};
@@ -17,13 +17,18 @@ pub fn os_path(path: &Path) -> String {
     }
     #[cfg(windows)]
     {
-        let s = fsutil::path_string(path);
-        if s.starts_with(r"\\?\") {
-            return s;
+        // An extended-length path is returned as given, like Graphify's
+        // `_os_path` (path_string would drop its prefix).
+        let raw = path.to_string_lossy();
+        if raw.starts_with(r"\\?\") {
+            return raw.into_owned();
         }
+        // `\\?\` turns off Windows path parsing, so a `/` after it is part of
+        // a name: spelled with `\` as `os.path.abspath` returns it (the
+        // engine's own spelling is `/`-separated, `C:/repo/a.py`).
         let absolute = crate::detect_ignore::absolute_lexical(path)
             .to_string_lossy()
-            .into_owned();
+            .replace('/', "\\");
         if let Some(tail) = absolute.strip_prefix(r"\\") {
             format!(r"\\?\UNC\{tail}")
         } else {
@@ -127,7 +132,7 @@ fn normpath_own_flavor(key: &str) -> String {
     }
 }
 /// Python 3.12 `ntpath.splitroot` on a path whose `/` are already `\`.
-fn ntpath_splitroot(p: &str) -> (&str, &str, &str) {
+pub(crate) fn ntpath_splitroot(p: &str) -> (&str, &str, &str) {
     let b = p.as_bytes();
     if b.first() == Some(&b'\\') {
         if b.get(1) == Some(&b'\\') {
@@ -163,7 +168,7 @@ fn ntpath_splitroot(p: &str) -> (&str, &str, &str) {
 }
 /// Python 3.12 `ntpath.normpath` (the pure-Python implementation every
 /// non-Windows host uses).
-fn ntpath_normpath(path: &str) -> String {
+pub(crate) fn ntpath_normpath(path: &str) -> String {
     let path = path.replace('/', "\\");
     let (drive, root, rest) = ntpath_splitroot(&path);
     let prefix = format!("{drive}{root}");
@@ -677,5 +682,25 @@ mod own_flavor_tests {
             assert_eq!(normpath_own_flavor(r"C:\proj\sub\..\a.py"), r"C:\proj\a.py");
             assert_eq!(normpath_own_flavor("/home/u/./x/../a.py"), "/home/u/a.py");
         }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_os_path_tests {
+    use super::os_path;
+    use std::path::Path;
+
+    #[test]
+    fn extended_length_paths_pass_through() {
+        assert_eq!(os_path(Path::new(r"\\?\C:\repo\a.py")), r"\\?\C:\repo\a.py");
+        assert_eq!(
+            os_path(Path::new(r"\\?\UNC\server\share\a.py")),
+            r"\\?\UNC\server\share\a.py"
+        );
+    }
+
+    #[test]
+    fn engine_spelled_paths_get_the_prefix_with_backslashes() {
+        assert_eq!(os_path(Path::new("C:/repo/a.py")), r"\\?\C:\repo\a.py");
     }
 }

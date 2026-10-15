@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Opt-in `serve --watch`: the MCP server keeps its graph resident and applies
 //! file changes in memory within a fraction of a second, then runs the normal
@@ -124,6 +124,8 @@ fn context_where(g: &Graph, keep: impl Fn(&str) -> bool) -> (Vec<Value>, Vec<Val
             "_ts_public_twin",
             "_py_property",
             "_java_ret",
+            "_ts_fields",
+            "_ts_static_fields",
         ] {
             if build::truthy(attr(g, i, k)) {
                 c[k] = attr(g, i, k).clone();
@@ -157,8 +159,11 @@ fn context_where(g: &Graph, keep: impl Fn(&str) -> bool) -> (Vec<Value>, Vec<Val
     let mut edges = vec![];
     for (u, v, e) in g.iter_edges() {
         let relation = e.attributes.get("relation").and_then(Value::as_str);
-        if !relation.is_some_and(|r| ["contains", "method", "inherits"].contains(&r))
-            || !ast_tier(&e.attributes)
+        // Import edges come too (0.9.91): a TS field inherited from an
+        // unchanged file is typed by that file's imports, as in a full build.
+        if !relation.is_some_and(|r| {
+            ["contains", "method", "inherits", "imports", "imports_from"].contains(&r)
+        }) || !ast_tier(&e.attributes)
             || !live(e.attributes.get("source_file").unwrap_or(&Value::Null))
         {
             continue;
@@ -350,7 +355,7 @@ pub fn patch_with(
             kept.push((
                 g.nodes[u].id.clone(),
                 g.nodes[v].id.clone(),
-                g.multigraph.then(|| e.key.clone()),
+                g.multigraph.then(|| e.key.to_value()),
                 e.attributes.clone(),
             ));
         }
@@ -393,7 +398,7 @@ pub fn patch_with(
         add(
             fresh.nodes[u].id.clone(),
             fresh.nodes[v].id.clone(),
-            fresh.multigraph.then(|| e.key.clone()),
+            fresh.multigraph.then(|| e.key.to_value()),
             e.attributes.clone(),
         )?;
     }

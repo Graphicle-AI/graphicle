@@ -184,6 +184,33 @@ const README: &str = "# Project\n\nuser: this file must never be sent to the obs
 
 #[tokio::test]
 async fn disjoint_observers_make_concurrent_calls_with_separate_budgets() {
+    // Windows: the process-wide limiter (Limiter::global) is sized by the
+    // first worker in the process, in this shared test binary often another
+    // test's with one model job, so the test runs alone in a child process.
+    if cfg!(windows) && std::env::var_os("GRAPHICLE_OBSERVER_ALONE").is_none() {
+        let output = crate::fork_guard::spawn(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "observer::disjoint_observers_make_concurrent_calls_with_separate_budgets",
+                    "--exact",
+                    "--test-threads=1",
+                ])
+                .env("GRAPHICLE_OBSERVER_ALONE", "1")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped()),
+        )
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && text.contains("1 passed"),
+            "{text}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let f = Fixture::new(&[("session-0001.txt", S1), ("session-0002.txt", S2)]);
     let seen = Seen {
         requests: Arc::new(Mutex::new(vec![])),

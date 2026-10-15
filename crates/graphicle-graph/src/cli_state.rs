@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Incremental extraction bookkeeping and conservative stale-source pruning.
 use crate::{Result, build, paths};
@@ -47,8 +47,31 @@ pub fn strings(v: &Value) -> Vec<String> {
 pub fn resolve(p: &Path) -> PathBuf {
     crate::extractors::resolution::resolved(p)
 }
+/// A path in the spelling the scan records (`path_string` on Windows).
 fn npath(p: &Path) -> String {
-    paths::nfc(&p.to_string_lossy())
+    #[cfg(windows)]
+    {
+        paths::nfc(&crate::fsutil::path_string(p))
+    }
+    #[cfg(not(windows))]
+    {
+        paths::nfc(&p.to_string_lossy())
+    }
+}
+/// `Path(os.path.normpath(str(base / rel)))`: on Windows the lexical
+/// normal form (no case folding, so it still matches the scan's spelling);
+/// elsewhere the joined path, as before.
+fn anchored(base: &Path, rel: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(paths::normpath(&crate::fsutil::path_string(
+            &base.join(rel),
+        )))
+    }
+    #[cfg(not(windows))]
+    {
+        crate::cache_paths::normalize(&base.join(rel))
+    }
 }
 pub fn stamped(
     files: &Value,
@@ -165,15 +188,16 @@ pub fn stale_sources_in(
             vec![p.into()]
         } else {
             let rel = sf.replace('\\', "/");
-            let mut a = vec![crate::cache_paths::normalize(&root.join(&rel))];
+            let mut a = vec![anchored(&root, &rel)];
             if root != out {
-                a.push(crate::cache_paths::normalize(&out.join(rel)));
+                a.push(anchored(&out, &rel));
             }
             a
         };
+        let within = |p: &Path| crate::fsutil::path_starts_with(p, &root);
         let inside = candidates
             .into_iter()
-            .filter(|p| p.starts_with(&root) || resolve(p).starts_with(&root))
+            .filter(|p| within(p) || within(&resolve(p)))
             .collect::<Vec<_>>();
         if inside.is_empty()
             || inside
@@ -236,9 +260,7 @@ pub fn zero_sources(
             present.insert(npath(&resolve(p)));
         } else {
             for base in [&root, &out] {
-                present.insert(npath(&crate::cache_paths::normalize(
-                    &base.join(sf.replace('\\', "/")),
-                )));
+                present.insert(npath(&anchored(base, &sf.replace('\\', "/"))));
             }
         }
     }

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/analyze.py, graphify/ids.py, graphify/validate.py
 //! Small native value helpers shared by translated modules, not a Python runtime.
 use crate::python_repr_data::PRINTABLE;

@@ -101,10 +101,10 @@ pass `--switch-from-graphify`.
 - Graphify's Claude Code hook stays in `.claude/settings.json` and still asks
   Claude to read `graphify-out/GRAPH_REPORT.md` before every search. When you
   no longer use Graphify, delete that `PreToolUse` entry (the one whose
-  command mentions `graphify-out`) from the file's `hooks`. Setup gives
-  Claude Code Graphicle's own guard hooks, in `.claude/settings.local.json`,
-  which point its searches to the graph tools of `graphicle mcp`
-  ([agents.md](agents.md#connect-and-disconnect)).
+  command mentions `graphify-out`) from the file's `hooks`. `graphicle
+  setup --guards` gives Claude Code Graphicle's own guard hooks instead, in
+  `.claude/settings.local.json`, which point its searches to the graph tools
+  of `graphicle mcp` ([agents.md](agents.md#connect-and-disconnect)).
 - Setup's code graph lives in Graphicle's data folder: it serves `graphicle
   ask` and your agents, and you need nothing else for them. Only the
   `graphicle graph` commands read a graph file. To keep using the ones you

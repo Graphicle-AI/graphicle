@@ -1,0 +1,27 @@
+# Line endings: text files are stored and checked out with LF on every system,
+# including Git for Windows, whose installer sets core.autocrlf=true. Hashes,
+# fixtures and the engine's reference files then match on every system.
+* text=auto eol=lf
+
+# Binary files: never converted.
+*.gif binary
+*.ico binary
+*.icns binary
+*.jpeg binary
+*.jpg binary
+*.png binary
+*.webp binary
+*.otf binary
+*.ttf binary
+*.woff binary
+*.woff2 binary
+*.bin binary
+*.hmm binary
+*.zst binary
+
+# Kept byte for byte as published upstream, CRLF line endings included: the
+# vendored sources and the licence texts and pages generated from them.
+crates/graphicle-graph/vendor/** -text
+crates/*/licenses/** -text
+/licenses/** -text
+THIRD_PARTY_LICENSES.html -text

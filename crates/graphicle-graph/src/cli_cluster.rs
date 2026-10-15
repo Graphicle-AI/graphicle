@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 use crate::{
     Result, build,
@@ -52,7 +52,7 @@ pub fn run(command: &str, a: &Args, out: &mut Output) -> Result<()> {
     if !prev.is_empty() {
         comm = cluster::remap_communities_to_previous(
             &comm,
-            &prev.into_iter().map(|(k, v)| (json!(k), v)).collect(),
+            &prev.iter().map(|(k, v)| (json!(k), *v)).collect(),
         )?;
     }
     timer.mark("cluster", &mut d.stderr);
@@ -86,15 +86,27 @@ pub fn run(command: &str, a: &Args, out: &mut Output) -> Result<()> {
     let mut usage = crate::llm::Usage::default();
     let placeholders = a.flag("no-label") && command != "label" && !lp.exists();
     if lp.exists() && command != "label" {
-        for (cid, _) in &comm {
+        let count_mismatch = saved.as_object().is_none_or(|m| m.len() != comm.len());
+        for (cid, members) in &comm {
             let k = cid.to_string();
             let named = saved[&k]
                 .as_str()
                 .is_some_and(|s| s != format!("Community {cid}"));
+            // Equal signature, or the shared members are a strict majority of
+            // both the saved and the current set (#2298). Without signatures a
+            // changed community count keeps a label only on that majority.
             let fresh = if sigs.as_object().is_some_and(|m| !m.is_empty()) {
-                sigs[&k] == current[&k]
+                cluster::label_still_applies(
+                    *cid,
+                    members,
+                    &prev,
+                    sigs[&k].as_str(),
+                    current[&k].as_str(),
+                )
+            } else if count_mismatch {
+                cluster::label_still_applies(*cid, members, &prev, None, None)
             } else {
-                saved.as_object().is_some_and(|m| m.len() == comm.len())
+                true
             };
             labels[&k] = if named && fresh {
                 saved[&k].clone()

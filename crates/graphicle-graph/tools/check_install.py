@@ -1,7 +1,7 @@
 """Installer helper parity and isolated native installation round trips."""
 import functools, inspect, json, os, platform, sys, tempfile, tomllib
 from pathlib import Path
-from parity import Native, ROOT, SOURCE
+from parity import BINARY, Native, ROOT, SOURCE
 from isolated_upstream import run
 from naming import NATIVE_BIN, to_native, to_upstream
 import graphify.install as ref
@@ -141,6 +141,71 @@ def symlinked_instructions():
             if previous is None:os.environ.pop('HOME',None)
             else:os.environ['HOME']=previous
 
+def pi_guard():
+    """0.9.89 `pi guard install|uninstall|path` against the reference
+    dispatcher, in the three contracts of tests/test_pi_guard_install.py:
+    `path` names a complete package (the reference's files with the program
+    and extension names translated, every manifest extension a file inside
+    it); install and uninstall hand that folder to `pi install|remove` and exit
+    with Pi's status; without `pi` on PATH both exit 1 with the same error and
+    nothing is written."""
+    import contextlib, io, subprocess
+    from types import SimpleNamespace
+    from unittest import mock
+    package=Path(ref.__file__).resolve().parent/'pi'
+    def upstream_text(text):
+        # The native files are upstream's after the name translation; their
+        # two header lines name the upstream release and file.
+        lines=text.split('\n')
+        if lines[0].startswith('// Adapted from Graphify'):lines=lines[2:]
+        text='\n'.join(lines).replace('graphicle-graph','graphify').replace('graphicle','graphify')
+        return text.replace('the package ships','the wheel ships').replace('to the installed graphify hook-guard CLI',"to Graphify's installed hook-guard CLI")
+    def reference(action,which):
+        seen={};out=io.StringIO();err=io.StringIO()
+        def host(argv,*,check):
+            seen['argv']=list(argv);seen['package']=(Path(argv[2])/'package.json').is_file()
+            return SimpleNamespace(returncode=23)
+        with tempfile.TemporaryDirectory(prefix='reference-pi-guard-') as work,contextlib.chdir(work),\
+             mock.patch.object(sys,'argv',['graphify','pi','guard',action]),mock.patch('graphify.install.shutil.which',lambda name:which),\
+             mock.patch('subprocess.run',host),contextlib.redirect_stdout(out),contextlib.redirect_stderr(err):
+            try:ref.dispatch_install_cli('pi');code=0
+            except SystemExit as stop:code=stop.code
+            written=sorted(p.name for p in Path(work).iterdir())
+        return {'code':code,'stderr':err.getvalue(),'verb':(seen.get('argv') or [None,None])[1],'package':seen.get('package'),'written':written},out.getvalue()
+    with tempfile.TemporaryDirectory(prefix='native-pi-guard-') as tmp:
+        root=Path(tmp);bindir=root/'bin';empty=root/'empty';bindir.mkdir();empty.mkdir();record=root/'argv'
+        (bindir/'pi').write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{record}'\nexit 23\n");(bindir/'pi').chmod(0o755)
+        def run_native(action,host):
+            home=root/f'home-{action}-{host}';work=root/f'work-{action}-{host}';home.mkdir();work.mkdir();record.unlink(missing_ok=True)
+            done=subprocess.run([str(BINARY),'pi','guard',action],cwd=work,capture_output=True,text=True,timeout=120,
+                                env={'HOME':str(home),'PATH':f'{bindir}:/usr/bin:/bin' if host else str(empty),'LANG':'C.UTF-8'})
+            argv=record.read_text().splitlines() if record.exists() else [None,None]
+            folder=home/'.graphicle-graph'/'pi'
+            if host and argv[1] is not None:assert Path(argv[1])==folder,(action,argv)
+            return {'code':done.returncode,'stderr':done.stderr,'verb':argv[0] if host else None,'package':(Path(argv[1])/'package.json').is_file() if argv[1] else None,
+                    'written':sorted(p.name for p in work.iterdir())},done.stdout,home
+        # path: the same package, translated.
+        expected,shown=reference('path',None)
+        assert Path(shown.strip())==package,(shown,package)
+        actual,shown,home=run_native('path',False)
+        folder=Path(shown.strip())
+        if folder!=home/'.graphicle-graph'/'pi' or actual['code']!=expected['code']:native.fail(case='pi guard path',expected=expected,actual=actual,shown=shown)
+        names=sorted(p.name for p in package.iterdir() if p.is_file())
+        if sorted(p.name for p in folder.iterdir())!=names:native.fail(case='pi guard path files',expected=names,actual=sorted(p.name for p in folder.iterdir()))
+        for name in names:
+            if upstream_text((folder/name).read_text())!=(package/name).read_text():native.fail(case='pi guard package text',file=name)
+        manifest=json.loads((folder/'package.json').read_text());entries=manifest['pi']['extensions']
+        assert entries and all((folder/e).is_file() and (folder/e).resolve().is_relative_to(folder.resolve()) for e in entries),manifest
+        counts['pi_guard_path']=1
+        # install/uninstall: with and without Pi on PATH.
+        for action in ['install','uninstall']:
+            for host in [True,False]:
+                expected,_=reference(action,'/usr/bin/pi' if host else None)
+                actual,_,home=run_native(action,host)
+                if actual!=expected:native.fail(case=f'pi guard {action}',host=host,expected=expected,actual=actual)
+                if not host:assert not any(home.iterdir()),(action,list(home.iterdir()))
+                counts['pi_guard_delegated' if host else 'pi_guard_without_host']=counts.get('pi_guard_delegated' if host else 'pi_guard_without_host',0)+1
+
 if __name__=='__main__':
     # Reuse only the static selector, without loading the CLI comparison module.
     import ast
@@ -158,6 +223,9 @@ if __name__=='__main__':
     # native guard above; hook identity (#4359) and the OpenCode plugin refresh
     # run the reference installer flows (see interface_differences).
     paths+=[p for p in ['tests/test_install_line_endings.py','tests/test_uninstall_purge_safety.py','tests/test_install_hook_identity.py','tests/test_opencode_plugin_refresh.py'] if (SOURCE/p).exists()]
+    # 0.9.89 `pi guard`: its test drives the reference dispatcher (the wheel's
+    # package and pyproject package-data); pi_guard() compares the native command.
+    paths+=[p for p in ['tests/test_pi_guard_install.py'] if (SOURCE/p).exists()]
     if '--test' in sys.argv:paths=[sys.argv[sys.argv.index('--test')+1]]
     with tempfile.TemporaryDirectory(prefix='install-oracle-home-') as tmp:
         previous=os.environ.get('HOME');os.environ['HOME']=tmp
@@ -166,5 +234,5 @@ if __name__=='__main__':
             if previous is None:os.environ.pop('HOME',None)
             else:os.environ['HOME']=previous
     assert code==0
-    roundtrips();symlinked_instructions();native.close()
-    native.receipt('graphify/install.py',[str(p.relative_to(ROOT)) for p in sorted((ROOT/'src').glob('install*.rs'))]+[str(p.relative_to(ROOT)) for p in sorted((ROOT/'src/assets/install').glob('*'))],checked=counts,upstream_tests=tests,interface_differences=['Embedded native skill and workflow reference replace Python command recipes; platform paths, scopes, configuration preservation, version stamps, and backups retain their contracts.','Skill writers take a skill-directory lock under the engine\'s own ~/.cache/graphicle/skill-locks. The installed skill is skills/graphicle with the stamp .graphicle_version holding the engine package version; the 0.9.72 CLI refresh of stale skills (#1805) keeps upstream\'s limits for those engine copies, and its executable tests are cli/tests/skill_refresh.rs.','Uninstall edits a symlinked instructions file through the link and keeps the link (#3805); symlinked_instructions() compares that file-system contract with the reference uninstall functions. Upstream\'s test_install_claude_md_names_the_symlink_target_it_wrote and test_uninstall_claude_md_names_the_symlink_target_it_edited assert per-file console lines (`_shown_path`); the native installer reports one summary line per platform and names no instruction file, so those lines have no native counterpart.','tests/test_install_hook_identity.py and tests/test_opencode_plugin_refresh.py drive the reference installer flows (settings hook entries, the OpenCode plugin file and the CLI refresh); only the substituted helpers are native there. The native hook-entry identity is the engine\'s own word match on hook-guard/hook-check under any program name (the reference also matches its legacy inline guards), and the native flows for both contracts are tests/compat_0_9_88_outputs.rs (hook identity, OpenCode plugins) and cli/tests/skill_refresh.rs.'])
+    roundtrips();symlinked_instructions();pi_guard();native.close()
+    native.receipt('graphify/install.py',[str(p.relative_to(ROOT)) for p in sorted((ROOT/'src').glob('install*.rs'))]+[str(p.relative_to(ROOT)) for p in sorted((ROOT/'src/assets/install').rglob('*')) if p.is_file()],checked=counts,upstream_tests=tests,interface_differences=['`pi guard` (0.9.89): upstream ships the Pi package in the wheel (graphify/pi); a native build writes the same files, with the program and extension names translated, to ~/.graphicle-graph/pi and hands that folder to Pi. tests/test_pi_guard_install.py drives the reference dispatcher; pi_guard() compares the native command with it (package files, delegation to `pi install|remove` with Pi\'s exit status, exit 1 with nothing written when Pi is not on PATH).','Embedded native skill and workflow reference replace Python command recipes; platform paths, scopes, configuration preservation, version stamps, and backups retain their contracts.','Skill writers take a skill-directory lock under the engine\'s own ~/.cache/graphicle/skill-locks. The installed skill is skills/graphicle with the stamp .graphicle_version holding the engine package version; the 0.9.72 CLI refresh of stale skills (#1805) keeps upstream\'s limits for those engine copies, and its executable tests are cli/tests/skill_refresh.rs.','Uninstall edits a symlinked instructions file through the link and keeps the link (#3805); symlinked_instructions() compares that file-system contract with the reference uninstall functions. Upstream\'s test_install_claude_md_names_the_symlink_target_it_wrote and test_uninstall_claude_md_names_the_symlink_target_it_edited assert per-file console lines (`_shown_path`); the native installer reports one summary line per platform and names no instruction file, so those lines have no native counterpart.','tests/test_install_hook_identity.py and tests/test_opencode_plugin_refresh.py drive the reference installer flows (settings hook entries, the OpenCode plugin file and the CLI refresh); only the substituted helpers are native there. The native hook-entry identity is the engine\'s own word match on hook-guard/hook-check under any program name (the reference also matches its legacy inline guards), and the native flows for both contracts are tests/compat_0_9_88_outputs.rs (hook identity, OpenCode plugins) and cli/tests/skill_refresh.rs.'])

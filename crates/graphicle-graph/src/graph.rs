@@ -1,17 +1,22 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/affected.py, graphify/global_graph.py, graphify/ids.py,
 //           graphify/multigraph_compat.py, graphify/serve.py
 //! Native attributed graph substrate for the translated Graphify modules.
 //! Preserves insertion order, keyed parallel edges and node-link JSON semantics.
 use crate::{
     Result,
-    graph_adjacency::Neighbors,
+    graph_adjacency::{GROUP, Neighbors},
     python_compat::{self, ScalarKey},
+    vtab::{self, VId},
 };
+use hashbrown::HashTable;
+use serde::{Serialize, Serializer};
 use serde_json::{Map, Value, json};
 use std::{
     collections::BTreeMap,
-    hash::{Hash, Hasher},
+    fmt,
+    hash::{BuildHasher, Hash, Hasher},
+    ops::Deref,
 };
 // Identifier indices are never iterated, so a fast non-cryptographic hasher
 // cannot change any observable ordering.
@@ -19,6 +24,9 @@ use std::{
 pub type FastState = foldhash::fast::RandomState;
 type IndexMap<K, V> = hashbrown::HashMap<K, V, FastState>;
 
+/// An owned identifier key (Python hash semantics: `1 == 1.0 == True`), for
+/// the ordered maps of `relabel_copy`. The indices hash and compare the
+/// stored identifiers themselves (`KeyRef`, `same_key`).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
     Scalar(ScalarKey),
@@ -38,20 +46,6 @@ fn hash_scalar<H: Hasher>(key: &ScalarKey, state: &mut H) {
         ScalarKey::Text(value) => {
             3u8.hash(state);
             value.hash(state);
-        }
-    }
-}
-impl Hash for Key {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Self::Scalar(value) => hash_scalar(value, state),
-            Self::Tuple(values) => {
-                4u8.hash(state);
-                values.len().hash(state);
-                for value in values {
-                    value.hash(state);
-                }
-            }
         }
     }
 }
@@ -78,18 +72,60 @@ impl Hash for KeyRef<'_> {
         }
     }
 }
-impl hashbrown::Equivalent<Key> for KeyRef<'_> {
-    fn equivalent(&self, key: &Key) -> bool {
-        match (self.0, key) {
-            (Value::String(a), Key::Scalar(ScalarKey::Text(b))) => a == b,
-            (Value::Array(a), Key::Tuple(b)) => {
-                a.len() == b.len() && a.iter().zip(b).all(|(a, b)| KeyRef(a).equivalent(b))
-            }
-            (Value::String(_) | Value::Array(_), _) => false,
-            (value, Key::Scalar(key)) => python_compat::scalar_key(value).as_ref() == Some(key),
-            _ => false,
-        }
+/// A scalar key hashed exactly as `KeyRef` hashes a value with that key.
+struct ScalarRef<'a>(&'a ScalarKey);
+impl Hash for ScalarRef<'_> {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_scalar(self.0, state);
     }
+}
+/// `key(a) == key(b)` for identifiers, without building either key: equal
+/// strings, element-wise equal tuples, or equal scalars (`1 == 1.0 == True`).
+fn same_key(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Array(a), Value::Array(b)) => {
+            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_key(a, b))
+        }
+        (Value::String(_) | Value::Array(_), _) | (_, Value::String(_) | Value::Array(_)) => false,
+        (a, b) => python_compat::scalar_key(a)
+            .is_some_and(|a| python_compat::scalar_key(b).as_ref() == Some(&a)),
+    }
+}
+/// Whether `key(value)` succeeds, without building the key.
+fn hashable(value: &Value) -> bool {
+    match value {
+        Value::String(_) => true,
+        Value::Array(items) => items.iter().all(hashable),
+        value => python_compat::scalar_key(value).is_some(),
+    }
+}
+fn unhashable() -> crate::Error {
+    crate::Error::graph("TypeError: unhashable graph identifier")
+}
+fn pair_of(directed: bool, source: usize, target: usize) -> (usize, usize) {
+    if !directed && source > target {
+        (target, source)
+    } else {
+        (source, target)
+    }
+}
+fn node_hash(state: &FastState, id: &Value) -> u64 {
+    state.hash_one(KeyRef(id))
+}
+fn edge_hash(state: &FastState, (u, v): (usize, usize), key: &Value) -> u64 {
+    state.hash_one((u, v, KeyRef(key)))
+}
+/// The `edge_hash` of a live edge slot (0 for an empty slot, which the
+/// index never holds).
+fn slot_hash(state: &FastState, directed: bool, edges: &[Option<Edge>], slot: u32) -> u64 {
+    edges[slot as usize].as_ref().map_or(0, |edge| {
+        edge_hash(
+            state,
+            pair_of(directed, edge.source, edge.target),
+            &edge.key,
+        )
+    })
 }
 fn key(value: &Value) -> Result<Key> {
     if let Some(scalar) = python_compat::scalar_key(value) {
@@ -114,11 +150,77 @@ pub struct Node {
     pub id: Value,
     pub attributes: crate::record::Attributes,
 }
+/// An edge's key: null on a simple graph; on a multigraph the integer the
+/// graph chose or the scalar the caller gave. Four bytes: the value lives
+/// once in the process-wide table (`crate::vtab`), against 72 bytes for an
+/// inline `Value`. It reads as that `&Value` (`Deref`), compares, formats and
+/// serializes exactly as the value does, and two keys are equal exactly when
+/// their values are (the table keeps one id per kind and exact text).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct EdgeKey(VId);
+impl EdgeKey {
+    /// The key of every simple-graph edge.
+    pub const NULL: Self = Self(VId::NULL);
+    /// The key holding the scalar `value`. Arrays and objects cannot be
+    /// edge keys and come back unchanged as the error.
+    pub fn new(value: Value) -> std::result::Result<Self, Value> {
+        vtab::intern(value).map(Self)
+    }
+    /// The key equal to the scalar `value` (cloned only when it is new to
+    /// the table); `None` for an array or an object.
+    pub fn of(value: &Value) -> Option<Self> {
+        vtab::intern_ref(value).map(Self)
+    }
+    /// The key's value, valid for the life of the process.
+    pub fn value(self) -> &'static Value {
+        self.0.value()
+    }
+    /// An owned copy of the key's value.
+    pub fn to_value(self) -> Value {
+        self.value().clone()
+    }
+}
+impl Deref for EdgeKey {
+    type Target = Value;
+    fn deref(&self) -> &Value {
+        self.value()
+    }
+}
+impl PartialEq<Value> for EdgeKey {
+    fn eq(&self, other: &Value) -> bool {
+        self.value() == other
+    }
+}
+impl PartialEq<EdgeKey> for Value {
+    fn eq(&self, other: &EdgeKey) -> bool {
+        self == other.value()
+    }
+}
+impl fmt::Debug for EdgeKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(self.value(), f)
+    }
+}
+impl fmt::Display for EdgeKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.value(), f)
+    }
+}
+impl Serialize for EdgeKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        self.value().serialize(serializer)
+    }
+}
+impl From<EdgeKey> for Value {
+    fn from(key: EdgeKey) -> Self {
+        key.to_value()
+    }
+}
 #[derive(Clone, Debug)]
 pub struct Edge {
     pub source: usize,
     pub target: usize,
-    pub key: Value,
+    pub key: EdgeKey,
     pub attributes: crate::record::Attributes,
 }
 #[derive(Clone, Debug)]
@@ -127,9 +229,17 @@ pub struct Graph {
     pub(crate) multigraph: bool,
     pub(crate) attributes: Value,
     pub(crate) nodes: Vec<Node>,
-    node_index: IndexMap<Key, usize>,
+    /// Seeds the hashes of `node_index` and `edge_index`.
+    state: FastState,
+    /// Position of every node, hashed and compared through `nodes[i].id`
+    /// (`KeyRef`, `same_key`), so no copy of an identifier is kept.
+    node_index: HashTable<u32>,
     edges: Vec<Option<Edge>>,
-    edge_index: IndexMap<(usize, usize, Key), usize>,
+    /// Number of live edge slots.
+    live: usize,
+    /// Multigraphs only: the slot of every live edge, by `(pair, key)`. A
+    /// simple graph has one edge per pair and finds it in an adjacency row.
+    edge_index: HashTable<u32>,
     adjacency: Vec<Neighbors>,
     incoming: Vec<Neighbors>,
 }
@@ -143,15 +253,169 @@ impl Graph {
             multigraph,
             attributes: json!({}),
             nodes: Vec::with_capacity(nodes),
-            node_index: IndexMap::with_capacity_and_hasher(nodes, FastState::default()),
+            state: FastState::default(),
+            node_index: HashTable::with_capacity(nodes),
             edges: Vec::with_capacity(edges),
-            edge_index: IndexMap::with_capacity_and_hasher(edges, FastState::default()),
+            live: 0,
+            edge_index: HashTable::with_capacity(if multigraph { edges } else { 0 }),
             adjacency: Vec::with_capacity(nodes),
             incoming: Vec::with_capacity(nodes),
         }
     }
+    /// Room for `additional` more edges, so that a build that knows how many
+    /// edges it adds grows the edge list once, exactly, instead of doubling.
+    pub fn reserve_edges(&mut self, additional: usize) {
+        self.edges.reserve_exact(additional);
+        if self.multigraph {
+            let Self {
+                state,
+                directed,
+                edges,
+                edge_index,
+                ..
+            } = self;
+            edge_index.reserve(additional, |&slot| slot_hash(state, *directed, edges, slot));
+        }
+    }
+    /// Releases spare capacity of the node and edge lists, the indices and
+    /// the adjacency rows of a complete graph. Order and contents are
+    /// unchanged.
+    pub fn shrink_to_fit(&mut self) {
+        let Self {
+            directed,
+            nodes,
+            state,
+            node_index,
+            edges,
+            edge_index,
+            adjacency,
+            incoming,
+            ..
+        } = self;
+        nodes.shrink_to_fit();
+        node_index.shrink_to(0, |&i| node_hash(state, &nodes[i as usize].id));
+        edges.shrink_to_fit();
+        edge_index.shrink_to(0, |&slot| slot_hash(state, *directed, edges, slot));
+        for row in adjacency.iter_mut().chain(incoming.iter_mut()) {
+            row.shrink_to_fit();
+        }
+        adjacency.shrink_to_fit();
+        incoming.shrink_to_fit();
+    }
     pub fn node_index(&self, id: &Value) -> Option<usize> {
-        self.node_index.get(&KeyRef(id)).copied()
+        let nodes = &self.nodes;
+        self.node_index
+            .find(node_hash(&self.state, id), |&i| {
+                same_key(id, &nodes[i as usize].id)
+            })
+            .map(|&i| i as usize)
+    }
+    /// Indexes `nodes[index]`, which is not indexed yet.
+    fn index_node(&mut self, index: usize) {
+        let Self {
+            nodes,
+            state,
+            node_index,
+            ..
+        } = self;
+        node_index.insert_unique(node_hash(state, &nodes[index].id), index as u32, |&i| {
+            node_hash(state, &nodes[i as usize].id)
+        });
+    }
+    /// `node_index` rebuilt for the current node list.
+    fn reindex_nodes(&mut self) {
+        self.node_index = HashTable::with_capacity(self.nodes.len());
+        for index in 0..self.nodes.len() {
+            self.index_node(index);
+        }
+    }
+    /// Recounts the live edges and rebuilds a multigraph's `edge_index`.
+    /// With `check` (snapshot loads) every key must be hashable and every
+    /// `(pair, key)` unique, on simple graphs too.
+    fn reindex_edges(&mut self, check: bool) -> Result<()> {
+        self.live = self.edges.iter().filter(|edge| edge.is_some()).count();
+        if !self.multigraph && !check {
+            self.edge_index = HashTable::new();
+            return Ok(());
+        }
+        let Self {
+            directed,
+            state,
+            edges,
+            ..
+        } = &*self;
+        let mut index = HashTable::with_capacity(self.live);
+        for (slot, edge) in edges.iter().enumerate() {
+            let Some(edge) = edge else { continue };
+            if check && !hashable(&edge.key) {
+                return Err(unhashable());
+            }
+            let pair = pair_of(*directed, edge.source, edge.target);
+            let hash = edge_hash(state, pair, &edge.key);
+            if check
+                && index
+                    .find(hash, |&other: &u32| {
+                        edges[other as usize].as_ref().is_some_and(|e| {
+                            pair_of(*directed, e.source, e.target) == pair
+                                && same_key(&e.key, &edge.key)
+                        })
+                    })
+                    .is_some()
+            {
+                return Err(crate::snapshot::corrupt("duplicate edge"));
+            }
+            index.insert_unique(hash, slot as u32, |&other| {
+                slot_hash(state, *directed, edges, other)
+            });
+        }
+        // A simple graph keeps no edge index; the check was all it was for.
+        self.edge_index = if self.multigraph {
+            index
+        } else {
+            HashTable::new()
+        };
+        Ok(())
+    }
+    /// The live edge `(pair, key)` of a multigraph.
+    fn find_keyed(&self, pair: (usize, usize), key: &Value) -> Option<usize> {
+        let (directed, edges) = (self.directed, &self.edges);
+        self.edge_index
+            .find(edge_hash(&self.state, pair, key), |&slot| {
+                edges[slot as usize].as_ref().is_some_and(|edge| {
+                    pair_of(directed, edge.source, edge.target) == pair && same_key(&edge.key, key)
+                })
+            })
+            .map(|&slot| slot as usize)
+    }
+    /// Whether a multigraph has a live edge `(pair, candidate)`.
+    fn has_integer_key(&self, pair: (usize, usize), candidate: u64) -> bool {
+        let key = ScalarKey::Integer(candidate.into());
+        let hash = self.state.hash_one((pair.0, pair.1, ScalarRef(&key)));
+        let (directed, edges) = (self.directed, &self.edges);
+        self.edge_index
+            .find(hash, |&slot| {
+                edges[slot as usize].as_ref().is_some_and(|edge| {
+                    pair_of(directed, edge.source, edge.target) == pair
+                        && !matches!(*edge.key, Value::String(_) | Value::Array(_))
+                        && python_compat::scalar_key(&edge.key).as_ref() == Some(&key)
+                })
+            })
+            .is_some()
+    }
+    /// Adds the live edge `slot` to a multigraph's `edge_index`.
+    fn index_edge(&mut self, slot: usize) {
+        let Self {
+            directed,
+            state,
+            edges,
+            edge_index,
+            ..
+        } = self;
+        edge_index.insert_unique(
+            slot_hash(state, *directed, edges, slot as u32),
+            slot as u32,
+            |&other| slot_hash(state, *directed, edges, other),
+        );
     }
     /// The built graph for a query snapshot (`crate::snapshot`): records,
     /// edge slots and both adjacency tables exactly as they are in memory,
@@ -208,6 +472,10 @@ impl Graph {
                 r.usize()?,
             ))
         })?;
+        // Rows store node ids as u32 and edge ids below `GROUP`.
+        if u32::try_from(n).is_err() || m > GROUP as usize {
+            return Err(corrupt("graph size"));
+        }
         let part = |n: usize, i: usize| CHUNK.min(n - i * CHUNK);
         let nodes = d.chunks(chunk_count(n), |r, i| {
             (0..part(n, i))
@@ -221,14 +489,19 @@ impl Graph {
         let mut graph = Self::with_capacity(directed, multigraph, 0, 0);
         graph.attributes = attributes;
         graph.nodes = nodes.into_iter().flatten().collect();
-        graph.node_index.reserve(n);
-        for (index, node) in graph.nodes.iter().enumerate() {
-            if node.id.is_null() || !valid_identifier(&node.id) {
+        graph.node_index = HashTable::with_capacity(graph.nodes.len());
+        for index in 0..graph.nodes.len() {
+            let id = &graph.nodes[index].id;
+            if id.is_null() || !valid_identifier(id) {
                 return Err(corrupt("node identifier"));
             }
-            if graph.node_index.insert(key(&node.id)?, index).is_some() {
+            if !hashable(id) {
+                return Err(unhashable());
+            }
+            if graph.node_index(id).is_some() {
                 return Err(corrupt("duplicate node"));
             }
+            graph.index_node(index);
         }
         let edges = d.chunks(chunk_count(m), |r, i| {
             (0..part(m, i))
@@ -238,7 +511,14 @@ impl Graph {
                         1 => Some(Edge {
                             source: r.index(n)?,
                             target: r.index(n)?,
-                            key: r.value()?,
+                            // The writer only ever holds scalar keys.
+                            key: EdgeKey::new(r.value()?).map_err(|key| {
+                                if key.is_object() {
+                                    unhashable()
+                                } else {
+                                    corrupt("edge key")
+                                }
+                            })?,
                             attributes: crate::record::Attributes::read_snapshot(r)?,
                         }),
                         _ => return Err(corrupt("edge slot")),
@@ -247,22 +527,7 @@ impl Graph {
                 .collect::<Result<Vec<_>>>()
         })?;
         graph.edges = edges.into_iter().flatten().collect();
-        graph.edge_index.reserve(m);
-        for (index, edge) in graph.edges.iter().enumerate() {
-            let Some(edge) = edge else { continue };
-            let (u, v) = if !directed && edge.source > edge.target {
-                (edge.target, edge.source)
-            } else {
-                (edge.source, edge.target)
-            };
-            if graph
-                .edge_index
-                .insert((u, v, key(&edge.key)?), index)
-                .is_some()
-            {
-                return Err(corrupt("duplicate edge"));
-            }
-        }
+        graph.reindex_edges(true)?;
         let mut rows = [Vec::new(), Vec::new()];
         for table in &mut rows {
             *table = d
@@ -315,24 +580,25 @@ impl Graph {
         if id.is_null() {
             return Err(crate::Error::graph("ValueError: None cannot be a node"));
         }
-        if let Some(&index) = self.node_index.get(&KeyRef(&id)) {
+        if let Some(index) = self.node_index(&id) {
             self.nodes[index].attributes.extend_record(attributes);
             return Ok(index);
         }
-        let k = key(&id)?;
+        if !hashable(&id) {
+            return Err(unhashable());
+        }
         let index = self.nodes.len();
-        self.node_index.insert(k, index);
+        if u32::try_from(index).is_err() {
+            return Err(crate::Error::graph("Graph node limit reached"));
+        }
         self.nodes.push(Node { id, attributes });
+        self.index_node(index);
         self.adjacency.push(Neighbors::default());
         self.incoming.push(Neighbors::default());
         Ok(index)
     }
     fn pair(&self, source: usize, target: usize) -> (usize, usize) {
-        if !self.directed && source > target {
-            (target, source)
-        } else {
-            (source, target)
-        }
+        pair_of(self.directed, source, target)
     }
     fn attach(&mut self, source: usize, target: usize, edge: usize) {
         self.adjacency[source].push_edge(target, edge);
@@ -380,15 +646,21 @@ impl Graph {
             let mut candidate = self.adjacency[source]
                 .get(target)
                 .map_or(0, |edges| edges.len()) as u64;
-            let mut lookup = (u, v, Key::Scalar(ScalarKey::Integer(candidate.into())));
-            while self.edge_index.contains_key(&lookup) {
+            while self.has_integer_key((u, v), candidate) {
                 candidate += 1;
-                lookup.2 = Key::Scalar(ScalarKey::Integer(candidate.into()));
             }
             json!(candidate)
         };
-        let lookup = (u, v, key(&edge_key)?);
-        if let Some(&index) = self.edge_index.get(&lookup) {
+        // A simple graph keeps one edge per pair, the one its row lists.
+        let existing = if self.multigraph {
+            self.find_keyed((u, v), &edge_key)
+        } else {
+            self.adjacency[source]
+                .get(target)
+                .and_then(|ids| ids.first())
+                .map(|&id| id as usize)
+        };
+        if let Some(index) = existing {
             self.edges
                 .get_mut(index)
                 .and_then(Option::as_mut)
@@ -398,13 +670,21 @@ impl Graph {
             return Ok(edge_key);
         }
         let index = self.edges.len();
+        if index >= GROUP as usize {
+            return Err(crate::Error::graph("Graph edge limit reached"));
+        }
+        // Simple-graph keys are null; a multigraph key is a checked scalar.
+        let key = EdgeKey::of(&edge_key).ok_or_else(unhashable)?;
         self.edges.push(Some(Edge {
             source,
             target,
-            key: edge_key.clone(),
+            key,
             attributes,
         }));
-        self.edge_index.insert(lookup, index);
+        self.live += 1;
+        if self.multigraph {
+            self.index_edge(index);
+        }
         self.attach(source, target, index);
         self.incoming[target].push_edge(source, index);
         if !self.directed && source != target {
@@ -419,7 +699,7 @@ impl Graph {
         self.adjacency[u].get(v).map_or(0, |edges| edges.len())
     }
     pub fn edge_count(&self) -> usize {
-        self.edge_index.len()
+        self.live
     }
     /// Mutable attributes of the first edge between `source` and `target`
     /// (`G[u][v]` on a simple graph), or of the one with `key` on a multigraph.
@@ -434,11 +714,15 @@ impl Graph {
         let ids = self.adjacency[u].get(v)?;
         let id = match key {
             None => *ids.first()?,
-            Some(key) => *ids
-                .iter()
-                .find(|&&id| self.edges[id].as_ref().is_some_and(|edge| &edge.key == key))?,
+            Some(key) => *ids.iter().find(|&&id| {
+                self.edges[id as usize]
+                    .as_ref()
+                    .is_some_and(|edge| &edge.key == key)
+            })?,
         };
-        self.edges[id].as_mut().map(|edge| &mut edge.attributes)
+        self.edges[id as usize]
+            .as_mut()
+            .map(|edge| &mut edge.attributes)
     }
     pub fn edges_between(&self, source: &Value, target: &Value) -> Vec<&Edge> {
         let (Some(u), Some(v)) = (self.node_index(source), self.node_index(target)) else {
@@ -448,7 +732,7 @@ impl Graph {
             .get(v)
             .into_iter()
             .flatten()
-            .filter_map(|&id| self.edges[id].as_ref())
+            .filter_map(|&id| self.edges[id as usize].as_ref())
             .collect()
     }
     pub fn remove_edge(
@@ -464,11 +748,15 @@ impl Graph {
         let edge_index = if self.multigraph
             && let Some(k) = explicit_key
         {
-            self.edge_index.get(&(pair.0, pair.1, key(k)?)).copied()
+            if !hashable(k) {
+                return Err(unhashable());
+            }
+            self.find_keyed(pair, k)
         } else {
             self.adjacency[u]
                 .get(v)
-                .and_then(|edges| edges.last().copied())
+                .and_then(|edges| edges.last())
+                .map(|&id| id as usize)
         }
         .ok_or("Edge not found")?;
         let edge = self
@@ -476,7 +764,16 @@ impl Graph {
             .get_mut(edge_index)
             .and_then(Option::take)
             .ok_or_else(|| crate::Error::Internal("Graph edge index is inconsistent".into()))?;
-        self.edge_index.remove(&(pair.0, pair.1, key(&edge.key)?));
+        self.live -= 1;
+        if self.multigraph
+            && let Ok(entry) = self
+                .edge_index
+                .find_entry(edge_hash(&self.state, pair, &edge.key), |&slot| {
+                    slot as usize == edge_index
+                })
+        {
+            entry.remove();
+        }
         self.incoming[edge.target].remove_edge(edge.source, edge_index);
         self.adjacency[u].remove_edge(v, edge_index);
         if !self.directed && u != v {
@@ -533,22 +830,8 @@ impl Graph {
         };
         self.adjacency = filter(std::mem::take(&mut self.adjacency));
         self.incoming = filter(std::mem::take(&mut self.incoming));
-        self.node_index = self
-            .nodes
-            .iter()
-            .enumerate()
-            .map(|(i, n)| Ok((key(&n.id)?, i)))
-            .collect::<Result<_>>()?;
-        self.edge_index = self
-            .edges
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| e.as_ref().map(|e| (i, e)))
-            .map(|(i, e)| {
-                let (u, v) = self.pair(e.source, e.target);
-                Ok(((u, v, key(&e.key)?), i))
-            })
-            .collect::<Result<_>>()?;
+        self.reindex_nodes();
+        self.reindex_edges(false)?;
         Ok(removed.len())
     }
     /// The graph that `clone()` plus `remove_nodes_from` of every other node
@@ -581,7 +864,7 @@ impl Graph {
             .iter()
             .flat_map(|&u| self.adjacency[u].iter().chain(self.incoming[u].iter()))
             .filter(|(v, _)| remap[*v].is_some())
-            .flat_map(|(_, ids)| ids.iter().copied())
+            .flat_map(|(_, ids)| ids.iter().map(|&id| id as usize))
             .collect();
         slots.sort_unstable();
         slots.dedup();
@@ -603,16 +886,15 @@ impl Graph {
                         Ok(Edge {
                             source: endpoint(edge.source)?,
                             target: endpoint(edge.target)?,
-                            key: edge.key.clone(),
+                            key: edge.key,
                             attributes: match only_edge_attribute {
                                 None => edge.attributes.clone(),
-                                Some(name) => {
-                                    let mut attributes = crate::record::Attributes::default();
-                                    if let Some(value) = edge.attributes.get(name) {
-                                        attributes.insert(name.to_string(), value.clone());
-                                    }
-                                    attributes
-                                }
+                                Some(name) => edge
+                                    .attributes
+                                    .get(name)
+                                    .map_or_else(Default::default, |value| {
+                                        crate::record::Attributes::single(name, value.clone())
+                                    }),
                             },
                         })
                     })
@@ -638,27 +920,17 @@ impl Graph {
             } else {
                 self.attributes.clone()
             },
-            node_index: nodes
-                .iter()
-                .enumerate()
-                .map(|(i, n)| Ok((key(&n.id)?, i)))
-                .collect::<Result<_>>()?,
             nodes,
+            state: self.state.clone(),
+            node_index: HashTable::new(),
             edges,
-            edge_index: IndexMap::default(),
+            live: 0,
+            edge_index: HashTable::new(),
             adjacency: kept.iter().map(|&u| row(&self.adjacency[u])).collect(),
             incoming: kept.iter().map(|&u| row(&self.incoming[u])).collect(),
         };
-        graph.edge_index = graph
-            .edges
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| e.as_ref().map(|e| (i, e)))
-            .map(|(i, e)| {
-                let (u, v) = graph.pair(e.source, e.target);
-                Ok(((u, v, key(&e.key)?), i))
-            })
-            .collect::<Result<_>>()?;
+        graph.reindex_nodes();
+        graph.reindex_edges(false)?;
         Ok(graph)
     }
     /// Edges between two distinct members, each counted once as `iter_edges`
@@ -675,7 +947,7 @@ impl Graph {
                     .filter(|(v, _)| *v != u && (self.directed || *v > u) && is_member(*v))
                     .map(|(_, ids)| {
                         ids.iter()
-                            .filter(|id| self.edges.get(**id).is_some_and(Option::is_some))
+                            .filter(|&&id| self.edges.get(id as usize).is_some_and(Option::is_some))
                             .count()
                     })
                     .sum::<usize>()
@@ -705,7 +977,7 @@ impl Graph {
             out.nodes[target].attributes = node.attributes.clone();
         }
         for (u, v, edge) in self.iter_edges() {
-            let mut edge_key = edge.key.clone();
+            let mut edge_key = edge.key.to_value();
             if self.multigraph {
                 while out
                     .edges_between(&ids[u], &ids[v])
@@ -763,9 +1035,11 @@ impl Graph {
             .into_iter()
             .flat_map(Neighbors::iter)
             .flat_map(|(target, edges)| {
-                edges
-                    .iter()
-                    .filter_map(|&id| self.edges[id].as_ref().map(|edge| (node, *target, edge)))
+                edges.iter().filter_map(move |&id| {
+                    self.edges[id as usize]
+                        .as_ref()
+                        .map(|edge| (node, target, edge))
+                })
             })
             .collect()
     }
@@ -775,9 +1049,11 @@ impl Graph {
             .into_iter()
             .flat_map(Neighbors::iter)
             .flat_map(|(source, edges)| {
-                edges
-                    .iter()
-                    .filter_map(|&id| self.edges[id].as_ref().map(|edge| (*source, node, edge)))
+                edges.iter().filter_map(move |&id| {
+                    self.edges[id as usize]
+                        .as_ref()
+                        .map(|edge| (source, node, edge))
+                })
             })
             .collect()
     }
@@ -799,7 +1075,7 @@ impl Graph {
                 })
                 .collect::<Result<_>>()?;
             let expected: std::collections::BTreeSet<_> =
-                self.incoming[target].iter().map(|(n, _)| *n).collect();
+                self.incoming[target].iter().map(|(n, _)| n).collect();
             if order.len() != expected.len()
                 || order
                     .iter()
@@ -829,7 +1105,7 @@ impl Graph {
                 })
                 .collect::<Result<_>>()?;
             let expected: std::collections::BTreeSet<_> =
-                self.adjacency[source].iter().map(|(n, _)| *n).collect();
+                self.adjacency[source].iter().map(|(n, _)| n).collect();
             if order.len() != expected.len()
                 || order
                     .iter()
@@ -858,9 +1134,9 @@ impl Graph {
                     .flat_map(move |(target, edges)| {
                         edges.iter().filter_map(move |id| {
                             self.edges
-                                .get(*id)
+                                .get(*id as usize)
                                 .and_then(Option::as_ref)
-                                .map(|edge| (source, *target, edge))
+                                .map(|edge| (source, target, edge))
                         })
                     })
             })
@@ -874,7 +1150,7 @@ impl Graph {
         rows.get(node)
             .into_iter()
             .flat_map(Neighbors::iter)
-            .map(|(other, _)| *other)
+            .map(|(other, _)| other)
     }
     /// Node `i` as a node-link record.
     pub fn node_link_node(&self, i: usize) -> Value {
@@ -889,7 +1165,7 @@ impl Graph {
         fields.insert("source".into(), self.nodes[u].id.clone());
         fields.insert("target".into(), self.nodes[v].id.clone());
         if self.multigraph {
-            fields.insert("key".into(), edge.key.clone());
+            fields.insert("key".into(), edge.key.to_value());
         }
         Value::Object(fields.into())
     }
@@ -1059,8 +1335,10 @@ impl Graph {
                     attributes: Default::default(),
                 })
                 .collect(),
+            state: self.state.clone(),
             node_index: self.node_index.clone(),
             edges: self.edges.clone(),
+            live: self.live,
             edge_index: self.edge_index.clone(),
             adjacency: self.adjacency.clone(),
             incoming: self.incoming.clone(),
@@ -1078,14 +1356,16 @@ impl Graph {
             .iter()
             .map(|edge| {
                 edge.as_ref().map(|edge| {
-                    let mut attributes = crate::record::Attributes::default();
-                    if let Some(value) = edge.attributes.get(key) {
-                        attributes.insert(key.to_string(), value.clone());
-                    }
+                    let attributes = edge
+                        .attributes
+                        .get(key)
+                        .map_or_else(Default::default, |value| {
+                            crate::record::Attributes::single(key, value.clone())
+                        });
                     Edge {
                         source: edge.source,
                         target: edge.target,
-                        key: edge.key.clone(),
+                        key: edge.key,
                         attributes,
                     }
                 })
@@ -1107,8 +1387,11 @@ impl Graph {
                     attributes: Default::default(),
                 })
                 .collect(),
+            state: self.state.clone(),
             node_index: self.node_index.clone(),
             edges: vec![],
+            // The caller fills `edges` slot for slot from this graph.
+            live: self.live,
             edge_index: self.edge_index.clone(),
             adjacency: self.adjacency.clone(),
             incoming: self.incoming.clone(),
@@ -1124,7 +1407,7 @@ impl Graph {
             out.add_edge(
                 self.nodes[u].id.clone(),
                 self.nodes[v].id.clone(),
-                self.multigraph.then(|| edge.key.clone()),
+                self.multigraph.then(|| edge.key.to_value()),
                 edge.attributes.clone(),
             )?;
         }
@@ -1192,6 +1475,124 @@ pub fn check_scenario(request: &Value) -> Result<Value> {
         }
     }
     Ok(json!({"graph":graph.to_node_link("links"),"errors":errors,"edge_count":graph.edge_count()}))
+}
+
+#[cfg(test)]
+#[path = "graph_parity_tests.rs"]
+mod parity_tests;
+
+#[cfg(test)]
+mod edge_key_tests {
+    use super::{Edge, EdgeKey, Graph};
+    use serde_json::{Value, json};
+
+    #[test]
+    #[cfg(target_pointer_width = "64")]
+    fn an_edge_slot_is_56_bytes() {
+        // Endpoints 2 x 8, key 4, attributes 32: the key no longer costs a
+        // 72-byte Value, and an empty slot needs no extra tag.
+        assert_eq!(std::mem::size_of::<EdgeKey>(), 4);
+        assert_eq!(std::mem::size_of::<Option<Edge>>(), 56);
+    }
+
+    #[test]
+    fn a_key_reads_compares_formats_and_serializes_as_its_value() {
+        // Numbers keep their exact text: `1`, `1.0`, `1e-7` and `1E-7` differ.
+        let values: Vec<Value> = serde_json::from_str(
+            r#"[null, true, false, 0, 1, 1.0, -0.0, 1e-7, 1E-7, 0.55,
+                18446744073709551616, "1", "k", "", "é"]"#,
+        )
+        .unwrap();
+        let keys: Vec<EdgeKey> = values
+            .iter()
+            .map(|v| EdgeKey::new(v.clone()).unwrap())
+            .collect();
+        for (i, (value, key)) in values.iter().zip(&keys).enumerate() {
+            assert_eq!(&**key, value);
+            assert_eq!(*key, *value);
+            assert_eq!(*value, *key);
+            assert_eq!(EdgeKey::of(value), Some(*key));
+            assert_eq!(key.to_value(), *value);
+            assert_eq!(Value::from(*key), *value);
+            assert_eq!(key.to_string(), value.to_string());
+            assert_eq!(format!("{key:?}"), format!("{value:?}"));
+            assert_eq!(format!("{key:#}"), format!("{value:#}"));
+            assert_eq!(
+                serde_json::to_string(key).unwrap(),
+                serde_json::to_string(value).unwrap()
+            );
+            assert_eq!(json!([key]), json!([value]));
+            for (other_value, other_key) in values.iter().zip(&keys).skip(i + 1) {
+                assert_eq!(
+                    key == other_key,
+                    value == other_value,
+                    "{value} {other_value}"
+                );
+            }
+        }
+        assert_eq!(keys[0], EdgeKey::NULL);
+        for complex in [json!([1]), json!(["k"]), json!({"k": 1}), json!([])] {
+            assert_eq!(EdgeKey::new(complex.clone()), Err(complex.clone()));
+            assert_eq!(EdgeKey::of(&complex), None);
+        }
+    }
+
+    #[test]
+    fn edges_keep_their_keys_through_every_copy() {
+        for multigraph in [false, true] {
+            let mut graph = Graph::new(true, multigraph);
+            for (key, relation) in [(None, "calls"), (Some(json!("k")), "uses"), (None, "calls")] {
+                let fields = json!({"relation": relation});
+                graph
+                    .add_edge(
+                        json!("a"),
+                        json!("b"),
+                        key,
+                        fields.as_object().unwrap().clone(),
+                    )
+                    .unwrap();
+            }
+            let keys = |g: &Graph| -> Vec<Value> {
+                g.iter_edges().map(|(_, _, e)| e.key.to_value()).collect()
+            };
+            let expected = if multigraph {
+                vec![json!(0), json!("k"), json!(2)]
+            } else {
+                vec![Value::Null]
+            };
+            assert_eq!(keys(&graph), expected);
+            assert!(
+                format!("{:?}", graph.edges_between(&json!("a"), &json!("b"))[0])
+                    .contains(&format!("key: {:?}", expected[0]))
+            );
+            for copy in [
+                graph.clone(),
+                graph.without_node_attributes(),
+                graph.topology_with_edge_attribute("relation"),
+                graph.induced_subgraph(&[0, 1]).unwrap(),
+                graph.to_undirected().unwrap(),
+                graph.relabel_copy(&[]).unwrap(),
+                Graph::from_node_link(&graph.to_node_link("links"), "links").unwrap(),
+            ] {
+                assert_eq!(keys(&copy), expected, "multigraph {multigraph}");
+            }
+            let link = graph.to_node_link("links");
+            let link_keys: Vec<_> = link["links"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l.get("key").cloned())
+                .collect();
+            if multigraph {
+                assert_eq!(
+                    link_keys,
+                    expected.into_iter().map(Some).collect::<Vec<_>>()
+                );
+            } else {
+                assert_eq!(link_keys, vec![None]);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1294,6 +1695,33 @@ mod induced_tests {
                     b.add_edge(u, v, None, attributes).unwrap()
                 );
                 assert_eq!(fingerprint(&a), fingerprint(&b), "round {round} edit");
+            }
+        }
+    }
+
+    #[test]
+    fn reserving_and_shrinking_change_nothing() {
+        let mut rng = XorShiftRng::seed_from_u64(515);
+        for round in 0..200 {
+            let graph = random_graph(&mut rng, round % 2 == 0, round % 4 < 2);
+            let mut reserved = graph.clone();
+            reserved.reserve_edges(rng.gen_range(0..50));
+            let mut shrunk = graph.clone();
+            shrunk.shrink_to_fit();
+            let mut edited = graph.clone();
+            for copy in [&mut reserved, &mut shrunk] {
+                assert_eq!(fingerprint(copy), fingerprint(&graph), "round {round}");
+                if copy.node_count() > 1 {
+                    let (u, v) = (copy.nodes[0].id.clone(), copy.nodes[1].id.clone());
+                    let attributes = json!({"extra": true}).as_object().unwrap().clone();
+                    let key = copy.add_edge(u.clone(), v.clone(), None, attributes.clone());
+                    let expected = edited.add_edge(u.clone(), v.clone(), None, attributes);
+                    assert_eq!(key.unwrap(), expected.unwrap(), "round {round}");
+                    copy.remove_edge(&u, &v, None).unwrap();
+                    edited.remove_edge(&u, &v, None).unwrap();
+                    assert_eq!(fingerprint(copy), fingerprint(&edited), "round {round}");
+                    edited = graph.clone();
+                }
             }
         }
     }
@@ -1413,12 +1841,12 @@ mod induced_tests {
                         let out: Vec<_> = g
                             .out_edges(i)
                             .into_iter()
-                            .map(|(_, v, e)| (v, e.key.clone()))
+                            .map(|(_, v, e)| (v, e.key))
                             .collect();
                         let inc: Vec<_> = g
                             .in_edges(i)
                             .into_iter()
-                            .map(|(u, _, e)| (u, e.key.clone()))
+                            .map(|(u, _, e)| (u, e.key))
                             .collect();
                         let nb: Vec<_> = g.neighbor_indices(i, false).collect();
                         let pr: Vec<_> = g.neighbor_indices(i, true).collect();

@@ -4,8 +4,8 @@ Copyright (c) 2026 KarLex AI, Inc.
 This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
 This product includes software adapted from Graphify
-(https://github.com/Graphify-Labs/graphify): release 0.9.88, commit
-a9860f70dc3cc2e9c2d8cb923484cfa0592b9067, ported to Rust. Files
+(https://github.com/Graphify-Labs/graphify): release 0.9.91, commit
+10130e79ed9caf8f60d998073e097531eaa1a395, ported to Rust. Files
 adapted from Graphify carry a header line naming the upstream release and the
 upstream files they port; migration/ADAPTED.json lists them.
 

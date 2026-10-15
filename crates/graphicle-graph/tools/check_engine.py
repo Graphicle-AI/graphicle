@@ -112,6 +112,23 @@ EXTRACT_0988 = [
     'tests/test_no_cluster_run_only_keys.py::test_run_only_keys_are_the_ones_extract_returns',
 ]
 paths += [p for p in EXTRACT_0988 if p not in paths and (SOURCE / p.split('::')[0]).is_file()]
+# 0.9.89-0.9.91 contracts that drive extract() without naming an extractor
+# (same list as check_extract.py).
+EXTRACT_0991 = [
+    'tests/test_cpp_template_type_params.py',
+    'tests/test_kotlin_generic_type_params.py',
+    'tests/test_scala_generic_type_params.py',
+    'tests/test_swift_generic_type_params.py',
+    'tests/test_go_package_type_fold.py',
+    'tests/test_go_receiver_member_calls.py',
+    'tests/test_go_generic_receiver_methods.py',
+    'tests/test_php_receiver_member_calls.py',
+    'tests/test_csharp_foreach_loop_variable.py',
+    'tests/test_csharp_underscore_collisions.py',
+    'tests/test_objc_callable_markers.py',
+    'tests/test_indirect_call_file_scope_callback_shadow.py',
+]
+paths += [p for p in EXTRACT_0991 if p not in paths and (SOURCE / p.split('::')[0]).is_file()]
 if '--test' in sys.argv:
     paths = [sys.argv[sys.argv.index('--test') + 1]]
 # An enclosing development checkout ignores research/. Isolate the unchanged

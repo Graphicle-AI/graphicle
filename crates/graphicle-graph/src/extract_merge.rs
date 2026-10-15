@@ -1,8 +1,9 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Corpus normalization, collision-safe merges, and import alias repair.
 use crate::{
     build::truthy,
+    extract::per_file::PerFile,
     extractors::{
         base::{file_stem, is_language_builtin, make_id},
         csharp::{is_cs_file, is_dotnet_source_file},
@@ -11,6 +12,7 @@ use crate::{
     },
     python_compat::string,
     rcfile::effective_suffix,
+    resolver_registry::{Rec, rs},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{Value, json};
@@ -79,14 +81,14 @@ pub fn remap_edges(edges: &mut [Value], mapping: &BTreeMap<String, String>) {
         }
     }
 }
-pub fn remap_objc_fields(per: &mut [Value], mapping: &BTreeMap<String, String>) {
+pub fn remap_objc_fields<P: PerFile>(per: &mut [P], mapping: &BTreeMap<String, String>) {
     for r in per {
-        if let Some(tables) = r["objc_field_types"]["tables"].as_object() {
+        if let Some(tables) = r.at("objc_field_types")["tables"].as_object() {
             let new = tables
                 .iter()
                 .map(|(k, v)| (mapping.get(k).unwrap_or(k).clone(), v.clone()))
                 .collect::<serde_json::Map<_, _>>();
-            r["objc_field_types"]["tables"] = json!(new);
+            r.key_mut("objc_field_types").expect("read just above")["tables"] = json!(new);
         }
     }
 }
@@ -127,7 +129,14 @@ pub fn canonicalize_namespaces(nodes: &mut Vec<Value>, edges: &mut [Value]) {
 /// definition with its label, rewire the edges, and drop the stubs no edge
 /// names any more.
 pub fn rewire_unique_stubs(nodes: &mut Vec<Value>, edges: &mut [Value]) {
-    let map = rewire_unique_stub_edges(nodes, edges);
+    rewire_unique_stubs_with(nodes, &[], edges);
+}
+/// [`rewire_unique_stubs`] over `nodes` followed by `lent` candidates that
+/// are never kept: the unchanged files' nodes of an incremental build, and
+/// a stub for each Rust `use` of this crate whose name nothing declares
+/// (#4439). `nodes` keeps exactly what the rewire over the whole view keeps.
+pub fn rewire_unique_stubs_with(nodes: &mut Vec<Value>, lent: &[&Value], edges: &mut [Value]) {
+    let map = rewire_unique_stub_edges_with(nodes, lent, edges);
     if map.is_empty() {
         return;
     }
@@ -141,13 +150,21 @@ pub fn rewire_unique_stubs(nodes: &mut Vec<Value>, edges: &mut [Value]) {
 /// Python member resolver runs it on copies of the `inherits` edges). Returns
 /// the stub -> definition map.
 pub fn rewire_unique_stub_edges(nodes: &[Value], edges: &mut [Value]) -> FxHashMap<String, String> {
+    rewire_unique_stub_edges_with(nodes, &[], edges)
+}
+fn rewire_unique_stub_edges_with(
+    nodes: &[Value],
+    lent: &[&Value],
+    edges: &mut [Value],
+) -> FxHashMap<String, String> {
+    let view = || nodes.iter().chain(lent.iter().copied());
     // Every table here is only looked up, never iterated, so hash tables give
     // the same result as ordered maps without the string comparisons.
     let mut defs: FxHashMap<String, Vec<&Value>> = FxHashMap::default();
     let mut ci: FxHashMap<String, Vec<&Value>> = FxHashMap::default();
     let mut funcs: FxHashMap<String, Vec<&Value>> = FxHashMap::default();
     let mut stubs = vec![];
-    for n in nodes.iter() {
+    for n in view() {
         let key = node_label_key(s(n, "label"), false);
         if key.is_empty() {
             continue;
@@ -241,10 +258,7 @@ pub fn rewire_unique_stub_edges(nodes: &[Value], edges: &mut [Value]) -> FxHashM
             }
         }
     }
-    let by_id = nodes
-        .iter()
-        .map(|n| (s(n, "id"), n))
-        .collect::<FxHashMap<_, _>>();
+    let by_id = view().map(|n| (s(n, "id"), n)).collect::<FxHashMap<_, _>>();
     for e in edges.iter_mut() {
         let sf = s(e, "source_file").to_string();
         let scoped = is_dotnet_source_file(&e["source_file"])
@@ -295,10 +309,14 @@ pub fn rewire_unique_stub_edges(nodes: &[Value], edges: &mut [Value]) -> FxHashM
     }
     map
 }
-pub fn merge_swift_extensions(per: &[Value], nodes: &mut Vec<Value>, edges: &mut Vec<Value>) {
+pub fn merge_swift_extensions<P: PerFile>(
+    per: &[P],
+    nodes: &mut Vec<Value>,
+    edges: &mut Vec<Value>,
+) {
     let mut ext = BTreeMap::new();
     for r in per {
-        for e in r["swift_extensions"].as_array().into_iter().flatten() {
+        for e in r.at("swift_extensions").as_array().into_iter().flatten() {
             ext.insert(s(e, "nid").to_string(), s(e, "label").to_string());
         }
     }
@@ -363,6 +381,10 @@ pub fn merge_swift_extensions(per: &[Value], nodes: &mut Vec<Value>, edges: &mut
         !changed || unique
     });
 }
+/// `_merge_csharp_partial_class_nodes` (#2332, #2411): one node per C#
+/// partial type. Runs after `disambiguate_colliding_node_ids`, so a half
+/// whose id collides with another file's node is already salted apart
+/// (0.9.91, #4411), and before the stub rewire and the resolvers.
 pub fn merge_csharp_partials(
     per: &mut [Value],
     nodes: &mut Vec<Value>,
@@ -370,10 +392,20 @@ pub fn merge_csharp_partials(
     paths: &[PathBuf],
     root: &Path,
 ) {
+    merge_csharp_partials_of(per, nodes, edges, paths, root);
+}
+/// [`merge_csharp_partials`] over per-file results in either form.
+pub(crate) fn merge_csharp_partials_of<P: PerFile>(
+    per: &mut [P],
+    nodes: &mut Vec<Value>,
+    edges: &mut Vec<Value>,
+    paths: &[PathBuf],
+    root: &Path,
+) {
     let mut id_path = BTreeMap::new();
     for (r, p) in per.iter().zip(paths) {
-        for n in r["nodes"].as_array().into_iter().flatten() {
-            id_path.entry(s(n, "id").to_string()).or_insert(p);
+        for n in r.nodes().into_iter().flatten() {
+            id_path.entry(rs(n, "id").to_string()).or_insert(p);
         }
     }
     let stop = resolved(root);
@@ -488,10 +520,10 @@ pub fn merge_csharp_partials(
     }
     *edges = kept;
     for r in per {
-        if let Some(raw) = r.get_mut("raw_calls").and_then(Value::as_array_mut) {
+        if let Some(raw) = r.raw_calls_mut() {
             for call in raw {
-                if let Some(id) = map.get(s(call, "caller_nid")) {
-                    call["caller_nid"] = json!(id);
+                if let Some(id) = map.get(rs(call, "caller_nid")) {
+                    call.rec_set_str("caller_nid", id);
                 }
             }
         }

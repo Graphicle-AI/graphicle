@@ -1,9 +1,10 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/validate.py
 //! Port of graphify/validate.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 use crate::{
     Result,
     python_compat::{repr, scalar_key, string, type_name},
+    record::{EdgeItem, Record},
 };
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -31,6 +32,18 @@ pub fn validate_extraction(data: &Value) -> Result<Vec<String>> {
 /// when `dangling` is false (every other error, in the same order): callers
 /// that discard those skip indexing the node ids and checking every endpoint.
 pub fn validate_extraction_with(data: &Value, dangling: bool) -> Result<Vec<String>> {
+    let none: &[Value] = &[];
+    validate_extraction_beside(data, none, dangling)
+}
+/// [`validate_extraction_with`] for an extraction whose edges are held beside
+/// it: `beside` continues the array `data` holds under `edges` (the build
+/// leaves an empty one there), with the same errors in the same order as when
+/// they are that array's items.
+pub(crate) fn validate_extraction_beside<R: Record, E: EdgeItem<Record = R>>(
+    data: &Value,
+    beside: &[E],
+    dangling: bool,
+) -> Result<Vec<String>> {
     let Some(data) = data.as_object() else {
         return Ok(vec!["Extraction must be a JSON object".into()]);
     };
@@ -97,65 +110,91 @@ pub fn validate_extraction_with(data: &Value, dangling: bool) -> Result<Vec<Stri
     match edge_list {
         None | Some(Value::Null) => errors.push("Missing required key 'edges'".into()),
         Some(Value::Array(edges)) => {
+            let check = EdgeCheck {
+                any_id,
+                dangling,
+                node_ids: &node_ids,
+            };
             for (i, edge) in edges.iter().enumerate() {
-                let Some(edge) = edge.as_object() else {
-                    errors.push(format!("Edge {i} must be an object"));
-                    continue;
-                };
-                for field in REQUIRED_EDGE_FIELDS {
-                    if !edge.contains_key(*field) {
-                        errors.push(format!("Edge {i} missing required field '{field}'"));
-                    }
-                }
-                if let Some(confidence) = edge.get("confidence")
-                    && !in_string_set(confidence, VALID_CONFIDENCES)?
-                {
-                    errors.push(format!(
-                        "Edge {i} has invalid confidence '{}' - must be one of {}",
-                        string(confidence),
-                        repr(&json!(VALID_CONFIDENCES))
-                    ));
-                }
-                for endpoint in ["source", "target"] {
-                    let Some(value) = edge.get(endpoint) else {
-                        continue;
-                    };
-                    // Preserve Python's bool(node_ids) short-circuit: no hash
-                    // lookup takes place when the ID set is empty.
-                    if !any_id {
-                        continue;
-                    }
-                    if !dangling {
-                        // A string is always hashable; skip copying it.
-                        let hashable = match value {
-                            Value::String(_) => true,
-                            other => scalar_key(other).is_some(),
-                        };
-                        if !hashable {
-                            errors.push(format!(
-                                "Edge {i} {endpoint} {} is non-hashable - must be a string",
-                                repr(value)
-                            ));
-                        }
-                        continue;
-                    }
-                    match scalar_key(value) {
-                        None => errors.push(format!(
-                            "Edge {i} {endpoint} {} is non-hashable - must be a string",
-                            repr(value)
-                        )),
-                        Some(key) if !node_ids.contains(&key) => errors.push(format!(
-                            "Edge {i} {endpoint} '{}' does not match any node id",
-                            string(value)
-                        )),
-                        _ => {}
-                    }
-                }
+                check.edge(i, edge.as_object(), &mut errors)?;
+            }
+            for (i, edge) in beside.iter().enumerate() {
+                check.edge(edges.len() + i, edge.record(), &mut errors)?;
             }
         }
         _ => errors.push("'edges' must be a list".into()),
     }
     Ok(errors)
+}
+/// The per-edge checks of [`validate_extraction_with`].
+struct EdgeCheck<'a> {
+    any_id: bool,
+    dangling: bool,
+    node_ids: &'a BTreeSet<crate::python_compat::ScalarKey>,
+}
+impl EdgeCheck<'_> {
+    /// Edge `i`, given as its record (`None`: the item is no object).
+    fn edge<R: Record>(&self, i: usize, edge: Option<&R>, errors: &mut Vec<String>) -> Result<()> {
+        let Self {
+            any_id,
+            dangling,
+            node_ids,
+        } = *self;
+        let Some(edge) = edge else {
+            errors.push(format!("Edge {i} must be an object"));
+            return Ok(());
+        };
+        for field in REQUIRED_EDGE_FIELDS {
+            if edge.get(field).is_none() {
+                errors.push(format!("Edge {i} missing required field '{field}'"));
+            }
+        }
+        if let Some(confidence) = edge.get("confidence")
+            && !in_string_set(confidence, VALID_CONFIDENCES)?
+        {
+            errors.push(format!(
+                "Edge {i} has invalid confidence '{}' - must be one of {}",
+                string(confidence),
+                repr(&json!(VALID_CONFIDENCES))
+            ));
+        }
+        for endpoint in ["source", "target"] {
+            let Some(value) = edge.get(endpoint) else {
+                continue;
+            };
+            // Preserve Python's bool(node_ids) short-circuit: no hash
+            // lookup takes place when the ID set is empty.
+            if !any_id {
+                continue;
+            }
+            if !dangling {
+                // A string is always hashable; skip copying it.
+                let hashable = match value {
+                    Value::String(_) => true,
+                    other => scalar_key(other).is_some(),
+                };
+                if !hashable {
+                    errors.push(format!(
+                        "Edge {i} {endpoint} {} is non-hashable - must be a string",
+                        repr(value)
+                    ));
+                }
+                continue;
+            }
+            match scalar_key(value) {
+                None => errors.push(format!(
+                    "Edge {i} {endpoint} {} is non-hashable - must be a string",
+                    repr(value)
+                )),
+                Some(key) if !node_ids.contains(&key) => errors.push(format!(
+                    "Edge {i} {endpoint} '{}' does not match any node id",
+                    string(value)
+                )),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
 }
 
 pub fn assert_valid(data: &Value) -> Result<()> {

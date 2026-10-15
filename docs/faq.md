@@ -139,7 +139,9 @@ project.
 
 ## Does it run on Windows?
 
-Not yet. Release builds are for macOS and Linux.
+As a preview, on Windows (x86-64): `install.ps1` installs it from PowerShell
+([install.md](install.md#windows-preview)), which also lists what the preview
+leaves out.
 
 ## My agent cannot start Graphicle after an upgrade
 

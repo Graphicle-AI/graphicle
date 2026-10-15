@@ -8,6 +8,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// `canonicalize` in the engine's plain spelling: on Windows without the
+/// verbatim prefix (`\\?\C:\x` is `C:\x`); elsewhere `canonicalize` itself.
+fn canonical(path: &Path) -> PathBuf {
+    let path = path.canonicalize().unwrap();
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => plain.into(),
+        _ => path,
+    }
+}
+
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -26,12 +36,12 @@ fn git(dir: &Path, args: &[&str]) -> String {
 fn make_git_repo(path: &Path) -> PathBuf {
     fs::create_dir_all(path).unwrap();
     git(path, &["init", "-q"]);
-    path.canonicalize().unwrap()
+    canonical(path)
 }
 
 fn tmp() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().canonicalize().unwrap();
+    let root = canonical(dir.path());
     (dir, root)
 }
 
@@ -123,7 +133,7 @@ fn linked_worktree_keeps_its_default_hooks_dir() {
     );
     let expected = git(&wt, &["rev-parse", "--git-path", "hooks"]);
     let got = hooks_dir(&wt).unwrap();
-    assert_eq!(got, wt.join(&expected).canonicalize().unwrap());
+    assert_eq!(got, canonical(&wt.join(&expected)));
     assert!(got.starts_with(main.join(".git")), "{}", got.display());
     assert!(!wt.join(".git/hooks").exists());
 }

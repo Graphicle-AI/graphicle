@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 //! Native platform skill installation and project configuration.
 pub use crate::install_platforms::{
@@ -22,6 +22,71 @@ pub fn platforms() -> Vec<String> {
         .cloned()
         .chain(["gemini", "cursor", "vscode"].map(str::to_string))
         .collect()
+}
+/// The Pi guard package (0.9.89): a Pi / Oh My Pi extension that hands each
+/// search and read tool call to the installed `hook-guard` (index.ts) and the
+/// package manifest Pi reads (package.json).
+pub const PI_GUARD_FILES: [(&str, &str); 2] = [
+    ("index.ts", include_str!("assets/install/pi/index.ts")),
+    (
+        "package.json",
+        include_str!("assets/install/pi/package.json"),
+    ),
+];
+/// Where `pi guard` keeps the package: `~/.graphicle-graph/pi`. Upstream
+/// ships it inside the wheel; a native build writes it here, naming the
+/// running program, and Pi registers this folder.
+pub fn pi_guard_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join(crate::paths::CONFIG_DIR)
+        .join("pi")
+}
+/// Writes the Pi guard package to [`pi_guard_dir`] (unchanged files are left
+/// alone) and returns its folder.
+pub fn write_pi_guard() -> Result<PathBuf> {
+    let dir = pi_guard_dir();
+    fs::create_dir_all(&dir).map_err(crate::Error::from)?;
+    for (name, text) in PI_GUARD_FILES {
+        let text = crate::cli::program_text(text);
+        let path = dir.join(name);
+        if fs::read_to_string(&path).ok().as_deref() != Some(text.as_ref()) {
+            crate::paths::write_text_atomic(&path, &text).map_err(crate::Error::from)?;
+        }
+    }
+    Ok(dir)
+}
+/// `pi guard install|uninstall|path` (0.9.89): `path` prints the package
+/// folder; `install`/`uninstall` hand it to Pi (`pi install|remove <folder>`),
+/// which owns the registration. Without `pi` on PATH nothing is written.
+/// Returns the lines to print, the error lines and the exit code.
+pub fn pi_guard(action: &str) -> Result<(Vec<String>, Vec<String>, i32)> {
+    if action == "path" {
+        let dir = write_pi_guard()?;
+        return Ok((vec![dir.to_string_lossy().into_owned()], vec![], 0));
+    }
+    let env: crate::llm_config::Environment = std::env::vars().collect();
+    let Some(pi) = crate::llm_config::executable("pi", &env) else {
+        return Ok((
+            vec![],
+            vec!["error: install Pi (pi) and add it to PATH first".into()],
+            1,
+        ));
+    };
+    let dir = write_pi_guard()?;
+    let verb = if action == "install" {
+        "install"
+    } else {
+        "remove"
+    };
+    let status = std::process::Command::new(pi)
+        .arg(verb)
+        .arg(&dir)
+        .status()
+        .map_err(crate::Error::from)?;
+    Ok((vec![], vec![], status.code().unwrap_or(1)))
 }
 pub fn canonical(name: &str) -> &str {
     if name == "skills" { "agents" } else { name }

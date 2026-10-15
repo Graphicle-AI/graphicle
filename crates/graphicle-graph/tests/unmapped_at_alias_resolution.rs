@@ -8,6 +8,16 @@ use graphicle::extractors::base::make_id;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+/// `canonicalize` in the engine's plain spelling: on Windows without the
+/// verbatim prefix (`\\?\C:\x` is `C:\x`); elsewhere `canonicalize` itself.
+fn canonical(path: &Path) -> PathBuf {
+    let path = path.canonicalize().unwrap();
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => plain.into(),
+        _ => path,
+    }
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     root: PathBuf,
@@ -16,7 +26,7 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = canonical(dir.path());
         Self { _dir: dir, root }
     }
     fn write(&self, rel: &str, text: &str) -> PathBuf {

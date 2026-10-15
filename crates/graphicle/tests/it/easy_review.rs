@@ -9,6 +9,7 @@
 //! in a subfolder syncs its project; a file left empty is removed; client
 //! files keep their format; a key is never written as `key_env`; a check
 //! that fails is reported.
+use graphicle_runtime::platform::CanonicalExt;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -31,7 +32,7 @@ impl Machine {
     /// a data folder, and `bin/graphicle` linked to this build.
     fn new() -> Self {
         let dir = TempDir::new().unwrap();
-        let root = dir.path().canonicalize().unwrap();
+        let root = dir.path().canonical().unwrap();
         let home = root.join("home");
         let bin = root.join("bin");
         for folder in [
@@ -43,7 +44,7 @@ impl Machine {
         ] {
             std::fs::create_dir_all(folder).unwrap();
         }
-        let program = bin.join("graphicle");
+        let program = bin.join(crate::child_env::program("graphicle"));
         symlink(Path::new(env!("CARGO_BIN_EXE_graphicle")), &program);
         Self {
             data: root.join("data"),
@@ -73,10 +74,7 @@ impl Machine {
     }
 
     fn environment(&self, command: &mut Command) {
-        command
-            .env_clear()
-            .env("HOME", &self.home)
-            .env("PATH", format!("{}:/usr/bin:/bin", self.bin.display()))
+        crate::child_env::isolate(command, &self.home, &[&self.bin], "/usr/bin:/bin")
             .env("XDG_CONFIG_HOME", self.home.join(".config"))
             .env("XDG_DATA_HOME", self.home.join(".local/share"))
             .env("XDG_CACHE_HOME", self.home.join(".cache"))
@@ -135,6 +133,9 @@ impl Machine {
     fn desktop(&self) -> PathBuf {
         if cfg!(target_os = "macos") {
             self.home.join("Library/Application Support/Claude")
+        } else if cfg!(windows) {
+            // `%APPDATA%\Claude`; child_env::home points APPDATA here.
+            self.home.join("AppData").join("Roaming").join("Claude")
         } else {
             self.home.join(".config/Claude")
         }
@@ -457,7 +458,9 @@ fn disconnect_all_leaves_other_data_folders_alone() {
 /// Entries and capture hooks run the program through the link on PATH, so a
 /// Homebrew upgrade that removes the old version leaves them working; hooks
 /// an older setup pinned to a version that is gone are repaired by `doctor
-/// --fix`.
+/// --fix`. Homebrew's Cellar and links exist on macOS and Linux only (on
+/// Windows install.ps1 replaces the program in place).
+#[cfg(unix)]
 #[test]
 fn upgrades_keep_entries_and_hooks_working_and_fix_repairs_old_ones() {
     let mut m = Machine::new();
@@ -548,7 +551,7 @@ fn a_foreground_sync_waits_for_a_hook_sync_of_the_same_folder() {
     let repo = m.repo("code/app");
     m.json(&repo, &["sync", "."]);
     write(&repo.join("src/extra.py"), "def extra():\n    return 2\n");
-    let folder = repo.canonicalize().unwrap();
+    let folder = repo.canonical().unwrap();
     let digest = graphicle_runtime::digest(&json!(folder.to_string_lossy()));
     let lock_path = m.data.join("fresh").join(format!("{}.lock", &digest[..32]));
     std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
@@ -904,10 +907,10 @@ fn connect_keeps_a_client_files_format_and_mode() {
         "{text}"
     );
     assert!(text.ends_with("    }\n}\n"), "{text}");
-    assert_eq!(mode(&file), 0o644);
+    assert_eq!(mode(&file), if cfg!(unix) { 0o644 } else { 0 });
     m.json(&repo, &["disconnect"]);
     assert_eq!(read(&file), original);
-    assert_eq!(mode(&file), 0o644);
+    assert_eq!(mode(&file), if cfg!(unix) { 0o644 } else { 0 });
 }
 
 /// `config set model … --key-env` takes a variable's name: a key is

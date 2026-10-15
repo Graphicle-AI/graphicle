@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/watch.py
 //! Preserve semantic and unaffected AST records during incremental rebuilds.
 
@@ -405,24 +405,41 @@ pub struct ReconcileOptions<'a> {
 }
 pub fn reconcile(
     existing: &Value,
-    mut result: Value,
+    result: Value,
     o: &mut ReconcileOptions<'_>,
-    mut ignored: impl FnMut(&Path, bool) -> bool,
+    ignored: impl FnMut(&Path, bool) -> bool,
     messages: &mut Vec<String>,
 ) -> Result<Value> {
-    // Upstream backfills every stored node/edge's `_origin` before filtering
-    // (`_backfill_origin`). `is_ast_tier` reads `_origin` first and falls back
-    // to the same heuristic that produced it, so backfilling only the records
-    // that survive the filters ([`tier_is_ast`] reads a stub as unstamped)
-    // yields identical output without cloning the whole graph.
-    let tag_origin = build::backfill_origin;
+    let plan = plan(existing, o, ignored);
+    finish(plan, result, o, messages)
+}
+/// What a reconcile reads from the stored graph, taken by [`plan`] so the
+/// stored document can be released before the new extraction is made: the
+/// eviction decisions (the deleted paths and their messages) and, in stored
+/// order, the records that survive unless the new extraction replaces them.
+/// [`finish`] applies them with the new extraction.
+pub struct Plan {
+    sp: StoredSourcePaths,
+    deleted_paths: Vec<String>,
+    messages: Vec<String>,
+    /// Stored nodes that pass every filter but the new extraction's ids.
+    nodes: Vec<Value>,
+    /// Stored edges that pass every filter but their endpoints' presence.
+    edges: Vec<Value>,
+    /// Stored hyperedges that pass every filter but the new hyperedge ids
+    /// and their members' presence.
+    hyper: Vec<Value>,
+}
+/// The part of [`reconcile`] that reads only the stored graph, the file
+/// system and the ignore rules, never the new extraction: every filter is a
+/// pure predicate of one record, so the ones that need the extraction are
+/// applied by [`finish`] to what passes these, in the same order.
+pub fn plan(
+    existing: &Value,
+    o: &ReconcileOptions<'_>,
+    mut ignored: impl FnMut(&Path, bool) -> bool,
+) -> Plan {
     let sp = StoredSourcePaths::new(existing, o.out, o.project_root, o.watch_root);
-    let newids = result["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|n| text(n, "id"))
-        .collect::<BTreeSet<_>>();
     let current = o
         .code_files
         .iter()
@@ -445,6 +462,7 @@ pub fn reconcile(
     // Liveness and ignore status are per source file, not per node; memoise
     // them so a graph with thousands of nodes stats each file once.
     let mut file_state: HashMap<String, (bool, bool)> = HashMap::new();
+    let mut deleted_paths = vec![];
     // Read once, on the first missing source that could be a placeholder.
     let mut unscanned_refs: Option<BTreeSet<String>> = None;
     let mut referenced_unscanned = |identity: &str| {
@@ -507,7 +525,7 @@ pub fn reconcile(
         }
         let normalized = sp.normalize(&sf);
         if !normalized.is_empty() {
-            o.deleted_paths.insert(normalized);
+            deleted_paths.push(normalized);
         }
         if !id.is_empty() {
             node_evicted.insert(id.clone());
@@ -515,6 +533,7 @@ pub fn reconcile(
             hyper_evicted.insert(id);
         }
     }
+    let mut messages = vec![];
     if !newly.is_empty() {
         messages.push(format!(
             "pruned {newly_count} node(s) from {} newly-ignored file(s)",
@@ -524,47 +543,105 @@ pub fn reconcile(
     if !excluded.is_empty() {
         messages.push(format!("fail-closed: kept {excluded_count} node(s) from {} file(s) that left the scan corpus but still exist on disk and match no current ignore rule",excluded.len()));
     }
-    let mut preserved = existing_nodes
+    let nodes = existing_nodes
         .iter()
         .filter(|n| {
-            !newids.contains(&text(n, "id"))
-                && !(tier_is_ast(n)
-                    && ((text(n, "source_file").is_empty() && (o.full || o.code_files.is_empty()))
-                        || (o.full && sp.evicted(n, &rebuilt) && !sp.evicted(n, &excluded))))
+            !(tier_is_ast(n)
+                && ((text(n, "source_file").is_empty() && (o.full || o.code_files.is_empty()))
+                    || (o.full && sp.evicted(n, &rebuilt) && !sp.evicted(n, &excluded))))
                 && (!sp.evicted(n, &node_evicted) || sp.evicted(n, &excluded))
         })
         .cloned()
         .collect::<Vec<_>>();
-    let allids = newids
-        .into_iter()
-        .chain(preserved.iter().map(|n| text(n, "id")))
-        .collect::<BTreeSet<_>>();
     let edge_bucket = if existing.get("links").is_some() {
         "links"
     } else {
         "edges"
     };
-    let mut edges = existing[edge_bucket]
+    let edges = existing[edge_bucket]
         .as_array()
         .map(|a| {
             a.iter()
                 .filter(|e| {
-                    allids.contains(&text(e, "source"))
-                        && allids.contains(&text(e, "target"))
-                        && (!sp.evicted(e, &edge_evicted) || sp.evicted(e, &excluded))
+                    (!sp.evicted(e, &edge_evicted) || sp.evicted(e, &excluded))
                         && !(tier_is_ast(e) && sp.evicted(e, &rebuilt) && !sp.evicted(e, &excluded))
                 })
                 .cloned()
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    for item in preserved.iter_mut().chain(edges.iter_mut()) {
+    let hyper = existing["hyperedges"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| !sp.evicted(e, &hyper_evicted) || sp.evicted(e, &excluded))
+        .cloned()
+        .collect::<Vec<_>>();
+    Plan {
+        sp,
+        deleted_paths,
+        messages,
+        nodes,
+        edges,
+        hyper,
+    }
+}
+/// [`reconcile`] of a [`plan`] with the new extraction `result`.
+pub fn finish(
+    plan: Plan,
+    mut result: Value,
+    o: &mut ReconcileOptions<'_>,
+    messages: &mut Vec<String>,
+) -> Result<Value> {
+    // Upstream backfills every stored node/edge's `_origin` before filtering
+    // (`_backfill_origin`). `is_ast_tier` reads `_origin` first and falls back
+    // to the same heuristic that produced it, so backfilling only the records
+    // that survive the filters ([`tier_is_ast`] reads a stub as unstamped)
+    // yields identical output without cloning the whole graph.
+    let tag_origin = build::backfill_origin;
+    let Plan {
+        sp,
+        deleted_paths,
+        messages: planned,
+        nodes,
+        edges,
+        hyper,
+    } = plan;
+    o.deleted_paths.extend(deleted_paths);
+    messages.extend(planned);
+    // With nothing left to keep from the stored graph (a full rebuild of a
+    // code graph), the new ids and endpoints that only filter those records
+    // are not collected.
+    let keeps = !(nodes.is_empty() && edges.is_empty() && hyper.is_empty());
+    let mut preserved = vec![];
+    let mut kept_edges = vec![];
+    let mut allids = BTreeSet::new();
+    if keeps {
+        let newids = result["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|n| text(n, "id"))
+            .collect::<BTreeSet<_>>();
+        preserved = nodes
+            .into_iter()
+            .filter(|n| !newids.contains(&text(n, "id")))
+            .collect::<Vec<_>>();
+        allids = newids
+            .into_iter()
+            .chain(preserved.iter().map(|n| text(n, "id")))
+            .collect::<BTreeSet<_>>();
+        kept_edges = edges
+            .into_iter()
+            .filter(|e| allids.contains(&text(e, "source")) && allids.contains(&text(e, "target")))
+            .collect::<Vec<_>>();
+    }
+    for item in preserved.iter_mut().chain(kept_edges.iter_mut()) {
         tag_origin(item);
     }
-    let edges = edges;
     let mut edges = reconcile_markdown(
         &mut result,
-        edges,
+        kept_edges,
         &preserved,
         o.code_files,
         o.extract_targets,
@@ -574,67 +651,70 @@ pub fn reconcile(
             paths: &sp,
         },
     );
-    let newhyper = result["hyperedges"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|e| text(e, "id"))
-        .filter(|s| !s.is_empty())
-        .collect::<BTreeSet<_>>();
-    let mut hyper = existing["hyperedges"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|e| {
-            !newhyper.contains(&text(e, "id"))
-                && (!sp.evicted(e, &hyper_evicted) || sp.evicted(e, &excluded))
-                && e.get("nodes")
-                    .or(e.get("members"))
-                    .or(e.get("node_ids"))
-                    .and_then(Value::as_array)
-                    .is_none_or(|a| {
-                        a.iter()
-                            .all(|n| n.as_str().is_some_and(|s| allids.contains(s)))
-                    })
-        })
-        .cloned()
-        .collect::<Vec<_>>();
+    let mut hyper = if hyper.is_empty() {
+        hyper
+    } else {
+        let newhyper = result["hyperedges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| text(e, "id"))
+            .filter(|s| !s.is_empty())
+            .collect::<BTreeSet<_>>();
+        hyper
+            .into_iter()
+            .filter(|e| {
+                !newhyper.contains(&text(e, "id"))
+                    && e.get("nodes")
+                        .or(e.get("members"))
+                        .or(e.get("node_ids"))
+                        .and_then(Value::as_array)
+                        .is_none_or(|a| {
+                            a.iter()
+                                .all(|n| n.as_str().is_some_and(|s| allids.contains(s)))
+                        })
+            })
+            .collect::<Vec<_>>()
+    };
     // An external import stub exists only so an import edge has a declared
     // endpoint (#2873), and every write mints the ones still needed: one whose
     // last edge is gone is dropped, as a fresh build would not have it (0.9.80).
-    let mut referenced = BTreeSet::new();
-    for edge in result["edges"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .chain(&edges)
-    {
-        for endpoint in ["source", "target"] {
-            if let Some(key) = python_compat::scalar_key(edge.get(endpoint).unwrap_or(&Value::Null))
-            {
-                referenced.insert(key);
+    if preserved.iter().any(build::is_external_stub) {
+        let mut referenced = BTreeSet::new();
+        for edge in result["edges"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .chain(&edges)
+        {
+            for endpoint in ["source", "target"] {
+                if let Some(key) =
+                    python_compat::scalar_key(edge.get(endpoint).unwrap_or(&Value::Null))
+                {
+                    referenced.insert(key);
+                }
             }
         }
-    }
-    for edge in hyper
-        .iter()
-        .chain(result["hyperedges"].as_array().into_iter().flatten())
-    {
-        let members = edge
-            .get("nodes")
-            .or_else(|| edge.get("members"))
-            .or_else(|| edge.get("node_ids"));
-        for member in members.and_then(Value::as_array).into_iter().flatten() {
-            if let Some(key) = python_compat::scalar_key(member) {
-                referenced.insert(key);
+        for edge in hyper
+            .iter()
+            .chain(result["hyperedges"].as_array().into_iter().flatten())
+        {
+            let members = edge
+                .get("nodes")
+                .or_else(|| edge.get("members"))
+                .or_else(|| edge.get("node_ids"));
+            for member in members.and_then(Value::as_array).into_iter().flatten() {
+                if let Some(key) = python_compat::scalar_key(member) {
+                    referenced.insert(key);
+                }
             }
         }
+        preserved.retain(|node| {
+            !build::is_external_stub(node)
+                || python_compat::scalar_key(node.get("id").unwrap_or(&Value::Null))
+                    .is_some_and(|id| referenced.contains(&id))
+        });
     }
-    preserved.retain(|node| {
-        !build::is_external_stub(node)
-            || python_compat::scalar_key(node.get("id").unwrap_or(&Value::Null))
-                .is_some_and(|id| referenced.contains(&id))
-    });
     for v in preserved.iter_mut().chain(&mut edges).chain(&mut hyper) {
         sp.rebase_preserved(v);
     }

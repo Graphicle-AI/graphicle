@@ -1,0 +1,279 @@
+{
+  "server": "graphicle mcp --project . --tools essentials, as graphicle setup writes it for Claude Code (Core)",
+  "instructions": "When you do not yet know where the code for a task is, who calls it or why it was written that way, call query_graph (the code graph) or recall_project (code, documents and reviewed memory) with the question before searching files by hand; get_node and get_neighbors show one symbol with its callers and callees, and every answer cites file and lines.",
+  "tools": [
+    {
+      "name": "recall_project",
+      "description": "Search the project's code, documents, captured agent sessions and reviewed memory together for a question: excerpts cited by path, line and source id within a token budget (max_tokens); read_project_source continues any excerpt, and structured: true returns the whole packet, whose code excerpts carry the stable_id the graph tools cite. Memory is evidence, not permission: no tool can approve memory or run commands.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "max_tokens": {
+            "type": "integer",
+            "default": 3000
+          },
+          "max_chars": {
+            "type": "integer",
+            "default": 12000
+          },
+          "mode": {
+            "type": "string",
+            "default": "auto"
+          },
+          "needs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "local_embedding_profile": {
+            "type": "string"
+          },
+          "local_reranker_profile": {
+            "type": "string"
+          },
+          "pack_order": {
+            "type": "string",
+            "enum": [
+              "rank",
+              "chronological"
+            ],
+            "description": "chronological presents the selected excerpts by date, with markers where a source's text between two excerpts is not shown; selection stays by rank"
+          },
+          "reading_guidance": {
+            "type": "boolean",
+            "description": "add guidance on weighing what users said against what assistants suggested"
+          },
+          "skip_shown": {
+            "type": "boolean",
+            "description": "answer excerpts this connection already returned with one-line references and spend their budget on further hits"
+          },
+          "include": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 32,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            },
+            "description": "search only sources whose id starts with one of these prefixes: file: for the project's files, file:docs/ for a folder, connector:<id>: for one connector's documents"
+          },
+          "shown": {
+            "type": "array",
+            "maxItems": 200,
+            "description": "source spans already in your context; covered hits return as references",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "sha256": {
+                  "type": "string"
+                },
+                "byte_start": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "byte_end": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              },
+              "required": [
+                "id",
+                "byte_start",
+                "byte_end"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "read_project_source",
+      "description": "Read a project file, or a source an answer cited, by path or source id from a byte or line offset: the exact text past an excerpt of recall_project or a graph tool's citation.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "source_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "start_byte": {
+            "type": "integer"
+          },
+          "start_line": {
+            "type": "integer"
+          },
+          "line_count": {
+            "type": "integer"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "snapshot": {
+            "type": "string",
+            "description": "a repository snapshot digest: read a file as that snapshot held it"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "query_graph",
+      "description": "Find where the code for a question is and how it connects: walks the project's code graph from the functions, classes and files that match the question, with what calls, imports or contains what. The text ends with citations: the code-graph episode read and, for each node it names, its file: path, lines and stable_id (recall_project's structured: true packet carries the same stable_id for the same code); a range not checked against the current file is marked, as is a node reached only through relations read from changed files while their graph is rebuilt. structured: true adds every citation with its byte range in structuredContent. repo names another project, as_of an earlier code graph.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "description": "Natural language question or keyword search"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "bfs",
+              "dfs"
+            ],
+            "default": "bfs",
+            "description": "bfs=broad context, dfs=trace a specific path"
+          },
+          "depth": {
+            "type": "integer",
+            "default": 3,
+            "description": "Traversal depth (1-6)"
+          },
+          "token_budget": {
+            "type": "integer",
+            "default": 2000,
+            "description": "Max output tokens"
+          },
+          "context_filter": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Optional explicit edge-context filter, e.g. ['call', 'field']"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [
+          "question"
+        ],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_node",
+      "description": "Find where a function, class or other symbol is defined: its file and line, type, community and number of connections in the project's code graph, by label or id; cited by file: path, lines and stable_id, as query_graph cites.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "description": "Node label or ID to look up"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Alias for label (node id)"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    },
+    {
+      "name": "get_neighbors",
+      "description": "Find who calls a function or class and what it calls, imports or contains: its direct neighbours in the project's code graph, with each relation; cited by file: path, lines and stable_id, as query_graph cites.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string"
+          },
+          "node_id": {
+            "type": "string",
+            "description": "Alias for label (node id)"
+          },
+          "relation_filter": {
+            "type": "string",
+            "description": "Optional: filter by relation type"
+          },
+          "token_budget": {
+            "type": "integer",
+            "default": 2000,
+            "description": "Max output tokens"
+          },
+          "repo": {
+            "type": "string",
+            "description": "The project to read: its id or key, or with graphicle mcp a synced folder. Defaults to this connection's project."
+          },
+          "as_of": {
+            "type": "string",
+            "description": "The code-graph episode to read: an episode id, a label such as a commit sha, latest or working. Defaults to the project's current code graph."
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      },
+      "annotations": {
+        "readOnlyHint": true,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      }
+    }
+  ]
+}

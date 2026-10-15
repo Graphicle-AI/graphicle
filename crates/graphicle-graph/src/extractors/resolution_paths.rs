@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/objc.py, graphify/extractors/resolution.py
 //! Bounded realpath cache, quoted C include resolution and the declared
 //! language suffixes (`.graphiclerc`) the path probes honour.
@@ -29,6 +29,12 @@ pub fn resolve_cached(path: &Path) -> io::Result<PathBuf> {
         absolute = std::env::current_dir()?.join(path);
         &absolute
     };
+    // A verbatim key (`\\?\C:\x`, or `//?/C:/x` from an older cache) is
+    // looked up under its plain spelling, as `resolve_missing` returns it.
+    #[cfg(windows)]
+    let plain = fsutil::plain(key);
+    #[cfg(windows)]
+    let key = plain.as_path();
     resolve_key(key)
 }
 /// Resolve an absolute `key`, memoising every directory prefix so sibling
@@ -38,9 +44,17 @@ fn resolve_key(key: &Path) -> io::Result<PathBuf> {
         return Ok(path.clone());
     }
     let components = key.components().collect::<Vec<_>>();
-    let resolved = match components.split_last() {
+    let parent = match components.split_last() {
         Some((tail, parents)) if !parents.is_empty() => {
-            let parent = parents.iter().collect::<PathBuf>();
+            Some((parents.iter().collect::<PathBuf>(), tail))
+        }
+        _ => None,
+    };
+    // Stop when the parent is not shorter: on Windows a UNC share
+    // (`\\server\share`) yields `Prefix, RootDir` and is its own parent.
+    // On Unix a parent is always shorter.
+    let resolved = match parent {
+        Some((parent, tail)) if parent.as_os_str().len() < key.as_os_str().len() => {
             let base = resolve_key(&parent)?;
             fsutil::resolve_missing_from(&base, Path::new(tail.as_os_str()))?
         }
@@ -128,4 +142,49 @@ pub fn resolve_c_include_path(raw: &str, source: &str) -> io::Result<Option<Path
     }
     let candidate = resolve_cached(&PathBuf::from(path_syntax::posix_join(&parts)).join(raw))?;
     Ok(candidate.is_file().then_some(candidate))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_keys_resolve_through_their_parents() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("pkg/sub/a.py");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, b"").unwrap();
+        let root = fsutil::resolve_missing(dir.path()).unwrap();
+        assert_eq!(resolve_cached(&file).unwrap(), root.join("pkg/sub/a.py"));
+        let missing = root.join("pkg/missing/b.py");
+        assert_eq!(resolve_cached(&missing).unwrap(), missing);
+    }
+
+    /// UNC, WSL and verbatim roots used to recurse without end (a UNC share
+    /// is its own parent). They must return, whatever the network says.
+    #[cfg(windows)]
+    #[test]
+    fn unc_wsl_and_verbatim_roots_terminate() {
+        for root in [
+            r"\\server\share\repo\src\a.py",
+            r"\\server\share",
+            r"\\wsl.localhost\Ubuntu\home\u\repo\a.py",
+            r"\\?\UNC\server\share\repo\a.py",
+        ] {
+            let resolved = resolve_cached(Path::new(root)).unwrap();
+            assert!(
+                resolved.to_string_lossy().starts_with(r"\\"),
+                "{root}: {resolved:?}"
+            );
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let plain = fsutil::resolve_missing(dir.path()).unwrap();
+        let verbatim = PathBuf::from(format!(r"\\?\{}", plain.display())).join("x.py");
+        assert_eq!(resolve_cached(&verbatim).unwrap(), plain.join("x.py"));
+        let slashed = format!("//?/{}/x.py", plain.to_string_lossy().replace('\\', "/"));
+        assert_eq!(
+            resolve_cached(Path::new(&slashed)).unwrap(),
+            plain.join("x.py")
+        );
+    }
 }

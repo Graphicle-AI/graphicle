@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/sln.py
 //! Port of graphify/extractors/sln.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 use crate::{fsutil, ids::make_id};
@@ -56,7 +56,17 @@ pub fn extract_sln(path: &Path) -> Value {
         }
         let source =
             fsutil::resolve_missing(&path.parent().unwrap_or(Path::new(".")).join(&project))
-                .map(|path| path.to_string_lossy().into_owned())
+                .map(|path| {
+                    // Windows: `/`-separated like the solution's own node.
+                    #[cfg(windows)]
+                    {
+                        fsutil::path_string(&path)
+                    }
+                    #[cfg(not(windows))]
+                    {
+                        path.to_string_lossy().into_owned()
+                    }
+                })
                 .unwrap_or(project);
         let nid = make_id([source.as_str()]);
         if !nid.is_empty() && seen.insert(nid.clone()) {

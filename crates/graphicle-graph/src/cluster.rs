@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cluster.py
 //! Community policies translated from graphify/cluster.py. The Leiden kernel is
 //! the very same native dependency used by the pinned Python implementation.
@@ -9,6 +9,7 @@ use rand_xorshift::XorShiftRng;
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::{
+    borrow::Cow,
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashSet},
 };
@@ -121,10 +122,12 @@ fn stable_graph(graph: &Graph) -> Result<Graph> {
     for (_, u, v, edge) in rows {
         // Both partition backends read only `weight`; parallel rows still merge
         // it last-wins exactly as merging whole attribute records would.
-        let mut attributes = crate::record::Attributes::default();
-        if let Some(weight) = edge.attributes.get("weight") {
-            attributes.insert("weight".into(), weight.clone());
-        }
+        let attributes = edge
+            .attributes
+            .get("weight")
+            .map_or_else(Default::default, |weight| {
+                crate::record::Attributes::single("weight", weight.clone())
+            });
         stable.add_edge(
             graph.nodes[u].id.clone(),
             graph.nodes[v].id.clone(),
@@ -542,6 +545,167 @@ fn induced_as(graph: &Graph, nodes: &[Value], weights_only: bool) -> Result<Grap
     let selected: Vec<_> = nodes.iter().filter_map(|id| graph.node_index(id)).collect();
     graph.induced_subgraph_with(&selected, weights_only.then_some("weight"))
 }
+/// What `native_leiden(&stable_graph(&induced_as(graph, members, true)))`
+/// feeds the Leiden kernel, read from `graph` in place: no subgraph copy, no
+/// stable copy and no String labels. Built only for a simple undirected
+/// graph whose member ids have distinct texts (`leiden_input`).
+///
+/// `order[rank]` is the graph index of the member with the rank-th smallest
+/// id text: the nodes of the stable graph, in its order. `edges` holds one
+/// `(low rank, high rank, weight)` row per edge between members, in
+/// ascending rank-pair order, which is the order `native_leiden` reads them
+/// from the stable graph: `stable_graph` adds its rows sorted by (low text,
+/// high text, record), so every node's neighbours arrive in ascending rank,
+/// and `iter_edges` visits the nodes in rank order and, for each, its
+/// neighbours of equal or higher rank in that order. With distinct texts
+/// and no parallel edges no two rows share endpoints, so the record never
+/// decides the order and each row is one stable edge.
+struct LeidenInput {
+    order: Vec<usize>,
+    edges: Vec<(usize, usize, f64)>,
+}
+/// [`LeidenInput`] of the subgraph induced by `members` (node indices), or
+/// `None` when it cannot be read in place: a directed graph or multigraph,
+/// two members with the same id text, or two edges between the same pair.
+/// The weights are read after those checks and with `native_leiden`'s
+/// coercion, so a nonnumeric weight fails exactly where it fails there.
+fn leiden_input(graph: &Graph, members: &[usize]) -> Result<Option<LeidenInput>> {
+    if graph.directed || graph.multigraph {
+        return Ok(None);
+    }
+    // `induced_subgraph_with` keeps the members in index order and
+    // `stable_graph` stable-sorts them by text.
+    let mut kept: Vec<_> = members
+        .iter()
+        .copied()
+        .filter(|&i| i < graph.nodes.len())
+        .collect();
+    kept.sort_unstable();
+    kept.dedup();
+    let texts: Vec<Cow<'_, str>> = kept
+        .iter()
+        .map(|&i| match &graph.nodes[i].id {
+            Value::String(text) => Cow::Borrowed(text.as_str()),
+            id => Cow::Owned(python_compat::string(id)),
+        })
+        .collect();
+    let mut by_text: Vec<_> = (0..kept.len()).collect();
+    by_text.sort_by(|a, b| texts[*a].cmp(&texts[*b]));
+    if by_text
+        .windows(2)
+        .any(|pair| texts[pair[0]] == texts[pair[1]])
+    {
+        return Ok(None);
+    }
+    drop(texts);
+    let order: Vec<_> = by_text.into_iter().map(|k| kept[k]).collect();
+    drop(kept);
+    let mut rank = vec![usize::MAX; graph.nodes.len()];
+    for (r, &i) in order.iter().enumerate() {
+        rank[i] = r;
+    }
+    let mut rows = Vec::new();
+    for (u, v, edge) in graph.iter_edges() {
+        let (a, b) = (rank[u], rank[v]);
+        if a != usize::MAX && b != usize::MAX {
+            rows.push((a.min(b), a.max(b), &edge.attributes));
+        }
+    }
+    drop(rank);
+    rows.sort_unstable_by_key(|&(a, b, _)| (a, b));
+    if rows
+        .windows(2)
+        .any(|pair| (pair[0].0, pair[0].1) == (pair[1].0, pair[1].1))
+    {
+        return Ok(None);
+    }
+    let edges = rows
+        .into_iter()
+        .map(|(a, b, attributes)| Ok((a, b, weight(attributes, true)?)))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(LeidenInput { order, edges }))
+}
+/// `native_leiden` from a [`LeidenInput`]: the same checks, the same kernel
+/// call and the same result order. The builder numbers labels in the order
+/// it first sees them, so integer ranks give the network that the id texts
+/// gave; it is dropped before the kernel runs.
+fn leiden_on(graph: &Graph, input: LeidenInput, resolution: f64) -> Option<Partition> {
+    let LeidenInput { order, edges } = input;
+    if !resolution.is_finite() || resolution <= 0.0 || edges.is_empty() {
+        return None;
+    }
+    if edges.iter().any(|e| !e.2.is_finite()) {
+        return None;
+    }
+    let network = LabeledNetworkBuilder::<usize>::new().build(edges.into_iter(), true);
+    let mut rng = XorShiftRng::seed_from_u64(42);
+    let (_, clustering) = leiden::leiden(
+        network.compact(),
+        None,
+        Some(1),
+        Some(resolution),
+        Some(0.001),
+        &mut rng,
+        true,
+    )
+    .ok()?;
+    let mut result = Vec::new();
+    let mut included = vec![false; order.len()];
+    for item in &clustering {
+        let rank = *network.label_for(item.node_id);
+        result.push((graph.nodes[order[rank]].id.clone(), item.cluster as i64));
+        included[rank] = true;
+    }
+    let mut next = result.iter().map(|(_, c)| *c).max().unwrap_or(-1) + 1;
+    for (rank, &i) in order.iter().enumerate() {
+        if !included[rank] {
+            result.push((graph.nodes[i].id.clone(), next));
+            next += 1;
+        }
+    }
+    Some(result)
+}
+/// The grouped partition of the subgraph induced by `connected` (node
+/// indices). On the weights-only path with the Leiden backend the kernel
+/// reads `graph` in place ([`LeidenInput`]); everywhere else, and whenever
+/// Leiden gives no result (so that Louvain decides), the induced copy is
+/// partitioned as before. `in_place` false always takes the copy (tests).
+fn partition_connected(
+    graph: &Graph,
+    connected: &[usize],
+    weights_only: bool,
+    resolution: f64,
+    backend: &str,
+    in_place: bool,
+) -> Result<Communities> {
+    if connected.is_empty() {
+        return Ok(vec![]);
+    }
+    if in_place && weights_only && matches!(backend, "auto" | "leiden") {
+        let profiled = crate::profile::span("cluster.induced");
+        let input = leiden_input(graph, connected)?;
+        drop(profiled);
+        let _profiled = crate::profile::span("cluster.partition");
+        if let Some(partition) = input.and_then(|input| leiden_on(graph, input, resolution)) {
+            return Ok(grouped(partition));
+        }
+    }
+    // The subgraph only feeds the partition; free it before the splits.
+    let profiled = crate::profile::span("cluster.induced");
+    let ids: Vec<_> = connected
+        .iter()
+        .map(|&i| graph.nodes[i].id.clone())
+        .collect();
+    let sub = induced_as(graph, &ids, weights_only)?;
+    drop(ids);
+    drop(profiled);
+    let _profiled = crate::profile::span("cluster.partition");
+    if sub.nodes.is_empty() {
+        Ok(vec![])
+    } else {
+        Ok(grouped(partition(&sub, resolution, backend)?))
+    }
+}
 /// Whether every node id has its own `python_compat::string` text, so the
 /// endpoint text of a simple graph's rows identifies the row.
 fn ids_have_distinct_text(graph: &Graph) -> bool {
@@ -718,6 +882,25 @@ pub fn cluster_with(
     backend: &str,
     ambiguous_scale: f64,
 ) -> Result<Communities> {
+    cluster_core(
+        graph,
+        resolution,
+        exclude_hubs_percentile,
+        backend,
+        ambiguous_scale,
+        true,
+    )
+}
+/// [`cluster_with`]; `in_place` false partitions the induced copy even where
+/// Leiden can read the graph in place (see `partition_connected`).
+fn cluster_core(
+    graph: &Graph,
+    resolution: f64,
+    exclude_hubs_percentile: Option<f64>,
+    backend: &str,
+    ambiguous_scale: f64,
+    in_place: bool,
+) -> Result<Communities> {
     if graph.nodes.is_empty() {
         return Ok(vec![]);
     }
@@ -800,22 +983,19 @@ pub fn cluster_with(
         } else if !hubs.is_empty() && stranded_by_hubs(i) {
             stranded.push(i);
         } else {
-            connected.push(node.id.clone());
+            connected.push(i);
         }
     }
     drop(profiled);
-    // The subgraph only feeds the partition; free it before the splits.
-    let mut raw = {
-        let profiled = crate::profile::span("cluster.induced");
-        let sub = induced_as(graph, &connected, weights_only)?;
-        drop(profiled);
-        let _profiled = crate::profile::span("cluster.partition");
-        if sub.nodes.is_empty() {
-            vec![]
-        } else {
-            grouped(partition(&sub, resolution, backend)?)
-        }
-    };
+    let mut raw = partition_connected(
+        graph,
+        &connected,
+        weights_only,
+        resolution,
+        backend,
+        in_place,
+    )?;
+    drop(connected);
     let profiled = crate::profile::span("cluster.hubs_isolates");
     let mut next = raw.iter().map(|(c, _)| *c).max().unwrap_or(-1) + 1;
     for node in isolates {
@@ -1069,6 +1249,39 @@ pub fn remap_communities_to_previous(
     remapped.sort_by_key(|(c, _)| *c);
     Ok(remapped)
 }
+/// Whether a saved label still names community `cid` (#2298). An equal
+/// membership signature keeps the label. Otherwise the label stays only when
+/// the nodes shared with the previous assignment (`previous`: node id ->
+/// community before re-clustering) are a strict majority of both the previous
+/// set and the current set, so a one-node fragment of a large community that
+/// remap gave the old id does not keep its name.
+pub fn label_still_applies(
+    cid: i64,
+    current_members: &[Value],
+    previous: &BTreeMap<String, i64>,
+    saved_sig: Option<&str>,
+    current_sig: Option<&str>,
+) -> bool {
+    if let (Some(saved), Some(current)) = (saved_sig, current_sig)
+        && saved == current
+    {
+        return true;
+    }
+    let saved: HashSet<&str> = previous
+        .iter()
+        .filter(|(_, old)| **old == cid)
+        .map(|(node, _)| node.as_str())
+        .collect();
+    let current: HashSet<String> = current_members.iter().map(python_compat::string).collect();
+    if saved.is_empty() || current.is_empty() {
+        return false;
+    }
+    let overlap = current
+        .iter()
+        .filter(|node| saved.contains(node.as_str()))
+        .count();
+    overlap * 2 > saved.len() && overlap * 2 > current.len()
+}
 pub fn communities_from_json(value: &Value) -> Result<Communities> {
     value
         .as_object()
@@ -1094,9 +1307,210 @@ pub fn communities_to_json(communities: &Communities) -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{cluster, split_community_at};
+    use super::{
+        Communities, DEFAULT_AMBIGUOUS_SCALE, cluster, cluster_core, induced_as, leiden_input,
+        leiden_on, native_leiden, split_community_at, stable_graph, weight,
+    };
     use crate::graph::Graph;
-    use serde_json::{Map, json};
+    use serde_json::{Map, Value, json};
+
+    /// xorshift64, so that every generated graph depends on its seed only.
+    struct Rng(u64);
+    impl Rng {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// A random graph for the in-place Leiden checks. Ids are integers,
+    /// prefixed strings or tuples, each with its own text, so their text
+    /// order differs from their insertion order; with `mixed` every node
+    /// draws its own kind, otherwise the whole graph shares one (`sorted_ids`
+    /// cannot order ids of different kinds, as Python cannot). There are
+    /// isolated nodes, self-loops and repeated pairs (merged on a simple
+    /// graph, parallel on a multigraph). Weights are absent, integers,
+    /// floats, booleans, numeric strings or zero, and on every fifth seed
+    /// rarely nonnumeric; some edges are AMBIGUOUS.
+    fn random_graph(seed: u64, directed: bool, multigraph: bool, mixed: bool) -> Graph {
+        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let mut graph = Graph::new(directed, multigraph);
+        let n = 1 + rng.below(70);
+        let shared = rng.below(3);
+        let ids: Vec<Value> = (0..n)
+            .map(|i| {
+                let k = rng.below(1000) * 1000 + i;
+                match if mixed { rng.below(3) } else { shared } {
+                    0 => json!(k),
+                    1 => json!(format!("{}{k}", ["n", "Zeta.", "alpha/", "mid::"][k % 4])),
+                    _ => json!(["t", k]),
+                }
+            })
+            .collect();
+        for id in &ids {
+            graph.add_node(id.clone(), Map::new()).unwrap();
+        }
+        for _ in 0..rng.below(3 * n + 1) {
+            let u = rng.below(n);
+            let v = if rng.below(10) == 0 { u } else { rng.below(n) };
+            let mut attributes = Map::new();
+            let weight = match rng.below(40) {
+                0..=5 => None,
+                6..=13 => Some(json!(1 + rng.below(4))),
+                14..=21 => Some(json!(0.25 * (1 + rng.below(8)) as f64)),
+                22..=25 => Some(json!(rng.below(2) == 0)),
+                26..=29 => Some(json!(format!(" {}.5", rng.below(3)))),
+                30 => Some(json!(0)),
+                31 if seed.is_multiple_of(5) => Some(json!("heavy")),
+                _ => Some(json!(1.0)),
+            };
+            if let Some(weight) = weight {
+                attributes.insert("weight".into(), weight);
+            }
+            if rng.below(6) == 0 {
+                attributes.insert("confidence".into(), json!("AMBIGUOUS"));
+            }
+            attributes.insert("relation".into(), json!(["calls", "uses"][rng.below(2)]));
+            graph
+                .add_edge(ids[u].clone(), ids[v].clone(), None, attributes)
+                .unwrap();
+        }
+        graph
+    }
+
+    fn communities(
+        graph: &Graph,
+        resolution: f64,
+        hubs: Option<f64>,
+        backend: &str,
+        in_place: bool,
+    ) -> Result<Communities, String> {
+        cluster_core(
+            graph,
+            resolution,
+            hubs,
+            backend,
+            DEFAULT_AMBIGUOUS_SCALE,
+            in_place,
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    /// The rows Leiden reads in place are the stable graph's: node order,
+    /// edge rows and weights, and so the partition.
+    #[test]
+    fn leiden_input_is_the_stable_graph_of_the_induced_copy() {
+        let (mut compared, mut partitioned) = (0, 0);
+        for seed in 1..=300u64 {
+            let directed = seed.is_multiple_of(3);
+            let source = random_graph(seed, directed, false, true);
+            // `cluster` partitions the undirected weight topology.
+            let graph = if directed {
+                source
+                    .topology_with_edge_attribute("weight")
+                    .to_undirected()
+                    .unwrap()
+            } else {
+                source
+            };
+            let mut rng = Rng(seed | 1);
+            let every: Vec<_> = (0..graph.nodes.len()).collect();
+            let some: Vec<_> = every.iter().copied().filter(|_| rng.below(3) > 0).collect();
+            for members in [every, some] {
+                let ids: Vec<_> = members.iter().map(|&i| graph.nodes[i].id.clone()).collect();
+                let stable = stable_graph(&induced_as(&graph, &ids, true).unwrap()).unwrap();
+                let rows = stable
+                    .iter_edges()
+                    .map(|(u, v, edge)| {
+                        Ok((
+                            stable.nodes[u].id.clone(),
+                            stable.nodes[v].id.clone(),
+                            weight(&edge.attributes, true)?.to_bits(),
+                        ))
+                    })
+                    .collect::<crate::Result<Vec<_>>>()
+                    .map_err(|error| error.to_string());
+                let input = leiden_input(&graph, &members).map_err(|error| error.to_string());
+                match (rows, input) {
+                    (Ok(rows), Ok(Some(input))) => {
+                        let nodes: Vec<_> = stable.nodes.iter().map(|n| n.id.clone()).collect();
+                        let order: Vec<_> = input
+                            .order
+                            .iter()
+                            .map(|&i| graph.nodes[i].id.clone())
+                            .collect();
+                        assert_eq!(order, nodes, "node order, seed {seed}");
+                        let read: Vec<_> = input
+                            .edges
+                            .iter()
+                            .map(|&(a, b, w)| {
+                                (
+                                    graph.nodes[input.order[a]].id.clone(),
+                                    graph.nodes[input.order[b]].id.clone(),
+                                    w.to_bits(),
+                                )
+                            })
+                            .collect();
+                        assert_eq!(read, rows, "edge rows, seed {seed}");
+                        compared += 1;
+                        for resolution in [1.0, 0.5, 2.0, 0.0] {
+                            let input = leiden_input(&graph, &members).unwrap().unwrap();
+                            let expected = native_leiden(&stable, resolution).unwrap();
+                            partitioned += usize::from(expected.is_some());
+                            assert_eq!(
+                                leiden_on(&graph, input, resolution),
+                                expected,
+                                "partition, seed {seed}, resolution {resolution}"
+                            );
+                        }
+                    }
+                    (Err(a), Err(b)) => assert_eq!(a, b, "seed {seed}"),
+                    (rows, input) => panic!(
+                        "seed {seed}: copies {:?}, in place {:?}",
+                        rows.map(|r| r.len()),
+                        input.map(|i| i.map(|i| i.edges.len()))
+                    ),
+                }
+            }
+        }
+        assert!(
+            compared > 300 && partitioned > 600,
+            "{compared} {partitioned}"
+        );
+    }
+
+    /// End to end, `cluster` gives the same communities (or the same error)
+    /// with Leiden reading the graph in place as with the induced copy, on
+    /// directed graphs and multigraphs too (a multigraph keeps the copy),
+    /// with and without hub exclusion, and for every backend.
+    #[test]
+    fn in_place_clustering_matches_the_copying_path() {
+        let mut clustered = 0;
+        for seed in 1..=150u64 {
+            for (directed, multigraph) in [(false, false), (true, false), (false, true)] {
+                let graph = random_graph(seed, directed, multigraph, false);
+                for (resolution, hubs, backend) in [
+                    (1.0, None, "auto"),
+                    (1.0, Some(80.0), "leiden"),
+                    (0.3, None, "auto"),
+                    (1.0, None, "louvain"),
+                    (0.0, None, "auto"),
+                ] {
+                    let in_place = communities(&graph, resolution, hubs, backend, true);
+                    assert_eq!(
+                        in_place,
+                        communities(&graph, resolution, hubs, backend, false),
+                        "seed {seed}, directed {directed}, multigraph {multigraph}, \
+                         resolution {resolution}, hubs {hubs:?}, {backend}"
+                    );
+                    clustered += usize::from(in_place.is_ok_and(|c| c.len() > 1));
+                }
+            }
+        }
+        assert!(clustered > 500, "{clustered}");
+    }
 
     /// networkx `barbell_graph(15, 4)`: two 15-cliques joined by a 4-node path.
     fn barbell() -> Graph {

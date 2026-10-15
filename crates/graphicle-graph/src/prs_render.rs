@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/prs.py
 use crate::{
     prs::{PRInfo, ordered},
@@ -19,8 +19,21 @@ impl Default for RenderContext {
         Self {
             now_micros: chrono::Utc::now().timestamp_micros(),
             no_color: !std::io::stdout().is_terminal()
-                || std::env::var("NO_COLOR").is_ok_and(|s| !s.is_empty()),
+                || std::env::var("NO_COLOR").is_ok_and(|s| !s.is_empty())
+                || !virtual_terminal(),
         }
+    }
+}
+/// Windows: colour only where the console accepts ANSI escapes; elsewhere
+/// always true.
+fn virtual_terminal() -> bool {
+    #[cfg(windows)]
+    {
+        crate::win::enable_virtual_terminal()
+    }
+    #[cfg(not(windows))]
+    {
+        true
     }
 }
 impl RenderContext {

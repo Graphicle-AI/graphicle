@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.88 (a9860f70), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/dedup.py
 //! Development JSON bindings for the typed native deduplication API.
 use crate::{Result, dedup::*, dedup_strings};
@@ -108,6 +108,20 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         "_extension_qualified_id" => Ok(json!(extension_qualified_id(&r["node"]))),
         "_mentions" => {
             let mut found = mentions(array("nodes")?, array("edges")?, root)
+                .into_iter()
+                .collect::<Vec<_>>();
+            found.sort();
+            Ok(json!(found))
+        }
+        "_own_page_files" => {
+            let mut found = own_page_files(array("nodes")?, root)
+                .into_iter()
+                .collect::<Vec<_>>();
+            found.sort();
+            Ok(json!(found))
+        }
+        "_slice_references" => {
+            let mut found = slice_references(array("nodes")?, root)
                 .into_iter()
                 .collect::<Vec<_>>();
             found.sort();

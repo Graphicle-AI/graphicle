@@ -205,7 +205,8 @@ impl Store {
         self.authorized_read(workspace, cap, "read", |db, p| {
             let repository = repo(db, p, crate::string(args, "repository_id", 100)?)?;
             let identifier = s(&repository, "id");
-            let path = crate::store::path(crate::string(args, "path", 4096)?)?;
+            let path = crate::store::client_path(crate::string(args, "path", 4096)?)?;
+            let path: &str = &path;
             let episode = crate::graph_projection::resolve_episode(
                 db,
                 workspace,

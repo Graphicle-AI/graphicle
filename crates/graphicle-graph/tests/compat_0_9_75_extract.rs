@@ -2,7 +2,20 @@
 use graphicle::api::{ExtractOptions, extract};
 use serde_json::Value;
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// A path as the engine reports it: on Windows `/`-separated and without the
+/// verbatim prefix; elsewhere `to_string_lossy` itself.
+fn spelled(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.strip_prefix(r"\\?\")
+            .unwrap_or(&text)
+            .replace('\\', "/")
+    } else {
+        text.into_owned()
+    }
+}
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -606,7 +619,9 @@ fn scala_context_bounds_resolve_to_type_bound_references() {
     // The value parameters are found by node type, not the shared field name.
     assert!(has("main_sort", "list", "parameter_type"));
     assert!(has("main_program", "main_config", "parameter_type"));
-    assert!(has("main_bounded", "t", "parameter_type"));
+    // Graphify 0.9.89: `T` of `bounded[T <: ...]` is the method's own type
+    // parameter, a local binding, so `x: T` mints no `t` stub reference.
+    assert!(!has("main_bounded", "t", "parameter_type"));
 }
 
 // ---- Swift protocol dispatch (Graphify 0bd22d4 + f1f363c) ----
@@ -735,12 +750,9 @@ fn swift_builtin_conformance_is_skipped_while_static_requirements_link() {
 
 #[test]
 fn swift_ambiguous_or_unmatched_conformances_are_not_dispatched() {
+    // Two conformers now both get an edge (Graphify 0.9.91, #3800):
+    // compat_0_9_91_build.rs swift_two_conformers_both_dispatch.
     for files in [
-        // Two conformers.
-        &[(
-            "Loud.swift",
-            "protocol Loud { func shout() }\nstruct A1: Loud { func shout() {} }\nstruct A2: Loud { func shout() {} }\n",
-        )][..],
         // No matching member.
         &[(
             "P.swift",
@@ -1087,7 +1099,7 @@ fn bash_emits_invokes_for_a_non_shell_interpreter() {
         let stage = fx.write("stage.py", "print('stage')\n");
         let script = fx.write("runner.sh", &format!("#!/bin/bash\n{command}\n"));
         let invocation = bash_invokes(&fx, &script);
-        let stage_text = stage.to_string_lossy().to_string();
+        let stage_text = spelled(&stage);
         assert_eq!(
             invocation,
             vec![serde_json::json!({
@@ -1095,7 +1107,7 @@ fn bash_emits_invokes_for_a_non_shell_interpreter() {
                 "target": path_id(&stage),
                 "relation": "invokes",
                 "confidence": "INFERRED",
-                "source_file": script.to_string_lossy(),
+                "source_file": spelled(&script),
                 "source_location": "L2",
                 "weight": 1.0,
                 "context": "script_invocation",
@@ -1199,7 +1211,7 @@ fn dart_part_file_keeps_its_own_node() {
     let edges = result["edges"].as_array().unwrap();
     let part_node = nodes.iter().find(|n| n["id"] == part_id.as_str()).unwrap();
     assert_eq!(part_node["label"], "derive.dart");
-    assert_eq!(part_node["source_file"], part.to_string_lossy().as_ref());
+    assert_eq!(part_node["source_file"], spelled(&part));
     let includes = edges
         .iter()
         .filter(|e| e["relation"] == "includes")

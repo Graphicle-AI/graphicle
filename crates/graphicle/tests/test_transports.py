@@ -356,10 +356,11 @@ def test_http_host_origin_scope_and_real_mcp_stdio_and_http(service):
 def test_connect_graph_serves_one_server_through_the_official_mcp_client(tmp_path):
     """The one MCP server through the official MCP client.
 
-    A fresh store, `sync .`, `connect claude-code --graph`, then one stdio
-    session of the entry's own command. `initialize` and `tools/list` equal
-    the frozen list (tests/fixtures/one_server_tools.json, the Core
-    server: regenerate it when a change alters the list). query_graph,
+    A fresh store, `sync .`, `connect claude-code --graph --tools all` (the
+    whole server, as 0.1.0 connected Claude Code), then one stdio session of
+    the entry's own command. `initialize` and `tools/list` equal the frozen
+    list (tests/fixtures/one_server_tools.json, the Core server: regenerate it
+    when a change alters the list). query_graph,
     recall_project and propose_memory answer in
     that one connection, and query_graph and recall_project cite one
     stable_id for the function.
@@ -381,7 +382,7 @@ def test_connect_graph_serves_one_server_through_the_official_mcp_client(tmp_pat
         return json.loads(result.stdout)
 
     assert cli("sync", ".")["graph"]["status"] == "built"
-    assert cli("connect", "claude-code", "--graph")["entry"] == "graphicle"
+    assert cli("connect", "claude-code", "--graph", "--tools", "all")["entry"] == "graphicle"
     servers = json.loads((folder / ".mcp.json").read_text())["mcpServers"]
     assert list(servers) == ["graphicle"], servers
     entry = servers["graphicle"]
@@ -406,6 +407,9 @@ def test_connect_graph_serves_one_server_through_the_official_mcp_client(tmp_pat
                         assert tool.get(key) == expected.get(key), (tool["name"], key)
 
                 async def call(name, arguments):
+                    # The whole packet in structuredContent (the default reply is the text).
+                    if name in ("query_graph", "recall_project"):
+                        arguments = {**arguments, "structured": True}
                     result = plain(await session.call_tool(name, arguments))
                     assert not result.get("isError"), result
                     return result

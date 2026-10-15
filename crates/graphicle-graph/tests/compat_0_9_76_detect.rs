@@ -8,6 +8,16 @@ use serde_json::json;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+/// `canonicalize` in the engine's plain spelling: on Windows without the
+/// verbatim prefix (`\\?\C:\x` is `C:\x`); elsewhere `canonicalize` itself.
+fn canonical(path: &Path) -> PathBuf {
+    let path = path.canonicalize().unwrap();
+    match path.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(plain) if cfg!(windows) && plain.as_bytes().get(1) == Some(&b':') => plain.into(),
+        _ => path,
+    }
+}
+
 /// A non-hidden project root: the shape rule looks at the absolute path, and
 /// tempfile names its directories `.tmpXXXX`.
 struct Project {
@@ -19,7 +29,7 @@ struct Project {
 impl Project {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().canonicalize().unwrap();
+        let base = canonical(dir.path());
         let root = base.join("proj");
         let home = base.join("home");
         std::fs::create_dir_all(&root).unwrap();

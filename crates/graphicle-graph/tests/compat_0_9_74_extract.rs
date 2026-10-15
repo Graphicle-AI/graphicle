@@ -4,7 +4,20 @@
 use graphicle::api::{ExtractOptions, extract};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// A path as the engine reports it: on Windows `/`-separated and without the
+/// verbatim prefix; elsewhere `to_string_lossy` itself.
+fn spelled(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.strip_prefix(r"\\?\")
+            .unwrap_or(&text)
+            .replace('\\', "/")
+    } else {
+        text.into_owned()
+    }
+}
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -445,7 +458,7 @@ fn rust_forward_type_references_resolve_to_local_declarations() {
         "nested.rs",
         "use inner::Sink;\n\nfn before(s: &Sink) {}\n\nmod inner {\n    pub struct Sink;\n}\n",
     );
-    let file = path.to_string_lossy().into_owned();
+    let file = spelled(&path);
     assert!(reference_targets(&r).contains(&("Sink".into(), file)));
 }
 
@@ -525,7 +538,7 @@ fn rust_forward_reference_to_a_colliding_id_keeps_its_stub() {
         ),
     ] {
         let (_d, path, r) = rust_file(name, &format!("fn user(h: &Handle) {{}}\n\n{source}"));
-        let file = path.to_string_lossy().into_owned();
+        let file = spelled(&path);
         assert!(
             edge_labels(&r, "references").contains(&pair("user()", "Handle"))
                 && reference_targets(&r).contains(&("Handle".into(), file)),
