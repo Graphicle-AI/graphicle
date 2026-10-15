@@ -363,6 +363,14 @@ scripts. `--json` asks for JSON on a terminal, and `GRAPHICLE_OUTPUT=text` or
 off. `GRAPHICLE_NO_BROWSER=1` makes `graphicle open` print the app's address
 instead of starting a browser.
 
+When a newer release is out, a command you run in a terminal ends with a
+three-line notice on standard error: the new version, the upgrade command and
+the release page. Graphicle asks GitHub for the latest release once a day,
+and asks again with the next command when GitHub has not answered by the time
+a command ends. It prints the notice at most once a day.
+`GRAPHICLE_NO_UPDATE_NOTIFIER=1` or `graphicle config set update_notifier false`
+turns both off.
+
 ## Code graph
 
 | Setting | Effect |

@@ -626,13 +626,18 @@ pub fn main_with(extensions: Extensions) -> i32 {
     }
     crate::extension::install(extensions);
     crate::fresh::allow_background_builds();
+    crate::update_notice::allow();
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("Failed building the Runtime")
         .block_on(async {
             let code = match run(std::env::args_os()).await {
-                Ok(()) => 0,
+                Ok(()) => {
+                    // The new-release notice, when one is due.
+                    crate::update_notice::finish();
+                    0
+                }
                 Err(error) => {
                     // The common errors name the command that fixes them.
                     eprintln!("graphicle: {}", crate::terminal::explain(&error.message));
@@ -685,6 +690,36 @@ fn unread_environment(read: &[&str], set: impl Fn(&str) -> bool) -> Option<&'sta
         .copied()
         .find(|name| set(name) && !read.contains(name))
 }
+/// Whether the new-release notice ([`crate::update_notice`]) may follow
+/// `command` (`None`: `graphicle` alone): a command people run at a terminal
+/// that prints its readable view. Never the servers (`mcp`, `serve`, `open`),
+/// hooks, session capture, workers, `update`, `uninstall`, a quiet sync or
+/// JSON output.
+fn notice_allowed(command: Option<&Command>) -> bool {
+    use crate::terminal::ConfigAction;
+    let json = match command {
+        None
+        | Some(Command::Config {
+            action: None | Some(ConfigAction::Show { json: false }),
+        }) => false,
+        Some(
+            Command::Setup { json, .. }
+            | Command::Connect { json, .. }
+            | Command::Disconnect { json, .. }
+            | Command::Status { json, .. }
+            | Command::Doctor { json, .. }
+            | Command::Context { json, .. }
+            | Command::Ask { json, .. }
+            | Command::WorkState { json, .. }
+            | Command::Config {
+                action: Some(ConfigAction::Set { json, .. }),
+            },
+        ) => *json,
+        Some(Command::Sync { json, quiet, .. }) => *json || *quiet,
+        _ => return false,
+    };
+    crate::terminal::human(json)
+}
 /// Run one command line (`args` includes the program name). Usage errors,
 /// `--help` and `--version` print and end the process, as clap does.
 pub async fn run<I, T>(args: I) -> Result<()>
@@ -712,6 +747,15 @@ where
         Ok(cli) => cli,
         Err(error) => error.format(&mut interface.clone()).exit(),
     };
+    // The new-release check runs beside an interactive command (it does
+    // nothing in a test's process); `main_with` prints the notice after it.
+    crate::update_notice::start(
+        notice_allowed(cli.command.as_ref()),
+        &crate::terminal::config_path(
+            cli.config.as_deref(),
+            &cli.data_dir.clone().unwrap_or_else(local::data_dir),
+        ),
+    );
     // `graphicle` alone: this project's short status, or how to start. It
     // creates nothing (earlier builds opened the app).
     let Some(command) = cli.command else {

@@ -11,8 +11,10 @@ Every crate is at 0.1.1, and `graphicle --version` prints
 ### Code graph
 
 - The engine follows Graphify 0.9.91 (0.1.0 followed 0.9.88): the three
-  releases 0.9.89 to 0.9.91 are ported, and the comparison checks pass
-  against 0.9.91. What changes in the graph:
+  releases 0.9.89 to 0.9.91 are ported. Against 0.9.91 the comparison checks
+  have run on Linux, where the only checks that do not pass stop for reasons
+  of that host; the full run on macOS is still to be made
+  (`docs/benchmarks.md`). What changes in the graph:
   - Go: a package type whose methods span several files is one node, and
     the methods of a generic receiver (`func (b *Box[T])`) attach to `Box`.
     Member calls on a typed receiver are bound; when the receiver's type is
@@ -167,9 +169,21 @@ token or accuracy claim; it trims that text.
 - On Windows, the memory library reads a source named in a graph only when
   its path stays inside the project folder: no drive, network-share, rooted
   or `..` paths.
+- The Windows programs are not code-signed yet. `docs/code-signing.md` is the
+  code signing policy for the planned signing through the SignPath
+  Foundation; the release workflow's signing job stays off until then.
 
 ### Other changes
 
+- A new-release notice, like the GitHub CLI's. Once a day, when you run a
+  command in a terminal, `graphicle` asks GitHub's releases API for the
+  latest release. That is one GET request, with no code or data in it; when
+  GitHub has not answered by the time the command ends, the request is made
+  again with the next command. When the release is newer, `graphicle` prints the version, the upgrade
+  command for your install and the release page on standard error. It never
+  checks from the MCP server, `serve`, hooks, session capture, `update`,
+  CI, or JSON or piped output. `GRAPHICLE_NO_UPDATE_NOTIFIER=1` or
+  `graphicle config set update_notifier false` turns it off.
 - The repository's `.gitattributes` checks text files out with LF line
   endings on every system.
 

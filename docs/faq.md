@@ -41,6 +41,18 @@ finds through an API key in your environment. Run `--dry-run` first to see what
 it would send. The README's [privacy section](../README.md#privacy-and-local-first)
 lists every case.
 
+One of them is on by default: once a day, when you run a command in a
+terminal, `graphicle` asks GitHub's releases API for its latest release.
+That is one GET request to api.github.com, with no code, project data or
+version in it. If GitHub has not answered by the time the command ends, the
+request is made again with your next command. The answer is kept in
+`~/.cache/graphicle/update-check.json`.
+When a newer release exists, `graphicle` prints the new version and the
+upgrade command for your install. It never checks from an agent's MCP
+server or hooks, on CI, or when its output goes to a pipe or is JSON. To turn
+it off, set `GRAPHICLE_NO_UPDATE_NOTIFIER=1` or run
+`graphicle config set update_notifier false`.
+
 ## Is Graphicle a fork of Graphify?
 
 The code-graph engine is a Rust port of Graphify, which is

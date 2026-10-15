@@ -63,6 +63,7 @@ pub mod structured_memory;
 pub mod symbols;
 pub mod temporal_graph;
 pub mod terminal;
+pub mod update_notice;
 pub mod vault;
 pub mod vector;
 pub mod work_state;

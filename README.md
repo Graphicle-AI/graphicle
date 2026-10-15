@@ -92,7 +92,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 - **Cited context, within a budget you set.** Your agent asks Graphicle and gets the relevant code, docs and decisions as cited excerpts, within a token budget you set. In our tests it tied grep on finding code, and we do not claim it saves tokens ([what we measured](#benchmarks)).
 - **Answers you can check.** Every excerpt names its file and lines. Memories an agent proposes wait for your approval.
 - **One program, not a stack.** The code graph, the memory, one MCP server, the web app and the command line come in one install, with one SQLite file. No Python, Docker or database server.
-- **Local and private.** No account and no telemetry. Nothing leaves your machine unless you ask.
+- **Local and private.** No account and no telemetry. Your code and data leave your machine only when you ask. The only automatic request is a daily check for a new release, which `GRAPHICLE_NO_UPDATE_NOTIFIER=1` turns off.
 
 <p align="center">
   <picture>
@@ -171,8 +171,9 @@ Every figure is labelled, and [docs/benchmarks.md](docs/benchmarks.md) has the f
 
 - **One data folder.** Your sources, memories and the code graph that setup builds live in one SQLite store: `~/Library/Application Support/Graphicle` on macOS, `~/.local/share/graphicle` on Linux. `graphicle graph extract` writes its graph file to `.graphicle/` in the project.
 - **Loopback by default.** The app and its HTTP and MCP endpoints listen on 127.0.0.1.
-- **No telemetry, no account.** Graphicle connects to the network only when you ask it to: a model or a connector you configure, a full `graphicle graph extract`
-  (it sends documents and images to the LLM whose API key it finds), the GitHub CLI for `graphicle graph add`, `clone` and the graph server's pull-request tools, and `graphicle update` with a feed you name.
+- **No telemetry, no account.** Graphicle connects to the network only in these cases: a model or a connector you configure, a full `graphicle graph extract`
+  (it sends documents and images to the LLM whose API key it finds), the GitHub CLI for `graphicle graph add`, `clone` and the graph server's pull-request tools, `graphicle update` with a feed you name, and a daily check for a new release.
+  That check is on by default: a command you run in a terminal asks GitHub for the latest release, with no code or data, to tell you about a new one (`GRAPHICLE_NO_UPDATE_NOTIFIER=1` turns it off).
   A build from source also downloads the parser sources once. [Details](docs/faq.md)
 - **Careful sync.** `sync` respects `.gitignore` and skips `.env` files, keys and credentials. Session capture drops `<private>…</private>` spans and redacts credentials.
 - **Forgetting with a receipt.** Deleting a memory or a captured session also removes what was derived from it, and you get a hash-chained deletion receipt.
@@ -232,6 +233,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). To report a security problem, follow [SE
 ## License and credits
 
 Graphicle is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 KarLex AI, Inc.
+
+[Code signing policy](docs/code-signing.md): the Windows programs are not code-signed yet; signing through the SignPath Foundation is planned.
 
 The code-graph engine is a Rust port of [Graphify](https://github.com/Graphify-Labs/graphify) by Safi Shamsi and the Graphify
 contributors, licensed under Apache-2.0, with portions that remain available under the MIT License. Thank you.

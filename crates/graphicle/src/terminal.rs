@@ -2969,6 +2969,9 @@ pub fn config_command(
             } else if key == "freshness" {
                 // GRAPHICLE_FRESHNESS overrides the file (ux-fresh).
                 Some(json!(crate::fresh::mode(&load()?)))
+            } else if key == crate::update_notice::SETTING {
+                // GRAPHICLE_NO_UPDATE_NOTIFIER overrides the file.
+                Some(json!(crate::update_notice::on(&path)))
             } else if let Some(name) = key.strip_prefix("limits.")
                 && crate::limits::SETTINGS
                     .iter()

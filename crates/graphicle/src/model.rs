@@ -85,6 +85,11 @@ pub struct Config {
     /// `GRAPHICLE_MAX_*` environment variables win over these.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub limits: BTreeMap<String, Value>,
+    /// The new-release notice after interactive commands
+    /// ([`crate::update_notice`]): `false` turns it off, as the environment
+    /// variable `GRAPHICLE_NO_UPDATE_NOTIFIER` does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_notifier: Option<bool>,
 }
 fn concurrency_default() -> usize {
     1
@@ -102,6 +107,7 @@ impl Default for Config {
             max_queued_bytes_per_repository: None,
             freshness: None,
             limits: BTreeMap::new(),
+            update_notifier: None,
         }
     }
 }

@@ -2,7 +2,7 @@
 
 This page takes you from nothing to your first answer in three steps. You need
 macOS or Linux and a code repository on your machine. Nothing here needs an
-account, and setup sends nothing over the network.
+account, and setup sends none of your code or data over the network.
 
 ## 1. Install
 

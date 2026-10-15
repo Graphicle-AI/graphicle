@@ -93,6 +93,14 @@ Notes for the preview:
 - The optional features under [Build from source](#build-from-source) are
   untested on Windows.
 
+### Windows signing
+
+The Windows programs are not code-signed yet, so Windows may warn before it
+runs them (see **SmartScreen or Smart App Control** below). We plan to have
+them signed through the SignPath Foundation, which signs open-source projects
+for free; the [Code signing policy](code-signing.md) says what will be signed
+and who approves each signed release.
+
 ### Troubleshooting on Windows
 
 - **SmartScreen or Smart App Control.** The preview programs are not
@@ -256,6 +264,18 @@ graph's agent rules or Git hooks, also run `graphicle graph <platform> install`
 or `graphicle graph hook install` again. `graphicle update` says how to
 upgrade for the way you installed Graphicle. On Windows, run the PowerShell
 install line from [Windows (preview)](#windows-preview) again.
+
+Upgrading from 0.1.0: run `graphicle setup` again in each repository. It
+switches Claude Code to 0.1.1's lighter defaults: five tools and no guard
+hooks. To keep 0.1.0's setup, with every tool and the guard hooks, run
+`graphicle setup --tools all --guards` instead; the
+[CHANGELOG](../CHANGELOG.md) lists the two small differences that remain.
+
+You do not have to watch for releases: once a day, when you run a command in
+a terminal, `graphicle` asks GitHub for the latest release. When it is
+newer, `graphicle` prints the version and the upgrade command for your install.
+`GRAPHICLE_NO_UPDATE_NOTIFIER=1` or `graphicle config set update_notifier false`
+turns this off.
 
 ## Uninstall
 
