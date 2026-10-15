@@ -9,7 +9,7 @@ endorsement is implied.
 
 | Area | Status | Result |
 |---|---|---|
-| Code-graph engine: parity | Graphify 0.9.91: run on Linux, 15 October 2026; the full run on macOS is pending. Graphify 0.9.88: done, 13 October 2026; widened 14 October 2026 | Against Graphify 0.9.91, 89 of the 96 comparison checks pass on Linux; the other 7 stop on that host, as they did against 0.9.88 (IPv4 loopback, a speech recording and ffmpeg, and one layout tolerance). Against Graphify 0.9.88, 96 of 96 pass, with reviewed upstream fixes applied to nine of the reference's modules; widened on 14 October, they run 354 of its 402 test files against the engine: 350 pass and 4 have known differences (7 tests). The limits are [below](#parity-with-graphify) |
+| Code-graph engine: parity | Graphify 0.9.91: run on Linux, 15 October 2026; the full run on macOS is pending. Graphify 0.9.88: done, 13 October 2026; widened 14 October 2026 | Against Graphify 0.9.91, the comparison checks pass on Linux, apart from those that stop on that host, as they did against 0.9.88 (IPv4 loopback, a speech recording and ffmpeg, and one layout tolerance). Against Graphify 0.9.88, every check passes, with reviewed upstream fixes applied to nine of the reference's modules; widened on 14 October, they run most of its test files against the engine, and every file they run passes apart from the recorded known differences. The limits are [below](#parity-with-graphify) |
 | Code-graph engine: speed | Done, on a pre-release build that followed Graphify 0.9.77. The 0.1.0 engine: an exploratory survey, 14 October 2026; its registered quiet-host repeat is pending. Updates after commits: Graphicle 0.1.0 against Graphify 0.9.91, registered before the first update, 15 October 2026 | Django (pre-release build): code-only extract 7.5 s against 72.8 s for Graphify 0.9.77. Kubernetes v1.37.1 (the 0.1.0 engine, which follows Graphify 0.9.88; exploratory, one run each on one Linux host, the same 16 CPUs, 8 workers, with four recorded deviations): code-only extract 198.4 s against 1,597.9 s for Graphify 0.9.88, the same graph. [Details](#speed-on-kubernetes). Updates after each of 30 commits on prometheus, tokio and poetry (one Linux node, 4 CPUs per run): 6 to 8 times less time than Graphify 0.9.91, with the same differences from a fresh build in both. [Details](#updates-after-commits) |
 | Code-graph engine: peak memory | A pre-release build with 0.1.1's changes to how the engine holds its data, against Graphify 0.9.91, 15 October 2026; five cells rechecked on a build of the merged 0.1.1 source | Less peak memory than Graphify 0.9.91 in all 39 cells (13 repositories; extract, priming update and update with no change), from 0.29 to 0.97 times Graphify's figure; Kubernetes extract 2,091.5 against 2,767 MiB. One Linux node (its 8 H100 GPUs not used), 8 workers; Graphicle's peak RSS against Graphify's peak PSS. [Details](#peak-memory-against-graphify-0991) |
 | Coding agents: Claude Code with Graphicle, Graphify or neither | Four task sets, each test registered before any answer was scored; Claude Code with Opus 5.5, and one set repeated with Haiku 5.5 | Graphicle tied plain Claude Code on finding files and facts in every test, and no token saving is claimed against it. Against Graphify 0.9.91, Graphicle found more facts on Graphify's showcase corpus and used fewer tokens in all four task sets (on SWE-bench Verified, a secondary comparison); in two of them, Graphicle's arm included a prototype that does not ship. [Details](#coding-agents-with-graphicle-graphify-or-neither) |
@@ -23,35 +23,35 @@ endorsement is implied.
 The engine is a Rust port of Graphify. It follows Graphify
 0.9.91 (tag commit `10130e79`): the port was made from 0.9.77 (`5c7b8479`),
 the eleven releases 0.9.78 to 0.9.88 were ported for 0.1.0, and the three
-releases 0.9.89 to 0.9.91 for 0.1.1. Against Graphify 0.9.88 it passed the
-96 comparison checks, and all 95 application modules had passing receipts.
-Against Graphify 0.9.91 the checks have run on Linux, where 7 of them stop
-for reasons of that host (below); the full run on macOS, which records every
-module's receipt, is still to be made for 0.9.91. That is the parity claim,
-with these limits:
+releases 0.9.89 to 0.9.91 for 0.1.1. Against Graphify 0.9.88 it passed every
+comparison check, and every application module had a passing receipt.
+Against Graphify 0.9.91 the checks have run on Linux, where the only checks
+that do not pass stop for reasons of that host (below); the full run on
+macOS, which records every module's receipt, is still to be made for 0.9.91.
+That is the parity claim, with these limits:
 
 - **Graphify 0.9.91 (15 October 2026).** A qualified build of the 0.1.1
   source (binary SHA-256 `f212d846…`) ran `tools/qualify_all.py` against the
   pinned archive of Graphify 0.9.91 (`10130e79`, archive SHA-256
-  `f4916b0c…`, with `graphifyy` 0.9.91 from PyPI) on Linux (x86_64). Of the
-  96 checks, 89 pass in that full run, `check_detect` among them. The other
-  7 stop on that host, as they did against 0.9.88: 5 need IPv4 loopback
+  `f4916b0c…`, with `graphifyy` 0.9.91 from PyPI) on Linux (x86_64). In
+  that full run every check passes, `check_detect` among them, except those
+  that stop on that host, as they did against 0.9.88: some need IPv4 loopback
   connections, which the host refuses, `check_transcribe` needs a speech
   recording (`jfk.wav`) and ffmpeg, which the host lacks, and in
   `check_export` a graph layout position differs from NetworkX's by 2.2e-9,
   against a tolerance of 2e-9. Since that run, the engine has changed only in
   one test file. Before the merge, the port branch's own build (binary
-  SHA-256 `adf81bb2…`) also reached 89: `tools/qualify_all.py` passed 88,
-  and `check_detect` passed when run on its own (in that full run, one
+  SHA-256 `adf81bb2…`) had the same result, except that `check_detect` passed
+  only when run on its own: in its full run of `tools/qualify_all.py`, one
   upstream test could not bind a Unix socket because the run's temporary
-  path was longer than the system allows). On that build, 4 of the 5
-  loopback checks passed with their test servers on the host's own address;
-  in `check_native_workflows` the reference's own client then failed to set
-  up TLS on that host. Of the 19 test files that 0.9.89 to 0.9.91
-  add and the 25 they change, the checks run all but five: two test
-  Graphify's skill text and skill generator, one patches the reference's
-  own subprocess call (the engine's equivalent has a Rust test), and the two
-  Ollama files drive mocked Python clients, so `check_llm` compares the
+  path was longer than the system allows. On that build, the loopback checks
+  passed with their test servers on the host's own address, apart from
+  `check_native_workflows`, in which the reference's own client then failed
+  to set up TLS on that host. Of the test files that 0.9.89 to 0.9.91 add or
+  change, the checks run all but these: the files that test Graphify's skill
+  text and skill generator, the file that patches the reference's own
+  subprocess call (the engine's equivalent has a Rust test), and the Ollama
+  files, which drive mocked Python clients, so `check_llm` compares the
   engine's Ollama requests with the reference's instead. On
   Kubernetes, prometheus and tokio, the port branch's engine's `update
   --force --no-cluster` gave the same nodes and edges as Graphify 0.9.91's on
@@ -63,38 +63,38 @@ with these limits:
   describe the 0.9.88 runs unless they say otherwise.
 - **What the checks do.** Each check runs upstream tests and comparisons
   against the Rust engine and compares the engine's results with the pinned
-  Python release. Together they run 354 of Graphify 0.9.88's 402 test files
-  (`tests/test_*.py`) and cover all 95 application modules (84,134 source
+  Python release. Together they run most of Graphify 0.9.88's test files
+  (`tests/test_*.py`) and cover every application module (84,134 source
   lines). A file counts as run when at least one of its tests runs and passes
   in a check, or when the engine fails one of its tests (a known difference,
   below).
-- **Widened on 14 October 2026.** Before that day the checks ran 279 of the
-  test files; 75 more were added, mostly extraction and cross-file
-  resolution across languages, plus files for the command line, graph
-  building, file discovery, exports and other modules. They are listed in
+- **Widened on 14 October 2026.** That day more test files were added to the
+  checks, mostly extraction and cross-file resolution across languages, plus
+  files for the command line, graph building, file discovery, exports and
+  other modules. They are listed in
   [evidence/upstream-tests-known-differences.md](evidence/upstream-tests-known-differences.md).
   The widened checks ran on Linux (x86_64) with the same engine source. There
-  89 of the 96 checks pass, and the other 7 stop on that host, before the
-  change and after it alike: 5 need IPv4 loopback connections, which the
-  host refuses, one needs ffmpeg, which it lacks, and in one a graph layout
-  position differs there from NetworkX's by 2.2e-9, against a tolerance of
-  2e-9. Every upstream test that ran there passed, apart from the known
-  differences. The widened checks have not yet run on macOS.
-- **Known differences in upstream tests.** 7 tests in 4 files fail against
+  every check passes except those that stop on that host, before the change
+  and after it alike: some need IPv4 loopback connections, which the host
+  refuses, `check_transcribe` needs ffmpeg, which it lacks, and in
+  `check_export` a graph layout position differs there from NetworkX's by
+  2.2e-9, against a tolerance of 2e-9. Every upstream test that ran there
+  passed, apart from the known differences. The widened checks have not yet
+  run on macOS.
+- **Known differences in upstream tests.** A few upstream tests fail against
   the engine. Each is recorded, with the reason, in
   [evidence/upstream-tests-known-differences.md](evidence/upstream-tests-known-differences.md)
-  and deselected by its exact name. Six are command-line messages and help
+  and deselected by its exact name. Most are command-line messages and help
   text that the engine words differently or does not print; one is a second
   `case_of` edge for TypeScript enum members whose names differ only in case.
-- **Tests that are not run.** The other 48 test files are listed in
+- **Tests that are not run.** The other test files are listed in
   [evidence/upstream-tests-not-run.md](evidence/upstream-tests-not-run.md),
-  each with its reason: 20 test something the engine does not contain or
+  each with its reason: some test something the engine does not contain or
   that exists only in Python (Python packaging and interpreter details,
   private Python functions, Graphify Cloud's call to action, Graphify's own
-  skill text and skill generator, and its test fixtures), and 28 test
+  skill text and skill generator, and its test fixtures), and the rest test
   behaviour the engine ports but are not run yet, mostly in the
-  language-model module (11 files) and the installer and agent integration
-  (9).
+  language-model module and the installer and agent integration.
 - **A reviewed reference.** The checks compare with the pinned release plus
   reviewed upstream fixes, applied in memory to nine of its modules (cache,
   extract, cluster, markdown, sql, vbnet, apex, commonlisp and sln); the
@@ -119,7 +119,7 @@ with these limits:
   (`crates/graphicle-graph/tools/naming.py`), which the checks apply.
   Graphify's `graphify-out/` folder, for example, is Graphicle's
   `.graphicle/`.
-- **The checked build.** All 96 checks last passed on 13 October 2026, on a
+- **The checked build.** All the checks last passed on 13 October 2026, on a
   pre-release build (commit cce5fd4, 13 October 2026) of the engine
   (`graphicle-graph`) for macOS, release profile; the widened checks ran on
   14 October 2026 on a Linux release build of the same source. Both builds
@@ -131,7 +131,7 @@ with these limits:
 - **The record.** [evidence/engine-parity-0.9.88.json](evidence/engine-parity-0.9.88.json)
   summarizes the 13 October run: each check with its result, and each
   module's receipt. [evidence/upstream-tests-0.9.88.json](evidence/upstream-tests-0.9.88.json)
-  gives the status of each of the 402 upstream test files.
+  gives the status of each upstream test file.
   `crates/graphicle-graph/migration/STATUS.md` lists every ported module, and
   `crates/graphicle-graph/migration/upstream-review/REVIEW.md` records the
   upstream fixes that were reviewed and the known limitations.
@@ -632,10 +632,10 @@ index was built once, with Claude Sonnet 5.5 reading the papers and images
 | Graphify − plain | −6.9 points [−14.2, −0.6] | −70.2k [−234.2k, +30.5k], a tie |
 
 - **No token saving against plain Claude Code.** With Graphicle's index
-  build counted, the difference is −90.8k [−249.8k, +2.5k], a tie. Without
-  it the interval excludes 0 (−101.9k [−260.9k, −8.6k]), but plain Claude
-  Code's mean rests on one run that used 2.31M tokens, and its median is the
-  lowest of the three, so we do not read it as a saving.
+  build counted, the difference is −90.8k [−249.8k, +2.5k], a tie. Plain
+  Claude Code's mean rests on one run that used 2.31M tokens, and its median
+  is the lowest of the three, so we do not read Graphicle's lower mean as a
+  saving.
 - **Where Graphify's gap is** (descriptive: 10 questions, no interval). On
   the 10 questions that connect code to a paper, the facts found were 89% for
   plain Claude Code, 73% for Graphify and 98% for Graphicle.

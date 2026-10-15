@@ -3,7 +3,7 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## 0.1.1 - unreleased
+## 0.1.1 - 2026-10-15
 
 Every crate is at 0.1.1, and `graphicle --version` prints
 `graphicle 0.1.1 (core)`.
