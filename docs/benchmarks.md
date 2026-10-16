@@ -10,11 +10,16 @@ endorsement is implied.
 | Area | Status | Result |
 |---|---|---|
 | Code-graph engine: parity | Graphify 0.9.91: run on Linux, 15 October 2026; the full run on macOS is pending. Graphify 0.9.88: done, 13 October 2026; widened 14 October 2026 | Against Graphify 0.9.91, the comparison checks pass on Linux, apart from those that stop on that host, as they did against 0.9.88 (IPv4 loopback, a speech recording and ffmpeg, and one layout tolerance). Against Graphify 0.9.88, every check passes, with reviewed upstream fixes applied to nine of the reference's modules; widened on 14 October, they run most of its test files against the engine, and every file they run passes apart from the recorded known differences. The limits are [below](#parity-with-graphify) |
-| Code-graph engine: speed | Done, on a pre-release build that followed Graphify 0.9.77. The 0.1.0 engine: an exploratory survey, 14 October 2026; its registered quiet-host repeat is pending. Updates after commits: Graphicle 0.1.0 against Graphify 0.9.91, registered before the first update, 15 October 2026 | Django (pre-release build): code-only extract 7.5 s against 72.8 s for Graphify 0.9.77. Kubernetes v1.37.1 (the 0.1.0 engine, which follows Graphify 0.9.88; exploratory, one run each on one Linux host, the same 16 CPUs, 8 workers, with four recorded deviations): code-only extract 198.4 s against 1,597.9 s for Graphify 0.9.88, the same graph. [Details](#speed-on-kubernetes). Updates after each of 30 commits on prometheus, tokio and poetry (one Linux node, 4 CPUs per run): 6 to 8 times less time than Graphify 0.9.91, with the same differences from a fresh build in both. [Details](#updates-after-commits) |
-| Code-graph engine: peak memory | A pre-release build with 0.1.1's changes to how the engine holds its data, against Graphify 0.9.91, 15 October 2026; five cells rechecked on a build of the merged 0.1.1 source | Less peak memory than Graphify 0.9.91 in all 39 cells (13 repositories; extract, priming update and update with no change), from 0.29 to 0.97 times Graphify's figure; Kubernetes extract 2,091.5 against 2,767 MiB. One Linux node (its 8 H100 GPUs not used), 8 workers; Graphicle's peak RSS against Graphify's peak PSS. [Details](#peak-memory-against-graphify-0991) |
+| Code-graph engine: speed | Done, on a pre-release build that followed Graphify 0.9.77. The 0.1.0 engine: an exploratory survey, 14 October 2026; its registered quiet-host repeat is pending. Updates after commits: Graphicle 0.1.0 against Graphify 0.9.91, registered before the first update, 15 October 2026. 13 codebases against Graphify 0.9.91: Graphicle's 0.1.1 memory engine (a pre-release build), one session per program, 15 October 2026 | Django (pre-release build): code-only extract 7.5 s against 72.8 s for Graphify 0.9.77. Kubernetes v1.37.1 (the 0.1.0 engine, which follows Graphify 0.9.88; exploratory, one run each on one Linux host, the same 16 CPUs, 8 workers, with four recorded deviations): code-only extract 198.4 s against 1,597.9 s for Graphify 0.9.88, the same graph. [Details](#speed-on-kubernetes). Updates after each of 30 commits on prometheus, tokio and poetry (one Linux node, 4 CPUs per run): 6 to 8 times less time than Graphify 0.9.91, with the same differences from a fresh build in both. [Details](#updates-after-commits). 13 codebases, 3 operations each (Graphicle's 0.1.1 memory engine, a pre-release build, against Graphify 0.9.91; the same machine, 3 CPUs and 8 workers each): 3.0 to 22.7 times less time in all 39 measurements; the graphs differ slightly, with node counts within 4.7% and edge counts within 2.0%. [Details](#speed-on-13-codebases-against-graphify-0991) |
+| Code-graph engine: peak memory | A pre-release build with 0.1.1's changes to how the engine holds its data, against Graphify 0.9.91, 15 October 2026; five measurements rechecked on a build of the merged 0.1.1 source | Less peak memory than Graphify 0.9.91 in all 39 measurements (13 repositories; extract, priming update and update with no change), from 0.29 to 0.97 times Graphify's figure; Kubernetes extract 2,091.5 against 2,767 MiB. One Linux node (its 8 H100 GPUs not used), 8 workers; Graphicle's peak RSS against Graphify's peak PSS. [Details](#peak-memory-against-graphify-0991) |
 | Coding agents: Claude Code with Graphicle, Graphify or neither | Four task sets, each test registered before any answer was scored; Claude Code with Opus 5.5, and one set repeated with Haiku 5.5 | Graphicle tied plain Claude Code on finding files and facts in every test, and no token saving is claimed against it. Against Graphify 0.9.91, Graphicle found more facts on Graphify's showcase corpus and used fewer tokens in all four task sets (on SWE-bench Verified, a secondary comparison); in two of them, Graphicle's arm included a prototype that does not ship. [Details](#coding-agents-with-graphicle-graphify-or-neither) |
 | Agent memory: comparison with seven memory systems | Done, on development sets, with a proxy evaluator | Every system's scores and the 21 registered comparisons are [below](#agent-memory-comparison-with-seven-memory-systems). None of them is a headline claim |
 | Agent memory: retrieval defaults | Chosen | Model-free retrieval runs on development data, plus held-out checks; their records are not published yet, so no numbers are given |
+
+The main results in one table image; each row names its build and conditions,
+and the sections below have the full tables.
+
+<p align="center"><img src="../assets/graphicle-011-comparison.svg" alt="Table: Graphicle 0.1.1 against Graphify 0.9.91 (Python) and Claude Code alone. A blue chip marks Graphicle ahead (the 95% CI of the difference excludes 0); a grey chip marks a tie (no difference measured). Speed and memory, one Linux node per test (Intel Xeon Platinum 8480C), with the Graphicle build named on each row. Speed on 13 codebases × 3 operations (extract, priming update and update with no change): Graphicle's 0.1.1 memory engine (a pre-release build) against Graphify 0.9.91 on the same machine, 3 CPUs each, median of 3 runs (1 for Kubernetes and VS Code); the graphs differ slightly, node counts within 4.7%, edge counts within 2.0%. Graphicle took less time in 39 of 39 measurements, 3.0× to 22.7× less; Graphify in 0 of 39. Kubernetes extract in that run (code-only, one run each, 256,329 against 244,784 nodes): 1 min 8 s against 25 min 47 s, 22.7× less time. Kubernetes extract, same graph (the published run on Kubernetes, 31k files: the 0.1.0 engine against Graphify 0.9.88, one exploratory run each on the same 16 CPUs; both built the same graph): 3 min 18 s against 26 min 38 s, 8.1× less time on this run. Update after a commit (prometheus, tokio and poetry; median over 30 commits each, 4 CPUs per run; measured on 0.1.0): 5.7, 2.1 and 1.6 s against 34.6, 13.0 and 13.1 s, 6 to 8× less time. Peak memory, Kubernetes build (Graphicle 0.1.1, a build of the merged source; highest peak RSS of 2 runs against Graphify's peak PSS from one run): 2,148 MiB against 2,767 MiB, 0.78× of Graphify's peak. Peak memory, 13 repositories × 3 operations (a pre-release build with 0.1.1's memory changes, whose graphs differ from Graphify's; 0.1.1 itself rechecked in 5 of them, lower in all): lower in 39 of 39 measurements, 0.29× to 0.97× of Graphify's peak; Graphify in 0 of 39. Memory checks, Graphicle only: stale-memory flags on notes tied to code (30 notes on prometheus, tokio and poetry, 30 commits each; measured on 0.1.0): 15 of 15 changed notes flagged, 0 false flags; a wider check on every function found some false flags (precision 0.68 to 0.86). Coding agents (Claude Code 2.1.287, Opus 5.5, effort medium, one run per task). Graphify's showcase corpus, facts found (30 questions, 108 facts; Graphicle 0.1.1 agent defaults, a pre-release build): Graphicle 99.2%, Graphify 87.8% (Graphicle +11.4 points, 95% CI [4.2, 19.7]), Claude Code alone 94.7% (tie). Same test, tokens per answer (median, with the mean; the tested differences are on the mean): Graphicle 69.2k (mean 81.8k), Graphify 87.1k (mean 113.5k; Graphicle −31.8k, 95% CI [−58.9k, −8.2k]), Claude Code alone 60.8k (mean 183.7k; no difference measured). Index builds add 11.1k (Graphicle) and 14.0k (Graphify) per question; one 2.31M-token run lifts Claude Code alone's mean. Never-seen private commits, all files found (93 tasks; Graphicle: a prototype card from 0.1.0's index, not shipped): Graphicle 57.0%, Graphify 58.1% (tie), Claude Code alone 57.0% (tie). SWE-bench Verified, all files found (100 tasks; Graphicle 0.1.0, default setup, used 16% more tokens than Claude Code alone, a measured loss; on 50 of these tasks 0.1.1, pre-release, used 12.4% more, 95% CI [−0.7%, +24.3%], a tie, and its file hit was not scored): Graphicle 95%, Graphify 94% (tie), Claude Code alone 95% (tie). Questions about our own project, facts found (60 questions, 177 facts; Graphicle: pre-release 0.1.1 plus a prototype context hook, not shipped): Graphicle 97.1%, Graphify 98.5% (tie), Claude Code alone 97.4% (tie). Never-seen with Haiku 5.5, all files found (93 tasks, Claude Code 2.1.300; Graphicle: the prototype card; Graphify was not run): Graphicle 43.0%, Claude Code alone 38.7% (tie). Tests run 14 and 15 Oct 2026; paired differences with 95% bootstrap CIs; the 13-codebase rows are one session per program, run one after the other on 15 Oct 2026, not interleaved. Ties are shown as ties. The 0.1.1 token check on 50 SWE-bench tasks comes from our run records; it is not in the page's tables."></p>
 
 ## Code-graph engine
 
@@ -286,9 +291,13 @@ least and most favourable run in brackets.
   process tree; peak memory as the PSS summed over the process tree, sampled
   every 0.5 s. A memory ratio is given only when the resident-set sum agrees
   in direction.
-- **Same output.** A speed-up is given only when both programs wrote the same
-  graph, with every node and every edge record equal, in every measured run
-  of that operation. Differences are reported as found.
+- **Same output.** In this survey, a speed-up is given only when both
+  programs wrote the same graph, with every node and every edge record equal,
+  in every measured run of that operation; differences are reported as found.
+  [Speed on 13 codebases against Graphify 0.9.91](#speed-on-13-codebases-against-graphify-0991),
+  below, is an exception: there the two programs' graphs differ slightly in
+  every measurement, and each speed-up is shown next to both graphs' node and
+  edge counts.
 - **Programs.** Graphify 0.9.88 (Python 3.12.13) in a hash-locked environment.
   Graphicle: `graphicle-graph` 0.1.0 built for Linux on the measuring host from
   the release source, not the published download; for the smaller
@@ -415,6 +424,96 @@ eligible function and method.
 - **Records.** The run records name local paths, so they stay with the
   maintainers.
 
+### Speed on 13 codebases against Graphify 0.9.91
+
+**Label for every figure in this section:** Graphicle's 0.1.1 memory engine
+(a pre-release build with 0.1.1's changes to how the engine holds its data,
+binary SHA-256 `611eb188…`) against Graphify 0.9.91 (the PyPI wheel, in a
+hash-locked environment), on the same machine with 3 CPUs and 8 workers each,
+measured on 15 October 2026; the graphs differ slightly: node counts within
+4.7%, edge counts within 2.0%. The machine is one Linux node (two Intel Xeon
+Platinum 8480C, 96 cores; its 8 H100 GPUs were not used), and the
+repositories are the 13 registered for the survey above, with their tags in
+the table. The timed build is not the released 0.1.1 binary.
+
+- **Less time in all 39 measurements**, 3.0 to 22.7 times less: from 35.2 s
+  against 106.8 s (spring-boot, update with no change) to 68.3 s against
+  1,546.9 s (Kubernetes, code-only extract). In every measurement, Graphicle's
+  slowest run took less time than Graphify's fastest.
+- **The graphs differ slightly.** The timed build was made before the port of
+  Graphify 0.9.89 to 0.9.91 was merged into 0.1.1, and Graphify 0.9.91 changed
+  its own graphs, so in no measurement do the two programs' graphs have the
+  same node and edge counts. Graphicle's node counts differ from Graphify's by
+  −0.01% to +4.7%, and its edge counts by −2.0% to +0.4%. The table gives both
+  graphs' sizes.
+
+| Repository and tag | Operation | Graphicle (s) | Graphify 0.9.91 (s) | Speed-up | Runs per program | Nodes: Graphicle / Graphify | Edges: Graphicle / Graphify |
+|---|---|---|---|---|---|---|---|
+| pallets/flask 3.1.3 | Code-only extract | 0.34 | 2.39 | 6.9× | 3 | 2,096 / 2,096 | 3,435 / 3,438 |
+|  | Priming update | 0.38 | 2.25 | 6.0× | 3 | 2,114 / 2,114 | 3,440 / 3,443 |
+|  | Update with no change | 0.19 | 1.56 | 8.1× | 3 | 2,114 / 2,114 | 3,440 / 3,443 |
+| BurntSushi/ripgrep 15.2.0 | Code-only extract | 0.48 | 2.54 | 5.3× | 3 | 4,232 / 4,138 | 8,995 / 8,975 |
+|  | Priming update | 0.78 | 3.26 | 4.2× | 3 | 4,330 / 4,236 | 9,071 / 9,051 |
+|  | Update with no change | 0.37 | 1.65 | 4.5× | 3 | 4,330 / 4,236 | 9,071 / 9,051 |
+| redis/redis 8.10.2 | Code-only extract | 3.53 | 15.3 | 4.3× | 3 | 16,859 / 16,860 | 60,338 / 60,340 |
+|  | Priming update | 4.57 | 21.3 | 4.7× | 3 | 17,090 / 17,091 | 60,577 / 60,579 |
+|  | Update with no change | 2.61 | 10.5 | 4.0× | 3 | 17,090 / 17,091 | 60,577 / 60,579 |
+| prometheus/prometheus v3.15.0 | Code-only extract | 3.63 | 23.9 | 6.6× | 3 | 15,800 / 15,677 | 66,449 / 67,707 |
+|  | Priming update | 5.20 | 31.4 | 6.0× | 3 | 16,849 / 16,726 | 67,437 / 68,827 |
+|  | Update with no change | 3.20 | 19.6 | 6.1× | 3 | 16,849 / 16,726 | 67,437 / 68,827 |
+| tokio-rs/tokio tokio-1.53.3 | Code-only extract | 1.52 | 7.77 | 5.1× | 3 | 12,172 / 12,048 | 25,913 / 25,902 |
+|  | Priming update | 2.31 | 11.3 | 4.9× | 3 | 13,023 / 12,899 | 26,742 / 26,731 |
+|  | Update with no change | 1.30 | 5.79 | 4.5× | 3 | 13,023 / 12,899 | 26,742 / 26,731 |
+| facebook/react v19.3.0 | Code-only extract | 11.8 | 73.3 | 6.2× | 3 | 34,734 / 34,690 | 67,283 / 67,380 |
+|  | Priming update | 18.7 | 108.7 | 5.8× | 3 | 45,434 / 45,390 | 76,702 / 76,799 |
+|  | Update with no change | 15.1 | 86.6 | 5.7× | 3 | 45,434 / 45,390 | 76,702 / 76,799 |
+| vercel/next.js v16.4.0 | Code-only extract | 93.5 | 370.7 | 4.0× | 3 | 161,589 / 160,415 | 349,620 / 349,309 |
+|  | Priming update | 176.4 | 639.2 | 3.6× | 3 | 173,167 / 171,993 | 359,577 / 359,266 |
+|  | Update with no change | 179.7 | 598.9 | 3.3× | 3 | 173,169 / 171,995 | 359,577 / 359,266 |
+| pandas-dev/pandas v3.0.6 | Code-only extract | 10.9 | 62.4 | 5.8× | 3 | 41,949 / 41,949 | 99,181 / 100,021 |
+|  | Priming update | 11.0 | 71.5 | 6.5× | 3 | 42,655 / 42,653 | 99,709 / 100,548 |
+|  | Update with no change | 6.48 | 44.3 | 6.8× | 3 | 42,655 / 42,653 | 99,709 / 100,548 |
+| scikit-learn/scikit-learn 1.9.1 | Code-only extract | 5.84 | 35.5 | 6.1× | 3 | 20,238 / 20,233 | 67,325 / 67,325 |
+|  | Priming update | 6.11 | 37.1 | 6.1× | 3 | 20,643 / 20,638 | 67,421 / 67,421 |
+|  | Update with no change | 3.71 | 24.1 | 6.5× | 3 | 20,643 / 20,638 | 67,421 / 67,421 |
+| spring-projects/spring-boot v4.1.1 | Code-only extract | 37.7 | 125.9 | 3.3× | 3 | 87,595 / 87,590 | 303,837 / 303,566 |
+|  | Priming update | 48.2 | 207.9 | 4.3× | 3 | 87,598 / 87,593 | 303,839 / 303,568 |
+|  | Update with no change | 35.2 | 106.8 | 3.0× | 3 | 87,598 / 87,593 | 303,839 / 303,568 |
+| rails/rails v8.1.4 | Code-only extract | 12.1 | 84.9 | 7.0× | 3 | 54,910 / 54,910 | 93,937 / 94,047 |
+|  | Priming update | 15.6 | 114.7 | 7.3× | 3 | 58,207 / 58,207 | 98,495 / 98,605 |
+|  | Update with no change | 10.4 | 73.5 | 7.1× | 3 | 58,207 / 58,207 | 98,495 / 98,605 |
+| kubernetes/kubernetes v1.37.1 | Code-only extract | 68.3 | 1,546.9 | 22.7× | 1 | 256,329 / 244,784 | 1,400,392 / 1,394,490 |
+|  | Priming update | 109.2 | 1,872.5 | 17.1× | 1 | 260,459 / 248,914 | 1,404,074 / 1,399,050 |
+|  | Update with no change | 72.2 | 1,500.1 | 20.8× | 1 | 260,459 / 248,914 | 1,404,074 / 1,399,050 |
+| microsoft/vscode 1.141.1 | Code-only extract | 115.6 | 624.5 | 5.4× | 1 | 249,081 / 248,901 | 974,695 / 978,776 |
+|  | Priming update | 164.8 | 922.0 | 5.6× | 1 | 253,812 / 253,632 | 981,848 / 985,929 |
+|  | Update with no change | 131.4 | 658.7 | 5.0× | 1 | 253,812 / 253,632 | 981,848 / 985,929 |
+
+**Method.**
+
+- **Operations.** As in the survey: a code-only extract into an empty output
+  folder, then a priming update and an update with nothing changed, with the
+  graph-file cap raised to 1 GiB for both programs' Kubernetes and VS Code
+  updates. Every measured run exited 0.
+- **Runs.** One warm-up, then 3 measured runs per program for flask, ripgrep,
+  redis, prometheus, tokio, pandas, scikit-learn and rails; 3 measured runs
+  for react, next.js and spring-boot; one run for Kubernetes and VS Code.
+  Times are medians of the measured runs and include program start-up. A
+  speed-up is Graphify's time divided by Graphicle's, computed from the
+  unrounded times, so a few differ in the last digit from a division of the
+  rounded times shown.
+- **CPUs.** Each program ran in chains of 3 CPUs, one run at a time per chain,
+  with 8 workers. Graphify's runs came first, in four chains at once, then
+  Graphicle's, in five chains at once, in one session each on 15 October
+  2026. The runs were not in alternating order, and other work ran on the
+  node's other CPUs.
+- **Extra runs.** For flask, ripgrep, redis, prometheus, tokio, pandas and
+  scikit-learn, each program also made 3 further runs with finer memory
+  sampling. Their times are left out above; in them too, every Graphicle run
+  took less time than every Graphify run.
+- **Records.** The run records name local paths, so they stay with the
+  maintainers.
+
 ### Peak memory against Graphify 0.9.91
 
 **Label for every figure in this section:** a pre-release build with 0.1.1's
@@ -427,7 +526,7 @@ the survey above, with their tags in the table.
 - **The measured build.** It does not contain the port of Graphify 0.9.89 to
   0.9.91, which was merged into 0.1.1 afterwards, so its graphs are those of
   the 0.1.0 engine. Graphify 0.9.91 changed its own graphs, so the two
-  programs' graphs differ in every cell (on the Kubernetes extract, 256,329
+  programs' graphs differ in every measurement (on the Kubernetes extract, 256,329
   against 244,784 nodes): each figure is the memory a program used to build
   its own graph.
 - **Measures.** Graphicle: the peak resident set (`ru_maxrss` from `wait4`)
@@ -435,10 +534,10 @@ the survey above, with their tags in the table.
   PSS of its process tree, the median of 3 runs sampled every 20 ms (flask,
   ripgrep, redis, prometheus, tokio, pandas and scikit-learn) or every
   500 ms (react, next.js, spring-boot and rails), and one run sampled every
-  500 ms for Kubernetes and VS Code. A cell counts as below Graphify only
+  500 ms for Kubernetes and VS Code. A measurement counts as below Graphify only
   when both of Graphicle's figures are below Graphify's, and the ratio is the
   larger Graphicle figure over Graphify's, which is the conservative
-  comparison. In five update cells Graphicle's sampled PSS is 1.5 to 3.7 MiB
+  comparison. In five update measurements Graphicle's sampled PSS is 1.5 to 3.7 MiB
   above its peak resident set.
 - **Operations.** As in the survey: a code-only extract into an empty output
   folder, a priming update and an update with nothing changed, with the
@@ -486,18 +585,18 @@ the survey above, with their tags in the table.
 |  | Priming update | 6,431.0 | 6,428.9 | 1 | 9,214 | 1 | 0.70 |
 |  | Update with no change | 4,006.5 | 4,010.2 | 1 | 10,217 | 1 | 0.39 |
 
-- **Below Graphify 0.9.91 in all 39 cells**, from 0.29 to 0.97 times its
-  figure. The closest cells are the tokio priming update (0.97) and the
+- **Below Graphify 0.9.91 in all 39 measurements**, from 0.29 to 0.97 times its
+  figure. The closest measurements are the tokio priming update (0.97) and the
   spring-boot extract (0.94).
 - **Graphify's Kubernetes extract** ran once on each of two nodes of this
   type: 2,767 MiB (in the table), on the node where Graphicle ran, and
   2,781 MiB on the other. Against the second figure, the ratio is 0.75.
 - **The merged 0.1.1 source.** After the port of Graphify 0.9.91 and these
   changes were merged, a build of the 0.1.1 source was measured again in five
-  cells, 2 or 3 runs each, against Graphify 0.9.91's figures from the same
+  of the 39 measurements, 2 or 3 runs each, against Graphify 0.9.91's figures from the same
   node. It stayed below Graphify in every run:
 
-| Cell | Runs | 0.1.1 source: highest peak RSS (MiB) | Graphify 0.9.91: peak PSS (MiB) | Ratio |
+| Measurement | Runs | 0.1.1 source: highest peak RSS (MiB) | Graphify 0.9.91: peak PSS (MiB) | Ratio |
 |---|---|---|---|---|
 | Kubernetes, code-only extract | 2 | 2,148.0 | 2,767 | 0.78 |
 | next.js, code-only extract | 2 | 1,429.9 | 2,800 | 0.51 |
