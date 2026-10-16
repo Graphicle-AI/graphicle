@@ -10,7 +10,7 @@
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-3D5AFE"></a>
   <a href="https://github.com/graphicle-ai/graphicle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/graphicle-ai/graphicle?color=3D5AFE"></a>
-  <img alt="Platforms: macOS and Linux" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux-3D5AFE">
+  <img alt="Platforms: macOS, Linux and Windows (preview)" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%28preview%29-3D5AFE">
   <a href="https://discord.com/invite/rWuU7cWU4E"><img alt="Chat on Discord" src="https://img.shields.io/badge/chat-Discord-3D5AFE?logo=discord&amp;logoColor=white"></a>
 </p>
 
@@ -176,7 +176,7 @@ Every figure is labelled, and [docs/benchmarks.md](docs/benchmarks.md) has the f
 
 ### Privacy and local first
 
-- **One data folder.** Your sources, memories and the code graph that setup builds live in one SQLite store: `~/Library/Application Support/Graphicle` on macOS, `~/.local/share/graphicle` on Linux. `graphicle graph extract` writes its graph file to `.graphicle/` in the project.
+- **One data folder.** Your sources, memories and the code graph that setup builds live in one SQLite store: `~/Library/Application Support/Graphicle` on macOS, `~/.local/share/graphicle` on Linux, `%LOCALAPPDATA%\Graphicle` on Windows. `graphicle graph extract` writes its graph file to `.graphicle/` in the project.
 - **Loopback by default.** The app and its HTTP and MCP endpoints listen on 127.0.0.1.
 - **No telemetry, no account.** Graphicle connects to the network only in these cases: a model or a connector you configure, a full `graphicle graph extract`
   (it sends documents and images to the LLM whose API key it finds), the GitHub CLI for `graphicle graph add`, `clone` and the graph server's pull-request tools, `graphicle update` with a feed you name, and a daily check for a new release.
