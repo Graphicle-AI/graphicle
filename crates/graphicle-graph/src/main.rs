@@ -5,21 +5,27 @@ use std::io::{self, IsTerminal, Write};
 
 // Keep the allocator choice in the executable: applications embedding the
 // library retain control of their own process-wide allocator.
+// Not on macOS: mimalloc 3.3.2 can crash there on Apple silicon (microsoft/mimalloc#1306).
+#[cfg(not(target_os = "macos"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
+#[cfg(not(target_os = "macos"))]
 unsafe extern "C" fn ts_malloc(size: usize) -> *mut std::ffi::c_void {
     unsafe { libmimalloc_sys::mi_malloc(size) }
 }
+#[cfg(not(target_os = "macos"))]
 unsafe extern "C" fn ts_calloc(count: usize, size: usize) -> *mut std::ffi::c_void {
     match count.checked_mul(size) {
         Some(total) => unsafe { libmimalloc_sys::mi_zalloc(total) },
         None => std::ptr::null_mut(),
     }
 }
+#[cfg(not(target_os = "macos"))]
 unsafe extern "C" fn ts_realloc(ptr: *mut std::ffi::c_void, size: usize) -> *mut std::ffi::c_void {
     unsafe { libmimalloc_sys::mi_realloc(ptr, size) }
 }
+#[cfg(not(target_os = "macos"))]
 unsafe extern "C" fn ts_free(ptr: *mut std::ffi::c_void) {
     unsafe { libmimalloc_sys::mi_free(ptr) }
 }
@@ -28,6 +34,7 @@ unsafe extern "C" fn ts_free(ptr: *mut std::ffi::c_void) {
 /// default; with many parser threads the system allocator's locks cap the
 /// speedup (1.5x more parse throughput at 12 threads with mimalloc). Parse
 /// results are unchanged: only where the bytes live differs.
+#[cfg(not(target_os = "macos"))]
 fn use_mimalloc_for_tree_sitter() {
     // SAFETY: called once, first thing in `main`, before any tree-sitter
     // object exists; the four functions are one allocator family (mimalloc)
@@ -48,6 +55,7 @@ fn use_mimalloc_for_tree_sitter() {
 fn main() -> io::Result<()> {
     // mimalloc's options for a run of short phases (`par::configure_allocator`).
     graphicle::par::configure_allocator();
+    #[cfg(not(target_os = "macos"))]
     use_mimalloc_for_tree_sitter();
     struct FlushCaches;
     impl Drop for FlushCaches {

@@ -175,6 +175,10 @@ token or accuracy claim; it trims that text.
 
 ### Other changes
 
+- On macOS, `graphicle-graph` and `graphicle` use the system memory
+  allocator, because mimalloc 3.3.2 can crash on Apple silicon when memory
+  is freed after worker threads exit (microsoft/mimalloc#1306). Linux and
+  Windows keep mimalloc.
 - A new-release notice, like the GitHub CLI's. Once a day, when you run a
   command in a terminal, `graphicle` asks GitHub's releases API for the
   latest release. That is one GET request, with no code or data in it; when

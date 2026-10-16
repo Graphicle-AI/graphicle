@@ -1,10 +1,9 @@
 # Upstream tests with known differences
 
 On 14 October 2026 the comparison checks of the graph engine were widened: they
-now run 354 of the 402 test files of Graphify 0.9.88 against the engine, 75 of
-them for the first time. Of the 354 files, 350 pass and 4 have known
-differences: 7 tests that the engine fails. Each one is recorded below with the
-reason, deselected by its exact name in the check that runs its file, and
+now run most of the test files of Graphify 0.9.88 against the engine, some of
+them for the first time. A few of those files have known differences: tests
+that the engine fails. Each one is recorded below with the reason, deselected by its exact name in the check that runs its file, and
 listed in that check's receipt. They are not fixed in 0.1.0.
 
 The files the checks do not run are listed in
@@ -25,8 +24,8 @@ is in [upstream-tests-0.9.88.json](upstream-tests-0.9.88.json).
 
 ## Files first run on 14 October 2026
 
-Against Graphify 0.9.77, 2 of these 75 files are new, 2 changed and 71
-unchanged. "Left out" names the tests of a file that its check does not run,
+Against Graphify 0.9.77, most of these files are unchanged; the table marks
+the new and changed ones. "Left out" names the tests of a file that its check does not run,
 with the reason; the known differences above are left out too.
 
 | Test file | Since 0.9.77 | Check | Left out |

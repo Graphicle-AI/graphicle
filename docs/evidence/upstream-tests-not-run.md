@@ -1,10 +1,10 @@
 # Upstream tests the parity checks do not run
 
-The comparison checks of the graph engine run 354 of the 402 test files
+The comparison checks of the graph engine run most of the test files
 (`tests/test_*.py`) of Graphify 0.9.88 (commit `a9860f70`) against the engine.
 A file counts as run when at least one of its tests runs and passes in a check,
 or when the engine fails one of its tests and the check's receipt records that
-as a known difference. This page lists the other 48, with the reason each one
+as a known difference. This page lists the others, with the reason each one
 is not run, so that the parity claim in
 [benchmarks.md](../benchmarks.md#parity-with-graphify) can be read against
 it. The known differences are in
@@ -12,15 +12,15 @@ it. The known differences are in
 every file's status is in
 [upstream-tests-0.9.88.json](upstream-tests-0.9.88.json).
 
-- **Not applicable (20).** The file tests something the engine does not
+- **Not applicable.** The file tests something the engine does not
   contain, or something that exists only in Python or in Graphify's own test
   setup.
-- **Not yet run (28).** The file tests behaviour the engine ports, and no check
+- **Not yet run.** The file tests behaviour the engine ports, and no check
   runs it yet. Other checks and the engine's own tests may cover some of that
   behaviour; this page does not claim that they do.
 
-Against Graphify 0.9.77, from which the port was made, 5 of these files are
-new, 8 changed and 35 unchanged. "Covers" names the Graphify modules a file
+Against Graphify 0.9.77, from which the port was made, most of these files
+are unchanged; the tables mark the new and changed ones. "Covers" names the Graphify modules a file
 imports. The list was made on 14 October 2026 from the run of the widened
 checks on that day, which recorded every upstream test's outcome, and from its
 receipts.

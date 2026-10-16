@@ -132,7 +132,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/how-it-works-dark.svg">
-    <img src="assets/how-it-works-light.svg" alt="How Graphicle works: your code, documents and agent sessions sync into one program that keeps a code graph and a memory. Your coding agents use it over MCP; you use it with graphicle ask and graphicle open. Changed files sync before each answer. No account, no telemetry; nothing leaves your machine unless you ask." width="820">
+    <img src="assets/how-it-works-light.svg" alt="How Graphicle works: your code, documents and agent sessions sync into one program that keeps a code graph and a memory. Your coding agents use it over MCP; you use it with graphicle ask and graphicle open. Changed files sync before each answer. No account, no telemetry; your code and data leave your machine only when you ask, and the only automatic request is a daily check for a new release." width="820">
   </picture>
 </p>
 

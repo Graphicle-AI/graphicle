@@ -195,10 +195,11 @@ their results and limits, its
 that fail against the engine, with the reason for each, and its
 `docs/evidence/upstream-tests-not-run.md` lists the test files the checks do
 not run, with the reason for each.
-[migration/STATUS.md](migration/STATUS.md), [AUDIT.json](migration/AUDIT.json)
-and the [file ledger](migration/FILES.json) record the 13 October
-qualification; the repository's `docs/evidence/` folder summarizes it and the
-14 October run of the widened checks.
+[migration/STATUS.md](migration/STATUS.md) and [AUDIT.json](migration/AUDIT.json)
+record the 13 October qualification; the repository's `docs/evidence/` folder
+summarizes it and the 14 October run of the widened checks. The
+[file ledger](migration/FILES.json) lists every file of the pinned Graphify
+0.9.91 archive with its SHA-256.
 
 ## Build and run
 
