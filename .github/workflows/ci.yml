@@ -180,7 +180,10 @@ jobs:
       - name: Toolchain
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
       - name: cargo-deny and cargo-about
-        run: cargo install --locked cargo-deny@0.20.2 cargo-about@0.9.2
+        # cargo-about 0.9 builds its program only with the cli feature.
+        run: |
+          cargo install --locked cargo-deny@0.20.2
+          cargo install --locked --features cli cargo-about@0.9.2
       - name: Engine dependencies (licences, advisories, sources)
         working-directory: crates/graphicle-graph
         run: cargo deny check
