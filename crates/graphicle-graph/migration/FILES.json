@@ -840,7 +840,7 @@
       "lines": 30,
       "category": "application_python",
       "rust_target": "src/lib.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "__getattr__",
@@ -850,7 +850,14 @@
       ],
       "imports": [
         "importlib"
-      ]
+      ],
+      "rust_files": [
+        "src/lib.rs",
+        "src/model.rs",
+        "src/error.rs",
+        "tests/public_api.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/__main__.py",
@@ -963,8 +970,8 @@
       "bytes": 4143,
       "lines": 107,
       "category": "application_python",
-      "rust_target": "src/_minhash.rs",
-      "status": "pending",
+      "rust_target": "src/minhash.rs",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_mh_coeffs",
@@ -1022,7 +1029,11 @@
         "hashlib",
         "numpy",
         "struct"
-      ]
+      ],
+      "rust_files": [
+        "src/minhash.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/affected.py",
@@ -1031,7 +1042,7 @@
       "lines": 393,
       "category": "application_python",
       "rust_target": "src/affected.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "AffectedHit",
@@ -1109,7 +1120,14 @@
         "pathlib",
         "typing",
         "unicodedata"
-      ]
+      ],
+      "rust_files": [
+        "src/affected.rs",
+        "src/graph.rs",
+        "src/session.rs",
+        "src/graph_node_link.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/always_on/agents-md.md",
@@ -1184,7 +1202,7 @@
       "lines": 834,
       "category": "application_python",
       "rust_target": "src/analyze.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_cross_language",
@@ -1290,7 +1308,14 @@
         "itertools",
         "networkx",
         "pathlib"
-      ]
+      ],
+      "rust_files": [
+        "src/analyze.rs",
+        "src/analyze_data.rs",
+        "src/graph_algorithms.rs",
+        "src/python_compat.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/benchmark.py",
@@ -1299,7 +1324,7 @@
       "lines": 121,
       "category": "application_python",
       "rust_target": "src/benchmark.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_safe",
@@ -1338,7 +1363,14 @@
         "graphify.serve",
         "networkx",
         "sys"
-      ]
+      ],
+      "rust_files": [
+        "src/benchmark.rs",
+        "src/query_terms.rs",
+        "src/assets/query/stopwords.json",
+        "src/assets/query/jieba-py-0.46.12.hmm"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/build.py",
@@ -1347,7 +1379,7 @@
       "lines": 2806,
       "category": "application_python",
       "rust_target": "src/build.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_is_ast_tier",
@@ -1644,7 +1676,17 @@
         "sys",
         "unicodedata",
         "validate"
-      ]
+      ],
+      "rust_files": [
+        "src/build.rs",
+        "src/build_normalize.rs",
+        "src/build_merge.rs",
+        "src/build_api.rs",
+        "src/build_global.rs",
+        "src/build_labels.rs",
+        "src/hyperedge_members.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/cache.py",
@@ -1653,7 +1695,7 @@
       "lines": 1939,
       "category": "application_python",
       "rust_target": "src/cache.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_grammar_fingerprint",
@@ -1945,7 +1987,13 @@
         "tempfile",
         "time",
         "warnings"
-      ]
+      ],
+      "rust_files": [
+        "src/cache.rs",
+        "src/cache_paths.rs",
+        "src/cache_api.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/callflow_html.py",
@@ -1953,8 +2001,8 @@
       "bytes": 83274,
       "lines": 2051,
       "category": "application_python",
-      "rust_target": "src/callflow_html.rs",
-      "status": "pending",
+      "rust_target": "src/callflow_data.rs",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "read_json",
@@ -2331,7 +2379,13 @@
         "pathlib",
         "re",
         "sys"
-      ]
+      ],
+      "rust_files": [
+        "src/callflow_data.rs",
+        "src/callflow_html.rs",
+        "src/assets/callflow/templates.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/cargo_introspect.py",
@@ -2340,7 +2394,7 @@
       "lines": 166,
       "category": "application_python",
       "rust_target": "src/cargo_introspect.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_load_toml",
@@ -2371,7 +2425,11 @@
         "tomli",
         "tomllib",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/cargo_introspect.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/cli.py",
@@ -2380,7 +2438,7 @@
       "lines": 5364,
       "category": "application_python",
       "rust_target": "src/cli.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_nudge_for_out",
@@ -2679,7 +2737,20 @@
         "time",
         "typing",
         "urllib.parse"
-      ]
+      ],
+      "rust_files": [
+        "src/cli.rs",
+        "src/cli_cluster.rs",
+        "src/cli_commands.rs",
+        "src/cli_export.rs",
+        "src/cli_extract.rs",
+        "src/cli_guard.rs",
+        "src/cli_merge.rs",
+        "src/cli_state.rs",
+        "src/assets/cli/constants.json",
+        "src/assets/cli/help.txt"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/cluster.py",
@@ -2688,7 +2759,7 @@
       "lines": 507,
       "category": "application_python",
       "rust_target": "src/cluster.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_suppress_output",
@@ -2758,7 +2829,11 @@
         "networkx",
         "os",
         "sys"
-      ]
+      ],
+      "rust_files": [
+        "src/cluster.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/command-kilo.md",
@@ -2778,7 +2853,7 @@
       "lines": 273,
       "category": "application_python",
       "rust_target": "src/cross_repo_calls.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_key",
@@ -2833,7 +2908,11 @@
         "networkx",
         "os",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/cross_repo_calls.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/cross_repo_types.py",
@@ -2842,7 +2921,7 @@
       "lines": 75,
       "category": "application_python",
       "rust_target": "src/cross_repo_types.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "link_shared_type_declarations",
@@ -2855,7 +2934,11 @@
         "collections",
         "networkx",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/cross_repo_types.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/csharp_dispatch.py",
@@ -2864,7 +2947,7 @@
       "lines": 39,
       "category": "application_python",
       "rust_target": "src/csharp_dispatch.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "resolve_csharp_interface_dispatch",
@@ -2875,7 +2958,11 @@
       "imports": [
         "__future__",
         "graphify.interface_dispatch"
-      ]
+      ],
+      "rust_files": [
+        "src/csharp_dispatch.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/dedup.py",
@@ -2884,7 +2971,7 @@
       "lines": 1649,
       "category": "application_python",
       "rust_target": "src/dedup.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_is_label_char",
@@ -3135,7 +3222,13 @@
         "re",
         "sys",
         "unicodedata"
-      ]
+      ],
+      "rust_files": [
+        "src/dedup.rs",
+        "src/dedup_strings.rs",
+        "src/dedup_api.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/detect.py",
@@ -3144,7 +3237,7 @@
       "lines": 2981,
       "category": "application_python",
       "rust_target": "src/detect.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "FileType",
@@ -3594,7 +3687,16 @@
         "typing",
         "unicodedata",
         "zipfile"
-      ]
+      ],
+      "rust_files": [
+        "src/detect.rs",
+        "src/detect_types.rs",
+        "src/detect_ignore.rs",
+        "src/detect_documents.rs",
+        "src/detect_manifest.rs",
+        "src/assets/detect/constants.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/diagnostics.py",
@@ -3603,7 +3705,7 @@
       "lines": 422,
       "category": "application_python",
       "rust_target": "src/diagnostics.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_safe_text",
@@ -3687,7 +3789,13 @@
         "pathlib",
         "re",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/diagnostics.rs",
+        "src/diagnostics_report.rs",
+        "build.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/export.py",
@@ -3886,9 +3994,13 @@
       "lines": 1,
       "category": "application_python",
       "rust_target": "src/exporters/mod.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [],
-      "imports": []
+      "imports": [],
+      "rust_files": [
+        "src/exporters/mod.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/exporters/base.py",
@@ -3897,11 +4009,15 @@
       "lines": 14,
       "category": "application_python",
       "rust_target": "src/exporters/base.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [],
       "imports": [
         "__future__"
-      ]
+      ],
+      "rust_files": [
+        "src/exporters/base.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/exporters/graphdb.py",
@@ -3965,7 +4081,7 @@
       "lines": 781,
       "category": "application_python",
       "rust_target": "src/exporters/html.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_viz_node_limit",
@@ -4016,7 +4132,16 @@
         "networkx",
         "os",
         "pathlib"
-      ]
+      ],
+      "rust_files": [
+        "src/exporters/html.rs",
+        "src/exporters/common.rs",
+        "src/assets/export_html/styles.html",
+        "src/assets/export_html/script.html.template",
+        "src/assets/export_html/hyperedges.html.template",
+        "src/assets/export_html/document.html.template"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extract.py",
@@ -4025,7 +4150,7 @@
       "lines": 10974,
       "category": "application_python",
       "rust_target": "src/extract.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_raise_recursion_limit",
@@ -5162,7 +5287,22 @@
         "tree_sitter_typescript",
         "typing",
         "xml.etree.ElementTree"
-      ]
+      ],
+      "rust_files": [
+        "src/extract.rs",
+        "src/extract_languages.rs",
+        "src/extract_members.rs",
+        "src/extract_merge.rs",
+        "src/extract_normalize.rs",
+        "src/extract_projects.rs",
+        "src/extract_python.rs",
+        "src/assets/extract/constants.json",
+        "src/cache.rs",
+        "src/cache_paths.rs",
+        "src/extractors/resolution.rs",
+        "src/extractors/parse_cache.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/MIGRATION.md",
@@ -5181,8 +5321,8 @@
       "bytes": 3083,
       "lines": 76,
       "category": "application_python",
-      "rust_target": "src/extractors/mod.rs",
-      "status": "pending",
+      "rust_target": "src/extractors/registry.rs",
+      "status": "ported_verified",
       "definitions": [],
       "imports": [
         "__future__",
@@ -5216,7 +5356,12 @@
         "graphify.extractors.zig",
         "pathlib",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/registry.rs",
+        "src/extractors/mod.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/apex.py",
@@ -5225,7 +5370,7 @@
       "lines": 215,
       "category": "application_python",
       "rust_target": "src/extractors/apex.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_apex",
@@ -5248,7 +5393,11 @@
         "graphify.extractors.base",
         "pathlib",
         "re"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/apex.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/base.py",
@@ -5257,7 +5406,7 @@
       "lines": 153,
       "category": "application_python",
       "rust_target": "src/extractors/base.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_make_id",
@@ -5290,7 +5439,13 @@
         "graphify.ids",
         "pathlib",
         "sys"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/base.rs",
+        "src/extractors/builtins_data.rs",
+        "src/path_syntax.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/bash.py",
@@ -5299,7 +5454,7 @@
       "lines": 627,
       "category": "application_python",
       "rust_target": "src/extractors/bash.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_bash_source_suffix",
@@ -5382,7 +5537,11 @@
         "tree_sitter",
         "tree_sitter_bash",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/bash.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/blade.py",
@@ -5391,7 +5550,7 @@
       "lines": 67,
       "category": "application_python",
       "rust_target": "src/extractors/blade.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_blade",
@@ -5404,7 +5563,12 @@
         "graphify.extractors.base",
         "pathlib",
         "re"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/blade.rs",
+        "src/regex_compat.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/cobol.py",
@@ -5413,7 +5577,7 @@
       "lines": 297,
       "category": "application_python",
       "rust_target": "src/extractors/cobol.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_code_lines",
@@ -5452,7 +5616,11 @@
         "pathlib",
         "re",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/cobol.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/commonlisp.py",
@@ -5461,7 +5629,7 @@
       "lines": 540,
       "category": "application_python",
       "rust_target": "src/extractors/commonlisp.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_commonlisp",
@@ -5566,7 +5734,11 @@
         "tree_sitter",
         "tree_sitter_commonlisp",
         "warnings"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/commonlisp.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/csharp.py",
@@ -5575,7 +5747,7 @@
       "lines": 567,
       "category": "application_python",
       "rust_target": "src/extractors/csharp.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_build_csharp_type_def_index",
@@ -5714,7 +5886,13 @@
         "graphify.rcfile",
         "html",
         "pathlib"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/csharp.rs",
+        "src/html_compat.rs",
+        "src/html_entities.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/dart.py",
@@ -5723,7 +5901,7 @@
       "lines": 589,
       "category": "application_python",
       "rust_target": "src/extractors/dart.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_dart",
@@ -5766,7 +5944,11 @@
         "graphify.extractors.base",
         "pathlib",
         "re"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/dart.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/dm.py",
@@ -5775,7 +5957,7 @@
       "lines": 507,
       "category": "application_python",
       "rust_target": "src/extractors/dm.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_dm",
@@ -5868,7 +6050,11 @@
         "tree_sitter_dm",
         "typing",
         "zlib"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/dm.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/elixir.py",
@@ -5877,7 +6063,7 @@
       "lines": 464,
       "category": "application_python",
       "rust_target": "src/extractors/elixir.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_elixir",
@@ -5958,7 +6144,11 @@
         "tree_sitter",
         "tree_sitter_elixir",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/elixir.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/engine.py",
@@ -5967,7 +6157,7 @@
       "lines": 10054,
       "category": "application_python",
       "rust_target": "src/extractors/engine.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_csharp_namespace_id",
@@ -6987,7 +7177,23 @@
         "json",
         "pathlib",
         "tree_sitter"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/engine.rs",
+        "src/extractors/engine_calls.rs",
+        "src/extractors/engine_config.rs",
+        "src/extractors/engine_declarations.rs",
+        "src/extractors/engine_declarator.rs",
+        "src/extractors/engine_extra.rs",
+        "src/extractors/engine_parser.rs",
+        "src/extractors/engine_ruby.rs",
+        "src/extractors/engine_scope.rs",
+        "src/extractors/engine_semantics.rs",
+        "src/extractors/engine_types.rs",
+        "src/assets/engine/sets.json",
+        "src/assets/engine/configs.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/erlang.py",
@@ -6996,7 +7202,7 @@
       "lines": 353,
       "category": "application_python",
       "rust_target": "src/extractors/erlang.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_atom",
@@ -7036,7 +7242,12 @@
         "tree_sitter",
         "tree_sitter_language_pack",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/erlang.rs",
+        "vendor/tree-sitter-erlang/SOURCE.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/fortran.py",
@@ -7045,7 +7256,7 @@
       "lines": 431,
       "category": "application_python",
       "rust_target": "src/extractors/fortran.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_strip_include_directives",
@@ -7112,7 +7323,12 @@
         "subprocess",
         "tree_sitter",
         "tree_sitter_fortran"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/fortran.rs",
+        "src/process.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/go.py",
@@ -7121,7 +7337,7 @@
       "lines": 754,
       "category": "application_python",
       "rust_target": "src/extractors/go.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_go_type_param_names",
@@ -7211,7 +7427,11 @@
         "pathlib",
         "tree_sitter",
         "tree_sitter_go"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/go.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/json_config.py",
@@ -7220,7 +7440,7 @@
       "lines": 276,
       "category": "application_python",
       "rust_target": "src/extractors/json_config.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_is_config_json",
@@ -7265,7 +7485,11 @@
         "pathlib",
         "tree_sitter",
         "tree_sitter_json"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/json_config.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/julia.py",
@@ -7274,7 +7498,7 @@
       "lines": 498,
       "category": "application_python",
       "rust_target": "src/extractors/julia.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_julia",
@@ -7364,7 +7588,12 @@
         "pathlib",
         "tree_sitter",
         "tree_sitter_julia"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/julia.rs",
+        "src/extractors/engine_semantics.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/markdown.py",
@@ -7373,7 +7602,7 @@
       "lines": 582,
       "category": "application_python",
       "rust_target": "src/extractors/markdown.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_split_frontmatter",
@@ -7468,7 +7697,13 @@
         "unicodedata",
         "urllib.parse",
         "yaml"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/markdown.rs",
+        "src/extractors/markdown_data.rs",
+        "src/extractors/yaml_frontmatter.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/models.py",
@@ -7477,7 +7712,7 @@
       "lines": 131,
       "category": "application_python",
       "rust_target": "src/extractors/models.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "LanguageConfig",
@@ -7530,7 +7765,11 @@
         "dataclasses",
         "pathlib",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/models.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/objc.py",
@@ -7539,7 +7778,7 @@
       "lines": 813,
       "category": "application_python",
       "rust_target": "src/extractors/objc.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_objc_category_base_stem",
@@ -7648,7 +7887,13 @@
         "tree_sitter",
         "tree_sitter_objc",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/objc.rs",
+        "src/extractors/engine_declarator.rs",
+        "src/extractors/resolution_paths.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/ocaml.py",
@@ -7657,7 +7902,7 @@
       "lines": 357,
       "category": "application_python",
       "rust_target": "src/extractors/ocaml.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_ocaml",
@@ -7727,7 +7972,11 @@
         "pathlib",
         "tree_sitter",
         "tree_sitter_ocaml"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/ocaml.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/pascal.py",
@@ -7736,7 +7985,7 @@
       "lines": 720,
       "category": "application_python",
       "rust_target": "src/extractors/pascal.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_pascal_strip_comments",
@@ -7848,7 +8097,12 @@
         "tree_sitter",
         "tree_sitter_pascal",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/pascal.rs",
+        "src/extractors/pascal_paths.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/pascal_forms.py",
@@ -7857,7 +8111,7 @@
       "lines": 196,
       "category": "application_python",
       "rust_target": "src/extractors/pascal_forms.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_lazarus_form",
@@ -7896,7 +8150,12 @@
         "pathlib",
         "re",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/pascal_forms.rs",
+        "src/io_compat.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/powershell.py",
@@ -7905,7 +8164,7 @@
       "lines": 601,
       "category": "application_python",
       "rust_target": "src/extractors/powershell.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_powershell",
@@ -8001,7 +8260,11 @@
         "tree_sitter",
         "tree_sitter_powershell",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/powershell.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/r.py",
@@ -8010,7 +8273,7 @@
       "lines": 482,
       "category": "application_python",
       "rust_target": "src/extractors/r.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_unquote",
@@ -8105,7 +8368,12 @@
         "tree_sitter",
         "tree_sitter_language_pack",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/r.rs",
+        "vendor/tree-sitter-r/SOURCE.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/razor.py",
@@ -8114,7 +8382,7 @@
       "lines": 196,
       "category": "application_python",
       "rust_target": "src/extractors/razor.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_razor",
@@ -8133,7 +8401,11 @@
         "graphify.security",
         "pathlib",
         "re"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/razor.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/resolution.py",
@@ -8142,7 +8414,7 @@
       "lines": 4232,
       "category": "application_python",
       "rust_target": "src/extractors/resolution.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_declared_language_suffixes",
@@ -8710,7 +8982,16 @@
         "tree_sitter_python",
         "tree_sitter_typescript",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/resolution.rs",
+        "src/extractors/resolution_facts.rs",
+        "src/extractors/resolution_js.rs",
+        "src/extractors/resolution_paths.rs",
+        "src/extractors/resolution_types.rs",
+        "src/extractors/pascal_paths.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/robot.py",
@@ -8719,7 +9000,7 @@
       "lines": 297,
       "category": "application_python",
       "rust_target": "src/extractors/robot.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_resolve_robot_import",
@@ -8846,7 +9127,12 @@
         "re",
         "robot.api",
         "robot.api.parsing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/robot.rs",
+        "src/assets/robot/languages.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/rust.py",
@@ -8855,7 +9141,7 @@
       "lines": 906,
       "category": "application_python",
       "rust_target": "src/extractors/rust.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_rust_collect_type_refs",
@@ -8955,7 +9241,11 @@
         "re",
         "tree_sitter",
         "tree_sitter_rust"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/rust.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/sln.py",
@@ -8964,7 +9254,7 @@
       "lines": 92,
       "category": "application_python",
       "rust_target": "src/extractors/sln.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "extract_sln",
@@ -8977,7 +9267,12 @@
         "graphify.extractors.base",
         "pathlib",
         "re"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/sln.rs",
+        "src/fsutil.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/solidity.py",
@@ -8986,7 +9281,7 @@
       "lines": 484,
       "category": "application_python",
       "rust_target": "src/extractors/solidity.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_unquote",
@@ -9031,7 +9326,12 @@
         "tree_sitter",
         "tree_sitter_solidity",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/solidity.rs",
+        "vendor/tree-sitter-solidity/SOURCE.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/sql.py",
@@ -9040,7 +9340,7 @@
       "lines": 785,
       "category": "application_python",
       "rust_target": "src/extractors/sql.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_scan_sql",
@@ -9121,7 +9421,17 @@
         "re",
         "tree_sitter",
         "tree_sitter_sql"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/sql.rs",
+        "vendor/tree-sitter-sql/src/lib.rs",
+        "vendor/tree-sitter-sql/build.rs",
+        "vendor/tree-sitter-sql/grammar/parser.c",
+        "vendor/tree-sitter-sql/grammar/scanner.c",
+        "vendor/tree-sitter-sql/grammar/tree_sitter/parser.h",
+        "vendor/tree-sitter-sql/SOURCE.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/terraform.py",
@@ -9130,7 +9440,7 @@
       "lines": 462,
       "category": "application_python",
       "rust_target": "src/extractors/terraform.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_redact_value",
@@ -9229,7 +9539,16 @@
         "re",
         "tree_sitter",
         "tree_sitter_hcl"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/terraform.rs",
+        "vendor/tree-sitter-hcl/src/lib.rs",
+        "vendor/tree-sitter-hcl/build.rs",
+        "vendor/tree-sitter-hcl/grammar/parser.c",
+        "vendor/tree-sitter-hcl/grammar/scanner.c",
+        "vendor/tree-sitter-hcl/SOURCE.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/vbnet.py",
@@ -9238,7 +9557,7 @@
       "lines": 433,
       "category": "application_python",
       "rust_target": "src/extractors/vbnet.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "resolve_vbnet_partial_calls",
@@ -9288,7 +9607,12 @@
         "tree_sitter",
         "tree_sitter_vb_dotnet",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/vbnet.rs",
+        "vendor/tree-sitter-vb-dotnet/SOURCE.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/verilog.py",
@@ -9297,7 +9621,7 @@
       "lines": 364,
       "category": "application_python",
       "rust_target": "src/extractors/verilog.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_sv_first_identifier",
@@ -9382,7 +9706,11 @@
         "re",
         "tree_sitter",
         "tree_sitter_verilog"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/verilog.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/extractors/zig.py",
@@ -9391,7 +9719,7 @@
       "lines": 245,
       "category": "application_python",
       "rust_target": "src/extractors/zig.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_is_tagged_union",
@@ -9436,7 +9764,11 @@
         "tree_sitter",
         "tree_sitter_zig",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/extractors/zig.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/file_slice.py",
@@ -9445,7 +9777,7 @@
       "lines": 249,
       "category": "application_python",
       "rust_target": "src/file_slice.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_pdf_text",
@@ -9504,7 +9836,11 @@
         "graphify.detect",
         "graphify.extractors.base",
         "pathlib"
-      ]
+      ],
+      "rust_files": [
+        "src/file_slice.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/global_graph.py",
@@ -9513,7 +9849,7 @@
       "lines": 201,
       "category": "application_python",
       "rust_target": "src/global_graph.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_load_manifest",
@@ -9574,7 +9910,13 @@
         "networkx.readwrite",
         "pathlib",
         "sys"
-      ]
+      ],
+      "rust_files": [
+        "src/global_graph.rs",
+        "src/build_global.rs",
+        "src/graph.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/google_workspace.py",
@@ -9583,7 +9925,7 @@
       "lines": 237,
       "category": "application_python",
       "rust_target": "src/google_workspace.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "google_workspace_enabled",
@@ -9644,7 +9986,11 @@
         "typing",
         "unicodedata",
         "urllib.parse"
-      ]
+      ],
+      "rust_files": [
+        "src/google_workspace.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/hooks.py",
@@ -9653,7 +9999,7 @@
       "lines": 1137,
       "category": "application_python",
       "rust_target": "src/hooks.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_unquote_git_path",
@@ -9790,7 +10136,12 @@
         "re",
         "subprocess",
         "sys"
-      ]
+      ],
+      "rust_files": [
+        "src/hooks.rs",
+        "src/hooks_runtime.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/ids.py",
@@ -9799,7 +10150,7 @@
       "lines": 93,
       "category": "application_python",
       "rust_target": "src/ids.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "normalize_id",
@@ -9816,7 +10167,12 @@
         "__future__",
         "re",
         "unicodedata"
-      ]
+      ],
+      "rust_files": [
+        "src/ids.rs",
+        "src/unicode15.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/ingest.py",
@@ -9825,7 +10181,7 @@
       "lines": 383,
       "category": "application_python",
       "rust_target": "src/ingest.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_yaml_str",
@@ -9901,7 +10257,12 @@
         "urllib.error",
         "urllib.parse",
         "uuid"
-      ]
+      ],
+      "rust_files": [
+        "src/ingest.rs",
+        "src/ingest_api.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/install.py",
@@ -9910,7 +10271,7 @@
       "lines": 2779,
       "category": "application_python",
       "rust_target": "src/install.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_skill_lock_path",
@@ -10382,7 +10743,18 @@
         "threading",
         "time",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/install.rs",
+        "src/install_fs.rs",
+        "src/install_platforms.rs",
+        "src/assets/install/SKILL.md",
+        "src/assets/install/constants.json",
+        "src/assets/install/pi/index.ts",
+        "src/assets/install/pi/package.json",
+        "src/assets/install/workflows.md"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/interface_dispatch.py",
@@ -10391,7 +10763,7 @@
       "lines": 195,
       "category": "application_python",
       "rust_target": "src/interface_dispatch.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_dispatch_confidence",
@@ -10417,7 +10789,11 @@
       "imports": [
         "__future__",
         "graphify.rcfile"
-      ]
+      ],
+      "rust_files": [
+        "src/interface_dispatch.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/llm.py",
@@ -10968,11 +11344,15 @@
       "lines": 4,
       "category": "application_python",
       "rust_target": "src/manifest.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [],
       "imports": [
         "graphify.detect"
-      ]
+      ],
+      "rust_files": [
+        "src/manifest.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/manifest_ingest.py",
@@ -10981,7 +11361,7 @@
       "lines": 337,
       "category": "application_python",
       "rust_target": "src/manifest_ingest.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_load_toml_module",
@@ -11059,7 +11439,11 @@
         "typing",
         "xml.etree.ElementTree",
         "yaml"
-      ]
+      ],
+      "rust_files": [
+        "src/manifest_ingest.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/markdown_resolution.py",
@@ -11068,7 +11452,7 @@
       "lines": 231,
       "category": "application_python",
       "rust_target": "src/markdown_resolution.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_symbol_label",
@@ -11117,7 +11501,11 @@
         "os",
         "re",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/markdown_resolution.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/mcp_ingest.py",
@@ -11126,7 +11514,7 @@
       "lines": 386,
       "category": "application_python",
       "rust_target": "src/mcp_ingest.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "is_mcp_config_path",
@@ -11179,7 +11567,11 @@
         "re",
         "typing",
         "unicodedata"
-      ]
+      ],
+      "rust_files": [
+        "src/mcp_ingest.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/multigraph_compat.py",
@@ -11188,7 +11580,7 @@
       "lines": 212,
       "category": "application_python",
       "rust_target": "src/multigraph_compat.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "CapabilityCheck",
@@ -11275,7 +11667,12 @@
         "networkx.readwrite",
         "sys",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/multigraph_compat.rs",
+        "src/graph.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/pascal_resolution.py",
@@ -11284,7 +11681,7 @@
       "lines": 129,
       "category": "application_python",
       "rust_target": "src/pascal_resolution.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_pascal_raw_calls",
@@ -11304,7 +11701,11 @@
       ],
       "imports": [
         "__future__"
-      ]
+      ],
+      "rust_files": [
+        "src/pascal_resolution.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/paths.py",
@@ -11313,7 +11714,7 @@
       "lines": 593,
       "category": "application_python",
       "rust_target": "src/paths.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_out_from_env",
@@ -11421,7 +11822,13 @@
         "sys",
         "tempfile",
         "unicodedata"
-      ]
+      ],
+      "rust_files": [
+        "src/paths.rs",
+        "src/python_json.rs",
+        "src/security.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/pg_introspect.py",
@@ -11702,7 +12109,7 @@
       "lines": 80,
       "category": "application_python",
       "rust_target": "src/querylog.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_log_path",
@@ -11734,7 +12141,11 @@
         "re",
         "time",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/querylog.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/rcfile.py",
@@ -11743,7 +12154,7 @@
       "lines": 252,
       "category": "application_python",
       "rust_target": "src/rcfile.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_normalise_ext",
@@ -11797,7 +12208,12 @@
         "pathlib",
         "sys",
         "threading"
-      ]
+      ],
+      "rust_files": [
+        "src/rcfile.rs",
+        "src/par.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/reflect.py",
@@ -11806,7 +12222,7 @@
       "lines": 882,
       "category": "application_python",
       "rust_target": "src/reflect.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_yaml_unescape",
@@ -11965,7 +12381,12 @@
         "pathlib",
         "re",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/reflect.rs",
+        "src/python_datetime.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/report.py",
@@ -11974,7 +12395,7 @@
       "lines": 408,
       "category": "application_python",
       "rust_target": "src/report.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_portable_root_label",
@@ -12021,7 +12442,11 @@
         "networkx",
         "pathlib",
         "re"
-      ]
+      ],
+      "rust_files": [
+        "src/report.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/resolver_registry.py",
@@ -12030,7 +12455,7 @@
       "lines": 88,
       "category": "application_python",
       "rust_target": "src/resolver_registry.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "LanguageResolver",
@@ -12061,7 +12486,11 @@
         "logging",
         "pathlib",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/resolver_registry.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/ruby_resolution.py",
@@ -12070,7 +12499,7 @@
       "lines": 524,
       "category": "application_python",
       "rust_target": "src/ruby_resolution.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_key",
@@ -12148,7 +12577,12 @@
         "build",
         "re",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/ruby_resolution.rs",
+        "src/build_labels.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/scip_ingest.py",
@@ -12157,7 +12591,7 @@
       "lines": 363,
       "category": "application_python",
       "rust_target": "src/scip_ingest.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "ingest_scip_json",
@@ -12221,7 +12655,11 @@
         "hashlib",
         "re",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/scip_ingest.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/security.py",
@@ -12230,7 +12668,7 @@
       "lines": 461,
       "category": "application_python",
       "rust_target": "src/security.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_max_graph_file_bytes",
@@ -12363,7 +12801,13 @@
         "urllib.error",
         "urllib.parse",
         "urllib.request"
-      ]
+      ],
+      "rust_files": [
+        "src/security.rs",
+        "src/ip_policy_data.rs",
+        "src/decimal_data.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/semantic_cleanup.py",
@@ -12372,7 +12816,7 @@
       "lines": 336,
       "category": "application_python",
       "rust_target": "src/semantic_cleanup.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "validate_semantic_fragment",
@@ -12411,7 +12855,12 @@
         "json",
         "pathlib",
         "re"
-      ]
+      ],
+      "rust_files": [
+        "src/semantic_cleanup.rs",
+        "src/hyperedge_members.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/serve.py",
@@ -12420,7 +12869,7 @@
       "lines": 3007,
       "category": "application_python",
       "rust_target": "src/serve.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "ToolError",
@@ -12972,7 +13421,20 @@
         "unicodedata",
         "uvicorn",
         "warnings"
-      ]
+      ],
+      "rust_files": [
+        "src/serve.rs",
+        "src/serve_api.rs",
+        "src/serve_find.rs",
+        "src/serve_http.rs",
+        "src/serve_live.rs",
+        "src/serve_prs.rs",
+        "src/serve_search.rs",
+        "src/serve_socket.rs",
+        "src/serve_text.rs",
+        "src/assets/serve/constants.json"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/skill-agents.md",
@@ -14389,7 +14851,7 @@
       "lines": 46,
       "category": "application_python",
       "rust_target": "src/swift_dispatch.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "resolve_swift_protocol_dispatch",
@@ -14400,7 +14862,11 @@
       "imports": [
         "__future__",
         "graphify.interface_dispatch"
-      ]
+      ],
+      "rust_files": [
+        "src/swift_dispatch.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/symbol_resolution.py",
@@ -14409,7 +14875,7 @@
       "lines": 577,
       "category": "application_python",
       "rust_target": "src/symbol_resolution.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "ImportedSymbol",
@@ -14506,7 +14972,11 @@
         "re",
         "typing",
         "unicodedata"
-      ]
+      ],
+      "rust_files": [
+        "src/symbol_resolution.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/transcribe.py",
@@ -14576,7 +15046,7 @@
       "lines": 604,
       "category": "application_python",
       "rust_target": "src/tree_html.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_common_root",
@@ -14623,7 +15093,12 @@
         "json",
         "pathlib",
         "typing"
-      ]
+      ],
+      "rust_files": [
+        "src/tree_html.rs",
+        "src/assets/tree.html.template"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/validate.py",
@@ -14632,7 +15107,7 @@
       "lines": 95,
       "category": "application_python",
       "rust_target": "src/validate.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "validate_extraction",
@@ -14647,7 +15122,13 @@
       ],
       "imports": [
         "__future__"
-      ]
+      ],
+      "rust_files": [
+        "src/validate.rs",
+        "src/python_compat.rs",
+        "src/python_repr_data.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/watch.py",
@@ -14656,7 +15137,7 @@
       "lines": 2861,
       "category": "application_python",
       "rust_target": "src/watch.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_queue_pending",
@@ -15001,7 +15482,13 @@
         "watchdog.events",
         "watchdog.observers",
         "watchdog.observers.polling"
-      ]
+      ],
+      "rust_files": [
+        "src/watch.rs",
+        "src/watch_paths.rs",
+        "src/watch_reconcile.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "graphify/wiki.py",
@@ -15010,7 +15497,7 @@
       "lines": 455,
       "category": "application_python",
       "rust_target": "src/wiki.rs",
-      "status": "pending",
+      "status": "ported_verified",
       "definitions": [
         {
           "name": "_safe_filename",
@@ -15067,7 +15554,11 @@
         "pathlib",
         "re",
         "sys"
-      ]
+      ],
+      "rust_files": [
+        "src/wiki.rs"
+      ],
+      "checked_utc": "2026-10-15T13:11:11+00:00"
     },
     {
       "path": "pyproject.toml",

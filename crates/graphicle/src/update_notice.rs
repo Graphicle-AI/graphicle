@@ -15,9 +15,13 @@
 //! - **When.** The check runs on its own thread while the command runs, with
 //!   a 2-second timeout ([`TIMEOUT`]). After the command, the program waits
 //!   for it at most [`WAIT`]; a check that has not finished by then is
-//!   dropped and runs again after the next command. A failed check counts
-//!   as a check and prints nothing. The notice itself is printed at most once
-//!   a day, from the last answer.
+//!   dropped. Each check is recorded before its request is sent, so a dropped
+//!   check still counts as that day's check, though not as a failure. A check
+//!   whose request fails, or that GitHub refuses or rate-limits, prints
+//!   nothing and counts as a failure. The next check waits a day; after
+//!   failures in a row it waits one, two, then at most four days
+//!   ([`backoff`]). The notice itself is printed at most once a day, from the
+//!   last answer.
 //! - **Never** ([`allowed`]): when standard error is not a terminal, on CI
 //!   ([`CI_ENV`]), with [`OPT_OUT_ENV`] set to any non-empty value, with
 //!   `update_notifier: false` in the configuration ([`SETTING`]), in a
@@ -76,6 +80,8 @@ pub const TIMEOUT: Duration = Duration::from_secs(2);
 pub const WAIT: Duration = Duration::from_millis(200);
 /// How long a check, and a printed notice, last.
 const DAY: i64 = 24 * 60 * 60;
+/// The longest wait after failed checks ([`backoff`]).
+const MAX_BACKOFF: i64 = 4 * DAY;
 /// The state file's name in the cache folder.
 const STATE_FILE: &str = "update-check.json";
 
@@ -132,6 +138,11 @@ pub struct State {
     /// or not.
     #[serde(default)]
     pub checked_at: i64,
+    /// The checks in a row since the last answer whose request failed, was
+    /// refused or was rate-limited (a dropped check does not count); 0 after
+    /// an answer.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub failures: u32,
     /// The latest release's version then.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latest: Option<String>,
@@ -141,6 +152,10 @@ pub struct State {
     /// When the notice was last printed (Unix seconds).
     #[serde(default)]
     pub notified_at: i64,
+}
+
+fn is_zero(count: &u32) -> bool {
+    *count == 0
 }
 
 // ------------------------------------------------------------- versions
@@ -321,25 +336,43 @@ fn write_state(path: &Path, state: &State) {
     }
 }
 
-/// Whether the state's check is a day old, or later than `now` (the clock
-/// moved back).
+/// How long the next check waits after the last one, given the failed
+/// checks in a row since the last answer: a day while there are none or
+/// after one, two days after two, then four days ([`MAX_BACKOFF`]).
+pub fn backoff(failures: u32) -> i64 {
+    let doublings = failures.saturating_sub(1).min(2);
+    (DAY << doublings).min(MAX_BACKOFF)
+}
+
+/// Whether the state's last check is older than its [`backoff`], or later
+/// than `now` (the clock moved back).
 pub fn due(state: &State, now: i64) -> bool {
-    state.checked_at <= 0 || now - state.checked_at >= DAY || state.checked_at > now + 60
+    state.checked_at <= 0
+        || now - state.checked_at >= backoff(state.failures)
+        || state.checked_at > now + 60
 }
 
 /// One check of the state at `path`: when it is [`due`], ask `fetch` for the
-/// latest release and record the answer. A failed fetch is recorded as a
-/// check that keeps the last known release. Returns the state after it.
+/// latest release and record the answer. The attempt is written first, with
+/// the failures as they were, so that a check the program drops at exit still
+/// counts as a check but not as a failure. A failed fetch then counts as a
+/// failure and keeps the last known release; an answer clears the failures.
+/// Returns the state after it.
 pub fn check(path: &Path, now: i64, fetch: &dyn Fn() -> Option<Release>) -> State {
     let mut state = read_state(path);
     if !due(&state, now) {
         return state;
     }
-    if let Some(release) = fetch() {
-        state.latest = Some(release.version);
-        state.url = Some(release.url);
-    }
     state.checked_at = now;
+    write_state(path, &state);
+    match fetch() {
+        Some(release) => {
+            state.latest = Some(release.version);
+            state.url = Some(release.url);
+            state.failures = 0;
+        }
+        None => state.failures = state.failures.saturating_add(1),
+    }
     // A notice another command printed meanwhile.
     state.notified_at = state.notified_at.max(read_state(path).notified_at);
     write_state(path, &state);
@@ -708,9 +741,120 @@ mod tests {
     }
 
     #[test]
+    fn failed_checks_back_off_from_one_day_to_four() {
+        assert_eq!(backoff(0), DAY, "after an answer");
+        assert_eq!(backoff(1), DAY);
+        assert_eq!(backoff(2), 2 * DAY);
+        assert_eq!(backoff(3), 4 * DAY);
+        assert_eq!(backoff(4), MAX_BACKOFF);
+        assert_eq!(backoff(u32::MAX), MAX_BACKOFF);
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(STATE_FILE);
+        let calls = Cell::new(0);
+        let failing = || -> Option<Release> {
+            calls.set(calls.get() + 1);
+            None
+        };
+        // Each failure doubles the wait, up to four days; nothing is asked
+        // before the wait is over.
+        let mut at = NOW;
+        for (failures, wait) in [
+            (1, DAY),
+            (2, 2 * DAY),
+            (3, 4 * DAY),
+            (4, 4 * DAY),
+            (5, 4 * DAY),
+        ] {
+            let state = check(&path, at, &failing);
+            assert_eq!((state.failures, state.checked_at), (failures, at));
+            assert_eq!(calls.get(), failures);
+            check(&path, at + wait - 1, &failing);
+            assert_eq!(calls.get(), failures, "asked again before {wait} s");
+            at += wait;
+        }
+        // An answer ends the back-off: the release is kept and the next
+        // check is a day later.
+        let answered = check(&path, at, &|| Some(release("0.1.3")));
+        assert_eq!(answered.failures, 0);
+        assert_eq!(answered.latest.as_deref(), Some("0.1.3"));
+        assert!(!due(&answered, at + DAY - 1));
+        assert!(due(&answered, at + DAY));
+        // A failure after an answer keeps the release it knew.
+        let failed = check(&path, at + DAY, &failing);
+        assert_eq!(
+            (failed.failures, failed.latest.as_deref()),
+            (1, Some("0.1.3"))
+        );
+    }
+
+    #[test]
+    fn a_dropped_check_counts_as_a_check_but_not_as_a_failure() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(STATE_FILE);
+        check(&path, NOW, &|| Some(release("0.1.2")));
+        // While the request runs, the file already holds the attempt, with
+        // no failure counted: a program that exits now (the check dropped
+        // after [`WAIT`]) asks again a day later, not after its next command.
+        let seen = std::cell::RefCell::new(None);
+        let failed = check(&path, NOW + DAY, &|| {
+            *seen.borrow_mut() = Some(read_state(&path));
+            None
+        });
+        let dropped = seen.into_inner().unwrap();
+        assert_eq!((dropped.checked_at, dropped.failures), (NOW + DAY, 0));
+        assert_eq!(dropped.latest.as_deref(), Some("0.1.2"));
+        assert!(!due(&dropped, NOW + 2 * DAY - 1));
+        assert!(due(&dropped, NOW + 2 * DAY));
+        // The request did fail, so the finished check counts as a failure.
+        assert_eq!(failed.failures, 1);
+        assert_eq!(read_state(&path), failed);
+        // A dropped check leaves earlier failures as they were: after two,
+        // the next check still waits two days.
+        let after_two = State {
+            failures: 2,
+            ..dropped
+        };
+        write_state(&path, &after_two);
+        check(&path, NOW + 3 * DAY, &|| {
+            let during = read_state(&path);
+            assert_eq!((during.checked_at, during.failures), (NOW + 3 * DAY, 2));
+            Some(release("0.1.3"))
+        });
+        assert_eq!(read_state(&path).failures, 0, "an answer clears them");
+    }
+
+    #[test]
+    fn the_state_file_of_an_earlier_release_still_reads() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join(STATE_FILE);
+        // 0.1.1 wrote no failure count.
+        std::fs::write(
+            &path,
+            r#"{"checked_at":1792000000,"latest":"0.1.1","url":"https://github.com/graphicle-ai/graphicle/releases/tag/v0.1.1","notified_at":0}"#,
+        )
+        .unwrap();
+        let state = read_state(&path);
+        assert_eq!((state.checked_at, state.failures), (NOW, 0));
+        assert_eq!(state.latest.as_deref(), Some("0.1.1"));
+        // The count is written only while it is not zero.
+        let failing = State {
+            failures: 2,
+            ..state.clone()
+        };
+        assert_eq!(serde_json::to_value(&failing).unwrap()["failures"], 2);
+        assert!(
+            serde_json::to_value(&state)
+                .unwrap()
+                .get("failures")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn the_notice_names_both_versions_the_upgrade_command_and_the_page() {
         let state = State {
             checked_at: NOW,
+            failures: 0,
             latest: Some("0.1.2".into()),
             url: Some("https://github.com/graphicle-ai/graphicle/releases/tag/v0.1.2".into()),
             notified_at: 0,
@@ -812,6 +956,8 @@ mod tests {
             json!({"tag_name":"v0.1.2","html_url":"https://github.com/a b"}),
             json!({"tag_name":"v0.1.2","html_url":page,"draft":true}),
             json!({"tag_name":"v0.1.2","html_url":page,"prerelease":true}),
+            // GitHub's answer when it rate-limits a client.
+            json!({"message":"API rate limit exceeded for 192.0.2.1.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"}),
         ] {
             assert_eq!(Release::from_api(&bad), None, "{bad}");
         }

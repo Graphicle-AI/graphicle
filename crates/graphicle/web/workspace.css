@@ -296,7 +296,7 @@ form.graph-controls > button { flex: none; min-height: 38px; }
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  background: #0b0c11;
+  background: var(--graph-bg);
 }
 
 .graph-stage {
@@ -304,7 +304,7 @@ form.graph-controls > button { flex: none; min-height: 38px; }
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background-image: radial-gradient(rgba(208, 203, 188, .09) 1px, transparent 1.2px);
+  background-image: radial-gradient(rgba(var(--line-rgb), .09) 1px, transparent 1.2px);
   background-size: 20px 20px;
 }
 
@@ -333,10 +333,10 @@ form.graph-controls > button { flex: none; min-height: 38px; }
   padding: 3px;
   border: 1px solid var(--line-2);
   border-radius: var(--radius-md);
-  background: rgba(17, 19, 24, .82);
+  background: var(--graph-tools-bg);
   -webkit-backdrop-filter: blur(10px);
   backdrop-filter: blur(10px);
-  box-shadow: 0 10px 28px -12px rgba(0, 0, 0, .8);
+  box-shadow: var(--shadow-tools);
 }
 
 .graph-tools > button.quiet {
@@ -349,14 +349,14 @@ form.graph-controls > button { flex: none; min-height: 38px; }
 .graph-caption {
   padding: 10px 14px;
   border-top: 1px solid var(--line);
-  background: rgba(11, 12, 17, .86);
+  background: var(--graph-caption-bg);
   color: var(--text-4);
   font-size: 12.5px;
   line-height: 1.5;
 }
 
 .graph-edge {
-  stroke: rgba(208, 203, 188, .2);
+  stroke: rgba(var(--line-rgb), .2);
   stroke-width: 1.2;
   vector-effect: non-scaling-stroke;
 }
@@ -371,15 +371,15 @@ form.graph-controls > button { flex: none; min-height: 38px; }
   transition: stroke var(--fast) var(--ease);
 }
 
-.graph-node > .source-dot { fill: #d8bd8a; stroke: #0b0c11; }
+.graph-node > .source-dot { fill: var(--source-dot); stroke: var(--graph-bg); }
 
-.graph-node > .symbol-dot { fill: #0b0c11; stroke: #9aa5b8; }
+.graph-node > .symbol-dot { fill: var(--graph-bg); stroke: var(--symbol-dot-line); }
 
 .graph-node > text {
   fill: var(--text-2);
   font: 500 12px var(--font-sans);
   paint-order: stroke;
-  stroke: #0b0c11;
+  stroke: var(--graph-bg);
   stroke-width: 3px;
   stroke-linejoin: round;
 }
@@ -516,9 +516,9 @@ meter::-webkit-meter-bar { height: 8px; border: 0; border-radius: 999px; backgro
 
 meter::-webkit-meter-optimum-value,
 meter::-webkit-meter-suboptimum-value,
-meter::-webkit-meter-even-less-good-value { border-radius: 999px; background: linear-gradient(90deg, #8a7448, #d8bd8a); }
+meter::-webkit-meter-even-less-good-value { border-radius: 999px; background: var(--meter-fill); }
 
-meter::-moz-meter-bar { border-radius: 999px; background: linear-gradient(90deg, #8a7448, #d8bd8a); }
+meter::-moz-meter-bar { border-radius: 999px; background: var(--meter-fill); }
 
 .loading-state {
   display: flex;
@@ -549,8 +549,8 @@ meter::-moz-meter-bar { border-radius: 999px; background: linear-gradient(90deg,
 body.public {
   min-height: 100vh;
   background:
-    radial-gradient(1200px 600px at 78% -8%, rgba(214, 190, 142, .075), transparent 62%),
-    radial-gradient(900px 520px at -10% 40%, rgba(120, 132, 160, .04), transparent 60%),
+    radial-gradient(1200px 600px at 78% -8%, rgba(var(--gold-rgb), .075), transparent 62%),
+    radial-gradient(900px 520px at -10% 40%, rgba(var(--slate-rgb), .04), transparent 60%),
     var(--ink);
   background-repeat: no-repeat;
 }
@@ -588,7 +588,7 @@ body.public > main {
   gap: 12px 32px;
   margin-top: 112px;
   padding: 26px max(32px, calc((100% - 1136px) / 2)) 32px;
-  border-top: 1px solid rgba(211, 203, 181, .07);
+  border-top: 1px solid var(--header-line);
   color: var(--text-4);
   font-size: 13px;
 }
@@ -608,7 +608,7 @@ body.public > main {
   padding: 7px 14px;
   border: 1px solid var(--line-gold);
   border-radius: 999px;
-  background: rgba(214, 190, 142, .06);
+  background: rgba(var(--gold-rgb), .06);
 }
 
 .product-hero > h1 {
@@ -620,7 +620,7 @@ body.public > main {
 }
 
 .accent {
-  background: linear-gradient(180deg, #f3e3c1 10%, #c9ad78 90%);
+  background: var(--accent-text);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
@@ -645,8 +645,8 @@ figure.preview {
   padding: 10px;
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: linear-gradient(180deg, rgba(236, 226, 205, .05), rgba(236, 226, 205, .012));
-  box-shadow: 0 60px 120px -50px rgba(0, 0, 0, .95);
+  background: var(--preview-bg);
+  box-shadow: var(--shadow-preview);
 }
 
 .preview-window {
@@ -728,8 +728,8 @@ figure.preview {
 }
 
 .preview-item.is-current {
-  background: rgba(226, 204, 156, .075);
-  box-shadow: inset 0 0 0 1px rgba(214, 190, 142, .14);
+  background: rgba(var(--sand-rgb), .075);
+  box-shadow: inset 0 0 0 1px rgba(var(--gold-rgb), .14);
   color: var(--text-1);
 }
 
@@ -900,7 +900,7 @@ figure.preview {
   padding: 36px 40px;
   border: 1px solid var(--line-gold);
   border-radius: 14px;
-  background: radial-gradient(600px 220px at 100% 0%, rgba(214, 190, 142, .1), transparent 70%), var(--card);
+  background: radial-gradient(600px 220px at 100% 0%, rgba(var(--gold-rgb), .1), transparent 70%), var(--card);
 }
 
 .cta-band h2 {
@@ -979,7 +979,7 @@ main.docs-layout {
   line-height: 1.75;
 }
 
-.docs-content p > a { text-decoration: underline; text-decoration-color: rgba(223, 195, 141, .4); }
+.docs-content p > a { text-decoration: underline; text-decoration-color: var(--docs-underline); }
 
 .docs-content p > a:hover { text-decoration-color: currentColor; }
 
@@ -998,7 +998,7 @@ main.docs-layout {
   overflow: hidden;
   border: 1px solid var(--line-2);
   border-radius: var(--radius-lg);
-  background: #0b0c11;
+  background: var(--code-bg);
 }
 
 .code-block > figcaption {
@@ -1057,7 +1057,7 @@ main.docs-layout {
   flex-direction: column;
   gap: 6px;
   border-color: var(--line-gold);
-  background: rgba(214, 190, 142, .045);
+  background: rgba(var(--gold-rgb), .045);
 }
 
 .docs-content .callout > strong { font: 600 14px/1.3 var(--font-display); }

@@ -498,6 +498,7 @@ async fn public_assets_and_openapi_are_available_without_exposing_a_workspace() 
         "/docs",
         "/workspace.js",
         "/workspace.css",
+        "/theme.js",
         "/v1/openapi.json",
     ] {
         let (status, _, headers) = call(&app, path, "", None).await;
@@ -512,6 +513,95 @@ async fn public_assets_and_openapi_are_available_without_exposing_a_workspace() 
     let spec = call(&app, "/v1/openapi.json", "", None).await.1;
     assert_eq!(spec["openapi"], "3.1.0");
     assert!(!spec.to_string().contains(&f.owner));
+}
+
+/// Every page sets its colour theme before the first paint: `/theme.js`
+/// (the Content-Security-Policy allows no inline script) loads, without
+/// defer, before the stylesheets, and the page declares both schemes.
+#[test]
+fn every_page_sets_its_theme_before_the_first_paint() {
+    for (name, page) in [
+        ("index.html", include_str!("../../web/index.html")),
+        ("docs.html", include_str!("../../web/docs.html")),
+        ("product.html", include_str!("../../web/product.html")),
+    ] {
+        let theme = page
+            .find(r#"<script src="/theme.js"></script>"#)
+            .unwrap_or_else(|| panic!("{name} loads /theme.js without defer"));
+        let styles = page.find(r#"<link rel="stylesheet""#).unwrap();
+        assert!(theme < styles, "{name}: /theme.js before the stylesheets");
+        assert!(
+            page.contains(r#"<meta name="color-scheme" content="light dark">"#),
+            "{name}"
+        );
+        for scheme in ["light", "dark"] {
+            let meta = format!(r#"media="(prefers-color-scheme: {scheme})">"#);
+            assert!(page.contains(&meta), "{name}: theme-color for {scheme}");
+        }
+        for script in page.split("<script").skip(1) {
+            assert!(
+                script.trim_start().starts_with("src="),
+                "{name}: inline script"
+            );
+        }
+    }
+    // The control in Settings offers the three choices; the script keeps the
+    // choice under the graph export page's key.
+    let index = include_str!("../../web/index.html");
+    for choice in ["system", "light", "dark"] {
+        assert!(
+            index.contains(&format!(r#"data-theme-choice="{choice}""#)),
+            "{choice}"
+        );
+    }
+    let script = include_str!("../../web/theme.js");
+    assert!(script.contains(r#"const KEY = "graphicle-theme";"#));
+    assert!(script.contains("localStorage") && script.contains("catch"));
+}
+
+/// The light theme only gives other values to the dark theme's tokens, and
+/// the stylesheets name no colour outside the theme blocks, so a new rule
+/// cannot come out dark-only.
+#[test]
+fn the_light_theme_overrides_tokens_and_no_colour_is_hard_coded() {
+    let style = include_str!("../../web/style.css");
+    let block = |selector: &str| {
+        let start = style.find(&format!("{selector} {{")).expect(selector);
+        let end = start + style[start..].find("\n}").unwrap();
+        &style[start..end]
+    };
+    let names = |text: &str| -> std::collections::BTreeSet<String> {
+        text.lines()
+            .filter_map(|line| line.trim().strip_prefix("--"))
+            .filter_map(|line| line.split_once(':').map(|(name, _)| name.to_string()))
+            .collect()
+    };
+    let (dark, light) = (block("\n:root"), block(r#":root[data-theme="light"]"#));
+    assert!(light.contains("color-scheme: light;"));
+    let missing: Vec<_> = names(light).difference(&names(dark)).cloned().collect();
+    assert!(missing.is_empty(), "light-only tokens: {missing:?}");
+    let colour = regex::Regex::new(r"#[0-9a-fA-F]{3,8}\b|rgba?\((?:[^v)]|v[^a])").unwrap();
+    for (name, css) in [
+        ("style.css", style),
+        ("workspace.css", include_str!("../../web/workspace.css")),
+    ] {
+        let mut theme_block = false;
+        for (number, line) in css.lines().enumerate() {
+            let text = line.trim();
+            if text.starts_with(":root") {
+                theme_block = true;
+            }
+            if theme_block {
+                theme_block = text != "}";
+                continue;
+            }
+            // Masks use only the alpha channel.
+            if text.contains("url(\"data:") || text.contains("mask-image:") {
+                continue;
+            }
+            assert!(!colour.is_match(text), "{name}:{}: {text}", number + 1);
+        }
+    }
 }
 
 /// Both editions serve this `/docs` page, so it states the request budget

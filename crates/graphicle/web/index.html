@@ -3,12 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#0a0a12">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f3ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0a0a12" media="(prefers-color-scheme: dark)">
   <title>Graphicle</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2024%2024'%3E%3Cpath%20d='M9.7%204.6L20.5%2017.4L3.5%2019.4Z'%20fill='none'%20stroke='%235B7CFF'%20stroke-width='2.5'%20stroke-linejoin='round'/%3E%3Cpath%20d='M11%2014.1L9.7%204.6M11%2014.1L20.5%2017.4M11%2014.1L3.5%2019.4'%20stroke='%235B7CFF'%20stroke-width='1.6'%20stroke-linecap='round'/%3E%3Ccircle%20cx='9.7'%20cy='4.6'%20r='2.5'%20fill='%235B7CFF'/%3E%3Ccircle%20cx='20.5'%20cy='17.4'%20r='2.5'%20fill='%235B7CFF'/%3E%3Ccircle%20cx='3.5'%20cy='19.4'%20r='2.5'%20fill='%235B7CFF'/%3E%3Ccircle%20cx='11'%20cy='14.1'%20r='3.4'%20fill='%23A78BFA'/%3E%3C/svg%3E">
   <link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/fonts/space-grotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/workspace.css">
   <script src="/app.js" defer></script>
@@ -39,6 +41,7 @@
     <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 6.5C10.5 5.3 8.4 4.75 4.5 4.75v13.5c3.9 0 6 .55 7.5 1.75 1.5-1.2 3.6-1.75 7.5-1.75V4.75c-3.9 0-6 .55-7.5 1.75Z"/><path d="M12 6.5V20"/></symbol>
     <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="15.5" r="3.5"/><path d="m10.5 13 8.5-8.5M15.5 8l2.5 2.5M13.5 10l2 2"/></symbol>
     <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+    <symbol id="i-theme" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/><path d="M12 4.5a7.5 7.5 0 0 1 0 15Z" fill="currentColor" stroke="none"/></symbol>
     <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5"/><rect x="9.75" y="9.75" width="4.5" height="4.5" rx=".5"/><path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3"/></symbol>
   </svg>
 
@@ -294,6 +297,23 @@
               <div class="section-actions"><button id="configure-model" type="button" class="secondary">Configure model</button></div>
             </div>
             <div id="models-list" class="list"></div>
+          </section>
+
+          <section class="settings-section">
+            <div class="section-head">
+              <span class="tile" aria-hidden="true"><svg class="icon"><use href="#i-theme"/></svg></span>
+              <div class="section-text">
+                <h2>Appearance</h2>
+                <p>Follow your system’s light or dark setting, or choose one for this browser.</p>
+              </div>
+              <div class="section-actions">
+                <div class="filters" role="group" aria-label="Theme">
+                  <button type="button" data-theme-choice="system" aria-pressed="true" class="selected">System</button>
+                  <button type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+                  <button type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+                </div>
+              </div>
+            </div>
           </section>
 
           <details id="index-maintenance-panel" class="panel settings-details">

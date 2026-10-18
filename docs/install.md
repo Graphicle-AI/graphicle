@@ -16,7 +16,7 @@ step.
 
 ```sh
 brew install graphicle-ai/tap/graphicle
-graphicle --version          # graphicle 0.1.1 (core)
+graphicle --version          # graphicle 0.1.2 (core)
 ```
 
 `brew upgrade graphicle` installs a new release. Afterwards, read
@@ -145,7 +145,7 @@ folder with both programs, `LICENSE`, `NOTICE`, `NOTICE.md`, `README.md`,
 | Windows, x86-64 (preview) | `x86_64-pc-windows-msvc`, a `.zip` |
 
 ```sh
-version=0.1.1
+version=0.1.2
 target=aarch64-apple-darwin
 base=https://github.com/graphicle-ai/graphicle/releases/download/v$version
 curl -fLO "$base/graphicle-$version-$target.tar.gz"
@@ -239,7 +239,7 @@ in them.
 ## Check the installation
 
 ```sh
-graphicle --version          # graphicle 0.1.1 (core)
+graphicle --version          # graphicle 0.1.2 (core)
 graphicle graph --help       # the code-graph engine's commands
 graphicle doctor             # checks the programs, the data folder and your agents
 ```
@@ -271,8 +271,8 @@ hooks. To keep 0.1.0's setup, with every tool and the guard hooks, run
 `graphicle setup --tools all --guards` instead; the
 [CHANGELOG](../CHANGELOG.md) lists the two small differences that remain.
 
-You do not have to watch for releases: once a day, when you run a command in
-a terminal, `graphicle` asks GitHub for the latest release. When it is
+You do not have to watch for releases: at most once a day, when you run a
+command in a terminal, `graphicle` asks GitHub for the latest release. When it is
 newer, `graphicle` prints the version and the upgrade command for your install.
 `GRAPHICLE_NO_UPDATE_NOTIFIER=1` or `graphicle config set update_notifier false`
 turns this off.

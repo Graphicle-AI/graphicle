@@ -1,0 +1,212 @@
+# Lists a Graphicle release in the official MCP Registry
+# (registry.modelcontextprotocol.io) as io.github.Graphicle-AI/graphicle. Run it
+# by hand from main (Actions, mcp-registry, Run workflow) with the tag of a
+# final release once the release workflow has published it.
+#
+# The build job, which can only read the repository, checks the release,
+# downloads its five archives, builds one MCP bundle per target with
+# packaging/mcpb/build_mcpb.py (graphicle-<version>-<target>.mcpb), writes
+# server.json with packaging/mcpb/render_server_json.py and validates it. The
+# publish job uploads the bundles to the release, checks the uploaded files,
+# publishes server.json with mcp-publisher, which logs in with the run's GitHub
+# OIDC token (no secret is needed), and reads the listing back.
+#
+# The registry never changes a listed version, so a version it already lists
+# stops the run before anything is uploaded, and so does an immutable release,
+# whose assets cannot change. The scripts come from main, the programs from the
+# release. packaging/mcpb/README.md describes the steps.
+name: mcp-registry
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the published release to list, such as v0.1.2
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-registry
+  cancel-in-progress: false
+
+env:
+  # mcp-publisher, pinned: its release and the SHA-256 of its Linux x86-64
+  # archive, from registry_1.8.1_checksums.txt in that release.
+  MCP_PUBLISHER_VERSION: "1.8.1"
+  MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+  REGISTRY: https://registry.modelcontextprotocol.io
+  SERVER_NAME: io.github.Graphicle-AI/graphicle
+  TAG: ${{ inputs.tag }}
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$TAG' is not the tag of a final release, such as v0.1.2"; exit 1
+          fi
+          state="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,isImmutable \
+            --jq '"\(.isDraft) \(.isPrerelease) \(.isImmutable)"')"
+          read -r draft prerelease immutable <<< "$state"
+          if [ "$draft" != false ] || [ "$prerelease" != false ]; then
+            echo "::error::the release $TAG is not published as a final release (draft $draft, prerelease $prerelease)"
+            exit 1
+          fi
+          if [ "$immutable" != false ]; then
+            echo "::error::the release $TAG is immutable: its assets cannot change, so the bundles cannot be added to it"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Not listed yet
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          url="$REGISTRY/v0.1/servers/${SERVER_NAME/\//%2F}/versions/$VERSION?include_deleted=true"
+          code="$(curl -sS -o "$RUNNER_TEMP/listed.json" -w '%{http_code}' "$url")"
+          case "$code" in
+            404) echo "The registry does not list $SERVER_NAME $VERSION yet." ;;
+            200) echo "::error::the registry already lists $SERVER_NAME $VERSION, and a listed version never changes"
+                 cat "$RUNNER_TEMP/listed.json"; exit 1 ;;
+            *) echo "::error::the registry answered $code to $url"; exit 1 ;;
+          esac
+      - name: Download the archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir "$RUNNER_TEMP/archives"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/archives" \
+            --pattern "graphicle-$VERSION-*.tar.gz" --pattern "graphicle-$VERSION-*.zip" --pattern SHA256SUMS
+          cd "$RUNNER_TEMP/archives"
+          sha256sum --check --strict SHA256SUMS
+      - name: Build the bundles
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          for archive in "$RUNNER_TEMP"/archives/graphicle-"$VERSION"-*.tar.gz "$RUNNER_TEMP"/archives/graphicle-"$VERSION"-*.zip; do
+            python3 packaging/mcpb/build_mcpb.py "$archive" --version "$VERSION" --out "$RUNNER_TEMP/mcpb"
+          done
+          ls -l "$RUNNER_TEMP/mcpb"
+      - name: server.json
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 packaging/mcpb/render_server_json.py --version "$VERSION" --bundles "$RUNNER_TEMP/mcpb" \
+            --out "$RUNNER_TEMP/server.json"
+          cat "$RUNNER_TEMP/server.json"
+          {
+            echo "server.json for $SERVER_NAME $VERSION (once the run has published it, commit it at the repository's root):"
+            echo
+            echo '```json'
+            cat "$RUNNER_TEMP/server.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/mcp-publisher.tar.gz" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP" mcp-publisher
+          "$RUNNER_TEMP/mcp-publisher" --version
+      - name: Validate server.json
+        run: |
+          "$RUNNER_TEMP/mcp-publisher" validate "$RUNNER_TEMP/server.json"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcpb-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/mcpb/
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: server-json-${{ steps.version.outputs.version }}
+          path: ${{ runner.temp }}/server.json
+          if-no-files-found: error
+          overwrite: true
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # gh release upload adds the bundles to the release.
+      contents: write
+      # mcp-publisher login github-oidc.
+      id-token: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: mcpb-${{ needs.build.outputs.version }}
+          path: ${{ runner.temp }}/mcpb
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: server-json-${{ needs.build.outputs.version }}
+          path: ${{ runner.temp }}
+      - name: Check the bundles against server.json
+        run: |
+          jq -r '.packages[] | "\(.fileSha256)  \(.identifier | split("/") | last)"' "$RUNNER_TEMP/server.json" \
+            > "$RUNNER_TEMP/bundles.sha256"
+          cd "$RUNNER_TEMP/mcpb"
+          sha256sum --check --strict "$RUNNER_TEMP/bundles.sha256"
+          [ "$(find . -name '*.mcpb' | wc -l)" -eq "$(wc -l < "$RUNNER_TEMP/bundles.sha256")" ]
+      - name: Upload the bundles to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "$RUNNER_TEMP"/mcpb/*.mcpb
+      - name: Check the uploaded bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir "$RUNNER_TEMP/uploaded"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/uploaded" \
+            --pattern "graphicle-$VERSION-*.mcpb"
+          cd "$RUNNER_TEMP/uploaded"
+          sha256sum --check --strict "$RUNNER_TEMP/bundles.sha256"
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/mcp-publisher.tar.gz" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/v$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --check --strict
+          tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP" mcp-publisher
+          "$RUNNER_TEMP/mcp-publisher" --version
+      - name: Log in to the MCP Registry
+        run: |
+          "$RUNNER_TEMP/mcp-publisher" login github-oidc
+      - name: Publish
+        run: |
+          "$RUNNER_TEMP/mcp-publisher" publish "$RUNNER_TEMP/server.json"
+      - name: Read the listing back
+        run: |
+          url="$REGISTRY/v0.1/servers/${SERVER_NAME/\//%2F}/versions/$VERSION"
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS -o "$RUNNER_TEMP/listed.json" "$url"; then break; fi
+            if [ "$attempt" -eq 6 ]; then echo "::error::the registry does not answer for $url"; exit 1; fi
+            sleep 10
+          done
+          jq -e --slurpfile want "$RUNNER_TEMP/server.json" '
+            .server.name == $want[0].name and .server.version == $want[0].version and
+            ([.server.packages[] | [.identifier, .fileSha256]] | sort) ==
+            ([$want[0].packages[] | [.identifier, .fileSha256]] | sort)' "$RUNNER_TEMP/listed.json"
+          echo "The registry lists $SERVER_NAME $VERSION with each bundle's address and SHA-256."

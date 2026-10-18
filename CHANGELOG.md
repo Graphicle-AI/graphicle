@@ -3,6 +3,72 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.2 - 2026-10-18
+
+Every crate is at 0.1.2, and `graphicle --version` prints
+`graphicle 0.1.2 (core)`.
+
+### Dashboard
+
+- A light theme for the app that `graphicle open` shows, and for its product
+  and documentation pages (#2). The app follows the operating system's light
+  or dark setting; Settings > Appearance picks System, Light or Dark, and the
+  browser remembers the choice. The theme is set before the page is first
+  drawn, so the page never flashes in the other theme. In the light theme,
+  text has a contrast of at least 4.5:1 with its background, and control
+  borders and focus rings at least 3:1. The dark theme looks as before.
+
+### MCP Registry
+
+- From this release on, the `mcp-registry` workflow adds one MCP bundle
+  (`.mcpb`) for each release target to the GitHub release and lists the
+  release in the official MCP Registry as `io.github.Graphicle-AI/graphicle`.
+  Each bundle's manifest follows the MCP bundle format (checked against its
+  0.3 schema) and runs `graphicle mcp` on a project folder that
+  `graphicle sync` has set up. `packaging/mcpb/README.md` describes the
+  bundles and the steps at release time.
+
+### Other changes
+
+- The new-release check is no longer made again with the next command when
+  a command ends before it does. 0.1.1 already counted a failed check as the
+  day's check, but a check still running when a command ended was dropped
+  and made again with the next command. Each check is now recorded before its
+  request goes out, so such a check counts as the day's check, though not as
+  a failure. Repeated real failures now back off: after a check that fails,
+  or that GitHub refuses or limits, the next one waits a day, then two days
+  after a second failure in a row, then four. The request is still one GET
+  with no code or data in it, and the notice is still printed at most once a
+  day.
+- A test of `.graphiclerc` handling could fail when tests ran in parallel:
+  another test could clear the record of folders already warned about
+  between its two calls. The tests that change that process-wide state now
+  run one at a time.
+- Agent setup and detection read a Codex configuration whose multi-line
+  strings hold non-ASCII text instead of crashing (#3, thanks
+  @rudycelekli).
+- Session capture cuts a conversation opening longer than 300 bytes on a
+  character boundary, so a multi-byte character at the cut no longer
+  crashes it (#4, thanks @rudycelekli).
+- The graph engine's MCP server answers `initialize` with a protocol
+  version it speaks: the client's when it knows it, otherwise 2025-06-18,
+  instead of echoing whatever the client sent (#5, thanks @rudycelekli).
+- The app's MCP endpoint over HTTP answers a method it does not serve with
+  JSON-RPC's "Method not found" (-32601) instead of "Invalid params"
+  (-32602); a refused call of a method it serves keeps -32602 (#6, thanks
+  @rudycelekli).
+- The engine's file ledger (`crates/graphicle-graph/migration/FILES.json`)
+  marks each application module that has a passing comparison receipt against
+  Graphify 0.9.91 as verified, with the Rust files that port it. The modules
+  whose checks stop on the Linux host stay pending until the full run on
+  macOS. The ledger's summaries beside it, `STATUS.md`, `AUDIT.json` and
+  `PROGRESS.json`, now describe the 0.9.91 port instead of the 0.9.88 one.
+- cargo-deny ignores RUSTSEC-2026-0367, RUSTSEC-2026-0368 and
+  RUSTSEC-2026-0369 (zip 8.6.0, published after 0.1.1), with the reason: they
+  affect only zip's extract-to-disk APIs, and Graphicle never extracts
+  archives to disk; it reads archive members in memory. The ignores go once
+  calamine, which still requires zip 8, moves to zip 9.
+
 ## 0.1.1 - 2026-10-15
 
 Every crate is at 0.1.1, and `graphicle --version` prints

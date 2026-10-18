@@ -62,9 +62,17 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
 # Every vulnerability and unsoundness advisory is fixed (legacy AWS TLS client
-# removed, lru >= 0.18.2). The remaining entries are "unmaintained" notices for
-# transitive crates with no known vulnerability and no maintained drop-in:
+# removed, lru >= 0.18.2), except three in zip 8's extraction to disk, which
+# nothing here calls: the engine, the program and calamine open an archive and
+# read its members in memory. zip 9 fixes them, but calamine 0.36.1, the latest
+# release, requires zip ^8.6 (its main branch already uses zip 9.0, unreleased).
+# Remove these three ignores, and move to zip 9, when calamine releases with it.
+# The other entries are "unmaintained" notices for transitive crates with no
+# known vulnerability and no maintained drop-in:
 ignore = [
+    { id = "RUSTSEC-2026-0367", reason = "zip 8.6.0 (engine, program, calamine): SUID/SGID bits kept by ZipArchive::extract; archives are only read in memory, never extracted" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 8.6.0 (engine, program, calamine): symbolic links created by ZipArchive::extract; archives are only read in memory, never extracted" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 8.6.0 (engine, program, calamine): permissions applied through symbolic links by extract(); archives are only read in memory, never extracted" },
     { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build time only) via neo4rs -> nav-types -> nalgebra -> simba" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser via pdf-extract -> lopdf; font tables are parsed only from local PDFs" },
     { id = "RUSTSEC-2025-0075", reason = "unic-char-range via rustpython-parser (Python literal parsing); no vulnerability" },

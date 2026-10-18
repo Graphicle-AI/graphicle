@@ -1,14 +1,14 @@
 {
-  "upstream_commit": "a9860f70dc3cc2e9c2d8cb923484cfa0592b9067",
-  "updated_utc": "2026-10-13T15:17:37.483257+00:00",
-  "archive_files": 1046,
+  "upstream_commit": "10130e79ed9caf8f60d998073e097531eaa1a395",
+  "updated_utc": "2026-10-18T02:21:03.858688+00:00",
+  "archive_files": 1068,
   "application_files": 95,
-  "currently_verified_application_files": 95,
-  "currently_verified_source_lines": 84134,
-  "total_application_source_lines": 84134,
+  "currently_verified_application_files": 88,
+  "currently_verified_source_lines": 78578,
+  "total_application_source_lines": 86217,
   "stale_receipts": [],
-  "complete_port": true,
+  "complete_port": false,
   "qualification_manifests": [
-    "migration/qualification/d5aaef3ccf6dea8b61d58db81eefb23d7a1db793a4bf39fe6e7a8b2ebb6fdb72-85f2d451090c.json"
+    "migration/qualification/f212d84678cacef5c37e17234abeaa94ddc3dfe0e7d8252dd7be75264f442370-8e1961e66955.json"
   ]
 }

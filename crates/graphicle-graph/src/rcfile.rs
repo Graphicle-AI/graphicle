@@ -488,8 +488,26 @@ pub fn dispatch(r: &Value) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{fs, sync::MutexGuard};
 
+    /// The process-wide state these tests change: the fallback overrides and
+    /// the warned roots. Tests run in parallel threads of one process, so a
+    /// test that relies on that state holds this lock for its whole run;
+    /// otherwise another test's [`reset`] could clear the warned roots between
+    /// two calls (a second warning for the same root).
+    static PROCESS_STATE: Mutex<()> = Mutex::new(());
+
+    /// Holds [`PROCESS_STATE`] and starts from a fresh process's state. A test
+    /// that failed while holding the lock does not fail the others.
+    fn exclusive() -> MutexGuard<'static, ()> {
+        let guard = PROCESS_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        reset();
+        guard
+    }
+
+    /// A fresh process's state; call it only while holding [`exclusive`].
     fn reset() {
         set_language_overrides(None);
         clear_warned_roots();
@@ -497,7 +515,7 @@ mod tests {
 
     #[test]
     fn a_language_line_maps_an_extension_to_a_canonical_suffix() {
-        reset();
+        let _state = exclusive();
         let dir = tempfile::tempdir().unwrap();
         for key in [
             "language.inc",
@@ -587,7 +605,7 @@ mod tests {
 
     #[test]
     fn effective_suffix_and_cache_salt_follow_the_declaration() {
-        reset();
+        let _state = exclusive();
         assert_eq!(effective_suffix("x/a.inc"), ".inc");
         assert_eq!(effective_suffix("x/a.F90"), ".F90");
         assert_eq!(cache_salt("a.inc"), None);
@@ -605,7 +623,7 @@ mod tests {
 
     #[test]
     fn a_malformed_file_warns_once_and_activates_nothing() {
-        reset();
+        let _state = exclusive();
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join(RC_FILENAME),
@@ -638,6 +656,7 @@ mod tests {
 
     #[test]
     fn overrides_stay_with_their_thread_and_reach_workers() {
+        let _state = exclusive();
         let barrier = std::sync::Barrier::new(2);
         let seen = std::thread::scope(|scope| {
             let a = scope.spawn(|| {

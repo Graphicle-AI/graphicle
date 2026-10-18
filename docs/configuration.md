@@ -365,9 +365,11 @@ instead of starting a browser.
 
 When a newer release is out, a command you run in a terminal ends with a
 three-line notice on standard error: the new version, the upgrade command and
-the release page. Graphicle asks GitHub for the latest release once a day,
-and asks again with the next command when GitHub has not answered by the time
-a command ends. It prints the notice at most once a day.
+the release page. Graphicle asks GitHub for the latest release at most once a
+day; a check that has no answer by the time a command ends counts as that
+day's check. After a check that fails, or that GitHub refuses or limits, the
+next one waits a day, then two days after a second failure in a row, then
+four. It prints the notice at most once a day.
 `GRAPHICLE_NO_UPDATE_NOTIFIER=1` or `graphicle config set update_notifier false`
 turns both off.
 

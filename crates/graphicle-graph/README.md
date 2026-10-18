@@ -187,19 +187,22 @@ The port covers every application module of the pinned release; Graphify's
 original Python test files are kept as development references, and fixtures,
 documentation and licenses retain their original formats. The comparison
 checks run Graphify's own tests against the engine and compare its results
-with the pinned release. On 13 October 2026 every application module had a
-passing receipt from them; on 14 October they were widened to run more of the
-upstream `tests/test_*.py` files. The repository's `docs/benchmarks.md` gives
-their results and limits, its
-`docs/evidence/upstream-tests-known-differences.md` lists the upstream tests
-that fail against the engine, with the reason for each, and its
+with the pinned release. Against Graphify 0.9.88, on 13 October 2026, every
+application module had a passing receipt from them; on 14 October they were
+widened to run more of the upstream `tests/test_*.py` files. Against 0.9.91
+they ran on Linux on 15 October 2026, where the modules whose checks need
+nothing that host lacks have a passing receipt; the full run on macOS is still
+to be made. The repository's `docs/benchmarks.md` gives their results and
+limits, its `docs/evidence/upstream-tests-known-differences.md` lists the
+upstream tests that fail against the engine, with the reason for each, and its
 `docs/evidence/upstream-tests-not-run.md` lists the test files the checks do
 not run, with the reason for each.
-[migration/STATUS.md](migration/STATUS.md) and [AUDIT.json](migration/AUDIT.json)
-record the 13 October qualification; the repository's `docs/evidence/` folder
-summarizes it and the 14 October run of the widened checks. The
-[file ledger](migration/FILES.json) lists every file of the pinned Graphify
-0.9.91 archive with its SHA-256.
+[migration/STATUS.md](migration/STATUS.md), [AUDIT.json](migration/AUDIT.json)
+and the [file ledger](migration/FILES.json) record the 15 October run against
+0.9.91: the ledger lists every file of the pinned Graphify 0.9.91 archive with
+its SHA-256 and marks each application module that has a passing receipt as
+verified. The repository's `docs/evidence/` folder summarizes the 13 October
+qualification against 0.9.88 and the 14 October run of the widened checks.
 
 ## Build and run
 

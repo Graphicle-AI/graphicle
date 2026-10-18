@@ -37,12 +37,14 @@ SignPath.
 Graphicle has no telemetry and no account. It contacts the network only in
 these cases:
 
-- **The update check, which is on by default.** Once a day, when you run a
-  command in a terminal, `graphicle` sends one GET request to GitHub's
+- **The update check, which is on by default.** At most once a day, when you
+  run a command in a terminal, `graphicle` sends one GET request to GitHub's
   releases API (`api.github.com/repos/Graphicle-AI/graphicle/releases/latest`)
-  to learn the latest version, and tells you when a newer one exists. If
-  GitHub has not answered by the time the command ends, the request is sent
-  again with your next command. The request carries no code, project data,
+  to learn the latest version, and tells you when a newer one exists. A check
+  that has no answer by the time the command ends counts as that day's check;
+  after a check that fails, or that GitHub refuses or limits, the next one
+  waits a day, then two days after a second failure in a row, then four. The
+  request carries no code, project data,
   version or credentials; like any web request, it shows GitHub your IP
   address. Agents' MCP servers and hooks, CI runs, and commands whose output
   is JSON or not a terminal never check. To turn it off, set

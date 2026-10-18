@@ -225,6 +225,7 @@ pub fn router(app: App) -> Router {
         .merge(crate::product::routes())
         .route("/", get(index))
         .route("/app.js", get(script))
+        .route("/theme.js", get(theme_script))
         .route("/settings.js", get(settings_script))
         .route("/extensions.js", get(extensions_script))
         .route("/style.css", get(style))
@@ -433,6 +434,14 @@ async fn script() -> impl IntoResponse {
     (
         [("content-type", "text/javascript; charset=utf-8")],
         include_str!("../web/app.js"),
+    )
+}
+/// The colour theme (`web/theme.js`), which every page loads before its
+/// stylesheets so the theme is set before the first paint.
+async fn theme_script() -> impl IntoResponse {
+    (
+        [("content-type", "application/javascript; charset=utf-8")],
+        include_str!("../web/theme.js"),
     )
 }
 async fn settings_script() -> impl IntoResponse {
