@@ -151,10 +151,13 @@ pub fn openings(text: &str) -> Vec<(usize, usize)> {
         }
         let mut b = b;
         if b - a > 300 {
-            b = a + text[a..a + 300].rfind(' ').unwrap_or(300);
-            while !text.is_char_boundary(b) {
-                b -= 1;
+            // The first 300 bytes, back to a character boundary: byte 300
+            // can fall inside a multi-byte character.
+            let mut cut = a + 300;
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
             }
+            b = text[a..cut].rfind(' ').map_or(cut, |space| a + space);
         }
         found.push((a, b));
     }
@@ -385,6 +388,23 @@ mod tests {
                 "hmm, how do I test the update function properly?"
             ]
         );
+    }
+
+    #[test]
+    fn a_long_opening_ends_on_a_character_boundary() {
+        // Byte 300 of the opening falls inside an "é" (two bytes).
+        let text = format!("User: I need help with {}\n", "\u{e9}".repeat(200));
+        let spans = openings(&text);
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        let (a, b) = spans[0];
+        assert_eq!(&text[a..b], "I need help with");
+        // Without a space in the first 300 bytes the cut is at the last
+        // whole character.
+        let text = format!("User: x{} b c d\n", "\u{4f60}".repeat(120));
+        let spans = openings(&text);
+        assert_eq!(spans.len(), 1, "{spans:?}");
+        let (a, b) = spans[0];
+        assert_eq!(text[a..b], format!("x{}", "\u{4f60}".repeat(99)));
     }
 
     #[test]
