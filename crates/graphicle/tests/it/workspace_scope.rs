@@ -1256,6 +1256,11 @@ fn a_workspace_connection_serves_the_graph_tools_of_the_project_repo_names() {
         "Unsupported MCP method",
         "{refused}"
     );
+    // JSON-RPC's "Method not found", not "Invalid params".
+    assert_eq!(refused["error"]["code"], -32601, "{refused}");
+    // A refused call of a served method keeps "Invalid params".
+    let unknown_tool = rpc(&app, "tools/call", json!({"name":"no_such_tool"}));
+    assert_eq!(unknown_tool["error"]["code"], -32602, "{unknown_tool}");
     // A navigation tool names its project, by id or key.
     let unnamed = call(&app, "get_node", json!({"label":"quantize_cents"}));
     assert!(

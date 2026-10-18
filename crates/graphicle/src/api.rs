@@ -2001,16 +2001,26 @@ fn mcp_in(
                     }
                 })
             }
-            _ => Err(Error::bad("Unsupported MCP method")),
+            _ => Err(Error::bad(UNSUPPORTED_METHOD)),
         }
     })();
     Some(match result {
         Ok(value) => json!({"jsonrpc":"2.0","id":request["id"],"result":value}),
         Err(error) => {
-            json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":-32602,"message":error.message}})
+            // JSON-RPC's "Method not found" for a method this connection
+            // does not serve, so that a client can tell it from a refused
+            // call.
+            let code = if error.message == UNSUPPORTED_METHOD {
+                -32601
+            } else {
+                -32602
+            };
+            json!({"jsonrpc":"2.0","id":request["id"],"error":{"code":code,"message":error.message}})
         }
     })
 }
+/// The error message of a method a connection does not serve.
+const UNSUPPORTED_METHOD: &str = "Unsupported MCP method";
 async fn mcp_http(
     State(app): State<App>,
     Path((workspace, repository)): Path<(String, String)>,
