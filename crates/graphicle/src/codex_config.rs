@@ -88,7 +88,9 @@ fn scan(line: &str, open: &mut Option<&'static str>, depth: &mut usize) {
     let mut i = 0;
     while i < bytes.len() {
         if let Some(delimiter) = *open {
-            if line[i..].starts_with(delimiter) {
+            // Bytes, not `line[i..]`: inside a string `i` steps one byte at
+            // a time and can stop inside a multi-byte character.
+            if bytes[i..].starts_with(delimiter.as_bytes()) {
                 *open = None;
                 i += 3;
             } else {
@@ -543,6 +545,16 @@ model = "o4-mini"
         let (back, _, _) = remove(&codex, "graphicle-app").unwrap();
         assert_eq!(back, CONFIG);
         assert!(remove(CONFIG, "graphicle-app").is_none());
+    }
+
+    #[test]
+    fn tables_read_past_multi_line_strings_with_non_ascii_text() {
+        let text = "developer_instructions = \"\"\"\nAnswer in fran\u{e7}ais \u{2014} briefly.\n\"\"\"\nnotes = '''caf\u{e9}'''\n\n[mcp_servers.docs]\ncommand = \"npx\"\nargs = [\"docs-mcp\"]\n";
+        let found = tables(text);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].name, "docs");
+        assert_eq!(found[0].command.as_deref(), Some("npx"));
+        assert!(!inline_servers(text));
     }
 
     #[test]
