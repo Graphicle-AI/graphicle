@@ -10,7 +10,10 @@ v<version>), with the file's SHA-256, which MCP clients check before they
 install a bundle, and stdio transport. The registry has no field for a
 package's platform: the file names carry the target, each bundle's manifest
 names its operating system, and the packages are listed with the most common
-machine of each system first.
+machine of each system first. The entry's icon is the bundles' icon.png, by its
+address on raw.githubusercontent.com in the commit the GitHub Actions run
+checked out, which stays the same when main moves on (outside GitHub Actions,
+the address names main).
 
 The namespace io.github.Graphicle-AI is spelled as GitHub spells the
 organization: the registry grants a GitHub Actions run of this repository the
@@ -27,7 +30,8 @@ import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from build_mcpb import DESCRIPTION, REPOSITORY, TARGETS, VERSION, bundle_name, fail, program_name, sha256  # noqa: E402
+from build_mcpb import (DESCRIPTION, ICON, ICON_SIZE, REPOSITORY, TARGETS, VERSION, bundle_name, fail,  # noqa: E402
+                        icon, program_name, sha256)
 
 SCHEMA = 'https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json'
 OWNER = REPOSITORY.split('/')[0]
@@ -40,6 +44,8 @@ REPOSITORY_ID = '1418870464'
 NAME_PATTERN = re.compile(r'[a-zA-Z0-9.-]+/[a-zA-Z0-9._-]+')
 RELEASE_ASSET = re.compile(r'https://github\.com/[a-zA-Z0-9]([a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?/[a-zA-Z0-9._-]+'
                            r'/releases/download/[^/]+/[^/]+')
+# The commit a GitHub Actions run checked out, whose icon the entry links to.
+COMMIT = re.compile(r'[0-9a-f]{40}')
 
 
 def check_run():
@@ -55,6 +61,8 @@ def check_run():
         fail(f'this run belongs to {os.environ.get("GITHUB_REPOSITORY")}, not {REPOSITORY}')
     if os.environ.get('GITHUB_REPOSITORY_ID', REPOSITORY_ID) != REPOSITORY_ID:
         fail(f'the repository id is {os.environ["GITHUB_REPOSITORY_ID"]}, not {REPOSITORY_ID}')
+    if not COMMIT.fullmatch(os.environ.get('GITHUB_SHA', '')):
+        fail(f'GITHUB_SHA {os.environ.get("GITHUB_SHA")!r} is not a commit id')
 
 
 def package(bundles, version, target):
@@ -87,6 +95,18 @@ def package(bundles, version, target):
     }
 
 
+def icons():
+    """The entry's icon: the file every bundle holds, by its address in the
+    run's commit, or on main outside GitHub Actions. The registry takes an
+    HTTPS address of at most 255 characters."""
+    icon()
+    commit = os.environ['GITHUB_SHA'] if os.environ.get('GITHUB_ACTIONS') == 'true' else 'main'
+    url = f'https://raw.githubusercontent.com/{REPOSITORY}/{commit}/{ICON}'
+    if len(url) > 255:
+        fail(f'{url} is longer than the registry allows')
+    return [{'src': url, 'mimeType': 'image/png', 'sizes': [f'{ICON_SIZE}x{ICON_SIZE}']}]
+
+
 def server_json(bundles, version):
     if not NAME_PATTERN.fullmatch(NAME) or len(NAME) > 200:
         fail(f'{NAME} is not a server name the registry accepts')
@@ -99,6 +119,7 @@ def server_json(bundles, version):
         'description': DESCRIPTION,
         'version': version,
         'websiteUrl': f'https://github.com/{REPOSITORY}/blob/v{version}/docs/mcp.md',
+        'icons': icons(),
         'repository': {'url': f'https://github.com/{REPOSITORY}', 'source': 'github', 'id': REPOSITORY_ID},
         'packages': [package(bundles, version, target) for target in TARGETS],
     }

@@ -3,6 +3,15 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## Unreleased
+
+### MCP Registry
+
+- Each MCP bundle holds the Graphicle icon, which Claude Desktop shows beside
+  the extension, and the registry entry links to the same icon
+  (`packaging/mcpb/icon.png`). The workflow builds a release's bundles with
+  the scripts on main, so the bundles of 0.1.2 have the icon too.
+
 ## 0.1.2 - 2026-10-18
 
 Every crate is at 0.1.2, and `graphicle --version` prints

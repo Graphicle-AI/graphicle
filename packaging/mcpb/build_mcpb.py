@@ -18,6 +18,9 @@ OUT/graphicle-<version>-<target>.mcpb, and it holds
     server/         the archive's program, graphicle (graphicle.exe on
                     Windows), executable. graphicle-graph stays out:
                     `graphicle mcp` links the graph engine and never runs it
+    icon.png        the Graphicle icon beside this script, 512 x 512 pixels
+                    (icon.svg drawn as a PNG), which clients show with the
+                    server
     LICENSE, NOTICE, NOTICE.md and licenses/
                     the archive's licence and notices, which go wherever the
                     program goes
@@ -37,6 +40,7 @@ import json
 import os
 import re
 import stat
+import struct
 import sys
 import tarfile
 import time
@@ -67,12 +71,27 @@ LEGAL_EXTRA = ['NOTICE.md']
 LICENCES = 'licenses/'
 # The files a bundle takes from an archive stay below this size together.
 MAX_TOTAL = 1 << 30
+# The icon every bundle holds as icon.png: the logo on the dark background of
+# the organization's avatar, icon.svg drawn at 512 x 512 pixels. Its path in
+# the repository, where render_server_json.py links server.json to it.
+ICON = 'packaging/mcpb/icon.png'
+ICON_SIZE = 512
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def fail(message):
     if os.environ.get('GITHUB_ACTIONS') == 'true':
         print(f'::error::{message}', flush=True)
     sys.exit(message)
+
+
+def icon():
+    """The icon's bytes, which must be a PNG of ICON_SIZE by ICON_SIZE pixels."""
+    path = ROOT / ICON
+    data = path.read_bytes() if path.is_file() else b''
+    if data[:8] != b'\x89PNG\r\n\x1a\n' or data[12:24] != b'IHDR' + struct.pack('>II', ICON_SIZE, ICON_SIZE):
+        fail(f'{ICON} is not a PNG of {ICON_SIZE} x {ICON_SIZE} pixels')
+    return data
 
 
 def bundle_name(version, target):
@@ -200,6 +219,7 @@ def manifest(version, target):
         'homepage': f'https://github.com/{REPOSITORY}',
         'documentation': f'https://github.com/{REPOSITORY}/blob/v{version}/docs/mcp.md',
         'support': f'https://github.com/{REPOSITORY}/issues',
+        'icon': 'icon.png',
         'server': {
             'type': 'binary',
             'entry_point': f'server/{program}',
@@ -257,7 +277,8 @@ def build(archive, version, out):
         fail(f'{archive.name} has no {", ".join(missing)} in {root}/')
     mtime, binary = files[program]
     text = json.dumps(manifest(version, target), indent=2, ensure_ascii=False) + '\n'
-    entries = [('manifest.json', 0o644, text.encode('utf-8')), (f'server/{program}', 0o755, binary)]
+    entries = [('manifest.json', 0o644, text.encode('utf-8')), (f'server/{program}', 0o755, binary),
+               ('icon.png', 0o644, icon())]
     # Every other file is a document, 0644 whatever the archive says.
     entries += [(name, 0o644, files[name][1]) for name in (*LEGAL, *LEGAL_EXTRA) if name in files]
     entries += [(name, 0o644, data) for name, (_, data) in sorted(files.items()) if name.startswith(LICENCES)]

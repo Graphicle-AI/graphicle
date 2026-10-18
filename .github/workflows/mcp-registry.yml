@@ -6,7 +6,8 @@
 # The build job, which can only read the repository, checks the release,
 # downloads its five archives, builds one MCP bundle per target with
 # packaging/mcpb/build_mcpb.py (graphicle-<version>-<target>.mcpb), writes
-# server.json with packaging/mcpb/render_server_json.py and validates it. The
+# server.json with packaging/mcpb/render_server_json.py, checks that the
+# address of its icon serves packaging/mcpb/icon.png and validates it. The
 # publish job uploads the bundles to the release, checks the uploaded files,
 # publishes server.json with mcp-publisher, which logs in with the run's GitHub
 # OIDC token (no secret is needed), and reads the listing back.
@@ -111,6 +112,9 @@ jobs:
           python3 packaging/mcpb/render_server_json.py --version "$VERSION" --bundles "$RUNNER_TEMP/mcpb" \
             --out "$RUNNER_TEMP/server.json"
           cat "$RUNNER_TEMP/server.json"
+          # The listed icon address never changes, so it must serve this commit's icon now.
+          curl -fsS -o "$RUNNER_TEMP/icon.png" "$(jq -r '.icons[0].src' "$RUNNER_TEMP/server.json")"
+          cmp "$RUNNER_TEMP/icon.png" packaging/mcpb/icon.png
           {
             echo "server.json for $SERVER_NAME $VERSION (once the run has published it, commit it at the repository's root):"
             echo

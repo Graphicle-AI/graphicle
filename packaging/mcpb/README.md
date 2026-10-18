@@ -21,6 +21,10 @@ that `graphicle sync` has set up.
 - `server/graphicle` (`server/graphicle.exe` on Windows): the archive's program,
   byte for byte. `graphicle-graph` stays out, because `graphicle mcp` links the
   graph engine and never runs it;
+- `icon.png`: the Graphicle icon, 512 x 512 pixels, which clients such as
+  Claude Desktop show beside the server. It is [icon.png](icon.png) in this
+  folder, [icon.svg](icon.svg) drawn as a PNG (for example with a browser's
+  headless screenshot at a 512 x 512 window);
 - `LICENSE`, `NOTICE`, `NOTICE.md` and `licenses/` from the archive.
 
 The server serves a project that `graphicle sync` has set up. It does not index
@@ -48,6 +52,11 @@ step 3 below commits the entry the workflow published at the repository's root.
   packages are listed with the most common machine of each system first
   (Apple silicon before Intel, x86-64 Linux before Arm64).
 - The description has at most 100 characters, the registry's limit.
+- The icon is the bundles' `icon.png`, by its address on
+  raw.githubusercontent.com in the commit of main that the workflow run checked
+  out, so the listed address keeps working when main moves on. Before it
+  publishes, the workflow downloads the icon from that address and compares it
+  with the file. Outside GitHub Actions, the address names main.
 
 ## Steps at release time
 
