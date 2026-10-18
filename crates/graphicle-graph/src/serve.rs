@@ -675,7 +675,7 @@ impl Server {
         let method = r["method"].as_str().unwrap_or("");
         let p = &r["params"];
         let result:Result<Value>=match method{
-            "initialize"=>Ok(json!({"protocolVersion":p["protocolVersion"].as_str().unwrap_or("2025-06-18"),"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"graphicle-graph","version":crate::VERSION}})),"ping"=>Ok(json!({})),"tools/list"=>Ok(json!({"tools":tools_list()})),"resources/list"=>Ok(json!({"resources":resources_list()})),"resources/templates/list"=>Ok(json!({"resourceTemplates":[]})),
+            "initialize"=>Ok(json!({"protocolVersion":protocol_version(&p["protocolVersion"]),"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"graphicle-graph","version":crate::VERSION}})),"ping"=>Ok(json!({})),"tools/list"=>Ok(json!({"tools":tools_list()})),"resources/list"=>Ok(json!({"resources":resources_list()})),"resources/templates/list"=>Ok(json!({"resourceTemplates":[]})),
             "tools/call"=>{let name=p["name"].as_str().unwrap_or("");match self.call_tool(name,&p["arguments"]){Ok(t)=>Ok(json!({"content":[{"type":"text","text":t}]})),Err(e)=>Ok(json!({"isError":(["list_prs","get_pr_impact","triage_prs"].contains(&name)),"content":[{"type":"text","text":format!("Error executing {name}: {e}")}]}))}},
             "resources/read"=>self.resource(p["uri"].as_str().unwrap_or("")).map(|s|json!({"contents":[{"uri":p["uri"],"mimeType":if p["uri"].as_str().is_some_and(|s|s.starts_with("graphicle-graph://report")){"text/markdown"}else{"text/plain"},"text":s}]})),
             _=>return Some(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":format!("Method not found: {method}")}}))
@@ -685,6 +685,19 @@ impl Server {
             Err(e) => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32603,"message":e}}),
         })
     }
+}
+/// MCP protocol versions this server speaks.
+const PROTOCOL_VERSIONS: [&str; 4] = ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"];
+/// The protocol version an `initialize` reply names: the client's when this
+/// server speaks it, else this server's own, as the MCP lifecycle asks (and
+/// as Graphify's server, on the MCP Python SDK, answers). A version the
+/// server does not know is never echoed back as agreed.
+fn protocol_version(requested: &Value) -> &'static str {
+    requested
+        .as_str()
+        .and_then(|asked| PROTOCOL_VERSIONS.iter().find(|known| **known == asked))
+        .copied()
+        .unwrap_or("2025-06-18")
 }
 pub fn stdio(path: &Path) -> Result<()> {
     serve_stdio(&Server::new(path))
