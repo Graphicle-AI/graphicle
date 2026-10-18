@@ -1029,6 +1029,27 @@ fn mcp_recovers_after_malformed_and_oversized_frames() {
 }
 
 #[test]
+fn mcp_initialize_answers_a_protocol_version_it_speaks() {
+    let server = serve::Server::new(std::path::Path::new("unused-for-initialize.json"));
+    let version = |params: Value| {
+        let reply = server
+            .rpc(&json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":params}))
+            .unwrap();
+        reply["result"]["protocolVersion"].clone()
+    };
+    for known in ["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"] {
+        assert_eq!(version(json!({"protocolVersion":known})), known);
+    }
+    // An unknown or malformed version is answered with the server's own.
+    assert_eq!(
+        version(json!({"protocolVersion":"1999-01-01"})),
+        "2025-06-18"
+    );
+    assert_eq!(version(json!({"protocolVersion":7})), "2025-06-18");
+    assert_eq!(version(json!({})), "2025-06-18");
+}
+
+#[test]
 fn installer_rejects_conflicting_platforms_and_unknown_options_before_writes() {
     for arguments in [
         vec!["install", "claude", "--platform", "codex"],
