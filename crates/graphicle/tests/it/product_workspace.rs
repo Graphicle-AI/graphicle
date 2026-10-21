@@ -193,6 +193,255 @@ async fn v1_binds_authority_and_usage_is_owner_only() {
     );
 }
 
+/// One request with optional extra headers: status, headers and the raw body
+/// (the exact text the server served).
+async fn raw(
+    app: &Router,
+    path: &str,
+    cap: &str,
+    body: Value,
+    extra: &[(&str, &str)],
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let mut req = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("host", "localhost")
+        .header("content-type", "application/json")
+        .header("x-workspace-capability", cap);
+    for (name, value) in extra {
+        req = req.header(*name, *value);
+    }
+    let response = app
+        .clone()
+        .oneshot(req.body(Body::from(body.to_string())).unwrap())
+        .await
+        .unwrap();
+    let (status, headers) = (response.status(), response.headers().clone());
+    let bytes = axum::body::to_bytes(response.into_body(), 8 * 1024 * 1024)
+        .await
+        .unwrap();
+    (status, headers, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+/// What Graphicle serves is metered (`graphicle_runtime::metering`): the
+/// tokens of the text served, counted with cl100k_base, per credential, agent
+/// session, channel and tool or operation. The owner's usage report lists
+/// them beside the recorded model tokens, with no cost. An MCP HTTP client's
+/// agent session is the `Mcp-Session-Id` issued and signed at `initialize`;
+/// an id the server did not sign shares one label. Requests and results
+/// themselves are never stored.
+#[tokio::test]
+async fn served_tokens_are_reported_per_credential_and_agent_session() {
+    let f = Fixture::new();
+    let app = f.app();
+    f.sync("def authenticate():\n    return 'rotate keys every Friday'\n");
+    let agent = f
+        .store
+        .grant(
+            &f.workspace,
+            &f.owner,
+            &json!({"role":"agent","label":"Build agent"}),
+        )
+        .unwrap();
+    let key = s(&agent, "capability");
+    let question = "How does authenticate rotate keys?";
+    let (status, _, body) = raw(
+        &app,
+        &f.command_url(),
+        key,
+        json!({"operation":"context","arguments":{"question":question}}),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let http_tokens = graphicle_memory::text::count(&body) as u64;
+    // `memories` returns the project's memory rows: metered, as the
+    // `project_memory` tool that runs it.
+    let (status, _, body) = raw(
+        &app,
+        &f.command_url(),
+        key,
+        json!({"operation":"memories"}),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let memories_tokens = graphicle_memory::text::count(&body) as u64;
+    // An operation that returns only counts is not metered.
+    let (status, _, _) = raw(
+        &app,
+        &f.command_url(),
+        key,
+        json!({"operation":"observer.status","arguments":{"include":["file:"]}}),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let mcp = format!("/mcp/{}/{}", f.workspace, f.repo);
+    let (status, headers, body) = raw(
+        &app,
+        &mcp,
+        key,
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"Test Agent","version":"1.0"}}}),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let session = headers["mcp-session-id"].to_str().unwrap().to_string();
+    let (signed, signature) = session.rsplit_once('.').unwrap();
+    let random = signed.strip_prefix("testagent.").unwrap();
+    assert_eq!((random.len(), signature.len()), (32, 64), "{session}");
+    let (status, _, body) = raw(
+        &app,
+        &mcp,
+        key,
+        json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"recall_project","arguments":{"question":question}}}),
+        &[("mcp-session-id", &session)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let reply: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(reply["result"]["isError"], false, "{reply}");
+    let mcp_tokens =
+        graphicle_memory::text::count(s(&reply["result"]["content"][0], "text")) as u64;
+    assert!(http_tokens > 0 && mcp_tokens > 0 && memories_tokens > 0);
+    // A session id the server did not sign: one shared label, whatever the
+    // client sends, so it cannot add a counter row per call.
+    for forged in [
+        "testagent.0123456789abcdef0123456789abcdef",
+        "my-own-session",
+    ] {
+        let (status, _, body) = raw(
+            &app,
+            &mcp,
+            key,
+            json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"repository_status","arguments":{}}}),
+            &[("mcp-session-id", forged)],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    // Results are counted on threads of their own, and a usage report does
+    // not wait for them: record them first.
+    graphicle_runtime::metering::flush(&f.store).unwrap();
+    let (status, usage, _) = call(&app, &format!("{}/usage", f.base()), &f.owner, None).await;
+    assert_eq!(status, StatusCode::OK, "{usage}");
+    assert_eq!(usage["cost"], Value::Null, "no price table: no cost");
+    let served = &usage["served"];
+    assert_eq!(served["counted_with"], "cl100k_base");
+    assert_eq!(served["calls"], 5, "{served:#}");
+    assert_eq!(served["unrecorded_tokens"], 0);
+    let mut kinds: Vec<(String, String, u64)> = served["by_kind"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                s(row, "channel").to_string(),
+                s(row, "kind").to_string(),
+                row["tokens"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    kinds.sort();
+    let status_tokens = kinds
+        .iter()
+        .find(|(_, kind, _)| kind == "repository_status")
+        .map(|row| row.2)
+        .unwrap_or_default();
+    assert!(status_tokens > 0, "{kinds:?}");
+    assert_eq!(
+        served["tokens"].as_u64(),
+        Some(http_tokens + memories_tokens + mcp_tokens + status_tokens)
+    );
+    assert_eq!(
+        kinds,
+        [
+            ("http".to_string(), "context".to_string(), http_tokens),
+            ("http".to_string(), "memories".to_string(), memories_tokens),
+            ("mcp".to_string(), "recall_project".to_string(), mcp_tokens),
+            (
+                "mcp".to_string(),
+                "repository_status".to_string(),
+                status_tokens
+            ),
+        ]
+    );
+    let credentials = served["by_credential"].as_array().unwrap();
+    assert_eq!(credentials.len(), 1, "{credentials:?}");
+    assert_eq!(credentials[0]["credential_id"], agent["id"]);
+    assert_eq!(credentials[0]["label"], "Build agent");
+    assert_eq!(credentials[0]["role"], "agent");
+    let mut sessions: Vec<(String, u64, u64)> = served["by_session"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            assert_eq!(row["credential_id"], agent["id"]);
+            (
+                s(row, "session").to_string(),
+                row["calls"].as_u64().unwrap(),
+                row["tokens"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    sessions.sort();
+    assert_eq!(
+        sessions,
+        [
+            ("mcp:unverified".to_string(), 2, status_tokens),
+            (format!("testagent:{}", &random[..12]), 1, mcp_tokens),
+        ]
+    );
+    assert_eq!(served["by_project"][0]["repository_id"], json!(f.repo));
+    assert!(usage["model_usage_by_credential"].is_array());
+    assert!(usage["model_usage_by_model"].is_array());
+    // Counters only: never the question, a result or the client's session id.
+    let stored = graphicle_runtime::store::rows(
+        &f.store.connect().unwrap(),
+        "SELECT * FROM am_served_usage",
+        [],
+    )
+    .unwrap();
+    let stored = json!(stored).to_string();
+    assert!(
+        !stored.contains("authenticate") && !stored.contains(&session),
+        "{stored}"
+    );
+    // Graphicle's own model calls, by the credential that queued the job and
+    // by model: tokens, and still no cost.
+    let db = f.store.connect().unwrap();
+    let stamp = graphicle_runtime::now();
+    db.execute(
+        "INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,not_before,created_at,updated_at)
+         VALUES('job-1',?,'answer','job-1','{}',?,'complete',?,?,?)",
+        rusqlite::params![
+            f.repo,
+            graphicle_memory::text::sha256(key.as_bytes()),
+            stamp,
+            stamp,
+            stamp
+        ],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO am_model_calls VALUES('call-1',?,'job-1','openai','gpt-test','h',1200,300,0,0,?)",
+        rusqlite::params![f.repo, stamp],
+    )
+    .unwrap();
+    let (_, usage, _) = call(&app, &format!("{}/usage", f.base()), &f.owner, None).await;
+    assert_eq!(
+        usage["model_usage_by_credential"],
+        json!([{"credential_id":agent["id"],"calls":1,"input_tokens":1200,"output_tokens":300}])
+    );
+    assert_eq!(
+        usage["model_usage_by_model"],
+        json!([{"provider":"openai","model":"gpt-test","calls":1,"input_tokens":1200,"output_tokens":300}])
+    );
+    assert_eq!(usage["cost"], Value::Null);
+}
+
 #[tokio::test]
 async fn quota_covers_v1_legacy_and_mcp_but_preserves_recovery() {
     let f = Fixture::new();

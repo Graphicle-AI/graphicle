@@ -351,12 +351,18 @@ fn setup_connects_every_client_once_and_disconnect_restores_every_file() {
     assert_eq!(settings["permissions"]["allow"][0], "Bash(ls)");
     assert_eq!(settings["hooks"]["Stop"].as_array().unwrap().len(), 2);
     assert!(settings["hooks"].get("SessionStart").is_some());
-    // No guard hooks unless asked for (--guards).
+    // No guard hooks unless asked for (--guards), and no prompt hook
+    // (--prompt-context).
     assert!(
         settings["hooks"].get("PreToolUse").is_none(),
         "{settings:#}"
     );
     assert!(first["clients"][0].get("guard").is_none(), "{first:#}");
+    assert!(
+        settings["hooks"].get("UserPromptSubmit").is_none(),
+        "{settings:#}"
+    );
+    assert!(first.get("prompt_context").is_none(), "{first:#}");
     let codex_hooks = read_json(&m.home.join(".codex/hooks.json"));
     assert_eq!(codex_hooks["hooks"]["Stop"].as_array().unwrap().len(), 2);
     assert_eq!(first["capture"]["state"], "on", "{first:#}");
@@ -696,6 +702,45 @@ fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
     assert_eq!(client["state"], "updated", "{whole:#}");
     assert_eq!(client["tools"], "all", "{whole:#}");
     assert_eq!(client["guard"]["state"], "added", "{whole:#}");
+    // --prompt-context: Claude Code's prompt hook, one UserPromptSubmit
+    // entry beside the other hooks; a setup without it leaves it as it is.
+    let with_prompt = [
+        "setup",
+        "--yes",
+        "--clients",
+        "claude-code",
+        "--tools",
+        "all",
+        "--guards",
+        "--prompt-context",
+    ];
+    let prompted = m.graphicle(&with_prompt);
+    assert_eq!(prompted["prompt_context"]["state"], "added", "{prompted:#}");
+    let hooked = read_json(&m.repo.join(".claude/settings.local.json"));
+    let groups = hooked["hooks"]["UserPromptSubmit"].clone();
+    assert_eq!(groups.as_array().unwrap().len(), 1, "{hooked:#}");
+    assert!(groups[0].get("matcher").is_none(), "{groups:#}");
+    let handler = &groups[0]["hooks"][0];
+    assert_eq!(handler["type"], "command", "{handler:#}");
+    assert_eq!(
+        handler["timeout"],
+        graphicle_runtime::prompt_hook::HOOK_TIMEOUT
+    );
+    let command = handler["command"].as_str().unwrap();
+    assert!(
+        command.ends_with(" hook claude-code prompt-context") && command.contains(" --data-dir "),
+        "{command}"
+    );
+    assert!(hooked["hooks"].get("SessionStart").is_some());
+    assert!(hooked["hooks"].get("PreToolUse").is_some());
+    let again = m.graphicle(&with_prompt);
+    assert_eq!(again["prompt_context"]["state"], "already set", "{again:#}");
+    let without = m.graphicle(&with_prompt[..7]);
+    assert!(without.get("prompt_context").is_none(), "{without:#}");
+    assert_eq!(
+        read_json(&m.repo.join(".claude/settings.local.json"))["hooks"]["UserPromptSubmit"],
+        groups
+    );
     // 0.1.0's AGENTS.md section, with Claude Code alone too.
     let agents = std::fs::read_to_string(m.repo.join("AGENTS.md")).unwrap();
     assert!(
@@ -822,7 +867,9 @@ fn setup_then_one_mcp_session_answers_graph_and_memory_tools() {
     let agents = std::fs::read_to_string(m.repo.join("AGENTS.md")).unwrap();
     assert!(
         !agents.contains("This repository is indexed by Graphicle")
-            && agents.contains("When you do not yet know where the code"),
+            && agents
+                .to_lowercase()
+                .contains(graphicle_runtime::agent_instructions::ROUTING_GREP),
         "{agents}"
     );
     assert!(

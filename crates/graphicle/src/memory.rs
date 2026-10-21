@@ -60,7 +60,7 @@ pub fn documents(db: &Connection, repository: &Value, p: &Principal) -> Result<V
             && !crate::permissions::allows(
                 db,
                 &p.workspace,
-                s(&row, "kind"),
+                crate::connectors::identity_provider(s(&row, "kind")),
                 &row["metadata"]["provider_permissions"],
                 p,
                 integer(&row["config"], "permission_max_age_seconds", 300, 3600)?.max(30) as i64,
@@ -617,7 +617,7 @@ pub(crate) fn apply_review(
     args: &Value,
     model_review: Option<&Value>,
 ) -> Result<Value> {
-    if !p.permits("approve") {
+    if !crate::store::permitted(db, p, "approve")? {
         return Err(Error::denied());
     }
     let identifier = s(repository, "id");

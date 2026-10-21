@@ -399,6 +399,19 @@ async function workspaceUsage(root, scope, current) {
   const usage = panel("Provider usage", data.cost_note);
   usage.append(facts([["Recorded input tokens", (data.model_usage?.input_tokens || 0).toLocaleString()], ["Recorded output tokens", (data.model_usage?.output_tokens || 0).toLocaleString()], ["Unreported reservations", data.unreported_reservations || 0], ["HTTP errors", data.http_errors]]));
   columns.append(budget, usage); root.append(columns);
+  // What Graphicle returned to agents and keys this month: tokens, not cost.
+  const served = data.served || {}, channels = {mcp: "MCP tool results", http: "API", web: "Web app", cli: "Command line", hook: "Session-start context"};
+  const servedPanel = panel("What Graphicle served", served.scope);
+  servedPanel.append(facts([["Tokens served", Number(served.tokens || 0).toLocaleString()], ["Results served", Number(served.calls || 0).toLocaleString()],
+    ...(served.unrecorded_tokens ? [["Counted, not yet recorded", Number(served.unrecorded_tokens).toLocaleString() + " tokens"]] : []),
+    ...(served.by_channel || []).map(row => [channels[row.channel] || row.channel, Number(row.tokens).toLocaleString() + " tokens"]),
+    ...(served.by_credential || []).slice(0, 5).map(row => [row.label || row.credential_id, Number(row.tokens).toLocaleString() + " tokens"])]));
+  root.append(servedPanel);
+  // An installed extension can add to this view (/extensions.js).
+  if (typeof loadUsageDetails === "function") {
+    await loadUsageDetails(root, scope, current, data);
+    if (!current()) return;
+  }
   // An installed edition can add its own panels here (/extensions.js).
   if (typeof loadPlan === "function") {
     await loadPlan(root, scope, current, data);

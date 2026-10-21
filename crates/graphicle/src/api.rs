@@ -1,15 +1,15 @@
 use crate::platform::CanonicalExt;
 use crate::{Error, Result, string};
 use crate::{
-    extension::McpTool,
+    extension::{Access, McpTool},
     jobs::Worker,
     model,
-    store::{Store, repo, s},
+    store::{Store, repo, rows, s},
 };
 use axum::{
     Json, Router,
-    body::Body,
-    extract::{DefaultBodyLimit, Path, Query, State},
+    body::{Body, to_bytes},
+    extract::{DefaultBodyLimit, FromRequestParts, MatchedPath, Path, Query, RawPathParams, State},
     http::{HeaderMap, Request, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -121,7 +121,7 @@ pub enum ToolSet {
     Memory,
     /// The five tools an agent needs to find code ([`ESSENTIAL_TOOLS`]), with
     /// descriptions that start with what an agent searches for and carry the
-    /// citation details, and one sentence of instructions: what
+    /// citation details, and short instructions on when to call them: what
     /// `graphicle setup` gives Claude Code, which loads only tool names and
     /// instructions until a tool is searched for. A workspace connection adds
     /// `list_projects`; the server's opt-ins add their tools
@@ -193,27 +193,39 @@ pub fn reads_code_graph(tool: &McpTool) -> bool {
         .any(|family| tool.operation.starts_with(family))
 }
 
-/// Parse `--set switch=true|false` values into fixed switches; only the
-/// switches of [`RECALL_SWITCHES`] can be fixed, each at most once.
+/// Parse `--set switch=true|false` values (and `scope=project|workspace`)
+/// into fixed switches; only the switches of [`RECALL_SWITCHES`] and
+/// [`RECALL_SCOPE`] can be fixed, each at most once. An unknown name is
+/// refused, never ignored.
 pub fn fixed_switches(values: &[String]) -> Result<serde_json::Map<String, Value>> {
     let mut fixed = serde_json::Map::new();
     for value in values {
         let (name, setting) = value
             .split_once('=')
             .ok_or_else(|| Error::bad("Use --set <switch>=true or false"))?;
-        if !RECALL_SWITCHES.contains(&name) {
-            let (last, rest) = RECALL_SWITCHES.split_last().unwrap_or((&"", &[]));
+        let setting = if name == RECALL_SCOPE {
+            match setting {
+                "project" | "workspace" => json!(setting),
+                _ => return Err(Error::bad("scope is project or workspace")),
+            }
+        } else if RECALL_SWITCHES.contains(&name) {
+            let value = match setting {
+                "true" => json!(true),
+                "false" => json!(false),
+                "auto" => json!("auto"),
+                number => number.parse::<u64>().map_or(Value::Null, |n| json!(n)),
+            };
+            if let Some(refused) = switch_refusal(name, &value) {
+                return Err(Error::bad(refused));
+            }
+            value
+        } else {
             return Err(Error::bad(format!(
-                "{name} cannot be fixed; the server fixes {} and {last}",
-                rest.join(", ")
+                "{name} cannot be fixed; the server fixes {} and {RECALL_SCOPE}",
+                RECALL_SWITCHES.join(", ")
             )));
-        }
-        let setting = match setting {
-            "true" => true,
-            "false" => false,
-            _ => return Err(Error::bad(format!("{name} is true or false"))),
         };
-        if fixed.insert(name.to_string(), json!(setting)).is_some() {
+        if fixed.insert(name.to_string(), setting).is_some() {
             return Err(Error::bad(format!("{name} is set twice; give it once")));
         }
     }
@@ -304,18 +316,104 @@ pub fn router(app: App) -> Router {
             app.clone(),
             crate::product::meter,
         ))
+        .layer(middleware::from_fn_with_state(app.clone(), admission))
         .layer(middleware::from_fn_with_state(app.clone(), boundary))
         .with_state(app)
+}
+/// A route that names a workspace, before the request meter: an installed
+/// extension may refuse it for the request's credential or limit the tokens
+/// of its response (`extension::admit`, `Access::Route`). The limit applies
+/// to the response of a GET or HEAD route, unless the operation it serves
+/// checked its result already (`metering::SizeChecked`). Core installs none,
+/// so nothing changes there.
+async fn admission(State(app): State<App>, request: Request<Body>, next: Next) -> Response {
+    if crate::extension::installed().is_empty() {
+        return next.run(request).await;
+    }
+    let Some(pattern) = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(|path| path.as_str().to_owned())
+    else {
+        return next.run(request).await;
+    };
+    let (mut parts, body) = request.into_parts();
+    let workspace = RawPathParams::from_request_parts(&mut parts, &app)
+        .await
+        .ok()
+        .and_then(|params| {
+            params
+                .iter()
+                .find(|(name, _)| *name == "workspace")
+                .map(|(_, value)| value.to_owned())
+        });
+    let credential = token(&parts.headers).ok().map(str::to_owned);
+    let method = parts.method.as_str().to_owned();
+    // A read's response only: a write's is never refused once it is saved.
+    let reads = matches!(method.as_str(), "GET" | "HEAD");
+    let request = Request::from_parts(parts, body);
+    let (Some(workspace), Some(credential)) = (workspace, credential) else {
+        return next.run(request).await;
+    };
+    let store = app.worker.store.clone();
+    let admitted = crate::product::blocking(move || {
+        crate::extension::admit(
+            &store,
+            &workspace,
+            &credential,
+            Access::Route {
+                method: &method,
+                pattern: &pattern,
+            },
+            None,
+        )
+    })
+    .await;
+    let limit = match admitted {
+        Ok(admitted) => admitted.max_tokens.filter(|_| reads),
+        Err(error) => return error.into_response(),
+    };
+    let response = next.run(request).await;
+    if limit.is_none()
+        || !response.status().is_success()
+        || response
+            .extensions()
+            .get::<crate::metering::SizeChecked>()
+            .is_some()
+    {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let Ok(bytes) = to_bytes(body, usize::MAX).await else {
+        return Error::bad("Response unavailable").into_response();
+    };
+    // Counting a large response is CPU work: off the async executor.
+    let checked = crate::product::blocking(move || {
+        crate::extension::within_limit(limit, &String::from_utf8_lossy(&bytes))?;
+        Ok(bytes)
+    })
+    .await;
+    match checked {
+        Ok(bytes) => Response::from_parts(parts, Body::from(bytes)),
+        Err(error) => error.into_response(),
+    }
 }
 async fn boundary(State(app): State<App>, mut request: Request<Body>, next: Next) -> Response {
     // This header is internal only; untrusted HTTP clients cannot supply session authority.
     request.headers_mut().remove("x-graphicle-browser-session");
+    // A cross-site form post that an installed extension authenticates by
+    // itself (a sign-in callback that another site's page posts to) carries
+    // no browser session and skips the origin and browser-mutation checks;
+    // the host check stays.
+    let cross_site = request.method() == axum::http::Method::POST
+        && crate::extension::installed().cross_site_post(request.uri().path());
     let cookie_name = if app.public_origin.is_some() {
         "__Host-graphicle_session"
     } else {
         "graphicle_session"
     };
-    if let Some(cookie) = cookie(request.headers(), cookie_name).map(str::to_string) {
+    if !cross_site && let Some(cookie) = cookie(request.headers(), cookie_name).map(str::to_string)
+    {
         let explicit = request.headers().get(header::AUTHORIZATION).is_some()
             || request
                 .headers()
@@ -355,10 +453,11 @@ async fn boundary(State(app): State<App>, mut request: Request<Body>, next: Next
         )
             .into_response();
     }
-    if let Some(origin) = request
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
+    if !cross_site
+        && let Some(origin) = request
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
         && !app.public_origin.as_ref().map_or_else(
             || origin == format!("http://{host}") || origin == format!("https://{host}"),
             |public| origin == public && public == &format!("https://{host}"),
@@ -622,12 +721,18 @@ async fn graph_episodes(
     State(app): State<App>,
     Path((workspace, repository)): Path<(String, String)>,
     headers: HeaderMap,
-) -> Result<Json<Value>> {
-    Ok(Json(app.worker.store.graph_episodes(
+) -> Response {
+    let store = &app.worker.store;
+    let run = async { store.graph_episodes(&workspace, token(&headers)?, &repository) };
+    crate::metering::serve_route(
+        store,
+        &headers,
         &workspace,
-        token(&headers)?,
         &repository,
-    )?))
+        "graph.episodes",
+        run,
+    )
+    .await
 }
 /// `graph.impact`: base-versus-head impact between two graph episodes.
 async fn graph_impact(
@@ -635,7 +740,7 @@ async fn graph_impact(
     Path((workspace, repository)): Path<(String, String)>,
     headers: HeaderMap,
     Json(args): Json<Value>,
-) -> Result<Json<Value>> {
+) -> Response {
     overridable(
         app,
         &headers,
@@ -650,35 +755,42 @@ async fn graph_link(
     State(app): State<App>,
     Path(workspace): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<Value>> {
-    let token = token(&headers)?.to_string();
-    let store = app.worker.store.clone();
-    tokio::task::spawn_blocking(move || store.graph_link(&workspace, &token))
-        .await
-        .map(|result| result.map(Json))
-        .map_err(|_| Error::bad("Cross-repository linking interrupted"))?
+) -> Response {
+    let (store, link) = (&app.worker.store, app.worker.store.clone());
+    let run = async {
+        let (token, workspace) = (token(&headers)?.to_string(), workspace.clone());
+        tokio::task::spawn_blocking(move || link.graph_link(&workspace, &token))
+            .await
+            .map_err(|_| Error::bad("Cross-repository linking interrupted"))?
+    };
+    // Workspace-wide: admitted as a metered operation, and not counted.
+    crate::metering::serve_route(store, &headers, &workspace, "", "graph.link", run).await
 }
 async fn graph_cross_edges(
     State(app): State<App>,
     Path((workspace, repository)): Path<(String, String)>,
     headers: HeaderMap,
-) -> Result<Json<Value>> {
-    Ok(Json(app.worker.store.graph_cross_edges(
+) -> Response {
+    let store = &app.worker.store;
+    let run = async { store.graph_cross_edges(&workspace, token(&headers)?, &repository) };
+    crate::metering::serve_route(
+        store,
+        &headers,
         &workspace,
-        token(&headers)?,
         &repository,
-    )?))
+        "graph.cross_edges",
+        run,
+    )
+    .await
 }
 async fn graph_stats(
     State(app): State<App>,
     Path((workspace, repository)): Path<(String, String)>,
     headers: HeaderMap,
-) -> Result<Json<Value>> {
-    Ok(Json(app.worker.store.graph_stats(
-        &workspace,
-        token(&headers)?,
-        &repository,
-    )?))
+) -> Response {
+    let store = &app.worker.store;
+    let run = async { store.graph_stats(&workspace, token(&headers)?, &repository) };
+    crate::metering::serve_route(store, &headers, &workspace, &repository, "graph.stats", run).await
 }
 async fn graph_access(
     State(app): State<App>,
@@ -698,13 +810,18 @@ async fn graph_as_of(
     Path((workspace, repository)): Path<(String, String)>,
     headers: HeaderMap,
     Json(args): Json<Value>,
-) -> Result<Json<Value>> {
-    let token = token(&headers)?.to_string();
-    let store = app.worker.store.clone();
-    tokio::task::spawn_blocking(move || store.graph_as_of(&workspace, &token, &repository, &args))
+) -> Response {
+    let (store, reader) = (&app.worker.store, app.worker.store.clone());
+    let run = async {
+        let token = token(&headers)?.to_string();
+        let (workspace, repository) = (workspace.clone(), repository.clone());
+        tokio::task::spawn_blocking(move || {
+            reader.graph_as_of(&workspace, &token, &repository, &args)
+        })
         .await
-        .map(|result| result.map(Json))
         .map_err(|_| Error::bad("Episode reconstruction interrupted"))?
+    };
+    crate::metering::serve_route(store, &headers, &workspace, &repository, "graph.as_of", run).await
 }
 /// `impact.report`: the PR change-impact report.
 async fn impact_report(
@@ -712,7 +829,7 @@ async fn impact_report(
     Path((workspace, repository)): Path<(String, String)>,
     headers: HeaderMap,
     Json(args): Json<Value>,
-) -> Result<Json<Value>> {
+) -> Response {
     overridable(
         app,
         &headers,
@@ -729,7 +846,7 @@ async fn coverage_upload(
     Path((workspace, repository)): Path<(String, String)>,
     headers: HeaderMap,
     Json(args): Json<Value>,
-) -> Result<Json<Value>> {
+) -> Response {
     overridable(
         app,
         &headers,
@@ -745,7 +862,8 @@ async fn coverage_upload(
 /// extension serves it, and without one it answers 501 after authorization.
 /// The repository comes from the path. The work can be CPU-bound (projecting
 /// the head set first, parsing large coverage runs), so it runs off the
-/// executor.
+/// executor. It is admitted, size-checked and counted as through the command
+/// routes (`crate::metering::admit`).
 async fn overridable(
     app: App,
     headers: &HeaderMap,
@@ -753,15 +871,42 @@ async fn overridable(
     operation: &'static str,
     mut args: Value,
     interrupted: &'static str,
-) -> Result<Json<Value>> {
-    let token = token(headers)?.to_string();
+) -> Response {
+    let token = match token(headers) {
+        Ok(token) => token.to_string(),
+        Err(error) => return error.into_response(),
+    };
     if let Some(map) = args.as_object_mut() {
         map.insert("repository_id".into(), json!(repository));
     }
-    tokio::task::spawn_blocking(move || command(&app, &workspace, &token, operation, &args))
-        .await
-        .map(|result| result.map(Json))
-        .map_err(|_| Error::bad(interrupted))?
+    let store = app.worker.store.clone();
+    let mut admission =
+        match crate::metering::admit_request(&store, &workspace, &token, headers, operation, &args)
+            .await
+        {
+            Ok(admission) => admission,
+            Err(error) => return crate::metering::refusal(error),
+        };
+    let args = admission.take_arguments().unwrap_or(args);
+    let result =
+        tokio::task::spawn_blocking(move || dispatch(&app, &workspace, &token, operation, &args))
+            .await
+            .map_err(|_| Error::bad(interrupted))
+            .and_then(|result| result);
+    let served = match result {
+        Ok(value) => crate::metering::served(&store, admission, value).await,
+        Err(error) => Err(error),
+    };
+    match served {
+        Ok(value) => {
+            let mut response = Json(value).into_response();
+            response
+                .extensions_mut()
+                .insert(crate::metering::SizeChecked);
+            response
+        }
+        Err(error) => error.into_response(),
+    }
 }
 async fn graph_label(
     State(app): State<App>,
@@ -792,18 +937,40 @@ async fn http_command(
     Path(workspace): Path<String>,
     headers: HeaderMap,
     Json(body): Json<Command>,
-) -> Result<Json<Value>> {
-    Ok(Json(
-        command_async(
-            &app,
-            &workspace,
-            token(&headers)?,
-            &body.operation,
-            &body.arguments,
-        )
-        .await?,
-    ))
+) -> Result<Response> {
+    let capability = token(&headers)?;
+    // The one admission (`crate::metering::admit`): an installed extension
+    // authorizes the operation, then a metered one's quota; it runs; then a
+    // read's result is size-checked and a metered result counted.
+    let mut admission = match crate::metering::admit_request(
+        &app.worker.store,
+        &workspace,
+        capability,
+        &headers,
+        &body.operation,
+        &body.arguments,
+    )
+    .await
+    {
+        Ok(admission) => admission,
+        Err(error) => return Ok(crate::metering::refusal(error)),
+    };
+    let narrowed = admission.take_arguments();
+    let value = dispatch_async(
+        &app,
+        &workspace,
+        capability,
+        &body.operation,
+        narrowed.as_ref().unwrap_or(&body.arguments),
+    )
+    .await?;
+    Ok(Json(crate::metering::served(&app.worker.store, admission, value).await?).into_response())
 }
+/// Run one operation for `capability`, as `graphicle call` and the SDKs do:
+/// an installed extension authorizes it (`Access::Operation`) and may narrow
+/// its arguments, and a read's result must fit the credential's per-call cap
+/// (`crate::metering::admit`). The command routes, MCP and the routes that
+/// serve an operation also ask for its quota and count it.
 pub async fn command_async(
     app: &App,
     workspace: &str,
@@ -811,7 +978,55 @@ pub async fn command_async(
     operation: &str,
     args: &Value,
 ) -> Result<Value> {
-    // An extension operation without an async form runs through `command`
+    let mut admission = operation_admission(app, workspace, capability, operation, args)?;
+    let narrowed = admission.take_arguments();
+    let result = dispatch_async(
+        app,
+        workspace,
+        capability,
+        operation,
+        narrowed.as_ref().unwrap_or(args),
+    )
+    .await?;
+    crate::metering::served(&app.worker.store, admission, result).await
+}
+/// The admission of `command` and `command_async`: authorized, never asked
+/// for a quota or counted here (the local command line counts what it
+/// prints, `metering::served_locally`), and size-checked when it is a read.
+fn operation_admission(
+    app: &App,
+    workspace: &str,
+    capability: &str,
+    operation: &str,
+    args: &Value,
+) -> Result<crate::metering::Admission> {
+    crate::metering::admit(
+        &app.worker.store,
+        capability,
+        crate::metering::Ask {
+            access: Access::Operation(operation),
+            arguments: Some(args),
+            call: crate::metering::Call {
+                workspace: workspace.into(),
+                repository: String::new(),
+                credential: String::new(),
+                session: String::new(),
+                channel: crate::metering::Channel::Cli,
+                kind: operation.into(),
+            },
+            metered: false,
+            read: crate::metering::meter(operation) == Some(crate::metering::Meter::Read),
+        },
+    )
+}
+pub(crate) async fn dispatch_async(
+    app: &App,
+    workspace: &str,
+    capability: &str,
+    operation: &str,
+    args: &Value,
+) -> Result<Value> {
+    // An extension operation without an async form runs through `dispatch`
     // on a blocking thread (the fallback arm below).
     if let Some(run) = crate::extension::installed()
         .operation(operation)
@@ -879,7 +1094,7 @@ pub async fn command_async(
             let operation = operation.to_owned();
             let args = args.clone();
             tokio::task::spawn_blocking(move || {
-                command(&app, &workspace, &capability, &operation, &args)
+                dispatch(&app, &workspace, &capability, &operation, &args)
             })
             .await
             .map_err(|_| Error::bad("Command interrupted"))?
@@ -966,6 +1181,7 @@ pub const CORE_OPERATIONS: &[&str] = &[
     "graph.episodes",
     "graph.impact",
     "graph.link",
+    "graph.map",
     "graph.navigate",
     "graph.neo4j.configure",
     "graph.neo4j.publish",
@@ -986,9 +1202,11 @@ pub const CORE_OPERATIONS: &[&str] = &[
     "memory.export",
     "memory.history",
     "memory.import",
+    "memory.import_pack",
     "memory.propose",
     "memory.search",
     "memory.state",
+    "memory.template",
     "model.configure",
     "model.status",
     "note",
@@ -1029,6 +1247,31 @@ pub const CORE_OPERATIONS: &[&str] = &[
     "workspace.members",
 ];
 pub fn command(
+    app: &App,
+    workspace: &str,
+    capability: &str,
+    operation: &str,
+    args: &Value,
+) -> Result<Value> {
+    if !args.is_object() {
+        return Err(Error::bad("Command arguments must be an object"));
+    }
+    // As `command_async`: authorized, run, and a read's result size-checked.
+    let mut admission = operation_admission(app, workspace, capability, operation, args)?;
+    let narrowed = admission.take_arguments();
+    let result = dispatch(
+        app,
+        workspace,
+        capability,
+        operation,
+        narrowed.as_ref().unwrap_or(args),
+    )?;
+    admission.serve_value(&app.worker.store, &result)?;
+    Ok(result)
+}
+/// Run one operation, once it was admitted (`command`, `command_async`, the
+/// command routes and MCP `tools/call`, through `crate::metering::admit`).
+pub(crate) fn dispatch(
     app: &App,
     workspace: &str,
     capability: &str,
@@ -1105,6 +1348,9 @@ pub fn command(
             store.graph_as_of(workspace, capability, crate::string(args, "repository_id", 100)?, args)
         }
         "graph.link" => store.graph_link(workspace, capability),
+        // The projects the caller may read, the imports between them and
+        // what each holds.
+        "graph.map" => store.workspace_map(workspace, capability, args),
         // Documents' mention links to code, read
         // as the caller may read them now.
         "graph.doc_links" => crate::doc_links::read(store, workspace, capability, args),
@@ -1198,13 +1444,15 @@ pub fn command(
         "connector.schedule" => store.connector_schedule(workspace, capability, args),
         "connector.state" | "connector.delete" | "source.forget" | "project.delete"
         | "storage.prune" | "retention.apply" => store.maintain(workspace, capability, operation, args),
-        "files" | "memories" | "memory.history" | "memory.export" | "history" => {
+        "files" | "memories" | "memory.history" | "memory.export" | "memory.template"
+        | "history" => {
             store.project_read(workspace, capability, operation, args)
         }
         "sync.abort"
         | "memory.state"
         | "memory.delete"
         | "memory.import"
+        | "memory.import_pack"
         | "memory.propose"
         | "learning.refresh.propose" => {
             store.project_mutate(workspace, capability, operation, args)
@@ -1268,12 +1516,34 @@ fn published_tools(learning: bool, work_state: bool, options: &McpOptions) -> Ve
             }
         }
     }
+    for tool in &mut tools {
+        if let Some(sentence) = instead_of_grep(tool.name()) {
+            let description = format!("{} {sentence}", s(&tool.spec, "description"));
+            tool.spec["description"] = json!(description);
+        }
+    }
     tools
+}
+/// The sentence a tool's description ends with, in every set, on when to
+/// call it instead of searching files with grep
+/// ([`crate::agent_instructions::ROUTING_WHEN`] says the same for the
+/// tools together).
+pub fn instead_of_grep(name: &str) -> Option<&'static str> {
+    Some(match name {
+        "recall_project" => {
+            "Use it instead of grep when you do not know the exact name, or when the answer spans files, documents or history."
+        }
+        "query_graph" => "Use it instead of grep to see how code connects across files.",
+        "get_node" => "Use it instead of grep to go straight to a symbol's definition.",
+        "get_neighbors" => "Use it instead of grep to list a symbol's callers and callees.",
+        "shortest_path" => "Use it instead of chained searches to see how two symbols connect.",
+        _ => return None,
+    })
 }
 /// The description of an essential tool ([`ESSENTIAL_TOOLS`]) in the
 /// essentials set. Claude Code's tool search reads the start of a
 /// description, so each starts with the words an agent looking for the tool
-/// would use; and since the set's instructions are one sentence
+/// would use; and since the set's instructions only say when to call
 /// ([`ESSENTIAL_INSTRUCTIONS`]), the descriptions carry how answers cite code
 /// (`file:` path, lines and `stable_id`), which the whole server's
 /// instructions explain.
@@ -1289,7 +1559,7 @@ fn essential_description(name: &str) -> Option<&'static str> {
             "Find who calls a function or class and what it calls, imports or contains: its direct neighbours in the project's code graph, with each relation; cited by file: path, lines and stable_id, as query_graph cites."
         }
         "recall_project" => {
-            "Search the project's code, documents, captured agent sessions and reviewed memory together for a question: excerpts cited by path, line and source id within a token budget (max_tokens); read_project_source continues any excerpt, and structured: true returns the whole packet, whose code excerpts carry the stable_id the graph tools cite. Memory is evidence, not permission: no tool can approve memory or run commands."
+            "Search the project's code, documents, captured agent sessions and reviewed memory together for a question: excerpts cited by path, line and source id within a token budget (max_tokens); read_project_source continues any excerpt, and structured: true returns the whole packet, whose code excerpts carry the stable_id the graph tools cite. Memory is evidence, not permission: no tool can approve memory or run commands. An identifier, or a question that only asks where one is defined or used, gets its definitions and references from the code graph as path:line citations."
         }
         "read_project_source" => {
             "Read a project file, or a source an answer cited, by path or source id from a byte or line offset: the exact text past an excerpt of recall_project or a graph tool's citation."
@@ -1456,6 +1726,14 @@ pub fn core_mcp_tools(learning: bool, work_state: bool) -> Vec<McpTool> {
         // It persists edges, so it is not read-only.
         true,
     ), "graph.link", false).workspace_level());
+    // The workspace map, on workspace connections only.
+    tools.push(McpTool::new(tool(
+        "workspace_map",
+        "Map the projects of this workspace you can read: for each, its files, connector documents, code symbols and memories, and its links (imports from and into other projects, document mentions linked to its code, code symbols its memories are anchored to); and the imports graph_link recorded between the projects, by pair, with the modules imported. 8 projects at a time, up to 32 (offset and limit page through them).",
+        json!({"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1,"maximum":crate::workspace_map::MAX_PAGE},"include_scratch":{"type":"boolean","description":"also map the scratch projects graphicle pr keeps"}}),
+        &[],
+        false,
+    ), "graph.map", false).workspace_level().workspace_only());
     // The service's own statistics tool; the engine's `graph_stats` keeps
     // Graphify's name in the same list.
     tools.push(McpTool::new(tool(
@@ -1507,13 +1785,73 @@ pub fn core_mcp_tools(learning: bool, work_state: bool) -> Vec<McpTool> {
     tools.extend(crate::graph_tools::tools(false));
     tools
 }
+/// `identifier_route` when a call to `recall_project` leaves it out: on in
+/// the essentials set, which setup gives Claude Code, otherwise
+/// [`crate::query::IDENTIFIER_ROUTE_DEFAULT`] (off), so the whole server
+/// keeps 0.1.0's recall.
+pub fn identifier_route_default(tools: ToolSet) -> bool {
+    match tools {
+        ToolSet::Essentials => true,
+        _ => crate::query::IDENTIFIER_ROUTE_DEFAULT,
+    }
+}
 /// The switches `recall_project` accepts beside its published contract
 ///: each turns one retrieval
 /// mechanism off or on for the call, and the packet's `mechanisms` reports
 /// it. `doc_links: true` follows documents'
-/// mention links to code (left out, they are counted, not followed;
-/// `false` reads none). A server can fix each (`--set`).
-pub const RECALL_SWITCHES: [&str; 3] = ["graph_retrieval", "memory_retrieval", "doc_links"];
+/// mention links to code, and `symbol_links: true` reviewed memory's links
+/// to code symbols (left out, each is counted, not followed; `false` reads
+/// none). `cross_repo` turns workspace recall's cross-repository import step
+/// alone off or on (left out, it follows `graph_retrieval`). `notes_first:
+/// true` asks for the notes-first order, one window per file and dated
+/// excerpts (left out: [`crate::query::NOTES_FIRST_DEFAULT`]).
+/// `identifier_route: true` answers a question that is an identifier, or
+/// only asks where named identifiers are defined or used, from the code
+/// graph ([`crate::identifier_route`]); left out, it is
+/// [`identifier_route_default`] (on in the essentials set, off in the
+/// others), and `false` keeps the full retrieval. A server can
+/// fix each (`--set`), and every packet echoes the values in force
+/// (`mechanisms.switches`, [`crate::query::switches`]). The code-question
+/// switches take `true`, `false` or `"auto"` ([`THREE_WAY_SWITCHES`]:
+/// `code_first`, `query_focus`, `identifier_arm`), and `more_files` a number
+/// of files from 0 to 40 ([`crate::code_question`], [`crate::query`]).
+pub const RECALL_SWITCHES: [&str; 11] = [
+    "graph_retrieval",
+    "memory_retrieval",
+    "doc_links",
+    "symbol_links",
+    "cross_repo",
+    "notes_first",
+    "identifier_route",
+    "code_first",
+    "query_focus",
+    "identifier_arm",
+    "more_files",
+];
+
+/// The switches of [`RECALL_SWITCHES`] that take `true`, `false` or
+/// `"auto"`.
+pub const THREE_WAY_SWITCHES: [&str; 3] = ["code_first", "query_focus", "identifier_arm"];
+
+/// Why `value` is no value of the switch `field` of [`RECALL_SWITCHES`], or
+/// `None` when it is one: `more_files` takes a number from 0 to 40, the
+/// [`THREE_WAY_SWITCHES`] `true`, `false` or `"auto"`, the others `true` or
+/// `false`.
+pub fn switch_refusal(field: &str, value: &Value) -> Option<String> {
+    let (fits, takes) = if THREE_WAY_SWITCHES.contains(&field) {
+        (value.is_boolean() || value == "auto", "true, false or auto")
+    } else if field == "more_files" {
+        (
+            value
+                .as_u64()
+                .is_some_and(|n| n <= graphicle_memory::packing::MAX_NEXT_FILES as u64),
+            "a number from 0 to 40",
+        )
+    } else {
+        (value.is_boolean(), "true or false")
+    };
+    (!fits).then(|| format!("{field} must be {takes}"))
+}
 /// `recall_project`'s scope switch, accepted beside the
 /// published contract like [`RECALL_SWITCHES`]: `project`
 /// or `workspace`. A workspace connection recalls over the workspace unless
@@ -1529,9 +1867,22 @@ const REPO_DESCRIPTION: &str = "The project to read, by id or key (list_projects
 #[derive(Default)]
 pub struct McpSession {
     shown: std::collections::VecDeque<Value>,
+    /// The client's name from `initialize`, for the metering label.
+    client: Option<String>,
+    /// The connection's agent-session label (`metering::new_session`).
+    label: Option<String>,
 }
 impl McpSession {
     const LIMIT: usize = 200;
+    /// This connection's agent-session label for metering, made at its
+    /// first tool call.
+    fn label(&mut self) -> String {
+        self.label
+            .get_or_insert_with(|| {
+                crate::metering::new_session(self.client.as_deref().unwrap_or("mcp"))
+            })
+            .clone()
+    }
     fn record(&mut self, packet: &Value) {
         for source in packet["sources"].as_array().into_iter().flatten() {
             // Each span names its project: source ids such as
@@ -1570,7 +1921,15 @@ pub fn mcp(
     repository: &str,
     request: &Value,
 ) -> Option<Value> {
-    mcp_in(app, workspace, capability, Some(repository), request, None)
+    mcp_in(
+        app,
+        workspace,
+        capability,
+        Some(repository),
+        request,
+        None,
+        None,
+    )
 }
 /// As [`mcp`], for one connection that keeps what it has been given.
 pub fn mcp_session(
@@ -1588,6 +1947,7 @@ pub fn mcp_session(
         Some(repository),
         request,
         Some(session),
+        None,
     )
 }
 /// What `initialize` tells a client about the tools it was given: when to
@@ -1596,8 +1956,8 @@ pub fn mcp_session(
 fn instructions(app: &App, tools: &[McpTool], whole_workspace: bool) -> String {
     let published = |name: &str| tools.iter().any(|tool| tool.name() == name);
     let mut parts: Vec<&str> = Vec::new();
-    // The essentials set: one sentence on when to call; the tools'
-    // descriptions say how answers cite code.
+    // The essentials set: a few sentences on when to call and when grep is
+    // enough; the tools' descriptions say how answers cite code.
     if app.mcp.tools == ToolSet::Essentials {
         parts.push(ESSENTIAL_INSTRUCTIONS);
         if whole_workspace {
@@ -1649,13 +2009,35 @@ fn instructions(app: &App, tools: &[McpTool], whole_workspace: bool) -> String {
     if app.mcp_work_state && published("work_state_write") {
         parts.push(crate::work_state::INSTRUCTIONS);
     }
-    parts.join(" ")
+    // When to call the tools at all, first.
+    match routing(published("recall_project"), published("query_graph")) {
+        Some(routing) if parts.is_empty() => routing,
+        Some(routing) => format!("{routing} {}", parts.join(" ")),
+        None => parts.join(" "),
+    }
 }
-/// The instructions of the essentials set ([`ToolSet::Essentials`]): one
-/// sentence on when to call. Claude Code shows them, with the tool names, in
-/// every request; the tools' descriptions, which it loads only with a tool,
-/// say how answers cite code.
-pub const ESSENTIAL_INSTRUCTIONS: &str = "When you do not yet know where the code for a task is, who calls it or why it was written that way, call query_graph (the code graph) or recall_project (code, documents and reviewed memory) with the question before searching files by hand; get_node and get_neighbors show one symbol with its callers and callees, and every answer cites file and lines.";
+/// The whole server's sentence on when to call recall and the code graph,
+/// for the tools it publishes ([`ESSENTIAL_INSTRUCTIONS`] says the same for
+/// the essentials).
+pub(crate) fn routing(recall: bool, graph: bool) -> Option<String> {
+    let tools = match (recall, graph) {
+        (true, true) => "recall_project or query_graph",
+        (true, false) => "recall_project",
+        (false, true) => "query_graph",
+        (false, false) => return None,
+    };
+    Some(format!(
+        "Use {tools} {}; {}. Answers cite file and lines.",
+        crate::agent_instructions::ROUTING_WHEN,
+        crate::agent_instructions::ROUTING_GREP
+    ))
+}
+/// The instructions of the essentials set ([`ToolSet::Essentials`]): when
+/// to call the tools, and when grep is enough
+/// ([`crate::agent_instructions::ROUTING_WHEN`]). Claude Code shows them,
+/// with the tool names, in every request; the tools' descriptions, which it
+/// loads only with a tool, say how answers cite code.
+pub const ESSENTIAL_INSTRUCTIONS: &str = "Use recall_project (code, documents and reviewed memory) or query_graph (the code graph) for where or how something works, for questions across files or history, and before changing unfamiliar code; get_node and get_neighbors show one symbol with its callers and callees. For an exact identifier you already know, grep is enough. Every answer cites file and lines.";
 /// The sentence for the pull-request tools when recall is not published.
 const PULL_REQUEST_INSTRUCTIONS: &str = "list_prs, get_pr_impact and triage_prs run the GitHub CLI and git, read-only, in the project's folder.";
 /// The graph tools' part of the `initialize` instructions.
@@ -1683,7 +2065,7 @@ pub fn mcp_workspace(
     capability: &str,
     request: &Value,
 ) -> Option<Value> {
-    mcp_in(app, workspace, capability, None, request, None)
+    mcp_in(app, workspace, capability, None, request, None, None)
 }
 /// As [`mcp_workspace`], for one connection that keeps what it has been
 /// given.
@@ -1694,7 +2076,15 @@ pub fn mcp_workspace_session(
     request: &Value,
     session: &mut McpSession,
 ) -> Option<Value> {
-    mcp_in(app, workspace, capability, None, request, Some(session))
+    mcp_in(
+        app,
+        workspace,
+        capability,
+        None,
+        request,
+        Some(session),
+        None,
+    )
 }
 /// The refusal of a project connection's call that reaches beyond its
 /// project.
@@ -1703,6 +2093,80 @@ fn confined(what: &str) -> Error {
         "{what} needs a workspace connection (graphicle mcp --workspace, or POST /mcp/WORKSPACE_ID): this connection reads its own project"
     ))
 }
+/// The format of [`manifest`].
+pub const MANIFEST_FORMAT: &str = "graphicle.manifest.v1";
+
+/// The schema files compiled into this program, in the order a store
+/// applies them.
+const SCHEMA_FILES: [&str; 6] = [
+    include_str!("schema.sql"),
+    include_str!("workflow_schema.sql"),
+    include_str!("expansion_schema.sql"),
+    include_str!("projection_schema.sql"),
+    include_str!("temporal_schema.sql"),
+    include_str!("product_schema.sql"),
+];
+
+/// What one MCP server configuration serves, for a record a later run can
+/// be checked against (`graphicle mcp --manifest`): the program (version,
+/// edition, the sha256 of its executable), the tools a connection of this
+/// kind lists and the instructions it sends, each with its sha256, the
+/// switches (`--tools`, `--allow-learning`, `--work-state` and the values
+/// `--set` fixes, with the switches a request may set), the retrieval
+/// defaults, and the schema and format versions: the schema compiled in,
+/// the store's own tables, and the contracts of deletion receipts, state
+/// digests, exports, templates and the cross-repository link state. Reads
+/// only.
+pub fn manifest(
+    app: &App,
+    workspace: &str,
+    capability: &str,
+    repository: Option<&str>,
+) -> Result<Value> {
+    let tools = connection_tools(app, repository);
+    let specs: Vec<Value> = tools.iter().map(|tool| tool.spec.clone()).collect();
+    let text = instructions(app, &tools, repository.is_none());
+    let sha = |bytes: &[u8]| graphicle_memory::text::sha256(bytes);
+    let executable = std::env::current_exe().ok();
+    let binary_sha256 = executable
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok())
+        .map(|bytes| sha(&bytes));
+    let store = app.worker.store.authorized_read(workspace, capability, "read", |db, _| {
+        let tables = rows(
+            db,
+            "SELECT name,coalesce(sql,'') AS sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            [],
+        )?;
+        let user_version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        Ok(json!({"tables":tables.len(),"tables_sha256":sha(json!(tables).to_string().as_bytes()),
+            "user_version":user_version}))
+    })?;
+    let mut switches: Vec<&str> = RECALL_SWITCHES.to_vec();
+    switches.push(RECALL_SCOPE);
+    Ok(json!({
+        "format": MANIFEST_FORMAT,
+        "program": {"version": env!("CARGO_PKG_VERSION"),
+            "edition": crate::extension::installed().edition().name(),
+            "executable": executable.map(|path| path.display().to_string()),
+            "sha256": binary_sha256},
+        "connection": if repository.is_some() { "project" } else { "workspace" },
+        "tools": {"names": tools.iter().map(McpTool::name).collect::<Vec<_>>(),
+            "count": specs.len(), "sha256": sha(json!(specs).to_string().as_bytes()),
+            "instructions_sha256": sha(text.as_bytes())},
+        "switches": {"tools": app.mcp.tools.name(), "allow_learning": app.mcp_learning,
+            "work_state": app.mcp_work_state, "pull_requests": app.mcp.pull_requests,
+            "server_fixed": app.mcp.fixed, "request": switches,
+            "notes_first_default": crate::query::NOTES_FIRST_DEFAULT,
+            "identifier_route_default": identifier_route_default(app.mcp.tools)},
+        "retrieval_defaults": crate::query::recipe_defaults(),
+        "schemas": {"compiled_sha256": sha(SCHEMA_FILES.concat().as_bytes()), "store": store,
+            "deletion": crate::deletion::CONTRACT, "state": crate::deletion::STATE_CONTRACT,
+            "export": "graphicle.memories.v1", "template": crate::packs::TEMPLATE_FORMAT,
+            "cross_link_state": crate::graph_projection::LINK_STATE_FORMAT},
+    }))
+}
+
 /// The tools a connection publishes, of those the server's options give
 /// (`--tools`, `--pull-requests`). A project connection
 /// publishes each tool as [`McpTool::confined`] gives it, so it reads its own
@@ -1720,6 +2184,8 @@ fn connection_tools(app: &App, repository: Option<&str>) -> Vec<McpTool> {
             .collect(),
     }
 }
+/// One MCP message. `session` is a stdio connection's state; `http_session`
+/// the `Mcp-Session-Id` an HTTP client sent back (metering labels).
 fn mcp_in(
     app: &App,
     workspace: &str,
@@ -1727,6 +2193,7 @@ fn mcp_in(
     repository: Option<&str>,
     request: &Value,
     mut session: Option<&mut McpSession>,
+    http_session: Option<&str>,
 ) -> Option<Value> {
     if request["jsonrpc"] != "2.0" {
         return Some(
@@ -1748,13 +2215,52 @@ fn mcp_in(
                 app.worker.store.workspace(workspace, capability)?;
             }
         }
+        // A server that fixes the scope serves only connections of that
+        // scope: one project's, or the workspace's.
+        match (
+            app.mcp.fixed.get(RECALL_SCOPE).and_then(Value::as_str),
+            repository,
+        ) {
+            (Some("project"), None) => {
+                return Err(Error::bad(
+                    "This server fixes scope to project: serve one project (graphicle mcp without --workspace, or a project's access key)",
+                ));
+            }
+            (Some("workspace"), Some(_)) => {
+                return Err(Error::bad(
+                    "This server fixes scope to workspace: serve the workspace (graphicle mcp --workspace, or a workspace access key)",
+                ));
+            }
+            _ => {}
+        }
         let tools = connection_tools(app, repository);
+        // The tools an installed extension allows this credential
+        // (`Access::Tool`; every tool in Core): the connection lists and
+        // describes only these. `tools/call` asks again for the tool it
+        // calls, so calling a refused one says why.
+        let allowed = crate::extension::admit_each(
+            &app.worker.store,
+            workspace,
+            capability,
+            &tools.iter().map(tool_access).collect::<Vec<_>>(),
+        )?;
+        let (tools, refused): (Vec<McpTool>, Vec<McpTool>) = {
+            let mut allowed = allowed.into_iter();
+            tools
+                .into_iter()
+                .partition(|_| allowed.next().unwrap_or(false))
+        };
         // The engine's resources come with its tools, on
         // a project connection: they describe one project's code graph, and
         // a workspace connection has no project of its own.
         let resources = repository.filter(|_| tools.iter().any(crate::graph_tools::is_graph_tool));
         match s(request, "method") {
             "initialize" => {
+                if let Some(session) = session.as_deref_mut() {
+                    session.client = request["params"]["clientInfo"]["name"]
+                        .as_str()
+                        .map(str::to_owned);
+                }
                 let capabilities = if resources.is_some() {
                     json!({"tools":{},"resources":{}})
                 } else {
@@ -1779,6 +2285,33 @@ fn mcp_in(
             }
             "resources/read" if resources.is_some() => {
                 let uri = string(&request["params"], "uri", 200)?;
+                // A resource reads the code graph as the navigation tools
+                // do: the one admission authorizes it as their operation and
+                // asks for its quota; its text is then size-checked and
+                // counted (`crate::metering`).
+                let admission = crate::metering::admit(
+                    &app.worker.store,
+                    capability,
+                    crate::metering::Ask {
+                        access: Access::Operation(crate::graph_tools::NAVIGATE),
+                        arguments: None,
+                        call: crate::metering::Call {
+                            workspace: workspace.to_string(),
+                            repository: resources.unwrap_or_default().to_string(),
+                            credential: String::new(),
+                            session: agent_session(
+                                app,
+                                workspace,
+                                session.as_deref_mut(),
+                                http_session,
+                            ),
+                            channel: crate::metering::Channel::Mcp,
+                            kind: "resources/read".into(),
+                        },
+                        metered: true,
+                        read: true,
+                    },
+                )?;
                 let text = crate::graph_tools::read_resource(
                     &app.worker.store,
                     workspace,
@@ -1786,6 +2319,7 @@ fn mcp_in(
                     resources.unwrap_or_default(),
                     uri,
                 )?;
+                admission.serve(&app.worker.store, text.clone(), Vec::new())?;
                 let kind = if uri.starts_with("graphicle-graph://report") {
                     "text/markdown"
                 } else {
@@ -1797,8 +2331,18 @@ fn mcp_in(
                 let name = string(&request["params"], "name", 100)?;
                 let tool = tools
                     .iter()
+                    .chain(&refused)
                     .find(|tool| tool.name() == name)
                     .ok_or_else(|| Error::bad("Tool unavailable"))?;
+                // An installed extension may refuse the tool for this
+                // credential; its operation is admitted again in `command`.
+                crate::extension::admit(
+                    &app.worker.store,
+                    workspace,
+                    capability,
+                    tool_access(tool),
+                    None,
+                )?;
                 let operation = tool.operation;
                 let graph_tool = crate::graph_tools::is_graph_tool(tool);
                 let mut args = request["params"]
@@ -1825,9 +2369,9 @@ fn mcp_in(
                     crate::archived::check(crate::archived::Surface::Context, &args)?;
                     args = crate::archived::without_inert(crate::archived::Surface::Context, &args);
                 }
-                // `recall_project` honours the `graph_retrieval`,
-                // `memory_retrieval` and `doc_links` switches, which its
-                // published contract leaves out, to keep the ablation
+                // `recall_project` honours the switches of RECALL_SWITCHES
+                // (`graph_retrieval`, `doc_links`, `notes_first` and the
+                // others), which its published contract leaves out, to keep the ablation
                 // switches out of the schemas agents read. They are taken out
                 // before the contract is checked and passed on. A switch the
                 // server fixes (`--set`) takes its fixed value, and a request
@@ -1836,8 +2380,11 @@ fn mcp_in(
                 if name == "recall_project" {
                     for field in RECALL_SWITCHES {
                         let asked = args.as_object_mut().and_then(|a| a.remove(field));
-                        if asked.as_ref().is_some_and(|value| !value.is_boolean()) {
-                            return Err(Error::bad(format!("{field} must be true or false")));
+                        if let Some(refused) = asked
+                            .as_ref()
+                            .and_then(|value| switch_refusal(field, value))
+                        {
+                            return Err(Error::bad(refused));
                         }
                         match (app.mcp.fixed.get(field), asked) {
                             (Some(fixed), Some(asked)) if *fixed != asked => {
@@ -1853,7 +2400,17 @@ fn mcp_in(
                     // The scope switch likewise. A project
                     // connection reads its own project only: the workspace
                     // takes a workspace connection.
-                    if let Some(value) = args.as_object_mut().and_then(|a| a.remove(RECALL_SCOPE)) {
+                    let asked = args.as_object_mut().and_then(|a| a.remove(RECALL_SCOPE));
+                    let fixed = app.mcp.fixed.get(RECALL_SCOPE);
+                    if let (Some(fixed), Some(asked)) = (fixed, &asked)
+                        && fixed != asked
+                    {
+                        return Err(Error::bad(format!(
+                            "{RECALL_SCOPE} is fixed to {} by this server",
+                            fixed.as_str().unwrap_or("")
+                        )));
+                    }
+                    if let Some(value) = asked.or_else(|| fixed.cloned()) {
                         match value.as_str() {
                             Some("project") => {}
                             Some("workspace") if repository.is_none() => {}
@@ -1894,9 +2451,20 @@ fn mcp_in(
                 if name == "recall_project" && !structured {
                     crate::query::cap_recall(&mut args);
                 }
-                // 0.1.0's order: test files where the ranking puts them.
+                // 0.1.0's order: test files where the ranking puts them, and
+                // 0.1.0's excerpts: no dates or age marks (`source_age`).
                 if name == "recall_project" && !lean {
                     args["include_tests"] = json!(true);
+                    args["source_age"] = json!(false);
+                }
+                // The essentials' recall takes the identifier route unless
+                // the call or the server says otherwise; the packet then
+                // reports the switch as defaulted, as the call left it out.
+                let route_defaulted = name == "recall_project"
+                    && identifier_route_default(app.mcp.tools)
+                    && args.get(crate::identifier_route::FIELD).is_none();
+                if route_defaulted {
+                    args[crate::identifier_route::FIELD] = json!(true);
                 }
                 if name == "recall_project"
                     && args
@@ -1938,7 +2506,23 @@ fn mcp_in(
                 if graph_tool && operation == crate::graph_tools::NAVIGATE {
                     args["tool"] = json!(name);
                 }
-                let result = (|| {
+                // Every tool result goes through the one admission
+                // (`crate::metering::admit`): an installed extension
+                // authorizes the operation and may narrow its arguments, then
+                // asks for the credential's quota; the tool runs; a read's
+                // reply must fit the per-call cap, on the text served (a
+                // write's reply is never refused once it is saved); the reply
+                // is counted. The pull-request tools read as their contract
+                // says (`readOnlyHint`).
+                let pull_request = operation == crate::graph_tools::PULL_REQUEST;
+                let read = if pull_request {
+                    tool.spec["annotations"]["readOnlyHint"] == true
+                } else {
+                    crate::metering::meter(operation) != Some(crate::metering::Meter::Write)
+                };
+                let agent_session =
+                    agent_session(app, workspace, session.as_deref_mut(), http_session);
+                let result = (|| -> Result<_> {
                     // Graph tools may name another project of the workspace by
                     // its id or key, and over stdio by its folder; it is
                     // authorized again for the caller.
@@ -1953,7 +2537,34 @@ fn mcp_in(
                         )?;
                         args["repository_id"] = json!(named);
                     }
-                    if operation == crate::graph_tools::PULL_REQUEST {
+                    // A call that names no project (a recall over the
+                    // workspace) is counted on the projects its reply serves;
+                    // one that serves none (`list_projects`) is not counted.
+                    let mut admission = crate::metering::admit(
+                        &app.worker.store,
+                        capability,
+                        crate::metering::Ask {
+                            access: Access::Operation(operation),
+                            arguments: Some(&args),
+                            call: crate::metering::Call {
+                                workspace: workspace.to_string(),
+                                repository: args["repository_id"]
+                                    .as_str()
+                                    .or(repository)
+                                    .unwrap_or("")
+                                    .to_string(),
+                                credential: String::new(),
+                                session: agent_session,
+                                channel: crate::metering::Channel::Mcp,
+                                kind: name.to_string(),
+                            },
+                            metered: true,
+                            read,
+                        },
+                    )?;
+                    let narrowed = admission.take_arguments();
+                    let args = narrowed.as_ref().unwrap_or(&args);
+                    let packet = if pull_request {
                         let repository = repository.ok_or_else(|| {
                             Error::bad("The pull-request tools serve a project connection")
                         })?;
@@ -1963,52 +2574,55 @@ fn mcp_in(
                             capability,
                             repository,
                             name,
-                            &args,
-                        )
+                            args,
+                        )?
                     } else {
-                        command(app, workspace, capability, operation, &args)
-                    }
+                        dispatch(app, workspace, capability, operation, args)?
+                    };
+                    Ok((packet, admission))
                 })();
-                let result = result.map(|mut packet| {
-                    if name == "recall_project"
-                        && !app.mcp.fixed.is_empty()
-                        && packet["mechanisms"].is_object()
-                    {
-                        packet["mechanisms"]["server_fixed"] = Value::Object(app.mcp.fixed.clone());
-                    }
-                    packet
-                });
+                let (mut packet, admission) = match result {
+                    Ok(admitted) => admitted,
+                    Err(error) => return Ok(tool_error(&error.message)),
+                };
+                // A project connection keeps memory and documents on its
+                // project, also in get_node's back-links of a symbol that
+                // `repo` reads in another project's code graph.
+                if graph_tool && let Some(own) = repository {
+                    crate::symbol_links::confine(&mut packet, own);
+                }
+                if route_defaulted && packet[crate::identifier_route::REPORT].is_object() {
+                    packet[crate::identifier_route::REPORT]["defaulted"] = json!(true);
+                }
                 if name == "recall_project"
-                    && let (Ok(packet), Some(session)) = (&result, session.as_deref_mut())
+                    && !app.mcp.fixed.is_empty()
+                    && packet["mechanisms"].is_object()
                 {
+                    packet["mechanisms"]["server_fixed"] = Value::Object(app.mcp.fixed.clone());
+                }
+                // A recall packet this connection records once it is served.
+                let shown = (name == "recall_project" && session.is_some()).then(|| packet.clone());
+                let shares = if admission.needs_shares() {
+                    crate::metering::shares(&packet)
+                } else {
+                    Vec::new()
+                };
+                // The essentials' text, else the full reply.
+                let reply = match (!structured)
+                    .then(|| crate::query::lean_reply(name, graph_tool, &packet))
+                    .flatten()
+                {
+                    Some(lean) => lean,
+                    None => tool_reply(graph_tool, packet),
+                };
+                if let Err(error) = admission.serve(&app.worker.store, served_text(&reply), shares)
+                {
+                    return Ok(tool_error(&error.message));
+                }
+                if let (Some(packet), Some(session)) = (&shown, session.as_deref_mut()) {
                     session.record(packet);
                 }
-                if !structured
-                    && let Ok(value) = &result
-                    && let Some(lean) = crate::query::lean_reply(name, graph_tool, value)
-                {
-                    return Ok(lean);
-                }
-                Ok(match result {
-                    // The engine's text, as its own server answers, then (for
-                    // the navigation tools) a short citations block, which
-                    // clients that show the model `content` only also pass on;
-                    // `structuredContent` has the episode and the
-                    // nodes the text names.
-                    Ok(value) if graph_tool => {
-                        let mut content = vec![json!({"type":"text","text":value["text"]})];
-                        if value["nodes"].is_array() {
-                            content.push(json!({"type":"text","text":crate::graph_tools::citations_text(&value)}));
-                        }
-                        json!({"content":content,"structuredContent":value,"isError":false})
-                    }
-                    Ok(value) => {
-                        json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":if value.is_object(){value}else{json!({"items":value})},"isError":false})
-                    }
-                    Err(error) => {
-                        json!({"content":[{"type":"text","text":error.message}],"isError":true})
-                    }
-                })
+                Ok(reply)
             }
             _ => Err(Error::bad(UNSUPPORTED_METHOD)),
         }
@@ -2030,6 +2644,57 @@ fn mcp_in(
 }
 /// The error message of a method a connection does not serve.
 const UNSUPPORTED_METHOD: &str = "Unsupported MCP method";
+/// What calling `tool` asks for: its name, and whether its contract writes.
+fn tool_access(tool: &McpTool) -> Access<'_> {
+    Access::Tool {
+        name: tool.name(),
+        writes: tool.spec["annotations"]["readOnlyHint"] != true,
+    }
+}
+/// A tool's reply as the full answer: for the graph engine's tools, the
+/// engine's text as its own server answers, then (for the navigation tools)
+/// a short citations block, which clients that show the model `content` only
+/// also pass on; `structuredContent` has the episode and the nodes the text
+/// names. For the other tools, the answer as JSON text and structured content.
+fn tool_reply(graph_tool: bool, value: Value) -> Value {
+    if graph_tool {
+        let mut content = vec![json!({"type":"text","text":value["text"]})];
+        if value["nodes"].is_array() {
+            content.push(json!({"type":"text","text":crate::graph_tools::citations_text(&value)}));
+        }
+        json!({"content":content,"structuredContent":value,"isError":false})
+    } else {
+        json!({"content":[{"type":"text","text":value.to_string()}],"structuredContent":if value.is_object(){value}else{json!({"items":value})},"isError":false})
+    }
+}
+/// A tool call's error, as the tool's reply.
+fn tool_error(message: &str) -> Value {
+    json!({"content":[{"type":"text","text":message}],"isError":true})
+}
+/// The text a tool reply serves (`metering`): its text content, joined.
+fn served_text(reply: &Value) -> String {
+    reply["content"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| item["text"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+/// The agent session an MCP call is counted under: a stdio connection's own
+/// label, else the label of the `Mcp-Session-Id` an HTTP client sent back.
+fn agent_session(
+    app: &App,
+    workspace: &str,
+    session: Option<&mut McpSession>,
+    http_session: Option<&str>,
+) -> String {
+    match (session, http_session) {
+        (Some(connection), _) => connection.label(),
+        (None, Some(id)) => crate::metering::http_session(&app.worker.store, workspace, id),
+        (None, None) => String::new(),
+    }
+}
 async fn mcp_http(
     State(app): State<App>,
     Path((workspace, repository)): Path<(String, String)>,
@@ -2037,6 +2702,7 @@ async fn mcp_http(
     Json(request): Json<Value>,
 ) -> Result<Response> {
     let token = token(&headers)?.to_owned();
+    let (session, client) = mcp_http_session(&headers, &request);
     let reply = tokio::task::spawn_blocking(move || {
         // Keep transport-level authentication (including notifications) in
         // the blocking job too: it may wait on a SQLite transaction.
@@ -2045,18 +2711,24 @@ async fn mcp_http(
         let fresh = (request["method"] == "tools/call")
             .then(|| mcp_freshness(&app, &workspace, &token, &repository))
             .flatten();
-        let mut reply = mcp(&app, &workspace, &token, &repository, &request);
+        let mut reply = mcp_in(
+            &app,
+            &workspace,
+            &token,
+            Some(&repository),
+            &request,
+            None,
+            session.as_deref(),
+        );
         if let (Some(fresh), Some(reply)) = (&fresh, reply.as_mut()) {
             fresh.attach_mcp(reply);
         }
-        Ok::<_, Error>(reply)
+        let issued = issued_session(&app, &workspace, &request, reply.as_ref(), &client);
+        Ok::<_, Error>((reply, issued))
     })
     .await
     .map_err(|_| Error::bad("MCP request interrupted"))??;
-    Ok(match reply {
-        Some(value) => Json(value).into_response(),
-        None => StatusCode::ACCEPTED.into_response(),
-    })
+    Ok(mcp_http_response(reply))
 }
 /// `POST /mcp/{workspace}`: a workspace connection ([`mcp_workspace`]).
 async fn mcp_http_workspace(
@@ -2066,16 +2738,67 @@ async fn mcp_http_workspace(
     Json(request): Json<Value>,
 ) -> Result<Response> {
     let token = token(&headers)?.to_owned();
+    let (session, client) = mcp_http_session(&headers, &request);
     let reply = tokio::task::spawn_blocking(move || {
         app.worker.store.workspace(&workspace, &token)?;
-        Ok::<_, Error>(mcp_workspace(&app, &workspace, &token, &request))
+        let reply = mcp_in(
+            &app,
+            &workspace,
+            &token,
+            None,
+            &request,
+            None,
+            session.as_deref(),
+        );
+        let issued = issued_session(&app, &workspace, &request, reply.as_ref(), &client);
+        Ok::<_, Error>((reply, issued))
     })
     .await
     .map_err(|_| Error::bad("MCP request interrupted"))??;
-    Ok(match reply {
-        Some(value) => Json(value).into_response(),
+    Ok(mcp_http_response(reply))
+}
+/// An HTTP MCP request's agent session for metering: the `Mcp-Session-Id`
+/// this server issued and signed at `initialize`, which the client sends
+/// back, and the client's name from `initialize`. Nothing else depends on
+/// it, so a client without one is served as before.
+fn mcp_http_session(headers: &HeaderMap, request: &Value) -> (Option<String>, String) {
+    let session = headers
+        .get("mcp-session-id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 200)
+        .map(str::to_owned);
+    let client = request["params"]["clientInfo"]["name"]
+        .as_str()
+        .unwrap_or("mcp")
+        .to_owned();
+    (session, client)
+}
+/// A new signed session id for a successful `initialize`
+/// (`metering::issue_http_session`); `None` for any other message.
+fn issued_session(
+    app: &App,
+    workspace: &str,
+    request: &Value,
+    reply: Option<&Value>,
+    client: &str,
+) -> Option<String> {
+    (request["method"] == "initialize" && reply.is_some_and(|value| value.get("result").is_some()))
+        .then(|| crate::metering::issue_http_session(&app.worker.store, workspace, client))
+        .flatten()
+}
+/// The HTTP response to an MCP message: its reply with the session id issued
+/// at `initialize`, or 202 for a notification.
+fn mcp_http_response((reply, issued): (Option<Value>, Option<String>)) -> Response {
+    match reply {
+        Some(value) => {
+            let mut response = Json(value).into_response();
+            if let Some(id) = issued.and_then(|id| header::HeaderValue::from_str(&id).ok()) {
+                response.headers_mut().insert("mcp-session-id", id);
+            }
+            response
+        }
         None => StatusCode::ACCEPTED.into_response(),
-    })
+    }
 }
 
 /// The freshness of an HTTP MCP tool call: what `graphicle mcp` does before

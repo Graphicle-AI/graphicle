@@ -38,8 +38,12 @@ fn providers(store: &Store, workspace: &str) -> Result<BTreeMap<String, Provider
     }
     serde_json::from_slice(&bytes).map_err(Into::into)
 }
+/// The OAuth providers of the core's connectors; an installed extension's
+/// sources may use others (`extension::Source::oauth_provider`).
+const CORE_PROVIDERS: &[&str] = &["github", "slack", "notion", "gdrive", "atlassian"];
 fn validate(name: &str, p: &Provider) -> Result<()> {
-    if !["github", "slack", "notion", "gdrive", "atlassian"].contains(&name)
+    if !(CORE_PROVIDERS.contains(&name)
+        || crate::extension::installed().oauth_source(name).is_some())
         || p.client_id.is_empty()
         || p.client_id.len() > 1000
         || p.scopes.len() > 30
@@ -259,6 +263,14 @@ pub async fn callback(
     if who.get("ok") == Some(&json!(false)) {
         return Err(Error::bad("Could not verify provider account"));
     }
+    // A provider an extension's source uses reads its own identity response.
+    let added = if CORE_PROVIDERS.contains(&name) {
+        None
+    } else {
+        crate::extension::installed()
+            .oauth_source(name)
+            .and_then(|source| source.oauth_identity(&who))
+    };
     let external = match name {
         "github" => who["id"]
             .as_i64()
@@ -271,16 +283,19 @@ pub async fn callback(
             .as_str()
             .or(who["id"].as_str())
             .map(str::to_string),
-        _ => None,
+        _ => added.as_ref().map(|(account, _)| account.clone()),
     }
     .filter(|v| !v.is_empty())
     .ok_or_else(|| Error::bad("Provider did not return a stable account identity"))?;
-    let display = who["name"]
-        .as_str()
-        .or(who["login"].as_str())
-        .or(who["user"].as_str())
-        .unwrap_or(&external)
-        .to_string();
+    let display = match added {
+        Some((_, display)) if !display.is_empty() => display,
+        _ => who["name"]
+            .as_str()
+            .or(who["login"].as_str())
+            .or(who["user"].as_str())
+            .unwrap_or(&external)
+            .to_string(),
+    };
     let email = if name == "gdrive" && who["email_verified"] == true {
         who["email"].as_str()
     } else {

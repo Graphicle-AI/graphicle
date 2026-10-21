@@ -1029,16 +1029,17 @@ impl Store {
         })
     }
 
-    /// Session-start context: open work-state items when an agent recorded
-    /// any (labelled as unreviewed), reviewed, current memories (title and
-    /// id), the stale count and the last captured turns, within
-    /// [`START_CONTEXT_CHARS`]. Drafts and observer notes never appear.
+    /// Session-start context: a line on when to use Graphicle's tools and
+    /// when grep is enough ([`crate::agent_instructions::SESSION_ROUTING`]),
+    /// then open work-state items when an agent recorded any (labelled as
+    /// unreviewed), reviewed, current memories (title and id), the stale
+    /// count and the last captured turns, within [`START_CONTEXT_CHARS`].
+    /// Drafts and observer notes never appear.
     ///
-    /// Empty when there is nothing to report: no reviewed memory, no open
-    /// work and no stale memory. Captured turns alone do not make a note
-    /// (recall reads them), so a session starts with no Graphicle text until
-    /// the project holds something reviewed or open; the session-start hook
-    /// then prints nothing.
+    /// Only the line when there is nothing to report: no reviewed memory, no
+    /// open work and no stale memory. Captured turns alone do not make a
+    /// note (recall reads them), so a session starts with the line alone
+    /// until the project holds something reviewed or open.
     pub fn session_start_context(
         &self,
         workspace: &str,
@@ -1086,10 +1087,11 @@ impl Store {
                 turns.truncate(5);
                 Ok((open_work, reviewed, stale, turns))
             })?;
+        let mut out = format!("{}\n", crate::agent_instructions::SESSION_ROUTING);
         if open_work.is_none() && memories.is_empty() && stale == 0 {
-            return Ok(String::new());
+            return Ok(out);
         }
-        let mut out = String::from(
+        out.push_str(
             "Graphicle project memory. Reviewed memories are current; cite sources with read_project_source before relying on them.\n",
         );
         let push = |out: &mut String, line: String| {

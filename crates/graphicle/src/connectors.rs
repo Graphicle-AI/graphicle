@@ -24,6 +24,64 @@ pub fn provider_permission_sync() -> bool {
     crate::core_capabilities::capabilities()["provider_permission_sync"] == true
 }
 
+/// The connector kinds of the core. An installed extension may add others
+/// (`extension::Source`).
+pub const CORE_KINDS: &[&str] = &[
+    "github",
+    "slack",
+    "notion",
+    "gdrive",
+    "jira",
+    "confluence",
+    "jsonl",
+];
+
+/// The core kinds whose provider ACL an extension can sync without naming
+/// them: GitHub, Slack and Drive.
+const PROVIDER_ACL_KINDS: &[&str] = &["github", "slack", "gdrive"];
+
+/// The connector kinds whose provider permissions an installed extension
+/// syncs: its `provider_permission_kinds` capability, or GitHub, Slack and
+/// Drive for one that only sets `provider_permission_sync`. Empty in Core.
+pub fn provider_permission_kinds() -> Vec<String> {
+    let capabilities = crate::core_capabilities::capabilities();
+    if capabilities["provider_permission_sync"] != true {
+        return Vec::new();
+    }
+    match capabilities["provider_permission_kinds"].as_array() {
+        Some(kinds) => kinds
+            .iter()
+            .filter_map(|kind| kind.as_str().map(str::to_string))
+            .collect(),
+        None => PROVIDER_ACL_KINDS
+            .iter()
+            .map(|kind| kind.to_string())
+            .collect(),
+    }
+}
+
+/// The provider of a connector kind's connected accounts and verified
+/// identities: Atlassian for Jira and Confluence, the declared OAuth
+/// provider for a kind an extension adds, else the kind itself.
+pub fn identity_provider(kind: &str) -> &str {
+    match kind {
+        "jira" | "confluence" => "atlassian",
+        _ => crate::extension::installed()
+            .source(kind)
+            .map_or(kind, |source| source.oauth_provider()),
+    }
+}
+
+/// The kinds whose identity provider is not the kind itself, as a JSON object
+/// of kind to provider (for joins in SQL).
+pub fn identity_providers() -> Value {
+    let mut providers = json!({"jira":"atlassian","confluence":"atlassian"});
+    for source in crate::extension::installed().sources() {
+        providers[source.kind()] = json!(source.oauth_provider());
+    }
+    providers
+}
+
 fn validate_acl(db: &Connection, workspace: &str, acl: &Value) -> Result<()> {
     if !acl.is_object()
         || !acl["workspace_readers"].is_boolean()
@@ -91,7 +149,10 @@ fn validate_config(kind: &str, config: &Value) -> Result<()> {
             "max_age_seconds",
         ],
         "jsonl" => vec!["acl", "max_age_seconds"],
-        _ => return Err(Error::bad("Unsupported source connector")),
+        _ => match crate::extension::installed().source(kind) {
+            Some(source) => [&["acl", "max_age_seconds"], source.fields()].concat(),
+            None => return Err(Error::bad("Unsupported source connector")),
+        },
     };
     allowed.push("observe");
     if let Some(policy) = config.get("observe") {
@@ -109,12 +170,14 @@ fn validate_config(kind: &str, config: &Value) -> Result<()> {
     if !["explicit", "provider"].contains(&permission_mode) {
         return Err(Error::bad("Choose explicit or provider permission mode"));
     }
-    if permission_mode == "provider" && !["github", "slack", "gdrive"].contains(&kind) {
+    let synced = provider_permission_kinds();
+    let synced = synced.iter().any(|synced| synced == kind);
+    if permission_mode == "provider" && !PROVIDER_ACL_KINDS.contains(&kind) && !synced {
         return Err(Error::bad(
             "This provider does not expose the required source ACL API; use explicit sharing",
         ));
     }
-    if permission_mode == "provider" && !provider_permission_sync() {
+    if permission_mode == "provider" && !synced {
         return Err(Error::bad(
             "Provider permission mode is not part of Graphicle Core; use explicit sharing",
         ));
@@ -141,6 +204,9 @@ fn validate_config(kind: &str, config: &Value) -> Result<()> {
         if let Some(site) = config["site_url"].as_str() {
             model::checked_url(site)?;
         }
+    }
+    if let Some(source) = crate::extension::installed().source(kind) {
+        source.validate(config)?;
     }
     if kind == "github" {
         let name = string(config, "repository", 200)?;
@@ -255,7 +321,7 @@ impl Store {
             if kind!="jsonl" && credential.is_none(){return Err(Error::bad("Connect an account or choose a saved source credential"));}
             if credential.is_some_and(|v|v.is_empty() || v.len()>100 || !v.bytes().all(|b|b.is_ascii_alphanumeric() || b"_:-".contains(&b))) {return Err(Error::bad("Invalid credential reference"));}
             if let Some(reference)=credential.filter(|v|v.starts_with("secret:"))&& one(db,"SELECT id FROM am_secrets WHERE workspace_id=? AND id=?",params![workspace,&reference[7..]])?.is_none(){return Err(Error::denied());}
-            if let Some(reference)=credential.filter(|v|v.starts_with("oauth:")) {let provider=if ["jira","confluence"].contains(&kind){"atlassian"}else{kind};if one(db,"SELECT id FROM am_oauth_accounts WHERE workspace_id=? AND id=? AND provider=? AND state='active'",params![workspace,&reference[6..],provider])?.is_none(){return Err(Error::denied());}}
+            if let Some(reference)=credential.filter(|v|v.starts_with("oauth:")) {let provider=identity_provider(kind);if one(db,"SELECT id FROM am_oauth_accounts WHERE workspace_id=? AND id=? AND provider=? AND state='active'",params![workspace,&reference[6..],provider])?.is_none(){return Err(Error::denied());}}
             let identifier=id();db.execute("INSERT INTO am_connectors(id,repository_id,name,kind,config,credential_env,state,created_at) VALUES(?,?,?,?,?,?,'active',?)",params![identifier,s(&repository,"id"),name,kind,config.to_string(),credential,now()])?;
             Ok(json!({"id":identifier,"name":name,"kind":kind,"state":"active","sharing":"explicit_workspace_policy","provider_permissions_synced":false}))
         })
@@ -603,7 +669,10 @@ pub struct Remote<'a> {
     pub permissions: BTreeMap<String, Value>,
 }
 impl Remote<'_> {
-    pub(crate) async fn request(
+    /// One provider request within the job's budget, with the connector's
+    /// credential; a JSON reply. 401 and 403 withhold the connector's
+    /// documents until its next complete sync; rate limits are reported.
+    pub async fn request(
         &mut self,
         method: reqwest::Method,
         path: &str,
@@ -862,20 +931,24 @@ pub async fn probe(worker: &Worker, job: &Job) -> Result<Value> {
     decode(&mut connector, "config")?;
     let kind = s(&connector, "kind");
     let cfg = &connector["config"];
+    let source = crate::extension::installed().source(kind);
     let default = match kind {
-        "github" => "https://api.github.com",
-        "slack" => "https://slack.com/api",
-        "notion" => "https://api.notion.com/v1",
-        "gdrive" => "https://www.googleapis.com/drive/v3",
-        "jira" | "confluence" => string(cfg, "base_url", 2000)?,
-        _ => return Err(Error::bad("This source does not use a remote account")),
+        "github" => "https://api.github.com".to_string(),
+        "slack" => "https://slack.com/api".to_string(),
+        "notion" => "https://api.notion.com/v1".to_string(),
+        "gdrive" => "https://www.googleapis.com/drive/v3".to_string(),
+        "jira" | "confluence" => string(cfg, "base_url", 2000)?.to_string(),
+        _ => match source {
+            Some(source) => source.base_url(cfg)?,
+            None => return Err(Error::bad("This source does not use a remote account")),
+        },
     };
     let endpoint = worker
         .config
         .connector_endpoints
         .get(kind)
         .cloned()
-        .unwrap_or_else(|| default.into());
+        .unwrap_or(default);
     let url = model::checked_url(&endpoint)?;
     let loopback = url
         .host_str()
@@ -996,7 +1069,10 @@ pub async fn probe(worker: &Worker, job: &Job) -> Result<Value> {
                 json!({"id":target["id"],"name":target["name"]}),
             )
         }
-        _ => unreachable!(),
+        _ => match source {
+            Some(source) => source.probe(&mut remote).await?,
+            None => unreachable!(),
+        },
     };
     jobs::guarded(&worker.store, job, |db, _, _| {
         ensure_connector(db, &connector)
@@ -1028,19 +1104,22 @@ pub async fn sync(worker: &Worker, job: &Job) -> Result<Value> {
         return Err(Error::bad(PROVIDER_SYNC_UNAVAILABLE));
     }
     let default = match kind {
-        "github" => "https://api.github.com",
-        "slack" => "https://slack.com/api",
-        "notion" => "https://api.notion.com/v1",
-        "gdrive" => "https://www.googleapis.com/drive/v3",
-        "jira" | "confluence" => string(&connector["config"], "base_url", 2000)?,
-        _ => return Err(Error::bad("Unknown source connector")),
+        "github" => "https://api.github.com".to_string(),
+        "slack" => "https://slack.com/api".to_string(),
+        "notion" => "https://api.notion.com/v1".to_string(),
+        "gdrive" => "https://www.googleapis.com/drive/v3".to_string(),
+        "jira" | "confluence" => string(&connector["config"], "base_url", 2000)?.to_string(),
+        _ => match crate::extension::installed().source(kind) {
+            Some(source) => source.base_url(&connector["config"])?,
+            None => return Err(Error::bad("Unknown source connector")),
+        },
     };
     let base = worker
         .config
         .connector_endpoints
         .get(kind)
         .cloned()
-        .unwrap_or(default.into());
+        .unwrap_or(default);
     model::checked_url(&base)?;
     let mut remote = Remote {
         worker,
@@ -1379,7 +1458,10 @@ async fn listing(remote: &mut Remote<'_>, cursor: &Value) -> Result<(Vec<Value>,
             };
             Ok((files, next))
         }
-        _ => Err(Error::bad("Unsupported connector listing")),
+        kind => match crate::extension::installed().source(kind) {
+            Some(source) => source.listing(remote, cursor).await,
+            None => Err(Error::bad("Unsupported connector listing")),
+        },
     }
 }
 fn indexable(path: &str) -> bool {
@@ -1432,7 +1514,10 @@ async fn fetch_document(remote: &mut Remote<'_>, item: &Value) -> Result<Option<
         "notion" => notion_document(remote, item).await,
         "gdrive" => drive_document(remote, item).await,
         "jira" | "confluence" => crate::atlassian::document(remote, item).await,
-        _ => Err(Error::bad("Unsupported connector document")),
+        kind => match crate::extension::installed().source(kind) {
+            Some(source) => source.document(remote, item).await,
+            None => Err(Error::bad("Unsupported connector document")),
+        },
     }
 }
 async fn github_document(remote: &mut Remote<'_>, item: &Value) -> Result<Option<Value>> {
@@ -1709,6 +1794,43 @@ async fn notion_document(remote: &mut Remote<'_>, item: &Value) -> Result<Option
     }
     Ok(Some(document))
 }
+/// Keep the original bytes of a connector document parsed by
+/// `documents::extract` (`parsing`), for **Download original**, within the
+/// repository's retained-originals limit (`retained_original_bytes`).
+pub fn keep_original(
+    remote: &Remote<'_>,
+    document: &str,
+    name: &str,
+    parsing: &Value,
+    bytes: &[u8],
+) -> Result<()> {
+    jobs::guarded(&remote.worker.store, remote.job, |db, _, _| {
+        let used:i64=db.query_row("SELECT coalesce(sum(length(bytes)),0) FROM am_original_documents WHERE repository_id=?",[&remote.job.repository],|r|r.get(0))?;
+        let cap = crate::limits::current().retained_original_bytes;
+        if usize::try_from(used + bytes.len() as i64).unwrap_or(usize::MAX) > cap {
+            return Err(Error::bad(format!(
+                "Original document storage exceeds {}; prune retained versions, or raise the limit with {}",
+                crate::limits::size(cap),
+                crate::limits::raise("retained_original_bytes")
+            )));
+        }
+        db.execute(
+            "INSERT OR IGNORE INTO am_original_documents VALUES(?,?,?,?,?,?,?,?,?)",
+            params![
+                remote.job.repository,
+                s(remote.connector, "id"),
+                format!("connector:{}:{document}", s(remote.connector, "id")),
+                s(parsing, "original_sha256"),
+                name,
+                s(parsing, "parser"),
+                s(parsing, "text_sha256"),
+                bytes,
+                now()
+            ],
+        )?;
+        Ok(())
+    })
+}
 async fn drive_document(remote: &mut Remote<'_>, item: &Value) -> Result<Option<Value>> {
     let file_id = string(item, "id", 200)?;
     let metadata = remote
@@ -1750,32 +1872,7 @@ async fn drive_document(remote: &mut Remote<'_>, item: &Value) -> Result<Option<
             _=>return Err(Error::bad(format!("Drive format {mime} is not supported by an installed document parser")))
         };
         parsing = crate::documents::extract(&name, &bytes)?;
-        jobs::guarded(&remote.worker.store, remote.job, |db, _, _| {
-            let used:i64=db.query_row("SELECT coalesce(sum(length(bytes)),0) FROM am_original_documents WHERE repository_id=?",[&remote.job.repository],|r|r.get(0))?;
-            let cap = crate::limits::current().retained_original_bytes;
-            if usize::try_from(used + bytes.len() as i64).unwrap_or(usize::MAX) > cap {
-                return Err(Error::bad(format!(
-                    "Original document storage exceeds {}; prune retained versions, or raise the limit with {}",
-                    crate::limits::size(cap),
-                    crate::limits::raise("retained_original_bytes")
-                )));
-            }
-            db.execute(
-                "INSERT OR IGNORE INTO am_original_documents VALUES(?,?,?,?,?,?,?,?,?)",
-                params![
-                    remote.job.repository,
-                    s(remote.connector, "id"),
-                    format!("connector:{}:{file_id}", s(remote.connector, "id")),
-                    s(&parsing, "original_sha256"),
-                    name,
-                    s(&parsing, "parser"),
-                    s(&parsing, "text_sha256"),
-                    bytes,
-                    now()
-                ],
-            )?;
-            Ok(())
-        })?;
+        keep_original(remote, file_id, &name, &parsing, &bytes)?;
         s(&parsing, "text").to_string()
     };
     Ok(Some(

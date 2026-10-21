@@ -24,11 +24,17 @@ how retrieval ranks and packs evidence.
 | `server.json` | While `graphicle serve` (or `open`) runs: its port and a secret, so that `graphicle open` signs in only to this folder's server. It is readable by you only |
 | `version.json` | The newest Graphicle version that used the folder |
 | `gf-cache/` | Graph caches, which are rebuilt when needed |
+| `backups/` | The backups `graphicle backup` writes when you give it no path; `graphicle offboard` removes a project from them |
 
 `graphicle sync` creates the local workspace the first time it runs, so you do
 not need `graphicle init`.
 
-To back up while the app is running, run `graphicle backup /safe/place/graphicle.sqlite3`.
+To back up while the app is running, run `graphicle backup /safe/place/graphicle.sqlite3`,
+or `graphicle backup` to write it to the data folder's `backups/` folder (a
+backup there goes with the data folder, so keep a copy elsewhere too).
+`graphicle offboard --project PROJECT` removes one project from the store and
+from the backups in `backups/`, with a hash-chained receipt; without
+`--apply PLAN_HASH` it only shows its plan.
 `graphicle --data-dir NEW_FOLDER restore /safe/place/graphicle.sqlite3`
 restores into a new folder and never overwrites existing data. A backup leaves
 out provider secrets and the vault key, so reconnect providers after a restore.
@@ -171,6 +177,189 @@ applied. Over MCP, the essentials set (what setup gives Claude Code) uses
 this default; `--tools all`, `graph` and `memory` answer `recall_project` in
 0.1.0's order.
 
+A code question ranks the project's source files first (`code_first`,
+`"auto"` by default). A question is a code question when it names code (a
+backtick span, a `snake_case` or `camelCase` name with two lowercase letters
+before its capital, `Type::member`, `call()` or a code file) or reads like an issue or bug report (a code block, a stack
+trace or error line, or two words such as crash, error, fails, expected or
+regression). Its documentation files (Markdown, reStructuredText, AsciiDoc,
+plain text, `README`, `CHANGELOG`, `LICENSE`, files under `doc/`), test
+files and vendored or generated code (`vendor/`, `third_party/`,
+`node_modules/`, `x.min.js`, `x.pb.go`, lock files) count a quarter of
+their fused score in the ranking, before the excerpts are chosen and the
+budget is spent, and the code-graph arm leaves Markdown nodes out. A test
+file is one under a `test`, `tests`, `testing`, `__tests__`, `spec`,
+`testdata` or `fixtures` folder, a `Foo.Tests` or `FooTests` project, or one
+named like a test in Rust (`tests.rs`, `x_test.rs`), Python (`test_x.py`,
+`x_test.py`, `conftest.py`), Go (`x_test.go`), Java, Kotlin and Scala
+(`FooTest.java`, `FooIT.java`, `TestFoo.java`), C# (`FooTests.cs`),
+JavaScript and TypeScript (`x.test.ts`, `x.spec.js`), C and C++
+(`test_x.c`, `x_test.cc`, `x_unittest.cpp`) or Ruby (`x_spec.rb`). These
+keep the order they had:
+
+- a question about documents, notes or decisions (it names a
+  documentation file or uses words such as documentation, docs, readme,
+  notes or decided) that does not read like a report;
+- test files, when a question that does not read like a report names a
+  test, or the call sets `include_tests: true`;
+- a test or document that defines a code name the question names (one
+  with an underscore or an inner capital, as the identifier arm finds it in
+  the code graph) when no source file defines that name, such as a test
+  helper or a fixture.
+
+`code_first: false` keeps that order for every question, and `true` ranks
+source files first for every question. The packet's `code_first` says what
+applied, why, and how many files of each kind it lowered.
+
+A code question is searched by its content, not its instructions
+(`query_focus`, `"auto"` by default; `true` for every question, `false`
+for none). When it marks its content, the query is the marked text, every
+word kept, followed by the names of code in its prose outside the marks
+(backtick spans, identifiers and file paths, leaving out fenced examples and
+placeholders such as `ClassName.method_name` or `path/to/file.py`). A mark
+is a tag of its own (`<issue>` ... `</issue>`, `<pr_description>` ...),
+opening at the start of a line, with text after it or not, and closing
+anywhere after it (HTML elements such as `<details>` do not count), or a pair
+of delimiter lines (`--- BEGIN ISSUE ---` ... `--- END ISSUE ---`, drawn with
+`-`, `=`, `#`, `*` or `~`). The marks are ignored when the text outside them
+is longer than 2,000 characters and they hold less than 40% of the question.
+A question without marks leaves out the general words of instructions, such
+as find, locate, fix, resolve, change, edit, create, delete, implement,
+list, explain, task, issue, problem, question, file, function, method, class
+and please. Either way web addresses are left out, except a code host's link
+to a file (`https://github.com/o/r/blob/<ref>/src/x.rs#L10`, GitLab's
+`/-/blob/`), which becomes the file's path, and so are commit hashes.
+Identifiers, calls, quoted words and paths always stay. BM25, the code-graph
+arm, the files read past the passage bound, a local reranker and the
+excerpts' focus read the query; the packet's `question` is the question, and
+its `query_focus` says what was marked and left out.
+
+The identifiers and file paths a code question names rank their files
+(`identifier_arm`, `"auto"` by default; `true` for any question, `false`
+for none). Its names are every identifier of three or more characters in
+a code block or span that is not a common English word or keyword, and in
+prose the `snake_case`, `SCREAMING_CASE`, camelCase and PascalCase words
+with a capital inside, calls (`name(`) and qualified names (`a.b`, `a::b`,
+`a->b`, `a#b`), whole and by their parts written as code; its paths are the
+file names and paths with a known extension. Each name is matched as a
+whole word, case-sensitively, in the project's passages, and found at its
+definitions in the code graph (unless `graph_retrieval: false`). A file
+scores, for each of the 40 most specific names it holds,
+`ln(1 + files / files holding the name)`, twice that where it defines the
+name, plus twice the weight of a name only it holds when the question names
+its path. Files come in score order, each with its two best passages, as
+the arm `identifiers` of the fusion (weight 1; `arm_weights` sets another).
+The packet's `identifier_arm` lists the names and paths used and how many
+files ranked. With the identifier route on, a question that asks more than
+where its names are keeps the retrieval as before, and its `route` now
+says `names_fused` when the arm ranked them.
+
+`graphicle context` prints at most 8,400 characters by default, so a prompt
+hook that adds the packet under a header stays below the 10,000 characters
+Claude Code shows in full. `--max-chars` sets another size; with only
+`--max-tokens`, the packet holds 4 characters per token, as before.
+
+After its excerpts, a packet lists the paths of the files that rank next and
+that no excerpt quotes, one per line under "Next ranked files"
+(`more_files`: 0 to 40; left out, 10 for a code question and 0 for any
+other). Their room is kept from the excerpts' share of the budget, at most
+an eighth of it, so the packet still fits `max_chars` and `max_tokens`. The
+packet's `more_files` lists the paths.
+
+`code_first`, `query_focus`, `identifier_arm` (each `"auto"`, `true` or
+`false`) and `more_files` (0 to 40) are also flags of `graphicle context`
+(`--code-first false`, `--query-focus true`, `--identifier-arm auto`,
+`--more-files 0`) and switches of `recall_project` over MCP, beside its
+published arguments; `graphicle mcp --set code_first=false` (or
+`more_files=0`, `query_focus=auto`) fixes one for a server, and every packet
+echoes them in `mechanisms.switches`.
+
+A question over 16,000 bytes is shortened, not refused: to the text it
+marks with its own tags when that fits, else to its beginning, cut at a line
+end, followed by the identifiers and file paths of the text cut (at most
+3,000 bytes of them). The packet's `question_shortened` says so:
+`{"bytes": ..., "tagged_content": ..., "kept_bytes": ..., "names_appended":
+...}`.
+
+`notes_first: true` turns on three changes for a call, which are off by
+default (`graphicle context --notes-first`; over MCP, `recall_project` takes
+it beside its published arguments, and `graphicle mcp --set
+notes_first=true` turns it on for a server):
+
+- A question that names no code (no backtick span, `snake_case` or
+  `camelCase` name, `Type::member`, `call()` or code file) takes the first 50
+  files of the fused ranking, one passage each. Code files keep their
+  places; the notes (Markdown, text, PDF and other documents) among them are
+  ordered again among the notes' places: a note whose name or folder matches
+  the question's words, whose headings match, or that has a newer date (the
+  latest ISO date, up to today, in its path or text) comes before the other
+  notes. A question that names code keeps the code ranking.
+- A packet quotes one window of a file, and one of files with identical
+  bytes; the places freed go to the next files. `include_tests: true`, which
+  `--tools all`, `graph` and `memory` send for `recall_project`, keeps 0.1.0's
+  windows as ranked whatever `notes_first` says, and so does an explicit
+  `origin_quota` (`false`: at most two windows per file).
+- Each excerpt of a project file says when its file last changed, in its
+  citation: `Source [repository_file]: notes/node.md:75 (changed 2026-10-15
+  05:10 UTC)`. The date is that of the last commit that changed the file
+  when Git tracks it and the working tree has not changed it, otherwise the
+  file's modification time, read in the folder the project was last synced
+  from. A note may follow the citation: `Note: may be stale: <file> (defines
+  <name>) changed <date>`, when the excerpt names code (a document link, as
+  `doc_links` records it, written as code: with `_`, `::`, `.`, `/` or `(`,
+  or a capital inside it) whose file changed after the excerpt's file last
+  did. The date is the file's; the change may not touch the named
+  definition. Excerpts are not compared with one another, and the dates do
+  not change their order. `source_age: true` or `false` turns the dates on
+  or off by themselves; `--tools all`, `graph` and `memory` answer
+  `recall_project` without them.
+
+The packet's `notes_first` says what applied (`off` when the call did not
+turn it on), and `source_age` what was dated and marked; each dated source
+carries `changed`, `changed_at` and `changed_basis` (`git` or `mtime`).
+
+`identifier_route` answers a question that is an identifier, or names
+identifiers and only asks where they are defined or used, from the code
+graph instead of the full retrieval: each name's definitions and the places
+that refer to it, as `path:line` lines within the call's budget, and one
+line with the titles of the reviewed memories linked to those definitions
+(none when the call sets `memory_retrieval: false`). The packet has no
+excerpts: its `evidence` and `sources` are empty. `graphicle context` and,
+over MCP, `recall_project` in the essentials set (what setup gives Claude
+Code) take the route unless told otherwise; the HTTP API, `graphicle call
+context` and the SDKs take it only when a call sets `identifier_route:
+true`, and so do `--tools all`, `graph` and `memory`.
+
+A name is a backtick span that reads as an identifier, a `snake_case` or
+`SCREAMING_CASE` word, a camelCase or PascalCase word with a capital inside
+it (`parseConfig`, `ParseConfig`), a dotted or `::` path (`os.path.join`,
+`Store::open`), or a call `name()`. A name alone takes the route. Other
+words may only ask where the names are or what uses them, and one of them
+must: `where is Store::open defined`, `who calls parse_config()`,
+`references to ParseConfig`, `find the callers of run()`. These keep the
+full retrieval:
+
+- a question in plain words, a single plain word (`parser`) included;
+- a question that asks for more than where a name is or what uses it, such
+  as its content, its members, what it calls or where it is mentioned (`how
+  does parse_config() handle a missing file?`, `what is MAX_NAMES?`, `list
+  the fields of RecallArgs`, `callees of parse_config`), whose excerpts rank
+  the named code already;
+- a call with `needs` or `graph_retrieval: false`, a project without a code
+  graph, and a question none of whose names the code graph defines in the
+  files the call may read (`include`).
+
+`graphicle context --no-identifier-route` keeps the retrieval for one call;
+over MCP, `recall_project` takes `identifier_route` beside its published
+arguments, and `graphicle mcp --set identifier_route=false` (or `true`)
+fixes it for a server. The packet's `route` says which path ran:
+`{"path": "identifier", "names": [...], "not_found": [...]}` with each
+name's definitions and references under `symbols` and the linked memories
+under `linked_memories`, or `{"path": "retrieval", "reason": ...}`, the
+reason being `plain_words`, `asks_more`, `not_in_code_graph`,
+`no_code_graph`, `needs`, `graph_retrieval_off`, `too_many_names`, `off` or,
+for a workspace recall, which keeps the retrieval, `workspace`.
+
 Each packet lists the defaults it applied in `retrieval_defaults`. To change an
 option for one call, send the request through `graphicle call`. Setting an
 option to `false` turns it off:
@@ -199,6 +388,14 @@ Other options include the following:
   lists them. `graphicle mcp --set doc_links=true` turns it on for every
   `recall_project` call of that server ([MCP](mcp.md)). `doc_links: false`
   also keeps documents out of the code-graph part of the ranking.
+- `symbol_links: true` follows the links between reviewed memory and the code
+  symbols it is anchored to, one step: an excerpt of code brings in the
+  current reviewed memories linked to a symbol inside it, and a reviewed
+  memory brings in the current code of the symbols it is linked to. It is off
+  by default: each packet counts the links it did not follow in
+  `symbol_links`. `graphicle mcp --set symbol_links=true` turns it on for
+  every `recall_project` call of that server. `symbol_links: false` reads no
+  such link.
 
 These need a build with the `local-inference` feature:
 
@@ -317,7 +514,16 @@ document.
 most 5,000 manifest entries and 64 MiB of text) is internal and is never a
 project limit.
 
-`graphicle sync` respects `.gitignore` and `.git/info/exclude`. It skips
+`graphicle sync` respects `.gitignore`, `.git/info/exclude` and `.ignore`
+files. The first two cover the files Git does not track: a file Git tracks is
+read even when one of them matches it, since Git versions it with the rest (a
+repository that ignores its build output `app.js` and tracks `src/app.js`),
+and the sync's output counts those files (`tracked_ignored`). A file an
+`.ignore` file leaves out stays out, tracked or not. `graphicle config set
+sync.tracked_ignored false` (`"sync": {"tracked_ignored": false}` in
+`models.json`) leaves tracked files that a pattern matches out too, and the
+environment variable `GRAPHICLE_SYNC_TRACKED_IGNORED` (`0` or `1`) overrides
+the setting. It skips
 `.git`, `node_modules`, `target`, build output, `.env` files, keys and
 credential files, symbolic links and binary files other than documents. It
 reads PDF, DOCX, PPTX, XLSX, ODF and EPUB documents, HTML and UTF-8 text. It
@@ -326,8 +532,10 @@ Code's personal `.claude/settings.local.json`, a `.mcp.json` or
 `.vscode/mcp.json` holding only Graphicle's entries, and the Graphicle section
 of `AGENTS.md` and `CLAUDE.md`, which reads as blank lines. The output of
 `sync` counts what it excluded. To make a project smaller, set up a subfolder
-(`graphicle setup path/to/subfolder`), or leave paths out in `.gitignore` or,
-for your machine only, in `.git/info/exclude`.
+(`graphicle setup path/to/subfolder`), or leave untracked paths out in
+`.gitignore` or, for your machine only, in `.git/info/exclude` (with
+`sync.tracked_ignored` set to `false`, tracked paths too), or any path in an
+`.ignore` file.
 
 The code graph has no such limits.
 

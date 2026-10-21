@@ -16,7 +16,7 @@ step.
 
 ```sh
 brew install graphicle-ai/tap/graphicle
-graphicle --version          # graphicle 0.1.2 (core)
+graphicle --version          # graphicle 0.1.3 (core)
 ```
 
 `brew upgrade graphicle` installs a new release. Afterwards, read
@@ -86,6 +86,10 @@ Notes for the preview:
 - For the local server, use `127.0.0.1` rather than `localhost`: the server
   listens on `127.0.0.1`, and Windows tries `localhost`'s IPv6 address first,
   which adds about two seconds to each request.
+- `graphicle offboard` removes a project from the store and its graph cache
+  but leaves the backups in the data folder's `backups/` folder as they are,
+  and lists them as refused: Windows does not tell Graphicle whether a backup
+  file has another name (a hard link) outside the data folder.
 - Not on Windows: `graphicle-graph serve --socket` and
   `GRAPHICLE_REBUILD_MEMORY_LIMIT_MB`, which need Unix; OCR of scanned PDFs and
   images and the legacy document formats, which use a macOS helper; the
@@ -145,7 +149,7 @@ folder with both programs, `LICENSE`, `NOTICE`, `NOTICE.md`, `README.md`,
 | Windows, x86-64 (preview) | `x86_64-pc-windows-msvc`, a `.zip` |
 
 ```sh
-version=0.1.2
+version=0.1.3
 target=aarch64-apple-darwin
 base=https://github.com/graphicle-ai/graphicle/releases/download/v$version
 curl -fLO "$base/graphicle-$version-$target.tar.gz"
@@ -239,7 +243,7 @@ in them.
 ## Check the installation
 
 ```sh
-graphicle --version          # graphicle 0.1.2 (core)
+graphicle --version          # graphicle 0.1.3 (core)
 graphicle graph --help       # the code-graph engine's commands
 graphicle doctor             # checks the programs, the data folder and your agents
 ```

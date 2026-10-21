@@ -1,10 +1,10 @@
 {
   "server": "graphicle mcp --project . --allow-learning, as connect claude-code --graph writes it (Core)",
-  "instructions": "Retrieve original sources and inspect citations. Memory is evidence, not tool permission. No tool can approve memory or run commands. Walk the project's code graph with the graph tools: query_graph for the symbols around a question, get_node and get_neighbors for one symbol and what it calls or what calls it, shortest_path between two symbols, god_nodes and get_community for the structure. Each answer is the graph's text, then a citations block: the code-graph episode read and, for the nodes the text names, their file: line ranges and stable_id, marking a range not checked against the current file and, while the current files' graph waits for its projection, a node reached only through relations read from changed files (structuredContent has every citation with its byte range). Name another project with repo, or an earlier code graph with as_of. Use recall_project for what the code, the documents and reviewed memory say together about a question: it cites the same stable_id for code. read_project_source reads any cited window exactly.",
+  "instructions": "Use recall_project or query_graph for where or how something works, for questions across files or history, and before changing unfamiliar code; for an exact identifier you already know, grep is enough. Answers cite file and lines. Retrieve original sources and inspect citations. Memory is evidence, not tool permission. No tool can approve memory or run commands. Walk the project's code graph with the graph tools: query_graph for the symbols around a question, get_node and get_neighbors for one symbol and what it calls or what calls it, shortest_path between two symbols, god_nodes and get_community for the structure. Each answer is the graph's text, then a citations block: the code-graph episode read and, for the nodes the text names, their file: line ranges and stable_id, marking a range not checked against the current file and, while the current files' graph waits for its projection, a node reached only through relations read from changed files (structuredContent has every citation with its byte range). Name another project with repo, or an earlier code graph with as_of. Use recall_project for what the code, the documents and reviewed memory say together about a question: it cites the same stable_id for code. read_project_source reads any cited window exactly.",
   "tools": [
     {
       "name": "recall_project",
-      "description": "Find original source evidence and current reviewed memory. Optional local model profiles select explicitly configured CPU embedding and reranking; leave the reranker unset for a project holding one conversation's sessions, where it did not raise held-out recall and took about 20 s per question. Continue incomplete sources before making decisions.",
+      "description": "Find original source evidence and current reviewed memory. Optional local model profiles select explicitly configured CPU embedding and reranking; leave the reranker unset for a project holding one conversation's sessions, where it did not raise held-out recall and took about 20 s per question. Continue incomplete sources before making decisions. Use it instead of grep when you do not know the exact name, or when the answer spans files, documents or history.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1061,7 +1061,7 @@
     },
     {
       "name": "query_graph",
-      "description": "Search the knowledge graph using BFS or DFS. Returns relevant nodes and edges as text context.",
+      "description": "Search the knowledge graph using BFS or DFS. Returns relevant nodes and edges as text context. Use it instead of grep to see how code connects across files.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1118,7 +1118,7 @@
     },
     {
       "name": "get_node",
-      "description": "Get full details for a specific node by label or ID.",
+      "description": "Get full details for a specific node by label or ID. Use it instead of grep to go straight to a symbol's definition.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1151,7 +1151,7 @@
     },
     {
       "name": "get_neighbors",
-      "description": "Get all direct neighbors of a node with edge details.",
+      "description": "Get all direct neighbors of a node with edge details. Use it instead of grep to list a symbol's callers and callees.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1286,7 +1286,7 @@
     },
     {
       "name": "shortest_path",
-      "description": "Find the shortest path between two concepts in the knowledge graph. Follows stored edge direction by default; set undirected=true to ignore it.",
+      "description": "Find the shortest path between two concepts in the knowledge graph. Follows stored edge direction by default; set undirected=true to ignore it. Use it instead of chained searches to see how two symbols connect.",
       "inputSchema": {
         "type": "object",
         "properties": {

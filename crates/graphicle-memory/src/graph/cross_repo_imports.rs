@@ -62,7 +62,8 @@ impl Ecosystem {
             Ecosystem::Go => "go",
         }
     }
-    fn of_file(relpath: &str) -> Option<Self> {
+    /// The ecosystem of an importing file, by its extension.
+    pub fn of_file(relpath: &str) -> Option<Self> {
         let lower = relpath.to_ascii_lowercase();
         if PY_EXTS.iter().any(|e| lower.ends_with(e)) {
             Some(Ecosystem::Python)

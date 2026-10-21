@@ -85,6 +85,7 @@ undo it.
 | `--no-hooks` | Add no Git hooks |
 | `--tools all` | Give Claude Code every tool of the server, not five (`essentials`, the default for Claude Code) |
 | `--guards` | Add hooks that point Claude Code's searches and source reads to the graph tools (off by default) |
+| `--prompt-context` | Add a hook that gives Claude Code `graphicle context`'s packet before each prompt that is a code question (off by default) |
 | `--switch-from-graphify` | Switch from Graphify without asking |
 | `--json` | Print the result as JSON, for scripts |
 

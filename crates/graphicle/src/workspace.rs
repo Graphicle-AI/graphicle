@@ -28,7 +28,8 @@
 //!   symbol lifts the importing project's use of it. A lifted window follows
 //!   the window that led to it and carries `cross_repo` facts (the edge, both
 //!   ends and their stable ids). It is a graph mechanism: `graph_retrieval:
-//!   false` turns it off.
+//!   false` turns it off, and `cross_repo` turns it alone off or on (left
+//!   out, it follows `graph_retrieval`).
 //! - **A project the principal may not read takes no part**: it is not
 //!   searched, no edge to or from it is followed, and no count includes it.
 //! - **A project whose read fails is left out** and listed in `projects`
@@ -251,8 +252,9 @@ pub fn context(
             }
         }
     }
-    let graph_on = args["graph_retrieval"] != false;
-    let step = if graph_on {
+    // The cross-repository step's own switch, else `graph_retrieval`'s.
+    let switches = query::switches(args, "workspace")?;
+    let step = if switches["cross_repo"] == true {
         // A graph mechanism: like the code arm, it degrades (and says why)
         // rather than failing the query.
         cross_step(db, p, &reads, &order).unwrap_or_else(|error| Step::failed(&error))
@@ -299,6 +301,13 @@ pub fn context(
                     let id = s(included, "id");
                     let full = read.snapshot.memories.iter().find(|m| s(m, "id") == id)?;
                     let mut record = full.clone();
+                    // A memory the project's read lifted through a link to
+                    // code keeps how it came (`via`, `link`).
+                    for key in ["via", "link"] {
+                        if let Some(value) = included.get(key) {
+                            record[key] = value.clone();
+                        }
+                    }
                     record["repository_id"] = json!(read.id());
                     record["project"] = json!(read.name());
                     Some(json!({"identity":format!("{}:memory:{id}", read.id()),"kind":"memory","memory":record}))
@@ -365,7 +374,12 @@ pub fn context(
         let mut window = evidence::from_range(document, a, b)?;
         // The code arm's and the step's facts, and the document links each
         // project's read followed.
-        for key in [code_graph_arm::ARM, crate::doc_links::ARM, FACTS] {
+        for key in [
+            code_graph_arm::ARM,
+            crate::doc_links::ARM,
+            crate::symbol_links::ARM,
+            FACTS,
+        ] {
             if let Some(facts) = source.get(key) {
                 window[key] = facts.clone();
             }
@@ -386,6 +400,7 @@ pub fn context(
     packet["arms"] = arms(&reads, &packet, &step);
     packet[code_graph_arm::ARM] = code_graph(&searched, &evidence);
     packet[crate::doc_links::ARM] = doc_links(&reads, &evidence);
+    packet[crate::symbol_links::ARM] = symbol_links(&reads, &evidence, &packet);
     // Each project of the scope in its order: searched, or left out with
     // the error that stopped its read.
     let mut projects: Vec<(usize, Value)> = reads
@@ -419,17 +434,34 @@ pub fn context(
             "workspace".into(),
             json!({"projects_searched":reads.len(),"cross_edges_used":edges_used.len()}),
         );
-        // Links used, by the windows this packet holds, as `query::context_on`
-        // counts one project's (document links are the only
-        // links windows carry).
+        fields.insert("switches".into(), switches);
+        // Links used, by what this packet holds, as `query::context_on`
+        // counts one project's: the windows a document link reached, and
+        // the memories and windows a link to code symbols reached.
         let mut rungs: BTreeMap<String, u64> = BTreeMap::new();
+        let mut documents = 0u64;
+        let mut memory = 0u64;
         for window in &evidence {
             if let Some(facts) = window.get(crate::doc_links::ARM) {
+                documents += 1;
+                *rungs.entry(s(facts, "rung").to_string()).or_default() += 1;
+            }
+            if let Some(facts) = window.get(crate::symbol_links::ARM) {
+                memory += 1;
                 *rungs.entry(s(facts, "rung").to_string()).or_default() += 1;
             }
         }
+        for included in packet["memories"].as_array().into_iter().flatten() {
+            if included["via"] == "link" {
+                memory += 1;
+                *rungs
+                    .entry(s(&included["link"], "rung").to_string())
+                    .or_default() += 1;
+            }
+        }
         if let Some(used) = fields.get_mut("links_used").and_then(Value::as_object_mut) {
-            used.insert("document".into(), json!(rungs.values().sum::<u64>()));
+            used.insert("document".into(), json!(documents));
+            used.insert("memory".into(), json!(memory));
             used.insert("by_rung".into(), json!(rungs));
         }
     }
@@ -597,6 +629,52 @@ fn doc_links(reads: &[Read], evidence: &[Value]) -> Value {
             ))
             .collect::<Map<_, _>>()
     );
+    report
+}
+
+/// The workspace packet's `symbol_links`: the searched projects' own
+/// reports merged (counts add up), `followed` when one followed links and
+/// none failed (else `counted`, `disabled` or `not_requested` as they all
+/// say), with what this packet kept: the windows that carry link facts
+/// (`cited`) and the memories lifted through a link (`memories_included`).
+fn symbol_links(reads: &[Read], evidence: &[Value], packet: &Value) -> Value {
+    let reports: Vec<&Value> = reads
+        .iter()
+        .map(|read| &read.packet[crate::symbol_links::ARM])
+        .collect();
+    let mut report = merge(&reports);
+    let statuses: Vec<&str> = reports
+        .iter()
+        .map(|report| report["status"].as_str().unwrap_or(""))
+        .collect();
+    let status = if statuses.contains(&"error") {
+        "error"
+    } else if statuses.contains(&"followed") {
+        "followed"
+    } else if statuses.contains(&"counted") {
+        "counted"
+    } else if !statuses.is_empty() && statuses.iter().all(|status| *status == "disabled") {
+        "disabled"
+    } else {
+        "not_requested"
+    };
+    report["status"] = json!(status);
+    if report.get("considered").is_some() {
+        report["cited"] = json!(
+            evidence
+                .iter()
+                .filter(|w| w.get(crate::symbol_links::ARM).is_some())
+                .count()
+        );
+        report["memories_included"] = json!(
+            packet["memories"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|m| m["via"] == "link")
+                .count()
+        );
+    }
     report
 }
 

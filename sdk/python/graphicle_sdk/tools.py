@@ -26,7 +26,8 @@ read; to keep a model to one project, give it a key whose access to the other pr
 revoked (the ``graph.access`` operation). ``Tools(project,
 cross_project=True)`` opts in to the workspace: the definitions and calls are then those of the
 workspace connection ``/mcp/<workspace>``, where ``list_projects`` lists the projects the key may
-read, ``repo`` selects one (this project by default) and ``recall_project`` searches them all,
+read, ``workspace_map`` maps them, ``repo`` selects one (this project by default) and
+``recall_project`` searches them all,
 this project first, unless ``repo`` names one. Opt in only where everything the key can read may
 reach the model. No tool can approve memory or run commands. Write tools
 (``propose_memory``, ``propose_observations`` ...) are published only while the service runs with MCP
@@ -59,7 +60,7 @@ _FIXED = ("repository_id", "workspace_id")
 # What reaches other projects: tools listed only for the workspace, and the tools whose ``repo``
 # names another project. Without ``cross_project`` they are left out here even if a service
 # publishes them on a project connection.
-_WORKSPACE_TOOLS = ("list_projects",)
+_WORKSPACE_TOOLS = ("list_projects", "workspace_map")
 _REPO_TOOLS = ("recall_project", "read_project_source")
 # Tools whose MCP reply is the text an agent reads unless the call asks for the whole packet in
 # ``structuredContent`` (``structured``, beside the published contract); :meth:`Tools.call`
@@ -116,8 +117,8 @@ class Tools:
     def definitions(self, *, refresh: bool = False) -> List[Dict[str, Any]]:
         """The published MCP tool definitions (``name``, ``description``, ``inputSchema``,
         ``annotations``); read-only tools only unless ``include_write``. Without
-        ``cross_project``, nothing that reaches another project: no ``list_projects``, and no
-        ``repo`` on ``recall_project`` or ``read_project_source``."""
+        ``cross_project``, nothing that reaches another project: no ``list_projects`` or
+        ``workspace_map``, and no ``repo`` on ``recall_project`` or ``read_project_source``."""
         if self._definitions is None or refresh:
             listed = self._rpc("tools/list") or {}
             definitions = []

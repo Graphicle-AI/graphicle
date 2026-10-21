@@ -10,6 +10,10 @@ use crate::{
 use rusqlite::{Connection, params};
 use serde_json::Value;
 
+/// Whether `p` may read a document whose provider permissions are
+/// `permission`. `provider` is the provider of the verified identities and
+/// connected accounts the principals name
+/// (`connectors::identity_provider`, Atlassian for Jira and Confluence).
 pub fn allows(
     db: &Connection,
     workspace: &str,

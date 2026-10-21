@@ -30,8 +30,9 @@ fn still_present(
 /// Delete one project: queue the cleanup of its published projections,
 /// forget its dependency-index entries, purge its graph cache, delete its
 /// rows (they cascade) and sign its receipt, with `removed` added to the
-/// receipt's `removed`.
-fn delete_project(
+/// receipt's `removed`. Offboarding runs it on its backups too
+/// ([`crate::offboard`]).
+pub(crate) fn delete_project(
     db: &Connection,
     p: &store::Principal,
     identifier: &str,
@@ -54,6 +55,32 @@ fn delete_project(
     db.execute("DELETE FROM repo_projects WHERE id=?", [identifier])?;
     graphicle_memory::cache::clear(identifier).map_err(Error::bad)?;
     deletion::project_receipt(db, p, identifier, &connectors, removed)
+}
+
+/// `project.delete` of a project whose snapshot was checked: the PR scratch
+/// projects `graphicle pr` keeps for it hold copies of its code, so they go
+/// first, each with its own receipt, and the project's receipt names them;
+/// `removed` joins the project's receipt's `removed`.
+fn delete_with_copies(
+    db: &Connection,
+    p: &store::Principal,
+    identifier: &str,
+    mut removed: Value,
+) -> Result<Value> {
+    let copies = crate::folders::scratch_projects(db, identifier)?;
+    let mut scratch = Vec::with_capacity(copies.len());
+    for copy in &copies {
+        scratch.push(delete_project(db, p, copy, json!({}))?);
+    }
+    if !copies.is_empty() {
+        removed["pr_scratch_projects"] = json!(copies);
+    }
+    let receipt = delete_project(db, p, identifier, removed)?;
+    let mut result = json!({"deleted":true,"local_backups_are_separate":true,"receipt":receipt});
+    if !scratch.is_empty() {
+        result["pr_scratch_projects"] = json!(scratch);
+    }
+    Ok(result)
 }
 
 /// `retention.apply` with `sources`: forget the documents the policy selects
@@ -166,20 +193,7 @@ impl Store {
                 },
                 "project.delete"=>{
                     if args["expected_snapshot"]!=repository["snapshot"] {return Err(Error::conflict("Project snapshot changed; inspect it before deleting"));}
-                    // The PR scratch projects `graphicle pr` keeps for this
-                    // project hold copies of its code: they go
-                    // first, each with its own receipt, and this project's
-                    // receipt names them.
-                    let copies=crate::folders::scratch_projects(db,identifier)?;
-                    let mut scratch=Vec::with_capacity(copies.len());
-                    for copy in &copies {
-                        scratch.push(delete_project(db,p,copy,json!({}))?);
-                    }
-                    let removed=if copies.is_empty() {json!({})} else {json!({"pr_scratch_projects":copies})};
-                    let receipt=delete_project(db,p,identifier,removed)?;
-                    let mut result=json!({"deleted":true,"local_backups_are_separate":true,"receipt":receipt});
-                    if !scratch.is_empty() {result["pr_scratch_projects"]=json!(scratch);}
-                    Ok(result)
+                    delete_with_copies(db,p,identifier,json!({}))
                 },
                 "storage.prune"=>{
                     let keep=integer(args,"keep_snapshots",20,1000)?.max(1);
@@ -255,6 +269,29 @@ impl Store {
             // After commit, flush the deleted pages' old images out of the WAL.
             result["storage"] = deletion::checkpoint(self)?;
         }
+        Ok(result)
+    }
+    /// Offboarding's deletion of a project ([`crate::offboard`]): what
+    /// `project.delete` does, with `offboarding` (the files it removed and
+    /// what it could not reach) in the project's receipt. Only the owner.
+    pub fn offboard_project(
+        &self,
+        workspace: &str,
+        token: &str,
+        identifier: &str,
+        expected_snapshot: &str,
+        offboarding: Value,
+    ) -> Result<Value> {
+        let mut result = self.authorized(workspace, token, "admin", |db, p| {
+            let repository = repo(db, p, identifier)?;
+            if s(&repository, "snapshot") != expected_snapshot {
+                return Err(Error::conflict(
+                    "Project snapshot changed since the offboarding plan was shown; run graphicle offboard again",
+                ));
+            }
+            delete_with_copies(db, p, identifier, json!({"offboarding": offboarding}))
+        })?;
+        result["storage"] = deletion::checkpoint(self)?;
         Ok(result)
     }
     pub fn backup(&self, path: &Path) -> Result<Value> {

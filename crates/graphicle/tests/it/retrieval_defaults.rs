@@ -176,10 +176,16 @@ fn origin_quota_is_opt_in_and_false_keeps_the_flat_cap() {
     let on = f
         .context(json!({"pack_focus":false,"origin_quota":true}))
         .unwrap();
-    // Unset and false keep the flat cap of two excerpts per origin.
+    let one_per_file = f
+        .context(json!({"pack_focus":false,"notes_first":true}))
+        .unwrap();
+    // Unset and false keep the flat cap of two excerpts per origin;
+    // `notes_first: true` quotes one excerpt per file
+    // (crate::notes_first::one_per_file).
     assert!(unset.get("origin_quota").is_none());
     assert_eq!(gates(&unset), 2);
     assert_eq!(gates(&off), 2);
+    assert_eq!(gates(&one_per_file), 1);
     // One origin: the quota's maximum of three, then leftover slots from the
     // same origin.
     assert_eq!(on["origin_quota"]["origins"], 1);

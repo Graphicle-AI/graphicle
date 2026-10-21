@@ -138,7 +138,8 @@ fn select(db: &Connection, filter: &str, arguments: impl rusqlite::Params) -> Re
     Ok(found.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn by_ids(db: &Connection, repository: &str, ids: &BTreeSet<String>) -> Result<Vec<Live>> {
+/// The live code symbols with these `stable_id`s.
+pub fn by_ids(db: &Connection, repository: &str, ids: &BTreeSet<String>) -> Result<Vec<Live>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -146,6 +147,15 @@ fn by_ids(db: &Connection, repository: &str, ids: &BTreeSet<String>) -> Result<V
         db,
         "repository_id=?1 AND stable_id IN (SELECT value FROM json_each(?2))",
         params![repository, json!(ids).to_string()],
+    )
+}
+
+/// The live code symbols of one file (`relpath`), by the indexed file column.
+pub fn in_file(db: &Connection, repository: &str, relpath: &str) -> Result<Vec<Live>> {
+    select(
+        db,
+        "repository_id=?1 AND relpath=?2",
+        params![repository, relpath],
     )
 }
 
@@ -1285,6 +1295,167 @@ pub fn reground(
     }
     tidy(data);
     Ok(json!({"regrounded":regrounded,"unresolved":failed}))
+}
+
+/// A knowledge pack's anchor names no symbol of this project.
+pub const LAND_MISSING: &str = "symbol_missing";
+/// Several symbols here could be the anchor's.
+pub const LAND_AMBIGUOUS: &str = "ambiguous";
+/// The anchor's symbol is not built for its file's current content yet.
+pub const LAND_PENDING: &str = "projection_pending";
+/// The anchor carries no complete logical identity.
+pub const LAND_INCOMPLETE: &str = "identity_incomplete";
+
+/// A knowledge pack's symbol anchor, landed on a live symbol here.
+#[derive(Clone, Debug)]
+pub struct Landed {
+    /// The file the anchor named in the pack.
+    pub from: String,
+    pub row: Live,
+    /// Not at the anchor's relpath and ordinal: found by qualified name and
+    /// kind elsewhere.
+    pub moved: bool,
+}
+
+/// Land a knowledge pack's symbol anchors (logical identities: relpath,
+/// qualified name, kind, ordinal) on this project's live symbols: the one
+/// live symbol of the same identity, else, as a move, the only live symbol
+/// of that qualified name and kind anywhere in the project. The symbol's
+/// file must be a current source whose code graph is built for its content.
+/// Revisions are not compared: the code is another project's, and the
+/// import is a draft a member reviews against this code. Per anchor, the
+/// landed symbol or the reason it was dropped.
+pub fn land(
+    db: &Connection,
+    repository: &str,
+    anchors: &[Value],
+    documents: &[Value],
+) -> Result<Vec<std::result::Result<Landed, &'static str>>> {
+    Lander::new(db, repository, documents).land(anchors)
+}
+
+/// [`land`] for the anchors of many memories (one knowledge pack): the
+/// project's symbols are brought up to date once, the map of its live
+/// symbols by qualified name and kind is read at most once, and its
+/// documents are looked up by id.
+pub struct Lander<'a> {
+    db: &'a Connection,
+    repository: &'a str,
+    documents: HashMap<&'a str, &'a Value>,
+    by_name: Option<HashMap<(String, String), Vec<Live>>>,
+}
+
+impl<'a> Lander<'a> {
+    pub fn new(db: &'a Connection, repository: &'a str, documents: &'a [Value]) -> Self {
+        let _ = ensure_current(db, repository);
+        Self {
+            db,
+            repository,
+            documents: documents.iter().map(|d| (s(d, "id"), d)).collect(),
+            by_name: None,
+        }
+    }
+    /// Per anchor, the landed symbol or the reason it was dropped ([`land`]).
+    pub fn land(
+        &mut self,
+        anchors: &[Value],
+    ) -> Result<Vec<std::result::Result<Landed, &'static str>>> {
+        let (db, repository) = (self.db, self.repository);
+        let mut out = Vec::with_capacity(anchors.len());
+        for anchor in anchors {
+            let Ok(identity) = serde_json::from_value::<LogicalIdentity>(anchor.clone()) else {
+                out.push(Err(LAND_INCOMPLETE));
+                continue;
+            };
+            let mut rows = select(
+                db,
+                "repository_id=?1 AND relpath=?2 AND qualified_name=?3",
+                params![repository, identity.relpath, identity.qualified_name],
+            )?;
+            rows.retain(|r| {
+                r.identity.kind == identity.kind && r.identity.ordinal == identity.ordinal
+            });
+            let (candidates, moved) = if rows.len() == 1 {
+                (rows, false)
+            } else {
+                // Every live symbol by qualified name and kind, read once
+                // and only when an anchor is not where the pack had it.
+                if self.by_name.is_none() {
+                    let mut all: HashMap<(String, String), Vec<Live>> = HashMap::new();
+                    for row in select(db, "repository_id=?1", params![repository])? {
+                        all.entry((
+                            row.identity.qualified_name.clone(),
+                            row.identity.kind.clone(),
+                        ))
+                        .or_default()
+                        .push(row);
+                    }
+                    self.by_name = Some(all);
+                }
+                let key = (identity.qualified_name.clone(), identity.kind.clone());
+                let found = self.by_name.as_ref().and_then(|all| all.get(&key));
+                (found.cloned().unwrap_or_default(), true)
+            };
+            let row = match candidates.as_slice() {
+                [row] => row.clone(),
+                [] => {
+                    out.push(Err(LAND_MISSING));
+                    continue;
+                }
+                _ => {
+                    out.push(Err(LAND_AMBIGUOUS));
+                    continue;
+                }
+            };
+            let file = format!("file:{}", row.identity.relpath);
+            match self.documents.get(file.as_str()) {
+                None => out.push(Err(LAND_MISSING)),
+                Some(doc) if s(doc, "sha256") != row.sha256 => out.push(Err(LAND_PENDING)),
+                Some(_) => out.push(Ok(Landed {
+                    from: identity.relpath,
+                    row,
+                    moved,
+                })),
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Link landed symbols as `named` links at this project's ids, revisions
+/// and byte ranges; a symbol a quote already linked keeps that link. Their
+/// files become dependencies judged by their symbols.
+pub fn link_landed(
+    db: &Connection,
+    repository: &str,
+    landed: &[&Landed],
+    documents: &[Value],
+    data: &mut Value,
+) -> Result<()> {
+    if landed.is_empty() {
+        return Ok(());
+    }
+    let resolver = Resolver::new(db, repository)?;
+    for landed in landed {
+        let row = &landed.row;
+        if entries(data).any(|e| e["stable_id"] == row.stable_id.as_str()) {
+            continue;
+        }
+        let path = &row.identity.relpath;
+        let Some(doc) = documents
+            .iter()
+            .find(|d| s(d, "id") == format!("file:{path}"))
+        else {
+            continue;
+        };
+        let content = s(doc, "content");
+        let range = row.range(&span::line_starts(content), content.len());
+        data["dependencies"][path.as_str()] = doc["sha256"].clone();
+        push(data, link(row, RUNG_NAMED, resolver.episode(), range));
+        set_rule(data, path, RULE_SYMBOLS);
+    }
+    tidy(data);
+    Ok(())
 }
 
 /// A memory whose state, freshness and links make it a trigger for

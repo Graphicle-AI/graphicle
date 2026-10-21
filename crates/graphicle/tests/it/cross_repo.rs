@@ -621,3 +621,264 @@ fn a_pr_scratch_copy_does_not_make_imports_ambiguous() {
     assert!(linked.get("pr_scratch_skipped").is_none(), "{linked}");
     assert!(linked["edges"].as_u64().unwrap() >= 2, "{linked}");
 }
+
+const C_PYPROJECT: &str =
+    "[project]\nname = \"capp\"\nversion = \"0.1.0\"\ndependencies = [\"alib>=1.0\"]\n";
+const C_MAIN_V1: &str =
+    "from alib.core import process\n\ndef main(rows):\n    return process(rows)\n";
+const C_MAIN_V2: &str = "from alib.core import process\n\ndef main(rows):\n    rows = list(rows)\n    return process(rows)\n";
+
+fn c_files(main: &'static str) -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("pyproject.toml", C_PYPROJECT),
+        ("capp/__init__.py", ""),
+        ("capp/main.py", main),
+    ]
+}
+
+/// The link tables and the state the incremental pass keeps.
+const LINK_TABLES: &[&str] = &[
+    "gf_cross_edges",
+    "gf_cross_unresolved",
+    "gf_cross_packages",
+    "gf_cross_link_state",
+];
+
+/// Every row of the cross-repository link tables, live and closed, without
+/// row ids and timestamps, sorted.
+fn link_rows(db: &rusqlite::Connection) -> Vec<String> {
+    let mut out = Vec::new();
+    for table in ["gf_cross_edges", "gf_cross_unresolved", "gf_cross_packages"] {
+        let mut statement = db.prepare(&format!("SELECT * FROM {table}")).unwrap();
+        let columns: Vec<String> = statement
+            .column_names()
+            .iter()
+            .map(|c| c.to_string())
+            .collect();
+        let mut rows = statement.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            let mut fields = vec![table.to_string()];
+            for (i, column) in columns.iter().enumerate() {
+                if column == "id" || column == "created_at" {
+                    continue;
+                }
+                let value: rusqlite::types::Value = row.get(i).unwrap();
+                fields.push(format!("{column}={value:?}"));
+            }
+            out.push(fields.join("|"));
+        }
+    }
+    out.sort();
+    out
+}
+
+impl Fixture {
+    fn register(&self, project_key: &str, name: &str) -> String {
+        s(
+            &self
+                .store
+                .register(
+                    &self.workspace,
+                    &self.key,
+                    &json!({"project_key":project_key,"name":name}),
+                )
+                .unwrap(),
+            "id",
+        )
+        .to_string()
+    }
+    /// Run the queued jobs as `drain_jobs` does, checking each `link` job
+    /// against a full pass: from the same rows, a full pass runs first and
+    /// its rows are kept; the rows are put back, the incremental `link` job
+    /// runs, and both must leave the same rows. Returns the `link` jobs'
+    /// results.
+    fn drain_checking_links(&self) -> Vec<Value> {
+        let mut links = Vec::new();
+        while let Some(job) = self.store.lease_job().unwrap() {
+            let result = match job.kind.as_str() {
+                "project" => jobs::run_projection(&self.store, &job),
+                "link" => {
+                    let db = self.store.connect().unwrap();
+                    for table in LINK_TABLES {
+                        db.execute_batch(&format!(
+                            "DROP TABLE IF EXISTS snap_{table}; CREATE TABLE snap_{table} AS SELECT * FROM {table};"
+                        ))
+                        .unwrap();
+                    }
+                    let full = self
+                        .store
+                        .graph_link_full(&self.workspace, &self.key)
+                        .unwrap();
+                    // A full pass reuses nothing.
+                    assert!(
+                        full["reused"].as_array().is_none_or(Vec::is_empty),
+                        "{full}"
+                    );
+                    let after_full = link_rows(&db);
+                    for table in LINK_TABLES {
+                        db.execute_batch(&format!(
+                            "DELETE FROM {table}; INSERT INTO {table} SELECT * FROM snap_{table}; DROP TABLE snap_{table};"
+                        ))
+                        .unwrap();
+                    }
+                    let result = jobs::run_link(&self.store, &job);
+                    assert_eq!(
+                        link_rows(&db),
+                        after_full,
+                        "the incremental pass must leave the rows of a full pass"
+                    );
+                    links.push(result.as_ref().unwrap().clone());
+                    result
+                }
+                other => panic!("unexpected job kind {other}"),
+            };
+            self.store.finish_job(&job, result).unwrap();
+        }
+        links
+    }
+}
+
+/// Each `link` job relinks only the projects whose episode, or whose
+/// partners' export surface, changed; the others' links are reused, and
+/// every pass leaves the rows a full pass leaves (checked at every step).
+#[test]
+fn incremental_linking_relinks_only_changed_projects_and_matches_a_full_pass() {
+    let f = Fixture::new();
+    let c = f.register("capp", "Application C");
+    let ids = |list: &Value| -> Vec<String> {
+        let mut ids: Vec<String> = list
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|id| id.as_str().unwrap().to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+    let sorted = |mut list: Vec<String>| {
+        list.sort();
+        list
+    };
+    let all = sorted(vec![f.a.clone(), f.b.clone(), c.clone()]);
+
+    // First link: nothing stored yet, every project is linked.
+    f.commit(&f.a, &a_files(A_CORE_V1), A_SHA1);
+    f.commit(&f.b, &b_files(), B_SHA1);
+    f.commit(
+        &c,
+        &c_files(C_MAIN_V1),
+        "ccc1110000000000000000000000000000000000",
+    );
+    let links = f.drain_checking_links();
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(ids(&links[0]["relinked"]), all, "{}", links[0]);
+    assert!(links[0]["edges"].as_u64().unwrap() >= 3, "{}", links[0]);
+
+    // Nothing changed: every link is reused and every pair is unchanged.
+    let again = f.store.graph_link(&f.workspace, &f.key).unwrap();
+    assert_eq!(ids(&again["reused"]), all, "{again}");
+    assert!(again["relinked"].as_array().unwrap().is_empty(), "{again}");
+    assert!(
+        again["pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["unchanged"] == true),
+        "{again}"
+    );
+
+    // C changes a function body: only C is linked again.
+    f.commit(
+        &c,
+        &c_files(C_MAIN_V2),
+        "ccc2220000000000000000000000000000000000",
+    );
+    let links = f.drain_checking_links();
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(ids(&links[0]["relinked"]), vec![c.clone()], "{}", links[0]);
+    assert_eq!(
+        ids(&links[0]["reused"]),
+        sorted(vec![f.a.clone(), f.b.clone()]),
+        "{}",
+        links[0]
+    );
+
+    // A gains a file that exports nothing: A has a new episode with the same
+    // export surface. Only A is linked again; B's and C's links into A are
+    // reused and move to A's new episode.
+    let mut a_readme = a_files(A_CORE_V1);
+    a_readme.push(("README.md", "# alib\n"));
+    f.commit(&f.a, &a_readme, A_SHA2);
+    let links = f.drain_checking_links();
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(
+        ids(&links[0]["relinked"]),
+        vec![f.a.clone()],
+        "{}",
+        links[0]
+    );
+    let a2 = f.episode(&f.a);
+    let incoming = f
+        .store
+        .graph_cross_edges(&f.workspace, &f.key, &f.a)
+        .unwrap();
+    let live: Vec<&Value> = incoming["incoming"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["valid_to_episode"].is_null())
+        .collect();
+    assert!(live.len() >= 3, "{incoming}");
+    assert!(
+        live.iter().all(|e| s(e, "target_episode") == a2),
+        "{incoming}"
+    );
+
+    // A stops exporting `helper`: its export surface changed, so every
+    // importer is linked again.
+    let mut a_v2 = a_files(A_CORE_V2);
+    a_v2.push(("README.md", "# alib\n"));
+    f.commit(&f.a, &a_v2, "aaa3330000000000000000000000000000000000");
+    let links = f.drain_checking_links();
+    assert_eq!(links.len(), 1, "{links:?}");
+    assert_eq!(ids(&links[0]["relinked"]), all, "{}", links[0]);
+    assert!(
+        links[0]["unresolved"].as_u64().unwrap() >= 1,
+        "{}",
+        links[0]
+    );
+
+    // A full pass from here changes nothing either.
+    let db = f.store.connect().unwrap();
+    let before = link_rows(&db);
+    let full = f.store.graph_link_full(&f.workspace, &f.key).unwrap();
+    assert!(
+        full["pairs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["unchanged"] == true),
+        "{full}"
+    );
+    assert_eq!(link_rows(&db), before);
+}
+
+/// Projects that export nothing (conversation-only projects, for example)
+/// gain no link state.
+#[test]
+fn linking_projects_that_export_nothing_stores_no_link_state() {
+    let f = Fixture::new();
+    let notes = |text: &'static str| vec![("notes.md", text)];
+    f.commit(&f.a, &notes("# Notes A\n"), A_SHA1);
+    f.commit(&f.b, &notes("# Notes B\n"), B_SHA1);
+    f.drain_jobs();
+    let linked = f.store.graph_link(&f.workspace, &f.key).unwrap();
+    assert_eq!(linked["edges"], 0, "{linked}");
+    let db = f.store.connect().unwrap();
+    for table in LINK_TABLES {
+        let count: i64 = db
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table} must stay empty: {linked}");
+    }
+}

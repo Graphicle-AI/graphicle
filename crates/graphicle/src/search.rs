@@ -280,6 +280,9 @@ async fn basic_inner(worker: &Worker, job: &Job) -> Result<Value> {
     // (`doc_links: true`); left out, an integrated answer counts them, and a
     // source-only answer reads none unless asked to.
     let links_switch = switch("doc_links");
+    // Reviewed memory's links to code symbols likewise: counted by an
+    // integrated answer, read by a source-only answer only when asked.
+    let symbol_switch = switch("symbol_links");
     // Explicitly requested (or integrated) reviewed memory may guide
     // retrieval back to its original evidence.
     if memory_switch == Some(false) {
@@ -350,6 +353,7 @@ async fn basic_inner(worker: &Worker, job: &Job) -> Result<Value> {
         ("memory_retrieval", memory_switch),
         ("graph_retrieval", graph_switch),
         ("doc_links", links_switch),
+        ("symbol_links", symbol_switch),
     ] {
         if let Some(on) = switch {
             bounded[field] = json!(on);
@@ -358,14 +362,20 @@ async fn basic_inner(worker: &Worker, job: &Job) -> Result<Value> {
     let context_args = crate::workflow_retrieval::arguments(&job.payload, bounded);
     let mut packet =
         crate::workflow_retrieval::context(worker, job, &snap, context_args, rankings, reserve)?;
-    let requested: Vec<&str> = ["graph_retrieval", "memory_retrieval", "doc_links"]
-        .into_iter()
-        .filter(|field| job.payload[*field].is_boolean())
-        .collect();
+    let requested: Vec<&str> = [
+        "graph_retrieval",
+        "memory_retrieval",
+        "doc_links",
+        "symbol_links",
+    ]
+    .into_iter()
+    .filter(|field| job.payload[*field].is_boolean())
+    .collect();
     packet["integration"] = json!({"default": if integrated { "integrated" } else { "source_only" },
         "reason": integration["reason"], "episode": integration["episode"],
         "graph_retrieval": graph_switch.unwrap_or(true), "memory_retrieval": memory_switch.unwrap_or(true),
-        "doc_links": links_switch.unwrap_or(false), "requested": requested});
+        "doc_links": links_switch.unwrap_or(false), "symbol_links": job.payload["symbol_links"] == true,
+        "requested": requested});
     if let Some(error) = integration.get("error") {
         packet["integration"]["error"] = error.clone();
     }

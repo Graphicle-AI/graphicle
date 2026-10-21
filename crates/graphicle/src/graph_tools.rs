@@ -26,6 +26,10 @@
 //!   through a relation says whether a relation read from an unchanged file
 //!   reaches it (`relation_checked`), the rule the code-graph arm follows
 //!   when it withholds such neighbours.
+//! - **Back-links.** `get_node`'s node also lists, under `linked`, the
+//!   current reviewed memories linked to that symbol and the documents the
+//!   reader may read that mention it ([`crate::symbol_links::attach`]); the
+//!   citations block names them too.
 //! - **Communities**. The episode is clustered when the
 //!   server first reads it (the engine's Leiden clustering, as `cluster-only`
 //!   runs it), so `get_community`, the nodes' community numbers and the six
@@ -414,7 +418,7 @@ pub fn call(store: &Store, workspace: &str, token: &str, args: &Value) -> Result
             })
         });
         let mut contents = HashMap::new();
-        let nodes = named
+        let mut nodes = named
             .nodes
             .iter()
             .take(CITED_LIMIT)
@@ -426,6 +430,10 @@ pub fn call(store: &Store, workspace: &str, token: &str, args: &Value) -> Result
                 Ok(fact)
             })
             .collect::<Result<Vec<_>>>()?;
+        // The symbol `get_node` describes, with what links to it.
+        if tool == "get_node" {
+            crate::symbol_links::attach(db, p, &repository, &mut nodes)?;
+        }
         let mut reply = json!({"tool":tool,"text":text,"repo":identifier,
             "episode":reading.episode,"current_episode":reading.current,"episode_lag":reading.lag(),
             "nodes":nodes});
@@ -515,6 +523,7 @@ pub fn citations_text(reply: &Value) -> String {
         if node["relation_checked"] == false {
             out.push_str(" (reached only through relations read from changed files)");
         }
+        out.push_str(&linked_text(&node["linked"]));
     }
     let more = nodes.len().saturating_sub(CITED_IN_TEXT) as u64;
     if more > 0 {
@@ -534,6 +543,57 @@ pub fn citations_text(reply: &Value) -> String {
             "\n- {unmatched} line{} of the answer name{} a node this server could not tell apart; not cited",
             plural(unmatched),
             if unmatched == 1 { "s" } else { "" }
+        ));
+    }
+    out
+}
+
+/// Back-links named per node in the citations block.
+const LINKED_IN_TEXT: usize = 3;
+
+/// A node's back-links in the citations block: the reviewed memories (by
+/// title and id) and documents linked to it, at most [`LINKED_IN_TEXT`] of
+/// each named; empty when nothing links to it.
+fn linked_text(linked: &Value) -> String {
+    let list = |key: &str| linked[key].as_array().map(Vec::as_slice).unwrap_or(&[]);
+    let (memories, documents) = (list("memories"), list("documents"));
+    let mut out = String::new();
+    let more = |n: usize| {
+        let extra = n.saturating_sub(LINKED_IN_TEXT);
+        if extra > 0 {
+            format!(" and {extra} more")
+        } else {
+            String::new()
+        }
+    };
+    if !memories.is_empty() {
+        let named: Vec<String> = memories
+            .iter()
+            .take(LINKED_IN_TEXT)
+            .map(|m| {
+                format!(
+                    "{} ({})",
+                    m["title"].as_str().unwrap_or(""),
+                    m["id"].as_str().unwrap_or("")
+                )
+            })
+            .collect();
+        out.push_str(&format!(
+            "\n  reviewed memory linked: {}{}",
+            named.join("; "),
+            more(memories.len())
+        ));
+    }
+    if !documents.is_empty() {
+        let named: Vec<&str> = documents
+            .iter()
+            .take(LINKED_IN_TEXT)
+            .map(|d| d["document_id"].as_str().unwrap_or(""))
+            .collect();
+        out.push_str(&format!(
+            "\n  documents mentioning it: {}{}",
+            named.join(", "),
+            more(documents.len())
         ));
     }
     out

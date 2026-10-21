@@ -278,10 +278,12 @@ with the pinned upstream reference, with the reviewed upstream fixes of
 the reference's own tests against the engine (see above; the repository's
 `docs/benchmarks.md` has their results). That page's
 [parity section](../../docs/benchmarks.md#parity-with-graphify) also
-records a known difference: on gohugoio/hugo v0.167.0, the graph after
-`graphicle graph update` differs from Graphify 0.9.88's in the stored front
-matter of one Markdown page, because the engine's YAML parser rejects a list
-that the page closes at the start of a line. Folder, environment-variable,
+records a known difference of the checked build: on gohugoio/hugo v0.167.0,
+its graph after `graphicle graph update` differed from Graphify 0.9.88's in
+the stored front matter of one Markdown page, because its YAML parser
+rejected a list that the page closes at the start of a line; from 0.1.3 the
+engine reads that list as YAML, and the comparison has not been run again
+since. Folder, environment-variable,
 command and installed-file names follow a documented translation table
 (`tools/naming.py`), which the checks apply. The first two items below are on
 by default and change no output; the rest are opt-in, and the parity claim

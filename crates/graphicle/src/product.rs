@@ -87,7 +87,7 @@ async fn commands(
     Path((workspace, repository)): Path<(String, String)>,
     headers: HeaderMap,
     Json(mut body): Json<Command>,
-) -> Result<Json<Value>> {
+) -> Result<Response> {
     let capability = api::token(&headers)?.to_owned();
     if !body.arguments.is_object() {
         return Err(Error::bad("arguments must be an object"));
@@ -112,16 +112,32 @@ async fn commands(
         store.authorized_read(&w, &c, "read", |db, p| repo(db, p, &repository).map(|_| ()))
     })
     .await?;
-    Ok(Json(
-        api::command_async(
-            &app,
-            &workspace,
-            &capability,
-            &body.operation,
-            &body.arguments,
-        )
-        .await?,
-    ))
+    // The one admission, as the command routes (`crate::metering::admit`):
+    // authorized, then a metered operation's quota; run; then a read's result
+    // size-checked and a metered result counted.
+    let mut admission = match crate::metering::admit_request(
+        &app.worker.store,
+        &workspace,
+        &capability,
+        &headers,
+        &body.operation,
+        &body.arguments,
+    )
+    .await
+    {
+        Ok(admission) => admission,
+        Err(error) => return Ok(crate::metering::refusal(error)),
+    };
+    let narrowed = admission.take_arguments();
+    let value = api::dispatch_async(
+        &app,
+        &workspace,
+        &capability,
+        &body.operation,
+        narrowed.as_ref().unwrap_or(&body.arguments),
+    )
+    .await?;
+    Ok(Json(crate::metering::served(&app.worker.store, admission, value).await?).into_response())
 }
 
 pub async fn blocking<T: Send + 'static>(
@@ -171,6 +187,23 @@ async fn budget(
 
 fn month() -> String {
     Utc::now().format("%Y-%m").to_string()
+}
+/// `Retry-After` for a limit of the current UTC month (the request budget,
+/// an installed edition's served-token quota): the seconds until the next one
+/// starts.
+pub fn until_next_month() -> HeaderValue {
+    let now = Utc::now();
+    let (year, month) = if now.month() == 12 {
+        (now.year() + 1, 1)
+    } else {
+        (now.year(), now.month() + 1)
+    };
+    let reset = chrono::NaiveDate::from_ymd_opt(year, month, 1)
+        .unwrap()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .and_utc();
+    HeaderValue::from_str(&(reset - now).num_seconds().max(1).to_string()).unwrap()
 }
 fn day() -> String {
     Utc::now().format("%Y-%m-%d").to_string()
@@ -304,6 +337,11 @@ impl Store {
     }
 
     pub fn product_usage(&self, workspace: &str, cap: &str) -> Result<Value> {
+        // The owner first, with a read; then this process's served counts,
+        // briefly, so the report holds them. What a busy store leaves is
+        // reported as `unrecorded_tokens` (`metering::flush_briefly`).
+        self.authorized_read(workspace, cap, "admin", |_, _| Ok(()))?;
+        crate::metering::flush_briefly(self).ok();
         self.authorized_read(workspace, cap, "admin", |db, p| {
             let period = month();
             let start = format!("{period}-01");
@@ -328,6 +366,15 @@ impl Store {
                 "scope":"Authenticated HTTP requests, including MCP tool calls. Failed requests consume the request budget. Sign-in, navigation, usage, billing, export, deletion and cancellation are exempt. Local CLI and background model calls are separate.",
                 "cost":null,"cost_note":"Provider charges are not estimated. Model budgets are enforced per workflow; missing usage is shown separately."
             });
+            // What Graphicle served this month (`metering`), beside the model
+            // tokens it spent, by credential and model. Counts, no cost.
+            let mut served = crate::metering::summary(db, &p.workspace, &start, &day())?;
+            served["unrecorded_tokens"] =
+                json!(crate::metering::unrecorded_in(self, &p.workspace));
+            usage["served"] = served;
+            let models = crate::metering::model_usage(db, &p.workspace, &start, &day())?;
+            usage["model_usage_by_credential"] = models["by_credential"].clone();
+            usage["model_usage_by_model"] = models["by_model"].clone();
             crate::extension::installed().usage_details(db, &p.workspace, &mut usage)?;
             Ok(usage)
         })
@@ -441,7 +488,7 @@ pub async fn meter(State(app): State<App>, request: Request<Body>, next: Next) -
         || (!mcp
             && parts
                 .get(3)
-                .is_some_and(|v| matches!(*v, "billing" | "credentials")))
+                .is_some_and(|v| matches!(*v, "billing" | "credentials" | "usage")))
     {
         return next.run(request).await;
     }
@@ -479,21 +526,9 @@ pub async fn meter(State(app): State<App>, request: Request<Body>, next: Next) -
             let limited = error.status == StatusCode::TOO_MANY_REQUESTS;
             let mut response = error.into_response();
             if limited {
-                let now = Utc::now();
-                let (year, month) = if now.month() == 12 {
-                    (now.year() + 1, 1)
-                } else {
-                    (now.year(), now.month() + 1)
-                };
-                let reset = chrono::NaiveDate::from_ymd_opt(year, month, 1)
-                    .unwrap()
-                    .and_hms_opt(0, 0, 0)
-                    .unwrap()
-                    .and_utc();
-                response.headers_mut().insert(
-                    "retry-after",
-                    HeaderValue::from_str(&(reset - now).num_seconds().max(1).to_string()).unwrap(),
-                );
+                response
+                    .headers_mut()
+                    .insert("retry-after", until_next_month());
             }
             return response;
         }

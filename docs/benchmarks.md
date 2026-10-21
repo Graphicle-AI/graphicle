@@ -13,6 +13,7 @@ endorsement is implied.
 | Code-graph engine: speed | Done, on a pre-release build that followed Graphify 0.9.77. The 0.1.0 engine: an exploratory survey, 14 October 2026; its registered quiet-host repeat is pending. Updates after commits: Graphicle 0.1.0 against Graphify 0.9.91, registered before the first update, 15 October 2026. 13 codebases against Graphify 0.9.91: Graphicle's 0.1.1 memory engine (a pre-release build), one session per program, 15 October 2026 | Django (pre-release build): code-only extract 7.5 s against 72.8 s for Graphify 0.9.77. Kubernetes v1.37.1 (the 0.1.0 engine, which follows Graphify 0.9.88; exploratory, one run each on one Linux host, the same 16 CPUs, 8 workers, with four recorded deviations): code-only extract 198.4 s against 1,597.9 s for Graphify 0.9.88, the same graph. [Details](#speed-on-kubernetes). Updates after each of 30 commits on prometheus, tokio and poetry (one Linux node, 4 CPUs per run): 6 to 8 times less time than Graphify 0.9.91, with the same differences from a fresh build in both. [Details](#updates-after-commits). 13 codebases, 3 operations each (Graphicle's 0.1.1 memory engine, a pre-release build, against Graphify 0.9.91; the same machine, 3 CPUs and 8 workers each): 3.0 to 22.7 times less time in all 39 measurements; the graphs differ slightly, with node counts within 4.7% and edge counts within 2.0%. [Details](#speed-on-13-codebases-against-graphify-0991) |
 | Code-graph engine: peak memory | A pre-release build with 0.1.1's changes to how the engine holds its data, against Graphify 0.9.91, 15 October 2026; five measurements rechecked on a build of the merged 0.1.1 source | Less peak memory than Graphify 0.9.91 in all 39 measurements (13 repositories; extract, priming update and update with no change), from 0.29 to 0.97 times Graphify's figure; Kubernetes extract 2,091.5 against 2,767 MiB. One Linux node (its 8 H100 GPUs not used), 8 workers; Graphicle's peak RSS against Graphify's peak PSS. [Details](#peak-memory-against-graphify-0991) |
 | Coding agents: Claude Code with Graphicle, Graphify or neither | Four task sets, each test registered before any answer was scored; Claude Code with Opus 5.5, and one set repeated with Haiku 5.5 | Graphicle tied plain Claude Code on finding files and facts in every test, and no token saving is claimed against it. Against Graphify 0.9.91, Graphicle found more facts on Graphify's showcase corpus and used fewer tokens in all four task sets (on SWE-bench Verified, a secondary comparison); in two of them, Graphicle's arm included a prototype that does not ship. [Details](#coding-agents-with-graphicle-graphify-or-neither) |
+| Retrieval: finding the files a fix changes | Graphicle 0.1.3 and the 0.1.2 release, offline, 21 October 2026, on 100 SWE-bench Verified issues never used for tuning and 80 issues used for tuning | On the held-out issues, a file the fix changed was among the first 5 files of 0.1.3's context packet for 75, against 61 for BM25 (SWE-bench style; McNemar exact p = 0.013) and 54 for grep on the issue's names; for the first file and the first 10 files the differences from BM25 are not significant. Ranking only: the agent test of 0.1.3 is pending ([retrieval benchmark](benchmarks/retrieval.md)) |
 | Agent memory: comparison with seven memory systems | Done, on development sets, with a proxy evaluator | Every system's scores and the 21 registered comparisons are [below](#agent-memory-comparison-with-seven-memory-systems). None of them is a headline claim |
 | Agent memory: retrieval defaults | Chosen | Model-free retrieval runs on development data, plus held-out checks; their records are not published yet, so no numbers are given |
 
@@ -121,13 +122,15 @@ That is the parity claim, with these limits:
 - **Known differences.** PDF text comes from `pdf-extract`, not pypdf, so PDF
   word counts and text can differ, and command-line progress messages are the
   engine's own.
-- **Known difference.** On gohugoio/hugo v0.167.0, the graph after
-  `graphicle graph update` differs from Graphify 0.9.88's in one attribute of
-  one node: the stored front matter of a Markdown page that closes a YAML list
-  at the start of a line. Graphicle's YAML parser rejects that list, so
-  Graphicle stores the page's front matter fields as text and loses the list's
-  nine entries. Nodes, edges and communities are the same, code-only `extract`
-  gives the same graph, and answers are not affected.
+- **Known difference (checked build).** On gohugoio/hugo v0.167.0, the graph
+  after `graphicle graph update` differed from Graphify 0.9.88's in one
+  attribute of one node: the stored front matter of a Markdown page that
+  closes a YAML list at the start of a line. The checked build's YAML parser
+  rejected that list, so it stored the page's front matter fields as text and
+  lost the list's nine entries. Nodes, edges and communities were the same,
+  code-only `extract` gave the same graph, and answers were not affected.
+  From 0.1.3 the parser reads that page's front matter as YAML; the hugo
+  comparison has not been run again since.
 - **Names.** Folder, environment-variable, command and installed-file names
   are translated by one documented table
   (`crates/graphicle-graph/tools/naming.py`), which the checks apply.

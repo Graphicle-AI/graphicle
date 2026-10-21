@@ -310,6 +310,15 @@
                     episode TEXT NOT NULL, ecosystem TEXT NOT NULL, name TEXT NOT NULL, version TEXT,
                     created_at TEXT NOT NULL,
                     PRIMARY KEY(repository_id,episode,ecosystem,name));
+                -- Incremental cross-repository linking: per project, the
+                -- export index of the episode it last took part with, and
+                -- the digest of what its own imports were last linked
+                -- against, with the live row counts that link left.
+                CREATE TABLE IF NOT EXISTS gf_cross_link_state (
+                    repository_id TEXT PRIMARY KEY REFERENCES repo_projects(id) ON DELETE CASCADE,
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                    episode TEXT NOT NULL, format TEXT NOT NULL, export_index TEXT NOT NULL,
+                    inputs TEXT, edges INTEGER, unresolved INTEGER, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS gf_repo_access (
                     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
                     repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,

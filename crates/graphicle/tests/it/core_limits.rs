@@ -246,7 +246,7 @@ fn a_configured_project_limit_refuses_with_the_count_the_limit_the_setting_and_t
     let refused = f.sync().unwrap_err();
     assert_eq!(
         refused.message,
-        "This project is too large to sync: it has 4 text files (the limit is 3). Raise the limit with limits.project_files in the configuration file (models.json) or the GRAPHICLE_MAX_PROJECT_FILES environment variable, or leave paths out with .gitignore or .git/info/exclude, or set up a subfolder: graphicle setup path/to/subfolder"
+        "This project is too large to sync: it has 4 text files (the limit is 3). Raise the limit with limits.project_files in the configuration file (models.json) or the GRAPHICLE_MAX_PROJECT_FILES environment variable, or leave untracked paths out with .gitignore or .git/info/exclude (they cover only files Git does not track; graphicle config set sync.tracked_ignored false, or GRAPHICLE_SYNC_TRACKED_IGNORED=0, leaves out the tracked files they match too), or set up a subfolder: graphicle setup path/to/subfolder"
     );
     // Past the limit the rest is counted without being read.
     f.write("e.txt", "Note e.\n");
@@ -272,7 +272,7 @@ fn a_configured_project_limit_refuses_with_the_count_the_limit_the_setting_and_t
     f.write("a.txt", "Twenty bytes of text");
     assert_eq!(
         f.sync().unwrap_err().message,
-        "This project is too large to sync: it has 20 bytes of text (the limit is 10 bytes). Raise the limit with limits.project_bytes in the configuration file (models.json) or the GRAPHICLE_MAX_PROJECT_BYTES environment variable, or leave paths out with .gitignore or .git/info/exclude, or set up a subfolder: graphicle setup path/to/subfolder"
+        "This project is too large to sync: it has 20 bytes of text (the limit is 10 bytes). Raise the limit with limits.project_bytes in the configuration file (models.json) or the GRAPHICLE_MAX_PROJECT_BYTES environment variable, or leave untracked paths out with .gitignore or .git/info/exclude (they cover only files Git does not track; graphicle config set sync.tracked_ignored false, or GRAPHICLE_SYNC_TRACKED_IGNORED=0, leaves out the tracked files they match too), or set up a subfolder: graphicle setup path/to/subfolder"
     );
 }
 

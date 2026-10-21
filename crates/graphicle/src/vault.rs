@@ -1,4 +1,6 @@
-//! Workspace-bound authenticated encryption for provider secrets.
+//! Workspace-bound authenticated encryption for provider secrets. The key is
+//! the device key file `vault.key`, unless an installed extension holds it
+//! ([`crate::extension::Extension::vault_key`]).
 use crate::{
     Error, Result, id, now,
     store::{Store, one, s},
@@ -15,6 +17,10 @@ use std::io::{Read, Write};
 
 impl Store {
     fn vault_key(&self) -> Result<[u8; 32]> {
+        // An extension that holds the key answers for it, errors included.
+        if let Some(key) = crate::extension::installed().vault_key(self) {
+            return key;
+        }
         let path = self.directory.join("vault.key");
         let mut temporary = tempfile::NamedTempFile::new_in(&*self.directory)?;
         let mut new_key = [0u8; 32];

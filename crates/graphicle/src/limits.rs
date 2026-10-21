@@ -420,7 +420,7 @@ pub fn project_refusal(files: usize, bytes: usize, about: bool, limits: &Limits)
         ("limit", "environment variable")
     };
     Error::bad(format!(
-        "This project is too large to sync: it has {}. Raise the {limit} with {} in the configuration file (models.json) or the {} {variable_noun}, or leave paths out with .gitignore or .git/info/exclude, or set up a subfolder: graphicle setup path/to/subfolder",
+        "This project is too large to sync: it has {}. Raise the {limit} with {} in the configuration file (models.json) or the {} {variable_noun}, or leave untracked paths out with .gitignore or .git/info/exclude (they cover only files Git does not track; graphicle config set sync.tracked_ignored false, or GRAPHICLE_SYNC_TRACKED_IGNORED=0, leaves out the tracked files they match too), or set up a subfolder: graphicle setup path/to/subfolder",
         found.join(" and "),
         keys.join(" and "),
         variables.join(" and ")
@@ -552,7 +552,7 @@ mod tests {
         let refused = project_refusal(12_345, 2048, true, &limits).message;
         assert_eq!(
             refused,
-            "This project is too large to sync: it has about 12,345 text files (the limit is 10). Raise the limit with limits.project_files in the configuration file (models.json) or the GRAPHICLE_MAX_PROJECT_FILES environment variable, or leave paths out with .gitignore or .git/info/exclude, or set up a subfolder: graphicle setup path/to/subfolder"
+            "This project is too large to sync: it has about 12,345 text files (the limit is 10). Raise the limit with limits.project_files in the configuration file (models.json) or the GRAPHICLE_MAX_PROJECT_FILES environment variable, or leave untracked paths out with .gitignore or .git/info/exclude (they cover only files Git does not track; graphicle config set sync.tracked_ignored false, or GRAPHICLE_SYNC_TRACKED_IGNORED=0, leaves out the tracked files they match too), or set up a subfolder: graphicle setup path/to/subfolder"
         );
         let both = project_refusal(11, 3 << 30, false, &limits).message;
         assert!(both.contains(

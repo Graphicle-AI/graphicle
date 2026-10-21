@@ -123,6 +123,10 @@ pub struct Options {
     /// `--guards`: Claude Code's guard hooks (off unless asked for; a run
     /// without it removes those an earlier setup installed).
     pub guards: bool,
+    /// `--prompt-context`: Claude Code's prompt-context hook
+    /// ([`crate::prompt_hook`]; off unless asked for; a run without it
+    /// leaves an earlier setup's hook as it is).
+    pub prompt_context: bool,
     /// `--tools`: the tools every connected client's entry publishes;
     /// `None` is each client's default ([`agent_setup::default_tools`]).
     pub tools: Option<ToolSet>,
@@ -290,6 +294,25 @@ pub fn setup_report(
             },
         );
     }
+    // Claude Code's prompt-context hook (`--prompt-context`, off by
+    // default), beside its other hooks.
+    let prompt_context = if !options.prompt_context {
+        Value::Null
+    } else if clients
+        .iter()
+        .any(|client| client["client"] == "claude-code" && client["state"] != "failed")
+    {
+        match agent_setup::connect_prompt_context(store, &folder) {
+            Ok(hook) => {
+                let added = hook["installed"].as_array().is_some_and(|i| !i.is_empty());
+                json!({"state":if added { "added" } else { "already set" },"file":hook["configuration"],
+                    "context":hook["context"],"next":hook["next"]})
+            }
+            Err(error) => json!({"state":"failed","error":error.message}),
+        }
+    } else {
+        json!({"state":"skipped","reason":"Claude Code was not connected"})
+    };
     let capture = capture_report(&clients, &chosen, options.no_capture);
     let connected: Vec<&str> = clients
         .iter()
@@ -438,6 +461,9 @@ pub fn setup_report(
             "In your agent: \"use graphicle to find where errors are handled\""]});
     if let Some(note) = clients_note {
         report["clients_note"] = json!(note);
+    }
+    if !prompt_context.is_null() {
+        report["prompt_context"] = prompt_context;
     }
     Ok(report)
 }
@@ -1364,6 +1390,22 @@ pub fn render_setup(report: &Value) -> String {
         .any(|client| client["guard"]["state"] == "removed")
     {
         line("                The guard hooks are off unless asked for: graphicle setup --guards turns them on".into());
+    }
+    // Claude Code's prompt-context hook (`--prompt-context`).
+    let prompt = &report["prompt_context"];
+    if let Some(state) = prompt["state"].as_str() {
+        let detail = match state {
+            "added" | "already set" => show(&prompt["file"]),
+            _ => prompt["reason"]
+                .as_str()
+                .or(prompt["error"].as_str())
+                .unwrap_or_default()
+                .to_string(),
+        };
+        line(format!("  Prompt hook   {state}: {detail}"));
+        if matches!(state, "added" | "already set") {
+            line("                Before each prompt that is a code question, Claude Code gets graphicle context's packet".into());
+        }
     }
     for (index, written) in report["instructions"]
         .as_array()

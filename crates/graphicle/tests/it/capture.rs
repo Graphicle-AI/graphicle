@@ -1021,9 +1021,16 @@ fn open_work_leads_the_session_start_context_until_closed() {
             )
             .unwrap()
     };
-    // Nothing reviewed, open or stale: no context at all.
+    // Nothing reviewed, open or stale: the line on when to use Graphicle
+    // alone.
     let before = context();
-    assert_eq!(before, "");
+    assert_eq!(
+        before,
+        format!(
+            "{}\n",
+            graphicle_runtime::agent_instructions::SESSION_ROUTING
+        )
+    );
     write(json!({"task":"move bucket","status":"doing","region":"eu-west-1"}));
     let open = context();
     assert!(
@@ -1282,20 +1289,73 @@ fn run_timed(mut command: Command, input: &str) -> (std::process::Output, std::t
     (child.wait_with_output().unwrap(), began.elapsed())
 }
 
+/// `setup --prompt-context`'s hook: a code question gets `graphicle
+/// context`'s Markdown packet as the prompt's additional context, within
+/// the hook's timeout; a short prompt, a question in plain words, a folder
+/// outside every project and bad input get nothing, and never fail.
+#[test]
+fn the_prompt_hook_adds_the_packet_for_a_code_question_only() {
+    let f = Fixture::new();
+    let cwd = f.root.join("deploy").to_string_lossy().into_owned();
+    let hook = |input: &str| {
+        let mut command = binary(&f);
+        command.args(["hook", "claude-code", "prompt-context"]);
+        run_timed(command, input)
+    };
+    let prompt = "Why does the `assets` bucket in deploy/bucket.tf use us-east-1?";
+    let payload = json!({"session_id":CLAUDE_SESSION,"cwd":cwd,
+        "hook_event_name":"UserPromptSubmit","prompt":prompt});
+    let (output, took) = hook(&payload.to_string());
+    assert!(output.status.success());
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        printed["hookSpecificOutput"]["hookEventName"],
+        "UserPromptSubmit"
+    );
+    let markdown = s(&printed["hookSpecificOutput"], "additionalContext");
+    assert!(
+        markdown.starts_with("Graphicle project evidence"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("deploy/bucket.tf"), "{markdown}");
+    assert!(markdown.chars().count() <= graphicle_runtime::query::PUSH_CHARS);
+    assert!(
+        took < std::time::Duration::from_secs(graphicle_runtime::prompt_hook::HOOK_TIMEOUT),
+        "{took:?}"
+    );
+    let outside = f.dir.path().to_string_lossy().into_owned();
+    for quiet in [
+        json!({"cwd":cwd,"prompt":"yes, go on"}).to_string(),
+        json!({"cwd":cwd,"prompt":"What did we talk about in the last session?"}).to_string(),
+        json!({"cwd":outside,"prompt":prompt}).to_string(),
+        json!({"cwd":cwd}).to_string(),
+        "not json".to_string(),
+    ] {
+        let (output, _) = hook(&quiet);
+        assert!(output.status.success(), "{quiet}");
+        assert!(
+            output.stdout.is_empty(),
+            "{quiet}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+}
+
 #[test]
 fn hooks_add_context_at_start_and_import_after_stop_without_blocking() {
     let f = Fixture::new();
     let cwd = f.root.join("deploy").to_string_lossy().into_owned();
     let start = json!({"session_id":CLAUDE_SESSION,"cwd":cwd,"hook_event_name":"SessionStart","source":"startup"});
-    // Nothing reviewed, open or stale yet: the hook prints nothing at all.
+    // Nothing reviewed, open or stale yet: the hook prints the line on when
+    // to use Graphicle, alone.
     let mut command = binary(&f);
     command.args(["hook", "claude-code", "session-start"]);
     let output = run_with_input(command, &start.to_string());
     assert!(output.status.success());
-    assert!(
-        output.stdout.is_empty(),
-        "{}",
-        String::from_utf8_lossy(&output.stdout)
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        s(&printed["hookSpecificOutput"], "additionalContext").trim_end(),
+        graphicle_runtime::agent_instructions::SESSION_ROUTING
     );
     f.store
         .work_state_write(
@@ -1387,6 +1447,106 @@ fn hooks_add_context_at_start_and_import_after_stop_without_blocking() {
         waited < std::time::Duration::from_secs(10),
         "the hook returned after {waited:?}"
     );
+}
+
+/// What capture hooks and the command line serve is counted when the
+/// program ends: as the local owner, by the agent's session (a digest of its
+/// id, never the id) for a start context, and on the text served.
+#[test]
+fn hooks_and_the_command_line_count_what_they_serve() {
+    let f = Fixture::new();
+    let cwd = f.root.join("deploy").to_string_lossy().into_owned();
+    let served = |channel: &str| {
+        graphicle_runtime::store::rows(
+            &f.store.connect().unwrap(),
+            "SELECT credential_id,session,kind,calls,tokens FROM am_served_usage WHERE channel=? ORDER BY session",
+            [channel],
+        )
+        .unwrap()
+    };
+    // Open work, so the start context holds more than its first line.
+    f.store
+        .work_state_write(
+            f.ws(),
+            f.key(),
+            &f.args(json!({"list":"bucket move","fields":{"task":"move bucket","status":"doing"}})),
+        )
+        .unwrap();
+    let start = json!({"session_id":CLAUDE_SESSION,"cwd":cwd,"hook_event_name":"SessionStart","source":"startup"});
+    let mut command = binary(&f);
+    command.args(["hook", "claude-code", "session-start"]);
+    let output = run_with_input(command, &start.to_string());
+    assert!(output.status.success());
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let context = s(&printed["hookSpecificOutput"], "additionalContext").to_string();
+    // A resumed conversation gets nothing, so nothing is counted; a start
+    // without a session id is counted without one.
+    let resume = json!({"session_id":CLAUDE_SESSION,"cwd":cwd,"hook_event_name":"SessionStart","source":"resume"});
+    let mut command = binary(&f);
+    command.args(["hook", "claude-code", "session-start"]);
+    assert!(
+        run_with_input(command, &resume.to_string())
+            .stdout
+            .is_empty()
+    );
+    let mut command = binary(&f);
+    command.args(["hook", "codex", "session-start"]);
+    run_with_input(command, &json!({"cwd":cwd}).to_string());
+    let hooks = served("hook");
+    assert_eq!(hooks.len(), 2, "{hooks:?}");
+    assert_eq!(hooks[0]["session"], "");
+    assert_eq!(
+        hooks[1]["session"],
+        graphicle_runtime::metering::session_label("claude-code", CLAUDE_SESSION)
+    );
+    assert_eq!(
+        hooks[1]["tokens"].as_u64(),
+        Some(graphicle_memory::text::count(&context) as u64)
+    );
+    for row in &hooks {
+        assert_eq!(row["credential_id"], "owner");
+        assert_eq!(row["kind"], "session_start");
+        assert_eq!(row["calls"], 1);
+    }
+    assert!(!format!("{hooks:?}").contains(CLAUDE_SESSION));
+
+    let mut command = binary(&f);
+    command.args(["context", "Which region holds the assets bucket?"]);
+    let output = run_without_input(&mut command);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let cli = served("cli");
+    assert_eq!(cli.len(), 1, "{cli:?}");
+    assert_eq!(cli[0]["kind"], "context");
+    assert_eq!(cli[0]["credential_id"], "owner");
+    assert_eq!(cli[0]["session"], "");
+    assert_eq!(
+        cli[0]["tokens"].as_u64(),
+        Some(graphicle_memory::text::count(printed.trim_end()) as u64)
+    );
+    // `memories` returns the project's memory rows: counted, as the
+    // `project_memory` tool that runs it; an operation that returns no
+    // project text is not.
+    let mut command = binary(&f);
+    command.args(["call", "memories"]);
+    let output = run_without_input(&mut command);
+    assert!(output.status.success());
+    let printed = String::from_utf8(output.stdout).unwrap();
+    let cli = served("cli");
+    assert_eq!(cli.len(), 2, "{cli:?}");
+    let memories = cli.iter().find(|row| row["kind"] == "memories").unwrap();
+    assert_eq!(
+        memories["tokens"].as_u64(),
+        Some(graphicle_memory::text::count(printed.trim_end()) as u64)
+    );
+    let mut command = binary(&f);
+    command.args(["call", "build.info"]);
+    assert!(run_without_input(&mut command).status.success());
+    assert_eq!(served("cli").len(), 2);
 }
 
 #[test]

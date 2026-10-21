@@ -336,6 +336,37 @@ fn project_line(item: &Value, compact: bool) -> String {
         _ => String::new(),
     }
 }
+/// An excerpt's citation line: `Source [<kind>]: <path>:<line>`, and the
+/// date its file last changed when the caller dated it (`changed`).
+fn citation(source: &Value, line: u64) -> String {
+    let mut text = format!(
+        "\nSource [{}]: {}:{line}",
+        field(source, "source_kind"),
+        field(source, "path")
+    );
+    if let Some(changed) = source
+        .get("changed")
+        .and_then(Value::as_str)
+        .filter(|c| !c.is_empty())
+    {
+        text.push_str(&format!(" (changed {changed})"));
+    }
+    text.push('\n');
+    text
+}
+/// The caller's age marks of a source (`age_marks`: may be stale), a
+/// `Note:` line each.
+fn age_lines(source: &Value) -> String {
+    source
+        .get("age_marks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .take(6)
+        .map(|mark| format!("Note: {mark}\n"))
+        .collect()
+}
 fn reader_of(source: &Value) -> &'static str {
     if field(source, "source_kind") == "repository_file" {
         "read_repository_file"
@@ -396,6 +427,13 @@ pub fn pack(request: &Value) -> Result<Value> {
     let fraction = if memories.is_empty() { 1.0 } else { 0.8 };
     let mut source_tokens = ((max_tokens - header_tokens - 100) as f64 * fraction) as usize;
     let mut source_chars = ((max_chars - header_chars - 350) as f64 * fraction) as usize;
+    // Opt-in `next_files`: after the excerpts, the paths of the files that
+    // rank next, one per line. Room for them is kept from the excerpts'
+    // share (at most an eighth of the budget).
+    let next = NextFiles::parse(request)?;
+    let (next_tokens, next_chars) = next.reserve(max_tokens, max_chars);
+    source_tokens = source_tokens.saturating_sub(next_tokens);
+    source_chars = source_chars.saturating_sub(next_chars);
     let mut sources = Vec::new();
     let mut included_memories = Vec::new();
     let mut omitted_sources = 0;
@@ -463,12 +501,11 @@ pub fn pack(request: &Value) -> Result<Value> {
             .checked_add(body.len() as u64)
             .ok_or("Source byte range exceeds u64")?;
         let id = crate::string(item, "identity")?;
-        let mut intro = format!(
-            "\nSource [{}]: {}:{}\n",
-            field(source, "source_kind"),
-            field(source, "path"),
-            source.get("line").and_then(Value::as_u64).unwrap_or(1)
+        let mut intro = citation(
+            source,
+            source.get("line").and_then(Value::as_u64).unwrap_or(1),
         );
+        intro.push_str(&age_lines(source));
         intro.push_str(&project_line(source, compact));
         if !compact || field(source, "id") != format!("file:{}", field(source, "path")) {
             intro.push_str(&format!("ID: {}\n", field(source, "id")));
@@ -550,16 +587,8 @@ pub fn pack(request: &Value) -> Result<Value> {
                 .ok_or("Source line range exceeds u64")?;
             // The excerpt's visible citation must agree with its structured
             // byte/line reference, including when focus skips earlier text.
-            let old_intro = format!(
-                "\nSource [{}]: {}:{old_line}\n",
-                field(source, "source_kind"),
-                field(source, "path")
-            );
-            let new_intro = format!(
-                "\nSource [{}]: {}:{line}\n",
-                field(source, "source_kind"),
-                field(source, "path")
-            );
+            let old_intro = citation(source, old_line);
+            let new_intro = citation(source, line);
             intro.replace_range(..old_intro.len(), &new_intro);
             reference.insert("window_byte_start".into(), json!(source_start));
             reference.insert("byte_start".into(), json!(source_start + offset as u64));
@@ -640,11 +669,7 @@ pub fn pack(request: &Value) -> Result<Value> {
                 quote_end,
             )
         {
-            let mut payload = format!(
-                "\nSource [{}]: {}:{line}\n",
-                field(source, "source_kind"),
-                field(source, "path")
-            );
+            let mut payload = citation(source, line);
             payload.push_str(&project_line(source, compact));
             if !compact || field(source, "id") != format!("file:{}", field(source, "path")) {
                 payload.push_str(&format!("ID: {}\n", field(source, "id")));
@@ -884,6 +909,18 @@ pub fn pack(request: &Value) -> Result<Value> {
         record.remove("body");
         included_memories.push(Value::Object(record));
     }
+    // The next files, those no excerpt quotes, while they fit.
+    let quoted: std::collections::BTreeSet<&str> = sources
+        .iter()
+        .chain(&held_references)
+        .filter_map(|source| source.get("path").and_then(Value::as_str))
+        .collect();
+    let listed = next.append(
+        &mut rendered,
+        &quoted,
+        max_tokens.saturating_sub(100),
+        max_chars.saturating_sub(350),
+    );
     let coverage = request.get("coverage").cloned().unwrap_or(json!({}));
     let stale = coverage
         .get("stale_memories")
@@ -923,5 +960,116 @@ pub fn pack(request: &Value) -> Result<Value> {
     if guidance {
         result["reading_guidance"] = json!(true);
     }
+    if next.limit > 0 {
+        result["next_files"] = json!(listed);
+    }
     Ok(result)
+}
+
+/// Most `next_files` one packet lists.
+pub const MAX_NEXT_FILES: usize = 40;
+/// The line before the next files.
+pub const NEXT_FILES_HEADING: &str =
+    "\nNext ranked files (not quoted here; read them if the excerpts fall short):\n";
+
+/// The request's `next_files`: `{"paths": [...], "limit": n}`, the paths in
+/// rank order (those an excerpt quotes are skipped), at most `limit` (0 to
+/// [`MAX_NEXT_FILES`]) listed.
+struct NextFiles {
+    paths: Vec<String>,
+    limit: usize,
+}
+
+impl NextFiles {
+    fn parse(request: &Value) -> Result<Self> {
+        let Some(value) = request.get("next_files").filter(|v| !v.is_null()) else {
+            return Ok(Self {
+                paths: Vec::new(),
+                limit: 0,
+            });
+        };
+        let refused = || "next_files must be an object of paths (strings) and a limit of 0 to 40";
+        let limit = value
+            .get("limit")
+            .and_then(Value::as_u64)
+            .filter(|n| *n as usize <= MAX_NEXT_FILES)
+            .ok_or_else(refused)? as usize;
+        let paths = value
+            .get("paths")
+            .and_then(Value::as_array)
+            .filter(|paths| paths.len() <= 4 * MAX_NEXT_FILES + 200)
+            .ok_or_else(refused)?
+            .iter()
+            .map(|path| {
+                path.as_str()
+                    .filter(|p| !p.is_empty() && p.len() <= 1000 && !p.contains('\n'))
+                    .map(str::to_string)
+                    .ok_or_else(refused)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(Self { paths, limit })
+    }
+
+    fn line(path: &str) -> String {
+        format!("- {path}\n")
+    }
+
+    /// The tokens and characters kept for the list: the heading and the
+    /// first `limit` paths, at most an eighth of the budget.
+    fn reserve(&self, max_tokens: usize, max_chars: usize) -> (usize, usize) {
+        if self.limit == 0 || self.paths.is_empty() {
+            return (0, 0);
+        }
+        let mut text = NEXT_FILES_HEADING.to_string();
+        // The quoted files are skipped, so the reserve counts the longest
+        // of twice as many paths.
+        let mut longest: Vec<&String> = self.paths.iter().take(2 * self.limit).collect();
+        longest.sort_by_key(|path| std::cmp::Reverse(path.len()));
+        for path in longest.into_iter().take(self.limit) {
+            text.push_str(&Self::line(path));
+        }
+        (
+            text::count(&text).min(max_tokens / 8),
+            chars(&text).min(max_chars / 8),
+        )
+    }
+
+    /// Append the heading and the paths no excerpt quotes, in order, while
+    /// they fit within `tokens` and `characters`; the paths listed.
+    fn append(
+        &self,
+        rendered: &mut String,
+        quoted: &std::collections::BTreeSet<&str>,
+        tokens: usize,
+        characters: usize,
+    ) -> Vec<String> {
+        let mut listed = Vec::new();
+        if self.limit == 0 {
+            return listed;
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut block = String::new();
+        for path in &self.paths {
+            if listed.len() >= self.limit {
+                break;
+            }
+            if quoted.contains(path.as_str()) || !seen.insert(path.as_str()) {
+                continue;
+            }
+            let heading = if block.is_empty() {
+                NEXT_FILES_HEADING
+            } else {
+                ""
+            };
+            let line = format!("{heading}{}", Self::line(path));
+            let candidate = format!("{rendered}{block}{line}");
+            if !fits(&candidate, tokens, characters) {
+                break;
+            }
+            block.push_str(&line);
+            listed.push(path.clone());
+        }
+        rendered.push_str(&block);
+        listed
+    }
 }

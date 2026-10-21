@@ -19,6 +19,8 @@
 //!   `api::command_async`, before the core operations;
 //! - `routes`: `api::router`, inside the request meter and the host, origin
 //!   and browser-session boundary;
+//! - `cross_site_post`: that boundary (`api::router`), before its origin and
+//!   browser-mutation checks;
 //! - `mcp_tools`: `api::mcp_tools_with` and MCP `tools/call`;
 //! - `native_operations`, `native`: [`crate::native`], for the declared
 //!   operations only, before the memory engine;
@@ -26,7 +28,11 @@
 //! - `credential_revoked`: `Store::revoke`;
 //! - `request_allowance`, `usage_details`: the request meter and the owner's
 //!   usage report (`product`);
+//! - `served_allowed`, `metered_operations`: before a metered MCP tool call
+//!   or HTTP operation runs, and which operations are metered (`metering`);
 //! - `scrub_backup`: `Store::backup`, on the copy;
+//! - `vault_key`: the vault (`Store::save_secret` and `Store::secret`),
+//!   before the device key file;
 //! - `job_kinds`, `job`: queueing, leasing and `workflows::execute`, for the
 //!   declared job kinds (the core runs its own); `job` is asked in
 //!   installation order, not routed by declaration (see [`Extensions::job`]);
@@ -36,6 +42,9 @@
 //! - `schedule`: `Store::schedule_connectors`, the worker's scheduler;
 //! - `source_permissions`: provider permissions captured during a connector
 //!   sync;
+//! - `sources`: connector kinds beside the core's (`connectors`: adding,
+//!   probing and syncing a connector, its endpoint override in the provider
+//!   configuration, and the OAuth accounts it uses in `oauth`);
 //! - `environment`, `serve`: `graphicle serve` and `graphicle start`, before
 //!   the server announces readiness; its background tasks run until shutdown;
 //! - `cli`, `run_cli`: the `graphicle` command line ([`crate::cli`]), for the
@@ -43,7 +52,13 @@
 //! - `ui_script`: the `/extensions.js` script of the web app;
 //! - `page`: the public `/product` page (`product`);
 //! - `history_tables`, `retained_tables`: verified deletion (`deletion`), for
-//!   `deletion.state` and the residue scans of deletion receipts.
+//!   `deletion.state` and the residue scans of deletion receipts;
+//! - `role_permits`: `store::authorize_hash` and `Store::grant`, for roles the
+//!   core does not define;
+//! - `grant_role`: `Store::grant`, before a credential is made on a role the
+//!   core does not define;
+//! - `authorize`: wherever a credential other than the owner capability is
+//!   authorized, at each place [`Access`] lists.
 use crate::{
     Error, Result,
     api::App,
@@ -51,10 +66,11 @@ use crate::{
     jobs::{Job, Worker},
     store::{Principal, Store},
 };
-use axum::Router;
+use axum::{Router, http::StatusCode};
 use rusqlite::Connection;
 use serde_json::{Map, Value};
 use std::{
+    borrow::Cow,
     collections::{BTreeMap, BTreeSet},
     future::Future,
     path::PathBuf,
@@ -98,6 +114,10 @@ pub struct JobKind {
     /// The permission its requester needs (`read`, `propose`, `run` or
     /// `admin`), checked when it is queued and at every lease.
     pub permission: &'static str,
+    /// Work dominated by local CPU, like a projection: a worker leases it
+    /// only with a CPU permit in hand (G08 admission,
+    /// `ingestion::cpu_bound`). Set with [`Self::cpu_bound`].
+    pub cpu: bool,
     /// Source work, like a connector sync: no model call and no pinned
     /// source state.
     pub source: bool,
@@ -112,8 +132,13 @@ pub struct JobKind {
 }
 
 impl JobKind {
+    /// This kind, as CPU-bound work ([`Self::cpu`]).
+    pub const fn cpu_bound(self) -> Self {
+        Self { cpu: true, ..self }
+    }
     pub const fn new(name: &'static str, permission: &'static str, source: bool) -> Self {
         Self {
+            cpu: false,
             name,
             permission,
             source,
@@ -195,6 +220,225 @@ impl McpTool {
     pub fn name(&self) -> &str {
         self.spec["name"].as_str().unwrap_or("")
     }
+}
+
+/// What a request of a workspace credential asks for, at each place the
+/// runtime asks [`Extension::authorize`]. The owner capability is never
+/// asked about.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access<'a> {
+    /// A store permission (`read`, `write`, `collect`, `propose`, `approve`,
+    /// `run`, `verify` or `admin`), at every authorization of the credential
+    /// (`store::authorize_hash`), once its role grants it.
+    Permission(&'a str),
+    /// A repository the request opens or lists
+    /// (`graph_projection::repo_readable`); a PR scratch project is asked
+    /// about as its folder project, whose code it holds.
+    Repository(&'a str),
+    /// An HTTP route that names a workspace (`{workspace}`), by its method
+    /// and pattern, before its handler runs (`api::router`).
+    Route { method: &'a str, pattern: &'a str },
+    /// An operation (`api::command`, `api::command_async`): the command
+    /// endpoints, the routes that run one, MCP tools and `graphicle call`;
+    /// also the pull-request tools (`graph.pull_requests`) and MCP resource
+    /// reads, which read the code graph as `graph.navigate` does.
+    Operation(&'a str),
+    /// An MCP tool, at `tools/call` before its operation and at
+    /// `tools/list`; `writes` when its contract is not read-only.
+    Tool { name: &'a str, writes: bool },
+}
+
+/// One request of a workspace credential, as [`Extension::authorize`] sees
+/// it: an extension refuses it with an error, or narrows it.
+#[derive(Debug)]
+pub struct AccessRequest<'a> {
+    pub access: Access<'a>,
+    /// The arguments of an [`Access::Operation`]; `None` for other accesses.
+    /// An extension may narrow them through `Cow::to_mut` (a lower token
+    /// budget, for example); the operation then runs with the copy.
+    pub arguments: Option<Cow<'a, Value>>,
+    /// The most tokens (`graphicle_memory::text::count` of the text served)
+    /// a read's response may carry; an extension may set or lower it, and the
+    /// lowest applies. The runtime answers a larger result with 413 (the
+    /// size check of [`crate::metering`]): an operation's or MCP tool's
+    /// result when it is a read (`metering::meter`; for the pull-request
+    /// tools, when the tool is read-only), an MCP resource, and the response
+    /// of a GET or HEAD route. A write's result is never refused once it is
+    /// saved. Unused for [`Access::Permission`] and [`Access::Repository`].
+    pub max_tokens: Option<usize>,
+}
+
+impl<'a> AccessRequest<'a> {
+    pub fn new(access: Access<'a>) -> Self {
+        Self {
+            access,
+            arguments: None,
+            max_tokens: None,
+        }
+    }
+}
+
+/// What [`admit`] allowed: the narrowed arguments, if an extension narrowed
+/// them, and the response's token limit.
+#[derive(Debug, Default)]
+pub struct Admitted {
+    pub arguments: Option<Value>,
+    pub max_tokens: Option<usize>,
+}
+
+/// Ask the installed extensions ([`Extension::authorize`]) whether the
+/// credential `token` may have `access` where the store does not authorize it
+/// itself: a route, an operation or an MCP tool. Nothing is asked in Core, for
+/// the owner capability, or for a token that is no usable workspace
+/// credential (the request then fails, or authenticates otherwise, where it
+/// always did).
+pub fn admit(
+    store: &Store,
+    workspace: &str,
+    token: &str,
+    access: Access<'_>,
+    arguments: Option<&Value>,
+) -> Result<Admitted> {
+    let extensions = installed();
+    if extensions.is_empty() || token.is_empty() || token.len() > 512 {
+        return Ok(Admitted::default());
+    }
+    let hash = graphicle_memory::text::sha256(token.as_bytes());
+    store.read(|db| {
+        // Authentication only: a credential is checked whichever
+        // permissions its role holds.
+        let principal = match crate::store::authenticate_hash(db, workspace, &hash) {
+            Ok(principal) => principal,
+            // No usable credential: the request fails, or authenticates
+            // otherwise, where it always did.
+            Err(error) if error.status == StatusCode::FORBIDDEN => {
+                return Ok(Admitted::default());
+            }
+            // Anything else fails closed.
+            Err(error) => return Err(error),
+        };
+        if principal.role == "owner" {
+            return Ok(Admitted::default());
+        }
+        let mut request = AccessRequest {
+            access,
+            arguments: arguments.map(Cow::Borrowed),
+            max_tokens: None,
+        };
+        extensions.authorize(db, &principal, &mut request)?;
+        Ok(Admitted {
+            arguments: match request.arguments {
+                Some(Cow::Owned(narrowed)) => Some(narrowed),
+                _ => None,
+            },
+            max_tokens: request.max_tokens,
+        })
+    })
+}
+
+/// [`admit`] for several accesses of one credential in one read, each
+/// answered on its own: whether it is allowed.
+pub fn admit_each(
+    store: &Store,
+    workspace: &str,
+    token: &str,
+    accesses: &[Access<'_>],
+) -> Result<Vec<bool>> {
+    let extensions = installed();
+    if extensions.is_empty() || token.is_empty() || token.len() > 512 {
+        return Ok(vec![true; accesses.len()]);
+    }
+    let hash = graphicle_memory::text::sha256(token.as_bytes());
+    store.read(|db| {
+        let principal = match crate::store::authenticate_hash(db, workspace, &hash) {
+            Ok(principal) => principal,
+            Err(error) if error.status == StatusCode::FORBIDDEN => {
+                return Ok(vec![true; accesses.len()]);
+            }
+            Err(error) => return Err(error),
+        };
+        if principal.role == "owner" {
+            return Ok(vec![true; accesses.len()]);
+        }
+        Ok(accesses
+            .iter()
+            .map(|access| {
+                extensions
+                    .authorize(db, &principal, &mut AccessRequest::new(*access))
+                    .is_ok()
+            })
+            .collect())
+    })
+}
+
+/// Refuse a response of more than `limit` tokens ([`AccessRequest::max_tokens`]):
+/// the one per-call size check of a read's result, on the text served.
+pub fn within_limit(limit: Option<usize>, text: &str) -> Result<()> {
+    let Some(limit) = limit else {
+        return Ok(());
+    };
+    // Every token holds at least one byte.
+    if text.len() <= limit {
+        return Ok(());
+    }
+    let tokens = graphicle_memory::text::count(text);
+    if tokens > limit {
+        return Err(Error {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: format!(
+                "The response holds {tokens} tokens; this credential may receive at most {limit} per call. Ask for less (a lower max_tokens, budget_tokens or limit, or a narrower query)."
+            ),
+            provider_failure: None,
+        });
+    }
+    Ok(())
+}
+
+/// A source connector kind an extension adds beside the core's
+/// ([`crate::connectors::CORE_KINDS`]). Connectors of the kind are added,
+/// scheduled, staged, activated, shared and enforced on read by the core
+/// exactly like its own; the source only reads its provider, through the
+/// connector job's [`Remote`] (request budget, credentials and rate limits
+/// as for the core's kinds).
+pub trait Source: Send + Sync + 'static {
+    /// The connector `kind`; never a core kind ([`install`] panics).
+    fn kind(&self) -> &'static str;
+    /// The OAuth provider whose connected accounts (`oauth:` credentials) the
+    /// kind uses. It is also the provider of the verified identities the
+    /// core matches provider permissions against.
+    fn oauth_provider(&self) -> &'static str;
+    /// The stable account ID and display name in the identity response of
+    /// [`Self::oauth_provider`] (its `identity_url`), when the core does not
+    /// know that provider; `None` rejects the connection.
+    fn oauth_identity(&self, _identity: &Value) -> Option<(String, String)> {
+        None
+    }
+    /// The configuration fields of the kind, beside the common ones (`acl`,
+    /// `max_age_seconds`, `sync_every_seconds`, `permission_mode`,
+    /// `permission_max_age_seconds` and `observe`).
+    fn fields(&self) -> &'static [&'static str];
+    /// Check a configuration, after the core's checks of the common fields.
+    fn validate(&self, config: &Value) -> Result<()>;
+    /// The provider API base of a connector; the provider configuration's
+    /// `connector_endpoints.<kind>` overrides it.
+    fn base_url(&self, config: &Value) -> Result<String>;
+    /// One page of the listing from `cursor` (`null` at the start): the
+    /// items, and the next cursor, `null` when the listing is complete.
+    fn listing<'a>(
+        &'a self,
+        remote: &'a mut Remote<'_>,
+        cursor: &'a Value,
+    ) -> BoxFuture<'a, Result<(Vec<Value>, Value)>>;
+    /// The document of one listed item (`id`, `title`, `content`, `url`,
+    /// `source_timestamp`, `metadata`); `None` when it is gone.
+    fn document<'a>(
+        &'a self,
+        remote: &'a mut Remote<'_>,
+        item: &'a Value,
+    ) -> BoxFuture<'a, Result<Option<Value>>>;
+    /// The `connector_probe` diagnostic: the account's identity and the first
+    /// configured target.
+    fn probe<'a>(&'a self, remote: &'a mut Remote<'_>) -> BoxFuture<'a, Result<(Value, Value)>>;
 }
 
 /// What `graphicle serve` gives the `serve` hook, before it announces that
@@ -301,6 +545,15 @@ pub trait Extension: Send + Sync + 'static {
     fn routes(&self) -> Router<App> {
         Router::new()
     }
+    /// Whether a POST to `path` is a cross-site form post that this
+    /// extension's route authenticates by itself, such as a sign-in callback
+    /// that another site's page posts to from its own origin. For such a
+    /// request the boundary skips its origin and
+    /// browser-mutation checks and maps no browser session into it; the host
+    /// check still applies. Name exact paths only.
+    fn cross_site_post(&self, _path: &str) -> bool {
+        false
+    }
     /// MCP tools, published after the core tools. Names must be unique.
     fn mcp_tools(&self, _learning: bool, _work_state: bool) -> Vec<McpTool> {
         Vec::new()
@@ -345,6 +598,39 @@ pub trait Extension: Send + Sync + 'static {
     ) -> Result<()> {
         Ok(())
     }
+    /// Whether `role`, which the core does not define, grants `permission`
+    /// in `workspace`; `None` when this extension does not define it either.
+    /// The core defines owner, reader, agent, reviewer, collector and runner,
+    /// and denies everything to a role no one defines. `Store::grant` accepts
+    /// a role an extension defines.
+    fn role_permits(
+        &self,
+        _db: &Connection,
+        _workspace: &str,
+        _role: &str,
+        _permission: &str,
+    ) -> Result<Option<bool>> {
+        Ok(None)
+    }
+    /// Before `Store::grant` makes a credential on `role`, a role the core
+    /// does not define: an installed extension may refuse a new credential on
+    /// a role it defines. Every installed extension must allow it.
+    fn grant_role(&self, _db: &Connection, _workspace: &str, _role: &str) -> Result<()> {
+        Ok(())
+    }
+    /// Whether a workspace credential other than the owner capability may
+    /// have `request.access`, once the core's own checks allowed it: refuse
+    /// with an error, or narrow the request (its arguments, its response's
+    /// tokens). Every installed extension must allow it, so an extension can
+    /// only restrict. [`Access`] lists where the runtime asks.
+    fn authorize(
+        &self,
+        _db: &Connection,
+        _principal: &Principal,
+        _request: &mut AccessRequest<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
     /// The workspace's monthly HTTP request allowance from this extension (a
     /// plan, for example); `None` sets no limit. The lowest of the owner's own
     /// budget and every allowance applies.
@@ -355,10 +641,44 @@ pub trait Extension: Send + Sync + 'static {
     fn usage_details(&self, _db: &Connection, _workspace: &str, _usage: &mut Value) -> Result<()> {
         Ok(())
     }
+    /// Whether a metered result may be served to `principal`, a credential
+    /// other than the owner capability, before its MCP tool call, MCP
+    /// resource read or HTTP operation runs and once [`Self::authorize`]
+    /// allowed it ([`crate::metering`]): refuse with an error, which the
+    /// caller gets instead of the result (a quota, for example), or allow it.
+    /// Every installed extension must allow it. A refusal with status 429 is
+    /// a limit of the current UTC month: an HTTP caller gets `Retry-After`
+    /// until the next one starts. The local command line and capture hooks
+    /// are never asked.
+    fn served_allowed(
+        &self,
+        _db: &Connection,
+        _principal: &Principal,
+        _served: &crate::metering::Served<'_>,
+    ) -> Result<()> {
+        Ok(())
+    }
+    /// The extension's own operations ([`Self::operations`]) that no MCP tool
+    /// of it runs and that return a project's text: metered over HTTP and the
+    /// command line like the core's reads ([`crate::metering::meter`]). The
+    /// operations its tools run are metered anyway.
+    fn metered_operations(&self) -> &'static [&'static str] {
+        &[]
+    }
     /// Scrub a portable backup copy (never the live store) after the core
     /// scrub: remove sessions, secrets or entitlements the copy must not carry.
     fn scrub_backup(&self, _db: &Connection) -> Result<()> {
         Ok(())
+    }
+    /// The key that seals this store's vault (the `am_secrets` rows: provider
+    /// credentials, OAuth tokens and the other encrypted fields) when this
+    /// extension holds it, for example wrapped by a key held by an external
+    /// key service;
+    /// `None` leaves the vault on the device key file (`vault.key`). The
+    /// answer is final: an error fails the vault operation, and the core never
+    /// falls back to the device key for a store whose key an extension holds.
+    fn vault_key(&self, _store: &Store) -> Option<Result<[u8; 32]>> {
+        None
     }
     /// The job kinds this extension runs through [`Self::job`], with the
     /// permission each needs. Declared kinds can be queued and are leased; a
@@ -417,6 +737,11 @@ pub trait Extension: Send + Sync + 'static {
         _doc: &'a Value,
     ) -> Option<BoxFuture<'a, Result<Value>>> {
         None
+    }
+    /// The source connector kinds this extension adds ([`Source`]).
+    /// [`install`] rejects a core kind or one another extension adds.
+    fn sources(&self) -> &'static [&'static dyn Source] {
+        &[]
     }
     /// Environment variables this extension reads when the server starts.
     /// `graphicle serve` refuses to start while a variable that configures an
@@ -483,12 +808,13 @@ static INSTALLED: OnceLock<Extensions> = OnceLock::new();
 /// through [`crate::cli::main_with`], before anything else runs.
 ///
 /// Panics when extensions are already installed, when an extension claims a
-/// core operation other than the [`OVERRIDABLE_OPERATIONS`], when two
+/// core operation other than the [`OVERRIDABLE_OPERATIONS`] or meters one it
+/// does not serve, when two
 /// extensions claim the same operation, when an MCP tool name repeats a core
-/// or another extension's tool, when a declared native operation, job kind or
-/// subcommand clashes with the core's or another extension's, when a declared
-/// job kind is not supported ([`crate::archived`]), or when extensions declare
-/// different editions.
+/// or another extension's tool, when a declared native operation, job kind,
+/// connector kind or subcommand clashes with the core's or another
+/// extension's, when a declared job kind is not supported
+/// ([`crate::archived`]), or when extensions declare different editions.
 pub fn install(extensions: Extensions) {
     let extensions = extensions.indexed();
     if INSTALLED.set(extensions).is_err() {
@@ -553,6 +879,14 @@ impl Extensions {
                     );
                 }
             }
+            for operation in extension.metered_operations() {
+                if !extension.operations().contains(operation) {
+                    panic!(
+                        "graphicle: extension {} meters the operation {operation}, which it does not serve",
+                        extension.name()
+                    );
+                }
+            }
         }
         for learning in [false, true] {
             for work_state in [false, true] {
@@ -611,6 +945,24 @@ impl Extensions {
                         self.list[other].name(),
                         extension.name(),
                         kind.name
+                    );
+                }
+            }
+        }
+        let mut sources = BTreeMap::new();
+        for extension in &self.list {
+            for source in extension.sources() {
+                let kind = source.kind();
+                if crate::connectors::CORE_KINDS.contains(&kind) {
+                    panic!(
+                        "graphicle: extension {} adds the core connector kind {kind}",
+                        extension.name()
+                    );
+                }
+                if let Some(other) = sources.insert(kind, extension.name()) {
+                    panic!(
+                        "graphicle: extensions {other} and {} both add the connector kind {kind}",
+                        extension.name()
                     );
                 }
             }
@@ -693,12 +1045,25 @@ impl Extensions {
             .flat_map(|extension| extension.job_kinds().iter().map(|kind| kind.name))
             .collect()
     }
+    /// Every job kind the extensions declare CPU-bound ([`JobKind::cpu`]).
+    pub fn cpu_bound_kinds(&self) -> Vec<&'static str> {
+        self.list
+            .iter()
+            .flat_map(|extension| extension.job_kinds().iter())
+            .filter(|kind| kind.cpu)
+            .map(|kind| kind.name)
+            .collect()
+    }
     /// Every environment variable the extensions read when serving.
     pub fn environment(&self) -> Vec<&'static str> {
         self.list
             .iter()
             .flat_map(|extension| extension.environment().iter().copied())
             .collect()
+    }
+    /// Every operation the extensions serve, once installed.
+    pub fn operation_names(&self) -> Vec<&'static str> {
+        self.operations.keys().copied().collect()
     }
     /// The extension that serves `operation`, if any.
     pub fn operation(&self, operation: &str) -> Option<&dyn Extension> {
@@ -720,6 +1085,13 @@ impl Extensions {
         self.list.iter().fold(Router::new(), |router, extension| {
             router.merge(extension.routes())
         })
+    }
+    /// Whether an installed extension takes a cross-site form post to `path`
+    /// ([`Extension::cross_site_post`]); never in Core.
+    pub fn cross_site_post(&self, path: &str) -> bool {
+        self.list
+            .iter()
+            .any(|extension| extension.cross_site_post(path))
     }
     pub fn mcp_tools(&self, learning: bool, work_state: bool) -> Vec<McpTool> {
         self.list
@@ -764,6 +1136,39 @@ impl Extensions {
             .iter()
             .try_for_each(|extension| extension.credential_revoked(db, workspace, credential))
     }
+    /// The first extension that defines `role` decides.
+    pub fn role_permits(
+        &self,
+        db: &Connection,
+        workspace: &str,
+        role: &str,
+        permission: &str,
+    ) -> Result<Option<bool>> {
+        for extension in &self.list {
+            if let Some(granted) = extension.role_permits(db, workspace, role, permission)? {
+                return Ok(Some(granted));
+            }
+        }
+        Ok(None)
+    }
+    /// Every extension must allow a new credential on `role`.
+    pub fn grant_role(&self, db: &Connection, workspace: &str, role: &str) -> Result<()> {
+        self.list
+            .iter()
+            .try_for_each(|extension| extension.grant_role(db, workspace, role))
+    }
+    /// Every extension must allow the request; each sees what the earlier
+    /// ones narrowed.
+    pub fn authorize(
+        &self,
+        db: &Connection,
+        principal: &Principal,
+        request: &mut AccessRequest<'_>,
+    ) -> Result<()> {
+        self.list
+            .iter()
+            .try_for_each(|extension| extension.authorize(db, principal, request))
+    }
     /// The lowest allowance any extension sets.
     pub fn request_allowance(&self, db: &Connection, workspace: &str) -> Result<Option<u64>> {
         let mut lowest: Option<u64> = None;
@@ -779,10 +1184,35 @@ impl Extensions {
             .iter()
             .try_for_each(|extension| extension.usage_details(db, workspace, usage))
     }
+    /// Every extension's [`Extension::metered_operations`].
+    pub fn metered_operations(&self) -> Vec<&'static str> {
+        self.list
+            .iter()
+            .flat_map(|extension| extension.metered_operations().iter().copied())
+            .collect()
+    }
+    /// Every extension must allow the metered call.
+    pub fn served_allowed(
+        &self,
+        db: &Connection,
+        principal: &Principal,
+        served: &crate::metering::Served<'_>,
+    ) -> Result<()> {
+        self.list
+            .iter()
+            .try_for_each(|extension| extension.served_allowed(db, principal, served))
+    }
     pub fn scrub_backup(&self, db: &Connection) -> Result<()> {
         self.list
             .iter()
             .try_for_each(|extension| extension.scrub_backup(db))
+    }
+    /// The vault key of the first extension that holds this store's; `None`
+    /// when none does.
+    pub fn vault_key(&self, store: &Store) -> Option<Result<[u8; 32]>> {
+        self.list
+            .iter()
+            .find_map(|extension| extension.vault_key(store))
     }
     /// Run a leased job through the first installed extension whose
     /// [`Extension::job`] accepts it; `None` when none does. Operations,
@@ -871,6 +1301,28 @@ impl Extensions {
         }
         None
     }
+    /// Every source the extensions add, in installation order.
+    pub fn sources(&self) -> Vec<&'static dyn Source> {
+        self.list
+            .iter()
+            .flat_map(|extension| extension.sources().iter().copied())
+            .collect()
+    }
+    /// The source an extension adds for the connector kind `kind`.
+    pub fn source(&self, kind: &str) -> Option<&'static dyn Source> {
+        self.list
+            .iter()
+            .flat_map(|extension| extension.sources().iter().copied())
+            .find(|source| source.kind() == kind)
+    }
+    /// The first added source whose connected accounts come from the OAuth
+    /// provider `provider`.
+    pub fn oauth_source(&self, provider: &str) -> Option<&'static dyn Source> {
+        self.list
+            .iter()
+            .flat_map(|extension| extension.sources().iter().copied())
+            .find(|source| source.oauth_provider() == provider)
+    }
     pub fn serve(&self, context: &mut ServeContext<'_>) -> Result<()> {
         self.list
             .iter()
@@ -952,6 +1404,7 @@ mod tests {
         assert!(none.operation("status").is_none());
         assert!(none.mcp_tools(true, true).is_empty());
         assert_eq!(none.ui_script(), "");
+        assert!(!none.cross_site_post("/hooks/example"));
         assert!(installed().operation("impact.report").is_none());
     }
 
@@ -1069,7 +1522,10 @@ mod tests {
 
     #[test]
     fn declared_job_kinds_and_native_operations_are_indexed() {
-        const KINDS: &[JobKind] = &[JobKind::new("probe_kind", "read", true)];
+        const KINDS: &[JobKind] = &[
+            JobKind::new("probe_kind", "read", true),
+            JobKind::new("probe_cpu", "admin", true).cpu_bound(),
+        ];
         let extensions = Extensions::none()
             .with(Declares {
                 kinds: KINDS,
@@ -1083,7 +1539,11 @@ mod tests {
             Some("read")
         );
         assert!(extensions.job_kind("project").is_none());
-        assert_eq!(extensions.job_kinds(), ["probe_kind"]);
+        assert_eq!(extensions.job_kinds(), ["probe_kind", "probe_cpu"]);
+        assert!(!extensions.job_kind("probe_kind").unwrap().cpu);
+        assert!(extensions.job_kind("probe_cpu").unwrap().cpu);
+        assert_eq!(extensions.cpu_bound_kinds(), ["probe_cpu"]);
+        assert!(Extensions::none().cpu_bound_kinds().is_empty());
         assert_eq!(extensions.natives.get("graph.probe_native"), Some(&0));
         assert_eq!(extensions.subcommands.get("probe-command"), Some(&0));
         assert!(!extensions.subcommands.contains_key("serve"));
@@ -1171,6 +1631,87 @@ mod tests {
                 subcommand: Some("graph"),
                 ..Declares::NOTHING
             })
+            .indexed();
+    }
+
+    struct ProbeSource(&'static str);
+    impl Source for ProbeSource {
+        fn kind(&self) -> &'static str {
+            self.0
+        }
+        fn oauth_provider(&self) -> &'static str {
+            "probe_accounts"
+        }
+        fn fields(&self) -> &'static [&'static str] {
+            &[]
+        }
+        fn validate(&self, _config: &Value) -> Result<()> {
+            Ok(())
+        }
+        fn base_url(&self, _config: &Value) -> Result<String> {
+            Ok("https://probe.invalid".into())
+        }
+        fn listing<'a>(
+            &'a self,
+            _remote: &'a mut Remote<'_>,
+            _cursor: &'a Value,
+        ) -> BoxFuture<'a, Result<(Vec<Value>, Value)>> {
+            Box::pin(async { Ok((Vec::new(), Value::Null)) })
+        }
+        fn document<'a>(
+            &'a self,
+            _remote: &'a mut Remote<'_>,
+            _item: &'a Value,
+        ) -> BoxFuture<'a, Result<Option<Value>>> {
+            Box::pin(async { Ok(None) })
+        }
+        fn probe<'a>(
+            &'a self,
+            _remote: &'a mut Remote<'_>,
+        ) -> BoxFuture<'a, Result<(Value, Value)>> {
+            Box::pin(async { Ok((Value::Null, Value::Null)) })
+        }
+    }
+    struct Sources(&'static [&'static dyn Source]);
+    impl Extension for Sources {
+        fn name(&self) -> &'static str {
+            "sources"
+        }
+        fn sources(&self) -> &'static [&'static dyn Source] {
+            self.0
+        }
+    }
+
+    #[test]
+    fn added_connector_kinds_are_found_by_kind_and_by_oauth_provider() {
+        static PROBE: &[&dyn Source] = &[&ProbeSource("probe_kind")];
+        let extensions = Extensions::none().with(Sources(PROBE)).indexed();
+        assert_eq!(
+            extensions.source("probe_kind").map(|s| s.oauth_provider()),
+            Some("probe_accounts")
+        );
+        assert_eq!(
+            extensions.oauth_source("probe_accounts").map(|s| s.kind()),
+            Some("probe_kind")
+        );
+        assert!(extensions.source("github").is_none());
+        assert!(Extensions::none().source("probe_kind").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "adds the core connector kind gdrive")]
+    fn a_core_connector_kind_cannot_be_added() {
+        static DRIVE: &[&dyn Source] = &[&ProbeSource("gdrive")];
+        let _ = Extensions::none().with(Sources(DRIVE)).indexed();
+    }
+
+    #[test]
+    #[should_panic(expected = "both add the connector kind probe_same")]
+    fn two_extensions_cannot_add_one_connector_kind() {
+        static SAME: &[&dyn Source] = &[&ProbeSource("probe_same")];
+        let _ = Extensions::none()
+            .with(Sources(SAME))
+            .with(Sources(SAME))
             .indexed();
     }
 

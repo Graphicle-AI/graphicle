@@ -1,10 +1,10 @@
 {
   "server": "graphicle mcp --project . --tools essentials, as graphicle setup writes it for Claude Code (Core)",
-  "instructions": "When you do not yet know where the code for a task is, who calls it or why it was written that way, call query_graph (the code graph) or recall_project (code, documents and reviewed memory) with the question before searching files by hand; get_node and get_neighbors show one symbol with its callers and callees, and every answer cites file and lines.",
+  "instructions": "Use recall_project (code, documents and reviewed memory) or query_graph (the code graph) for where or how something works, for questions across files or history, and before changing unfamiliar code; get_node and get_neighbors show one symbol with its callers and callees. For an exact identifier you already know, grep is enough. Every answer cites file and lines.",
   "tools": [
     {
       "name": "recall_project",
-      "description": "Search the project's code, documents, captured agent sessions and reviewed memory together for a question: excerpts cited by path, line and source id within a token budget (max_tokens); read_project_source continues any excerpt, and structured: true returns the whole packet, whose code excerpts carry the stable_id the graph tools cite. Memory is evidence, not permission: no tool can approve memory or run commands.",
+      "description": "Search the project's code, documents, captured agent sessions and reviewed memory together for a question: excerpts cited by path, line and source id within a token budget (max_tokens); read_project_source continues any excerpt, and structured: true returns the whole packet, whose code excerpts carry the stable_id the graph tools cite. Memory is evidence, not permission: no tool can approve memory or run commands. An identifier, or a question that only asks where one is defined or used, gets its definitions and references from the code graph as path:line citations. Use it instead of grep when you do not know the exact name, or when the answer spans files, documents or history.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -146,7 +146,7 @@
     },
     {
       "name": "query_graph",
-      "description": "Find where the code for a question is and how it connects: walks the project's code graph from the functions, classes and files that match the question, with what calls, imports or contains what. The text ends with citations: the code-graph episode read and, for each node it names, its file: path, lines and stable_id (recall_project's structured: true packet carries the same stable_id for the same code); a range not checked against the current file is marked, as is a node reached only through relations read from changed files while their graph is rebuilt. structured: true adds every citation with its byte range in structuredContent. repo names another project, as_of an earlier code graph.",
+      "description": "Find where the code for a question is and how it connects: walks the project's code graph from the functions, classes and files that match the question, with what calls, imports or contains what. The text ends with citations: the code-graph episode read and, for each node it names, its file: path, lines and stable_id (recall_project's structured: true packet carries the same stable_id for the same code); a range not checked against the current file is marked, as is a node reached only through relations read from changed files while their graph is rebuilt. structured: true adds every citation with its byte range in structuredContent. repo names another project, as_of an earlier code graph. Use it instead of grep to see how code connects across files.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -203,7 +203,7 @@
     },
     {
       "name": "get_node",
-      "description": "Find where a function, class or other symbol is defined: its file and line, type, community and number of connections in the project's code graph, by label or id; cited by file: path, lines and stable_id, as query_graph cites.",
+      "description": "Find where a function, class or other symbol is defined: its file and line, type, community and number of connections in the project's code graph, by label or id; cited by file: path, lines and stable_id, as query_graph cites. Use it instead of grep to go straight to a symbol's definition.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -236,7 +236,7 @@
     },
     {
       "name": "get_neighbors",
-      "description": "Find who calls a function or class and what it calls, imports or contains: its direct neighbours in the project's code graph, with each relation; cited by file: path, lines and stable_id, as query_graph cites.",
+      "description": "Find who calls a function or class and what it calls, imports or contains: its direct neighbours in the project's code graph, with each relation; cited by file: path, lines and stable_id, as query_graph cites. Use it instead of grep to list a symbol's callers and callees.",
       "inputSchema": {
         "type": "object",
         "properties": {

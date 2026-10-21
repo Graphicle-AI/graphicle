@@ -34,6 +34,11 @@ const OPTIONS: &[&str] = &[
     "memory_retrieval",
     "graph_retrieval",
     "doc_links",
+    "symbol_links",
+    "notes_first",
+    "code_first",
+    "query_focus",
+    "more_files",
     "mode",
     "needs",
 ];
@@ -150,13 +155,16 @@ pub(crate) fn context(
     } else {
         jobs::guarded_read(&worker.store, job, |db, _, _| {
             let question = crate::string(&args, "question", 8000)?;
-            // `doc_links: false` leaves document nodes out of the arm too.
+            // The arm reads a code question's content, and leaves document
+            // nodes out for it as for `doc_links: false`, as `context` does.
+            let focus = crate::code_question::focus(&args, question)?;
+            let code_first = crate::code_question::decide(&args, question, &focus.text)?;
             Ok(crate::code_graph_arm::arm_with(
                 db,
                 &job.repository,
                 snapshot,
-                question,
-                links.documents(),
+                &focus.text,
+                links.documents() && !code_first.applied,
             )
             .unwrap_or_else(|error| {
                 let mut arm = crate::code_graph_arm::Arm::skipped("error");
@@ -165,10 +173,13 @@ pub(crate) fn context(
             }))
         })?
     };
-    // The documents' mention links, read on a
-    // connection of their own: rows only, checked against the snapshot
-    // (followed with `doc_links: true`, else counted).
-    let links_db = if links.documents() {
+    // The documents' mention links and reviewed memory's links to code
+    // symbols, read on a connection of their own: rows only, checked against
+    // the snapshot (each followed with its switch `true`, else counted). The
+    // memory links are read with `doc_links: false` too; `context_on` reads
+    // the document links only when documents take part.
+    let symbol_links = crate::symbol_links::Mode::parse(&args)?;
+    let links_db = if links.documents() || symbol_links != crate::symbol_links::Mode::Off {
         let db = worker.store.connect()?;
         db.pragma_update(None, "query_only", true)?;
         Some(db)

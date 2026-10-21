@@ -820,7 +820,8 @@ async fn basic_reads_the_code_graph_and_reviewed_memory_on_a_code_project() {
     assert_eq!(
         packet["integration"],
         json!({"default":"integrated","reason":"code_symbols","episode":f.current(),
-            "graph_retrieval":true,"memory_retrieval":true,"doc_links":false,"requested":[]}),
+            "graph_retrieval":true,"memory_retrieval":true,"doc_links":false,"symbol_links":false,
+            "requested":[]}),
         "{}",
         packet["integration"]
     );

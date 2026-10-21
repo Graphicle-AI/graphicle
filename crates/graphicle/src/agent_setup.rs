@@ -917,8 +917,10 @@ struct HookSpec {
     timeout: u64,
     matcher: Option<&'static str>,
     /// A guard hook of `--guards`, else a capture hook
-    /// of `connect --hooks`.
+    /// of `connect --hooks` (or the prompt-context hook, `prompt`).
     guard: bool,
+    /// Claude Code's prompt-context hook of `setup --prompt-context`.
+    prompt: bool,
 }
 
 const fn capture(event: &'static str, argument: &'static str, timeout: u64) -> HookSpec {
@@ -928,6 +930,7 @@ const fn capture(event: &'static str, argument: &'static str, timeout: u64) -> H
         timeout,
         matcher: None,
         guard: false,
+        prompt: false,
     }
 }
 
@@ -966,6 +969,7 @@ const CLAUDE_CODE_GUARDS: [HookSpec; 2] = [
         timeout: 10,
         matcher: Some("Bash|Grep"),
         guard: true,
+        prompt: false,
     },
     HookSpec {
         event: "PreToolUse",
@@ -973,8 +977,23 @@ const CLAUDE_CODE_GUARDS: [HookSpec; 2] = [
         timeout: 10,
         matcher: Some("Read|Glob"),
         guard: true,
+        prompt: false,
     },
 ];
+
+/// Claude Code's prompt-context hook of `setup --prompt-context` (off by
+/// default): on each prompt, `graphicle hook claude-code prompt-context`
+/// adds `graphicle context`'s packet for a code question
+/// ([`crate::prompt_hook`]). Claude Code's timeout is a backstop: the hook
+/// gives up by itself after [`crate::prompt_hook::SECONDS`].
+const CLAUDE_CODE_PROMPT_CONTEXT: HookSpec = HookSpec {
+    event: "UserPromptSubmit",
+    argument: "prompt-context",
+    timeout: crate::prompt_hook::HOOK_TIMEOUT,
+    matcher: None,
+    guard: false,
+    prompt: true,
+};
 
 /// The hooks `connect` installs for `client`: the capture hooks with
 /// `capture`, and with `guards` the guard hooks (Claude Code only).
@@ -1151,20 +1170,51 @@ pub fn refresh_hooks(store: &Store, client: &str, cwd: &Path) -> Result<Value> {
         Err(_) => (true, false),
     };
     let capture = capture || !guards;
-    let plan = plan_hooks(
-        client,
-        &stable_program()?,
-        &directory,
-        true,
-        cwd,
-        &hook_specs(client, capture, guards),
-    )?;
+    // The prompt-context hook of `setup --prompt-context`, when there.
+    let prompt = client == "claude-code"
+        && read_config(&hook_file(client, cwd)?, "hook")
+            .is_ok_and(|(document, _)| holds_prompt_hooks(&document, client, &directory));
+    let mut specs = hook_specs(client, capture, guards);
+    if prompt {
+        specs.push(CLAUDE_CODE_PROMPT_CONTEXT);
+    }
+    let plan = plan_hooks(client, &stable_program()?, &directory, true, cwd, &specs)?;
     let mut written = write_hooks(plan, &directory, &cwd.canonical()?, &project.id)?;
     let mut reply = written["capture"].take();
     if guards {
         reply["guard"] = written["guard"].take();
     }
+    if prompt {
+        reply["prompt_context"] = written["prompt_context"].take();
+    }
     Ok(reply)
+}
+
+/// Install (or bring up to date) Claude Code's prompt-context hook
+/// (`setup --prompt-context`, [`crate::prompt_hook`]) in the personal
+/// settings of the project folder `cwd`, beside its other hooks, which
+/// stay. Its report: the settings file and whether the hook was installed
+/// or already there.
+pub fn connect_prompt_context(store: &Store, cwd: &Path) -> Result<Value> {
+    let session = local::session(store, false)?;
+    let project = store.resolve_project(
+        &session.workspace,
+        &session.capability,
+        None,
+        Some(cwd),
+        session.project.as_deref(),
+    )?;
+    let directory = store.directory.canonical()?;
+    let plan = plan_hooks(
+        "claude-code",
+        &stable_program()?,
+        &directory,
+        true,
+        cwd,
+        &[CLAUDE_CODE_PROMPT_CONTEXT],
+    )?;
+    let mut written = write_hooks(plan, &directory, &cwd.canonical()?, &project.id)?;
+    Ok(written["prompt_context"].take())
 }
 
 /// Write a hook plan (backing the file up first) and record it in the data
@@ -1204,8 +1254,15 @@ fn write_hooks(plan: HookPlan, directory: &Path, folder: &Path, project: &str) -
     let listed = |guard: bool, installed: bool| -> Vec<&str> {
         plan.outcomes
             .iter()
-            .filter(|(spec, done)| spec.guard == guard && *done == installed)
+            .filter(|(spec, done)| spec.guard == guard && !spec.prompt && *done == installed)
             .map(|(spec, _)| if guard { spec.argument } else { spec.event })
+            .collect()
+    };
+    let prompt = |installed: bool| -> Vec<&str> {
+        plan.outcomes
+            .iter()
+            .filter(|(spec, done)| spec.prompt && *done == installed)
+            .map(|(spec, _)| spec.event)
             .collect()
     };
     let next = if plan.client == "codex" {
@@ -1222,6 +1279,9 @@ fn write_hooks(plan: HookPlan, directory: &Path, folder: &Path, project: &str) -
             "removed":plan.removed,
             "nudge":"before a search or a source read in a folder whose Graphicle project has a code graph, the agent is pointed to query_graph, get_node, get_neighbors and recall_project; elsewhere the graph engine's own guard answers",
             "next":next},
+        "prompt_context": {"configuration":plan.destination,"installed":prompt(true),"unchanged":prompt(false),
+            "context":"before each prompt that is a code question, the packet of graphicle context (at most 8,400 characters); nothing for other prompts, short ones, or when it fails or takes over 10 seconds",
+            "next":next},
     }))
 }
 
@@ -1231,6 +1291,10 @@ const HOOK_ARGUMENTS: [&str; 4] = ["session-start", "stop", "pre-compact", "sess
 /// The arguments of the guard hooks `--guards` (setup, `connect`) installs
 /// for Claude Code.
 pub const GUARD_ARGUMENTS: [&str; 2] = ["guard-search", "guard-read"];
+
+/// The argument of Claude Code's prompt-context hook (`setup
+/// --prompt-context`).
+pub const PROMPT_ARGUMENTS: [&str; 1] = ["prompt-context"];
 
 /// Whether a hook handler runs `<program> --data-dir <folder> hook <client>
 /// <argument>` for one of `arguments`.
@@ -1252,6 +1316,11 @@ pub fn is_capture_hook(handler: &Value, client: &str) -> bool {
 /// Whether a hook handler is one of Graphicle's guard hooks for `client`.
 pub fn is_guard_hook(handler: &Value, client: &str) -> bool {
     is_hook(handler, client, &GUARD_ARGUMENTS)
+}
+
+/// Whether a hook handler is Graphicle's prompt-context hook for `client`.
+pub fn is_prompt_hook(handler: &Value, client: &str) -> bool {
+    is_hook(handler, client, &PROMPT_ARGUMENTS)
 }
 
 /// Whether a hooks document holds one of the hooks `arguments` name for
@@ -1285,13 +1354,21 @@ pub fn holds_guard_hooks(document: &Value, client: &str, data: &Path) -> bool {
     holds_hooks(document, client, data, &GUARD_ARGUMENTS)
 }
 
-/// Remove Graphicle's capture and guard hooks for `client` that open the
-/// data folder `data` from a hooks document, with the groups, events and
-/// `hooks` object that held only them; other data folders' hooks stay.
-/// Returns whether any was there.
+/// Whether a hooks document holds the prompt-context hook of `client` that
+/// opens the data folder `data`.
+pub fn holds_prompt_hooks(document: &Value, client: &str, data: &Path) -> bool {
+    holds_hooks(document, client, data, &PROMPT_ARGUMENTS)
+}
+
+/// Remove Graphicle's capture, guard and prompt-context hooks for `client`
+/// that open the data folder `data` from a hooks document, with the groups,
+/// events and `hooks` object that held only them; other data folders' hooks
+/// stay. Returns whether any was there.
 pub fn remove_hooks(document: &mut Value, client: &str, data: &Path) -> bool {
     remove_matching(document, data, &|handler| {
-        is_capture_hook(handler, client) || is_guard_hook(handler, client)
+        is_capture_hook(handler, client)
+            || is_guard_hook(handler, client)
+            || is_prompt_hook(handler, client)
     })
 }
 
@@ -1623,7 +1700,7 @@ pub fn guard(directory: &Path, kind: &str, payload: &Value) -> Guard {
     let (name, root) = (found.name, found.root);
     let context = match kind {
         "search" => format!(
-            "Graphicle: this folder is the project \"{name}\", whose code graph is built. Before searching raw files, ask the graphicle MCP server: query_graph \"<question>\" walks the code graph around a question, get_node and get_neighbors show a symbol with its callers and callees, and recall_project searches the code, documents and reviewed memory together. Search the files afterwards to modify or debug specific lines."
+            "Graphicle: this folder is the project \"{name}\", whose code graph is built. For where or how something works, for questions across files or history, and before changing unfamiliar code, ask the graphicle MCP server first: query_graph \"<question>\" walks the code graph around a question, get_node and get_neighbors show a symbol with its callers and callees, and recall_project searches the code, documents and reviewed memory together. For an exact identifier you already know, grep is enough; search the files to modify or debug specific lines."
         ),
         "read" => {
             // A target is a path, or a Glob pattern, relative to the folder
@@ -1860,6 +1937,39 @@ mod tests {
         kept["hooks"]["PreToolUse"] =
             json!([{"matcher":"Bash","hooks":[{"type":"command","command":"lint-guard"}]}]);
         assert_eq!(guarded, kept);
+        // The prompt-context hook of `--prompt-context` goes too.
+        let mut prompted = original.clone();
+        prompted["hooks"]["UserPromptSubmit"] = json!([{"hooks":[ours("prompt-context")]}]);
+        assert!(holds_prompt_hooks(&prompted, "claude-code", d));
+        assert!(!holds_hooks(&prompted, "claude-code", d, &HOOK_ARGUMENTS));
+        assert!(!holds_guard_hooks(&prompted, "claude-code", d));
+        assert!(remove_hooks(&mut prompted, "claude-code", d));
+        assert_eq!(prompted, original);
+    }
+
+    /// The entry `setup --prompt-context` writes: one UserPromptSubmit
+    /// group, no matcher, the hook with its backstop timeout.
+    #[cfg(not(windows))]
+    #[test]
+    fn the_prompt_hook_entry_runs_the_hook_with_its_timeout() {
+        let folder = tempfile::TempDir::new().unwrap();
+        let plan = plan_hooks(
+            "claude-code",
+            Path::new("/usr/local/bin/graphicle"),
+            Path::new("/d"),
+            false,
+            folder.path(),
+            &[CLAUDE_CODE_PROMPT_CONTEXT],
+        )
+        .unwrap();
+        assert_eq!(
+            plan.document,
+            json!({"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command",
+                "command":"'/usr/local/bin/graphicle' --data-dir '/d' hook claude-code prompt-context",
+                "timeout":15}]}]}})
+        );
+        assert_eq!(plan.outcomes.len(), 1);
+        assert!(plan.outcomes[0].0.prompt && plan.outcomes[0].1);
     }
 
     #[test]

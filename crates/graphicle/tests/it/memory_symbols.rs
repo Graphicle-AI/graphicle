@@ -1703,3 +1703,284 @@ fn the_web_memory_form_names_files_and_picked_symbols() {
         .unwrap();
     assert!(picker.contains("command(\"graph.as_of\""), "{picker}");
 }
+
+/// An engagement template carries only the allow-listed fields of the
+/// reviewed procedures and decisions, and none of the project's quotes,
+/// names, paths, symbols, people, links or credentials.
+#[test]
+fn template_carries_only_allow_listed_fields_and_no_client_text() {
+    let f = Fixture::new(&[("a.py", A)]);
+    let acme = f.project("acme-ledger", "Acme Ledger");
+    let invoice = "import os\n\n\ndef acme_charge(amount):\n    return amount * 3\n\n\ndef refund_all():\n    return 0\n";
+    let runbook = "# Notes\n\nEscalate to the Falcon desk before refunds.\n";
+    f.sync_in(
+        &acme,
+        &[
+            ("ledger/acme_invoice.py", invoice),
+            ("docs/runbook.md", runbook),
+        ],
+    );
+    f.drain_in(&acme);
+    let note = |kind: &str, title: &str, body: &str, quotes: &[(&str, &str)], extra: Value| {
+        let mut args = json!({"repository_id":acme,"kind":kind,"title":title,"body":body});
+        for (key, value) in extra.as_object().unwrap() {
+            args[key] = value.clone();
+        }
+        let evidence: Vec<Value> = quotes
+            .iter()
+            .map(|(id, quote)| json!({"id":id,"quote":quote}))
+            .collect();
+        args["evidence"] = json!(evidence);
+        f.store.note(&f.workspace, &f.key, &args).unwrap()
+    };
+    let procedure = note(
+        "procedure",
+        "Acme Ledger: retry charges",
+        "In ledger/acme_invoice.py call acme_charge thrice; `return amount * 3` stays. \
+         Ask jane.doe@acme.com or see https://wiki.acme.example/runbook. token=s3cretvalue. \
+         Codename Falcon. Use refund_all only after review in acme_invoice.py.",
+        &[("file:ledger/acme_invoice.py", "    return amount * 3")],
+        json!({"symbols":[{"path":"ledger/acme_invoice.py","qualified_name":"refund_all"}]}),
+    );
+    assert_eq!(procedure["state"], "reviewed");
+    let decision = note(
+        "decision",
+        "Keep Falcon payments idempotent",
+        "Decided with the Acme Ledger team. Escalate to the Falcon desk before refunds.",
+        &[("file:docs/runbook.md", "Escalate to the Falcon desk")],
+        json!({}),
+    );
+    note(
+        "preference",
+        "Acme prefers tabs",
+        "Tabs in acme_invoice.py.",
+        &[],
+        json!({}),
+    );
+    let draft = f
+        .store
+        .project_mutate(
+            &f.workspace,
+            &f.key,
+            "memory.propose",
+            &json!({"repository_id":acme,"kind":"decision","title":"Acme draft","body":"Draft for Acme.",
+                "idempotency_key":"acme-1","evidence":[{"source_id":"file:ledger/acme_invoice.py","quote":"    return 0"}]}),
+        )
+        .unwrap();
+    assert_eq!(draft["state"], "draft");
+
+    let template = f
+        .store
+        .project_read(
+            &f.workspace,
+            &f.key,
+            "memory.template",
+            &json!({"repository_id":acme,"terms":["Falcon"]}),
+        )
+        .unwrap();
+    assert_eq!(template["format"], "graphicle.template.v1");
+    // Nothing outside the allow-list, at any level.
+    let top: Vec<&String> = template.as_object().unwrap().keys().collect();
+    assert!(
+        top.iter()
+            .all(|k| graphicle_runtime::packs::TEMPLATE_KEYS.contains(&k.as_str())),
+        "{top:?}"
+    );
+    for count in template["redactions"].as_object().unwrap().values() {
+        assert!(count.is_u64(), "{count}");
+    }
+    let memories = template["memories"].as_array().unwrap();
+    let mut kinds: Vec<&str> = memories
+        .iter()
+        .map(|m| m["kind"].as_str().unwrap())
+        .collect();
+    kinds.sort();
+    assert_eq!(kinds, ["decision", "procedure"]);
+    for memory in memories {
+        for (key, value) in memory.as_object().unwrap() {
+            assert!(
+                graphicle_runtime::packs::TEMPLATE_FIELDS.contains(&key.as_str()),
+                "{key}"
+            );
+            assert!(value.is_string(), "{key}: {value}");
+        }
+        assert_eq!(memory["state"], "reviewed");
+    }
+    let text = template.to_string();
+    let lower = text.to_lowercase();
+    for leak in [
+        "acme",
+        "falcon",
+        "jane",
+        "s3cretvalue",
+        "wiki",
+        "ledger/",
+        "refund_all",
+        "return amount",
+        "escalate",
+        "runbook",
+        "https://",
+    ] {
+        assert!(!lower.contains(leak), "{leak} left in {text}");
+    }
+    for id in [acme.as_str(), s(&procedure, "id"), s(&decision, "id")] {
+        assert!(!text.contains(id), "{id} left in {text}");
+    }
+    let procedure = memories.iter().find(|m| m["kind"] == "procedure").unwrap();
+    assert_eq!(procedure["title"], "[project]: retry charges");
+    for placeholder in [
+        "[source]",
+        "[symbol]",
+        "[quote]",
+        "[email]",
+        "[url]",
+        "[term]",
+        "[credential redacted]",
+        "[path]",
+    ] {
+        assert!(
+            s(procedure, "body").contains(placeholder),
+            "{placeholder}: {}",
+            procedure["body"]
+        );
+    }
+    assert!(template["redactions"]["[quote]"].as_u64().unwrap() >= 2);
+
+    // A template starts another project's memory as drafts with nothing
+    // to re-ground.
+    let next = f.project("next", "Next");
+    f.sync_in(&next, &[("a.py", A)]);
+    f.drain_in(&next);
+    let imported = f
+        .store
+        .project_mutate(
+            &f.workspace,
+            &f.key,
+            "memory.import_pack",
+            &json!({"repository_id":next,"memories":memories}),
+        )
+        .unwrap();
+    assert_eq!(imported["imported"].as_array().unwrap().len(), 2);
+    for memory in imported["imported"].as_array().unwrap() {
+        assert_eq!(memory["state"], "draft");
+        assert_eq!(memory["data"]["evidence"], json!([]));
+        assert_eq!(memory["data"]["dependencies"], json!({}));
+        assert!(memory["data"].get("symbols").is_none());
+    }
+}
+
+/// A knowledge pack lands reviewed memories in another project as drafts:
+/// symbol anchors re-ground through their logical identity, following a
+/// symbol that moved within its file or to another file; evidence points
+/// only at the new project's sources, or is dropped and counted.
+#[test]
+fn pack_import_regrounds_moved_symbols_and_keeps_only_local_evidence() {
+    let f = Fixture::new(&[
+        ("a.py", A),
+        ("b.py", B),
+        ("notes.md", "Alpha must stay pure.\n"),
+    ]);
+    let memory = f.note_with(
+        &[
+            ("file:a.py", "    return 1"),
+            ("file:notes.md", "Alpha must stay pure"),
+        ],
+        json!({"symbols":[{"path":"a.py","qualified_name":"beta"},{"path":"b.py","qualified_name":"run"}]}),
+    );
+    assert_eq!(memory["data"]["symbols"].as_array().unwrap().len(), 3);
+    let (old_alpha, _) = f.symbol("a.py", "alpha");
+    let (old_beta, _) = f.symbol("a.py", "beta");
+    f.store
+        .project_mutate(
+            &f.workspace,
+            &f.key,
+            "memory.propose",
+            &f.args(json!({"kind":"decision","title":"Draft","body":"Not reviewed.",
+                "idempotency_key":"draft-1","evidence":[{"source_id":"file:a.py","quote":"    return 2"}]})),
+        )
+        .unwrap();
+    let exported = f
+        .store
+        .project_read(&f.workspace, &f.key, "memory.export", &f.args(json!({})))
+        .unwrap();
+    let pack = exported["memories"].as_array().unwrap().clone();
+    assert_eq!(pack.len(), 2);
+
+    // beta moved down its file; alpha moved to another file; run is gone.
+    let target = f.project("target", "Target");
+    let moved_a = "import os\n\n\ndef gamma():\n    return 3\n\n\ndef beta():\n    return 2\n";
+    let core = "import sys\n\n\ndef helper():\n    return 0\n\n\ndef alpha():\n    return 1\n";
+    f.sync_in(&target, &[("a.py", moved_a), ("lib/core.py", core)]);
+    f.drain_in(&target);
+    let (alpha, _) = f.symbol_in(&target, "lib/core.py", "alpha");
+    let (beta, _) = f.symbol_in(&target, "a.py", "beta");
+
+    let imported = f
+        .store
+        .project_mutate(
+            &f.workspace,
+            &f.key,
+            "memory.import_pack",
+            &json!({"repository_id":target,"memories":pack}),
+        )
+        .unwrap();
+    assert_eq!(imported["skipped"], 1, "the draft is not imported");
+    assert_eq!(imported["imported"].as_array().unwrap().len(), 1);
+    let draft = &imported["imported"][0];
+    assert_eq!(draft["state"], "draft");
+    let data = &draft["data"];
+    assert_eq!(data["authority"], "unreviewed_pack");
+    assert_eq!(
+        data["pack"],
+        json!({"evidence":{"kept":1,"moved":1,"dropped":{"source_missing":1}},
+            "anchors":{"landed":2,"moved":1,"dropped":{"symbol_missing":1}}})
+    );
+    assert_eq!(imported["evidence"], data["pack"]["evidence"]);
+    assert_eq!(imported["anchors"], data["pack"]["anchors"]);
+    // The quote follows alpha to its new file.
+    assert_eq!(
+        data["evidence"],
+        json!([{"id":"file:lib/core.py","quote":"    return 1"}])
+    );
+    let mut links: Vec<(String, String)> = data["symbols"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| {
+            assert_eq!(l["state"], "resolved");
+            (
+                l["stable_id"].as_str().unwrap().to_string(),
+                l["source"].as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    links.sort();
+    let mut expected = vec![
+        (alpha.clone(), "file:lib/core.py".to_string()),
+        (beta.clone(), "file:a.py".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(links, expected);
+    let mut dependencies: Vec<&String> = data["dependencies"].as_object().unwrap().keys().collect();
+    dependencies.sort();
+    assert_eq!(dependencies, ["a.py", "lib/core.py"]);
+    for key in ["evidence_links", "native_sources"] {
+        assert_eq!(data[key], json!({}), "{key}");
+    }
+    let text = data.to_string();
+    for old in [&old_alpha, &old_beta, &f.repo] {
+        assert!(!text.contains(old.as_str()), "{old} left in {text}");
+    }
+    assert!(
+        !text.contains("notes.md") && !text.contains("b.py"),
+        "{text}"
+    );
+    // Current against the new code once reviewed.
+    let listed = f
+        .memories_in(&target)
+        .into_iter()
+        .find(|m| m["id"] == draft["id"])
+        .unwrap();
+    assert_eq!(listed["stale"], false, "{listed}");
+    assert_eq!(listed["state"], "draft");
+}

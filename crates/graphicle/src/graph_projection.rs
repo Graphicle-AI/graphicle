@@ -1513,7 +1513,8 @@ const MANIFEST_SKIP_DIRS: &[&str] = &["node_modules/", "vendor/", ".venv/", "dis
 /// repository unless an explicit `revoked` row in `gf_repo_access` names the
 /// principal's credential; the workspace owner always reads everything. A
 /// PR scratch project linked to a folder project is readable only while the
-/// folder project is.
+/// folder project is. An installed extension may narrow the repositories of
+/// a credential (`extension::Access::Repository`).
 pub fn repo_readable(db: &Connection, p: &Principal, repository: &str) -> Result<bool> {
     if p.role == "owner" {
         return Ok(true);
@@ -1526,7 +1527,26 @@ pub fn repo_readable(db: &Connection, p: &Principal, repository: &str) -> Result
          AND (repository_id=?2 OR repository_id IN (SELECT project_id FROM repo_pr_scratch WHERE repository_id=?2))",
         params![p.credential, repository],
     )?;
-    Ok(revoked.is_none())
+    if revoked.is_some() {
+        return Ok(false);
+    }
+    // An installed extension may narrow the credential's repositories. A PR
+    // scratch project is asked about as its folder project, whose code it
+    // holds.
+    let extensions = crate::extension::installed();
+    if extensions.is_empty() {
+        return Ok(true);
+    }
+    let scope = crate::folders::scratch_of(db, repository)?;
+    Ok(extensions
+        .authorize(
+            db,
+            p,
+            &mut crate::extension::AccessRequest::new(crate::extension::Access::Repository(
+                scope.as_deref().unwrap_or(repository),
+            )),
+        )
+        .is_ok())
 }
 
 /// Record `granted` / `revoked` repository access for a credential.
@@ -1605,10 +1625,122 @@ struct Linkable {
     episode: String,
     /// Whether `episode` is the current head set (sources then match the graph).
     current: bool,
-    graph: GraphHandle,
+    /// The resident graph, once this pass needed it: to build the export
+    /// index, or to link the project's own imports.
+    graph: Option<GraphHandle>,
     heads: BTreeMap<String, String>,
     manifests: Vec<PackageManifest>,
     index: ExportIndex,
+    /// The export index as built from the graph, before the nested-project
+    /// filter, when this pass built it (it is then stored for later passes).
+    built: Option<String>,
+}
+
+/// Version of the stored link state (`gf_cross_link_state`). Another value,
+/// as after an upgrade, rebuilds every export index and relinks every
+/// project once.
+pub const LINK_STATE_FORMAT: &str = concat!("xrepo-link-1/", env!("CARGO_PKG_VERSION"));
+
+/// The export index stored for `repository` at `episode`, if any.
+fn stored_export_index(
+    db: &Connection,
+    repository: &str,
+    episode: &str,
+) -> Result<Option<ExportIndex>> {
+    let Some(row) = one(
+        db,
+        "SELECT export_index FROM gf_cross_link_state WHERE repository_id=? AND episode=? AND format=?",
+        params![repository, episode, LINK_STATE_FORMAT],
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_str(s(&row, "export_index")).ok())
+}
+
+/// What other projects can import from `index`: its digest without the
+/// episode, so a new episode that exports the same modules and symbols
+/// (same node ids) has the same surface.
+fn export_surface(index: &ExportIndex) -> String {
+    let mut value = json!(index);
+    if let Some(map) = value.as_object_mut() {
+        map.remove("episode");
+    }
+    digest(&value)
+}
+
+/// The live link rows of `repository` as its import report: what its last
+/// link wrote. Only the persisted fields are filled; the persistence of
+/// [`link_workspace`] reads nothing else.
+fn previous_report(db: &Connection, repository: &str, episode: &str) -> Result<xrepo::LinkReport> {
+    let text = |row: &Value, field: &str| row[field].as_str().map(str::to_string);
+    let line = |row: &Value| row["line"].as_u64().map(|line| line as usize);
+    let edges = rows(
+        db,
+        "SELECT * FROM gf_cross_edges WHERE source_repository_id=? AND valid_to_episode IS NULL ORDER BY id",
+        [repository],
+    )?
+    .iter()
+    .map(|row| xrepo::CrossEdge {
+        source: xrepo::EdgeEnd {
+            repo: repository.to_string(),
+            node_id: s(row, "source_node_id").to_string(),
+            stable_id: text(row, "source_stable_id"),
+            ..Default::default()
+        },
+        target: xrepo::EdgeEnd {
+            repo: s(row, "target_repository_id").to_string(),
+            node_id: s(row, "target_node_id").to_string(),
+            stable_id: text(row, "target_stable_id"),
+            ..Default::default()
+        },
+        relation: s(row, "relation").to_string(),
+        confidence: s(row, "confidence").to_string(),
+        derivation: s(row, "derivation").to_string(),
+        module_path: s(row, "module_path").to_string(),
+        symbol: text(row, "symbol"),
+        version_constraint: text(row, "version_constraint"),
+        exporter_version: text(row, "exporter_version"),
+        version_status: s(row, "version_status").to_string(),
+        line: line(row),
+    })
+    .collect();
+    let unresolved = rows(
+        db,
+        "SELECT * FROM gf_cross_unresolved WHERE source_repository_id=? AND valid_to_episode IS NULL ORDER BY id",
+        [repository],
+    )?
+    .iter()
+    .map(|row| {
+        let relpath = text(row, "relpath");
+        xrepo::UnresolvedImport {
+            repo: repository.to_string(),
+            node_id: s(row, "source_node_id").to_string(),
+            stable_id: text(row, "source_stable_id"),
+            // Not stored; the persistence does not read it.
+            ecosystem: relpath
+                .as_deref()
+                .and_then(xrepo::Ecosystem::of_file)
+                .unwrap_or(xrepo::Ecosystem::Python),
+            relpath,
+            module_path: s(row, "module_path").to_string(),
+            symbol: text(row, "symbol"),
+            package: s(row, "package").to_string(),
+            reason: s(row, "reason").to_string(),
+            candidates: serde_json::from_str(s(row, "candidates")).unwrap_or_default(),
+            version_constraint: text(row, "version_constraint"),
+            exporter_version: text(row, "exporter_version"),
+            line: line(row),
+        }
+    })
+    .collect();
+    Ok(xrepo::LinkReport {
+        repo: repository.to_string(),
+        episode: Some(episode.to_string()),
+        edges,
+        unresolved,
+        ..Default::default()
+    })
 }
 
 fn live_pair_episodes(
@@ -1744,7 +1876,29 @@ fn export_index(
 /// side moved to a new episode the stale rows are closed with
 /// `valid_to_episode` (the new episode of the side that changed) and the pair
 /// is re-linked.
+///
+/// The pass is incremental. A project's own imports are linked again only
+/// when its episode, the export surface of another taking part (what it
+/// exports, without the episode) or the set of projects taking part changed
+/// since its last link, or when it no longer has as many live rows as that
+/// link left (rows are only ever closed or deleted, never edited in place);
+/// otherwise its live rows stand for the link and go through
+/// the same persistence, so the rows are those of a full pass
+/// ([`link_workspace_full`]). Export indexes are stored per project
+/// (`gf_cross_link_state`), so an unchanged project's graph is not loaded.
+/// The summary lists the projects linked again (`relinked`) and those whose
+/// links were reused (`reused`).
 pub fn link_workspace(db: &Connection, p: &Principal) -> Result<Value> {
+    link_workspace_with(db, p, true)
+}
+
+/// [`link_workspace`] that rebuilds every export index from the graphs and
+/// links every project's imports again, whatever changed.
+pub fn link_workspace_full(db: &Connection, p: &Principal) -> Result<Value> {
+    link_workspace_with(db, p, false)
+}
+
+fn link_workspace_with(db: &Connection, p: &Principal, incremental: bool) -> Result<Value> {
     let workspace = p.workspace.as_str();
     let mut hidden = 0usize;
     let mut unprojected = Vec::new();
@@ -1784,10 +1938,22 @@ pub fn link_workspace(db: &Connection, p: &Principal) -> Result<Value> {
     }
     let mut repos: Vec<Linkable> = Vec::new();
     for (id, name, episode, current) in candidates {
-        let graph = resident(db, &id, &episode)?;
         let heads = episode_heads(db, &id, &episode)?.unwrap_or_default();
         let manifests = manifests(db, &id, &heads)?;
-        let index = export_index(&graph, &id, &episode, &manifests);
+        let stored = if incremental {
+            stored_export_index(db, &id, &episode)?
+        } else {
+            None
+        };
+        let (graph, index, built) = match stored {
+            Some(index) => (None, index, None),
+            None => {
+                let graph = resident(db, &id, &episode)?;
+                let index = export_index(&graph, &id, &episode, &manifests);
+                let built = json!(index).to_string();
+                (Some(graph), index, Some(built))
+            }
+        };
         repos.push(Linkable {
             id,
             name,
@@ -1797,6 +1963,7 @@ pub fn link_workspace(db: &Connection, p: &Principal) -> Result<Value> {
             heads,
             manifests,
             index,
+            built,
         });
     }
     // Nested projects: a project synced from a folder inside
@@ -1869,6 +2036,11 @@ pub fn link_workspace(db: &Connection, p: &Principal) -> Result<Value> {
                  WHERE source_repository_id=?2 AND valid_to_episode IS NULL",
                 params![copy.episode, copy.id],
             )?;
+            // Its rows no longer describe its last link.
+            db.execute(
+                "UPDATE gf_cross_link_state SET inputs=NULL WHERE repository_id=?",
+                [&copy.id],
+            )?;
         }
     }
     let skipped_scratch: Vec<&str> = shadowed.iter().map(|copy| copy.id.as_str()).collect();
@@ -1894,29 +2066,80 @@ pub fn link_workspace(db: &Connection, p: &Principal) -> Result<Value> {
             record_packages(db, workspace, repo)?;
         }
     }
+    // Link state is stored only from a complete view of a workspace with
+    // something to link: a workspace whose projects export nothing (one of
+    // conversations only, for example) gains no rows.
+    let keep_state = hidden == 0
+        && repos
+            .iter()
+            .any(|repo| !repo.index.packages.is_empty() || !repo.index.modules.is_empty());
+    if keep_state {
+        for repo in &repos {
+            if let Some(built) = &repo.built {
+                db.execute(
+                    "INSERT INTO gf_cross_link_state(repository_id,workspace_id,episode,format,export_index,created_at) \
+                     VALUES(?,?,?,?,?,?) ON CONFLICT(repository_id) DO UPDATE SET workspace_id=excluded.workspace_id,\
+                     episode=excluded.episode,format=excluded.format,export_index=excluded.export_index,\
+                     created_at=excluded.created_at",
+                    params![repo.id, workspace, repo.episode, LINK_STATE_FORMAT, built, now()],
+                )?;
+            }
+        }
+    }
+    let surfaces: Vec<String> = repos
+        .iter()
+        .map(|repo| export_surface(&repo.index))
+        .collect();
     let stamp = now();
     let mut pairs = Vec::new();
     let mut edges_total = 0usize;
     let mut unresolved_total = 0usize;
+    let mut relinked = Vec::new();
+    let mut reused = Vec::new();
     for (i, importer) in repos.iter().enumerate() {
-        let others: Vec<ExportIndex> = repos
-            .iter()
-            .enumerate()
-            .filter(|(j, _)| *j != i)
-            .map(|(_, r)| r.index.clone())
-            .collect();
-        let loader = |relpath: &str| -> Option<String> {
-            let sha = importer.heads.get(relpath)?;
-            blob(db, &importer.id, sha).ok().flatten()
+        // Everything the importer's link reads besides its own episode: the
+        // other projects taking part, in order, with their export surfaces.
+        let inputs = digest(&json!([
+            LINK_STATE_FORMAT,
+            importer.id,
+            importer.episode,
+            repos
+                .iter()
+                .zip(&surfaces)
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, (repo, surface))| json!([repo.id, surface]))
+                .collect::<Vec<_>>(),
+        ]));
+        let reuse = incremental && keep_state && unchanged_link(db, &importer.id, &inputs)?;
+        let report = if reuse {
+            reused.push(importer.id.as_str());
+            previous_report(db, &importer.id, &importer.episode)?
+        } else {
+            relinked.push(importer.id.as_str());
+            let others: Vec<ExportIndex> = repos
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, r)| r.index.clone())
+                .collect();
+            let graph = match &importer.graph {
+                Some(graph) => graph.clone(),
+                None => resident(db, &importer.id, &importer.episode)?,
+            };
+            let loader = |relpath: &str| -> Option<String> {
+                let sha = importer.heads.get(relpath)?;
+                blob(db, &importer.id, sha).ok().flatten()
+            };
+            xrepo::link(
+                &graph,
+                &importer.id,
+                Some(&importer.episode),
+                &importer.manifests,
+                &others,
+                &loader,
+            )
         };
-        let report = xrepo::link(
-            &importer.graph,
-            &importer.id,
-            Some(&importer.episode),
-            &importer.manifests,
-            &others,
-            &loader,
-        );
         if hidden > 0 {
             // A restricted view cannot establish workspace-wide uniqueness of
             // an exporter. It must not overwrite shared links or unresolved
@@ -1926,9 +2149,11 @@ pub fn link_workspace(db: &Connection, p: &Principal) -> Result<Value> {
             continue;
         }
         let exporter_episodes = json!(
-            others
+            repos
                 .iter()
-                .map(|other| (other.repo.clone(), other.episode.clone()))
+                .enumerate()
+                .filter(|(j, _)| *j != i)
+                .map(|(_, other)| (other.index.repo.clone(), other.index.episode.clone()))
                 .collect::<BTreeMap<_, _>>()
         )
         .to_string();
@@ -2051,6 +2276,15 @@ pub fn link_workspace(db: &Connection, p: &Principal) -> Result<Value> {
                 )?;
             }
         }
+        // What this link read and wrote, for the next pass to compare. It
+        // updates a stored row only, so a workspace without one gains none.
+        db.execute(
+            "UPDATE gf_cross_link_state SET inputs=?1,\
+             edges=(SELECT count(*) FROM gf_cross_edges WHERE source_repository_id=?2 AND valid_to_episode IS NULL),\
+             unresolved=(SELECT count(*) FROM gf_cross_unresolved WHERE source_repository_id=?2 AND valid_to_episode IS NULL) \
+             WHERE repository_id=?2",
+            params![inputs, importer.id],
+        )?;
         unresolved_total += report.unresolved.len();
     }
     let mut summary = json!({
@@ -2067,11 +2301,27 @@ pub fn link_workspace(db: &Connection, p: &Principal) -> Result<Value> {
         "hidden_repositories": hidden,
         "persisted": hidden == 0,
         "unprojected_repositories": unprojected,
+        "incremental": incremental,
+        "relinked": relinked,
+        "reused": reused,
     });
     if !skipped_scratch.is_empty() {
         summary["pr_scratch_skipped"] = json!(skipped_scratch);
     }
     Ok(summary)
+}
+
+/// Whether `repository`'s last link read `inputs` and its live rows are
+/// still the ones that link wrote (as many edges and unresolved imports).
+fn unchanged_link(db: &Connection, repository: &str, inputs: &str) -> Result<bool> {
+    Ok(one(
+        db,
+        "SELECT 1 AS same FROM gf_cross_link_state WHERE repository_id=?1 AND inputs=?2 \
+         AND edges=(SELECT count(*) FROM gf_cross_edges WHERE source_repository_id=?1 AND valid_to_episode IS NULL) \
+         AND unresolved=(SELECT count(*) FROM gf_cross_unresolved WHERE source_repository_id=?1 AND valid_to_episode IS NULL)",
+        params![repository, inputs],
+    )?
+    .is_some())
 }
 
 /// Whether the repository-relative `path` is `prefix` or lies under it.
@@ -2294,8 +2544,21 @@ impl Store {
     /// ([`crate::doc_links::relink`]): its summary, or its error, is the
     /// result's `documents`.
     pub fn graph_link(&self, workspace: &str, token: &str) -> Result<Value> {
+        self.graph_link_with(workspace, token, link_workspace)
+    }
+    /// [`Store::graph_link`] with a full pass ([`link_workspace_full`]):
+    /// every project's imports are linked again, whatever changed.
+    pub fn graph_link_full(&self, workspace: &str, token: &str) -> Result<Value> {
+        self.graph_link_with(workspace, token, link_workspace_full)
+    }
+    fn graph_link_with(
+        &self,
+        workspace: &str,
+        token: &str,
+        pass: fn(&Connection, &Principal) -> Result<Value>,
+    ) -> Result<Value> {
         let (mut result, principal) = self.authorized(workspace, token, "read", |db, p| {
-            Ok((link_workspace(db, p)?, p.hash.clone()))
+            Ok((pass(db, p)?, p.hash.clone()))
         })?;
         result["documents"] =
             match crate::doc_links::relink(self, workspace, &principal, |_| Ok(())) {

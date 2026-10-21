@@ -112,7 +112,13 @@ pub struct Principal {
     pub hash: String,
     pub role: String,
 }
+/// The roles a workspace credential may have in Core, besides the owner
+/// capability. An installed extension may define more
+/// (`Extension::role_permits`).
+pub const CREDENTIAL_ROLES: &[&str] = &["reader", "agent", "reviewer", "collector", "runner"];
 impl Principal {
+    /// Whether the core's role grants `permission`; false for a role the core
+    /// does not define.
     pub fn permits(&self, permission: &str) -> bool {
         match self.role.as_str() {
             "owner" => true,
@@ -346,7 +352,11 @@ impl Store {
             limits: None,
         };
         let db = store.connect()?;
+        // A store that needs a newer program is refused before anything in
+        // it changes.
+        check_reader(&db)?;
         db.pragma_update(None, "journal_mode", "WAL")?;
+        db.execute_batch(READERS)?;
         db.execute_batch(include_str!("schema.sql"))?;
         db.execute_batch(include_str!("workflow_schema.sql"))?;
         db.execute_batch(include_str!("expansion_schema.sql"))?;
@@ -510,7 +520,13 @@ impl Store {
     pub fn grant(&self, workspace: &str, token: &str, args: &Value) -> Result<Value> {
         self.authorized(workspace,token,"admin",|db,_| {
             let role=string(args,"role",30)?;
-            if !["reader","agent","reviewer","collector","runner"].contains(&role) {return Err(Error::bad("Invalid credential role"));}
+            if !CREDENTIAL_ROLES.contains(&role) {
+                // A role an installed extension defines, which it may refuse
+                // a new credential on.
+                let extensions=crate::extension::installed();
+                if extensions.role_permits(db,workspace,role,"read")?.is_none() {return Err(Error::bad("Invalid credential role"));}
+                extensions.grant_role(db,workspace,role)?;
+            }
             let label=string(args,"label",100)?; let token=format!("{}{}",id(),id()); let identifier=id();
             let expiry=args.get("expires_at").and_then(Value::as_str);
             if let Some(value)=expiry && graphicle_memory::temporal::instant(value).map_err(Error::bad)?<=chrono::Utc::now().fixed_offset() {return Err(Error::bad("Expiry must be in the future"));}
@@ -913,8 +929,9 @@ impl Store {
 /// Connector documents whose sharing policy names `credential` exactly: an
 /// entry of the document's ACL credential list, or a provider-side principal
 /// (`am_source_permissions`) that maps to one of the credential's verified
-/// provider identities. Both are joins on the identifier, never text search
-/// over the JSON, so `cred-a` does not match `cred-ab`.
+/// provider identities (of the kind's identity provider,
+/// `connectors::identity_provider`). Both are joins on the identifier, never
+/// text search over the JSON, so `cred-a` does not match `cred-ab`.
 pub fn credential_sources(
     db: &Connection,
     workspace: &str,
@@ -942,14 +959,18 @@ pub fn credential_sources(
          JOIN repo_projects r ON r.id=c.repository_id \
          JOIN am_source_permissions p ON p.connector_id=d.connector_id AND p.source_id=d.id \
          JOIN json_each(p.principals) grant_ \
-         JOIN am_provider_identities i ON i.workspace_id=r.workspace_id AND i.provider=c.kind AND i.credential_id=? \
+         JOIN am_provider_identities i ON i.workspace_id=r.workspace_id AND i.provider=coalesce(json_extract(?,'$.\"'||c.kind||'\"'),c.kind) AND i.credential_id=? \
          LEFT JOIN am_provider_emails e ON e.workspace_id=i.workspace_id AND e.provider=i.provider AND e.external_id=i.external_id \
          LEFT JOIN am_oauth_accounts o ON o.workspace_id=i.workspace_id AND o.provider=i.provider AND o.external_id=i.external_id AND o.state='active' \
          WHERE r.workspace_id=? AND d.present=1 AND ( \
             (json_extract(grant_.value,'$.type')='user' AND json_extract(grant_.value,'$.id')=i.external_id) OR \
             (json_extract(grant_.value,'$.type')='email' AND coalesce(json_extract(grant_.value,'$.email'),'')!='' \
              AND lower(json_extract(grant_.value,'$.email')) IN (lower(coalesce(e.email,'')),lower(coalesce(o.email,'')))))",
-        params![credential, workspace],
+        params![
+            crate::connectors::identity_providers().to_string(),
+            credential,
+            workspace
+        ],
     )? {
         sources.insert(crate::invalidation::connector_document_id(
             s(&row, "connector_id"),
@@ -957,6 +978,72 @@ pub fn credential_sources(
         ));
     }
     Ok(sources.into_iter().collect())
+}
+
+/// The store format this program reads ([`require_reader`]). Format 1 is
+/// Graphicle 0.1.3's: the first program that checks the format when it opens
+/// a store, and one that honours the `credential_requirements` contract
+/// ([`required_capabilities`]).
+pub const READER_FORMAT: i64 = 1;
+
+/// The formats a store requires of the programs that open it, by reason.
+const READERS: &str = "CREATE TABLE IF NOT EXISTS store_readers (
+ reason TEXT PRIMARY KEY, format INTEGER NOT NULL, version TEXT NOT NULL,
+ updated_at TEXT NOT NULL);";
+
+/// Record, under `reason`, that a program must read store format `format`
+/// (first released in Graphicle `version`) to honour what this store holds,
+/// for example restrictions an older program would not enforce. From
+/// Graphicle 0.1.3 on, a program that reads only an older format refuses to
+/// open the store ([`Store::open`]) instead of ignoring them; programs before
+/// 0.1.3 do not check. Writes only when the record changes.
+pub fn require_reader(db: &Connection, reason: &str, format: i64, version: &str) -> Result<()> {
+    let current: Option<(i64, String)> = db
+        .query_row(
+            "SELECT format,version FROM store_readers WHERE reason=?",
+            [reason],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    if current
+        .as_ref()
+        .is_some_and(|(f, v)| *f == format && v == version)
+    {
+        return Ok(());
+    }
+    db.execute(
+        "INSERT INTO store_readers(reason,format,version,updated_at) VALUES(?,?,?,?)
+         ON CONFLICT(reason) DO UPDATE SET format=excluded.format,version=excluded.version,updated_at=excluded.updated_at",
+        params![reason, format, version, now()],
+    )?;
+    Ok(())
+}
+
+/// Refuse a store that requires a newer store format than this program reads
+/// ([`require_reader`]).
+fn check_reader(db: &Connection) -> Result<()> {
+    let declared: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='store_readers')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !declared {
+        return Ok(());
+    }
+    let needed: Option<(i64, String)> = db
+        .query_row(
+            "SELECT format,version FROM store_readers ORDER BY format DESC LIMIT 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    match needed {
+        Some((format, version)) if format > READER_FORMAT => Err(Error::bad(format!(
+            "This store needs Graphicle {version} or newer (store format {format}); this is Graphicle {} (store format {READER_FORMAT}). Open it with Graphicle {version} or newer.",
+            env!("CARGO_PKG_VERSION")
+        ))),
+        _ => Ok(()),
+    }
 }
 
 /// Additive column migration for tables created by an earlier schema:
@@ -972,12 +1059,14 @@ pub fn ensure_column(db: &Connection, table: &str, column: &str, ddl: &str) -> R
     Ok(())
 }
 
-pub fn authorize_hash(
-    db: &Connection,
-    workspace: &str,
-    hash: &str,
-    permission: &str,
-) -> Result<Principal> {
+/// The principal `hash` authenticates in `workspace`, whatever its role
+/// grants: the owner capability, a usable workspace credential (not revoked,
+/// expired or refused by its member's sign-in rules or the store's
+/// credential requirements), or a token an installed extension knows, such as
+/// a browser session. No permission is checked: admission and metering resolve their
+/// caller with this, so a credential is checked and counted whichever
+/// permissions its role holds ([`authorize_hash`] checks one).
+pub fn authenticate_hash(db: &Connection, workspace: &str, hash: &str) -> Result<Principal> {
     let owner: String = db
         .query_row(
             "SELECT capability_hash FROM workspaces WHERE id=?",
@@ -1010,9 +1099,12 @@ pub fn authorize_hash(
             return Err(Error::denied());
         }
         // A member's credential follows the member and team sign-in on any
-        // store that has the team tables, whichever edition reads it.
+        // store that has the team tables, whichever edition reads it, and a
+        // credential the store requires capabilities for needs a program
+        // that has them ([`required_capabilities`]).
         if !crate::store_compat::credential_allowed(db, s(&row, "id"))?
             || !crate::extension::installed().credential_allowed(db, s(&row, "id"))?
+            || !requirements_met(db, s(&row, "id"))?
         {
             return Err(Error::denied());
         }
@@ -1029,10 +1121,93 @@ pub fn authorize_hash(
             role: s(&row, "role").into(),
         }
     };
-    if !principal.permits(permission) {
+    Ok(principal)
+}
+/// The principal `hash` authenticates in `workspace` ([`authenticate_hash`]),
+/// once its role grants `permission` and every installed extension allows it.
+pub fn authorize_hash(
+    db: &Connection,
+    workspace: &str,
+    hash: &str,
+    permission: &str,
+) -> Result<Principal> {
+    let principal = authenticate_hash(db, workspace, hash)?;
+    if !role_grants(db, &principal, permission)? {
         return Err(Error::denied());
     }
+    extensions_allow(db, &principal, permission)?;
     Ok(principal)
+}
+/// Whether the role of `p` grants `permission`: a core role as
+/// [`Principal::permits`] says, and a role the core does not define only as
+/// the installed extension that defines it says (`Extension::role_permits`).
+pub fn role_grants(db: &Connection, p: &Principal, permission: &str) -> Result<bool> {
+    if p.permits(permission) {
+        return Ok(true);
+    }
+    if p.role == "owner" || CREDENTIAL_ROLES.contains(&p.role.as_str()) {
+        return Ok(false);
+    }
+    Ok(
+        crate::extension::installed().role_permits(db, &p.workspace, &p.role, permission)?
+            == Some(true),
+    )
+}
+/// Every installed extension allows `p` the permission
+/// (`Extension::authorize`); the owner capability is never asked about.
+fn extensions_allow(db: &Connection, p: &Principal, permission: &str) -> Result<()> {
+    if p.role == "owner" {
+        return Ok(());
+    }
+    crate::extension::installed().authorize(
+        db,
+        p,
+        &mut crate::extension::AccessRequest::new(crate::extension::Access::Permission(permission)),
+    )
+}
+/// Whether `p` holds `permission` as [`authorize_hash`] decides it, for checks
+/// inside an authorized transaction that need a further permission.
+pub fn permitted(db: &Connection, p: &Principal, permission: &str) -> Result<bool> {
+    Ok(role_grants(db, p, permission)? && extensions_allow(db, p, permission).is_ok())
+}
+/// The `build.info` capabilities a program needs to honour `credential`,
+/// sorted. A store may hold a table or view `credential_requirements`
+/// (`credential_id`, `capability`), which an installed extension keeps for
+/// the credentials it restricts in ways the core cannot enforce, each with a
+/// capability that extension sets. A program without the capability refuses
+/// the credential ([`authorize_hash`]) instead of granting its role in full,
+/// so the restriction holds, failing closed, wherever the store or a
+/// portable backup of it is opened; a program with it leaves the credential
+/// to its extensions' hooks. Empty when the store declares none.
+pub fn required_capabilities(db: &Connection, credential: &str) -> Result<Vec<String>> {
+    let declared: bool = db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='credential_requirements')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !declared {
+        return Ok(Vec::new());
+    }
+    Ok(rows(
+        db,
+        "SELECT DISTINCT capability FROM credential_requirements WHERE credential_id=? ORDER BY capability",
+        [credential],
+    )?
+    .iter()
+    .map(|row| s(row, "capability").to_string())
+    .collect())
+}
+/// Whether this program has every capability `credential` requires
+/// ([`required_capabilities`]).
+fn requirements_met(db: &Connection, credential: &str) -> Result<bool> {
+    let required = required_capabilities(db, credential)?;
+    if required.is_empty() {
+        return Ok(true);
+    }
+    let capabilities = crate::core_capabilities::capabilities();
+    Ok(required
+        .iter()
+        .all(|capability| capabilities[capability.as_str()] == true))
 }
 pub fn repo(db: &Connection, p: &Principal, identifier: &str) -> Result<Value> {
     let mut row = one(
@@ -1212,5 +1387,112 @@ mod client_path_tests {
             assert!(client_path(r"src\app.py").is_err());
             assert_eq!(client_path("C:x").unwrap(), "C:x");
         }
+    }
+}
+
+#[cfg(test)]
+mod reader_format_tests {
+    use super::{READER_FORMAT, Store, require_reader};
+
+    /// A store that requires a newer store format is refused at open,
+    /// before anything in it changes; one this program reads opens.
+    #[test]
+    fn a_store_that_needs_a_newer_program_is_refused_at_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let db = store.connect().unwrap();
+        require_reader(&db, "restrictions", READER_FORMAT, "0.1.3").unwrap();
+        drop(db);
+        assert!(Store::open(dir.path()).is_ok());
+        let db = store.connect().unwrap();
+        require_reader(&db, "later", READER_FORMAT + 1, "9.9.9").unwrap();
+        let changed: i64 = db
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        // Unchanged records are not rewritten.
+        require_reader(&db, "later", READER_FORMAT + 1, "9.9.9").unwrap();
+        let again: i64 = db
+            .query_row("SELECT total_changes()", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(changed, again);
+        drop(db);
+        let error = Store::open(dir.path()).err().expect("refused");
+        assert!(
+            error
+                .message
+                .starts_with("This store needs Graphicle 9.9.9 or newer (store format 2)"),
+            "{}",
+            error.message
+        );
+        store
+            .connect()
+            .unwrap()
+            .execute("DELETE FROM store_readers WHERE reason='later'", [])
+            .unwrap();
+        assert!(Store::open(dir.path()).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod credential_requirement_tests {
+    use super::{Store, required_capabilities, s};
+    use serde_json::json;
+
+    /// A credential the store requires a capability for is refused by a
+    /// program without it (this Core build), also for a permission its role
+    /// grants; one this program has leaves it usable, as are credentials the
+    /// store names no requirement for and the owner capability.
+    #[test]
+    fn a_credential_needs_the_capabilities_the_store_requires_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let created = store.create_workspace("Requirements").unwrap();
+        let (workspace, owner) = (s(&created, "id"), s(&created, "capability"));
+        let grant = |label: &str| {
+            let granted = store
+                .grant(workspace, owner, &json!({"label":label,"role":"agent"}))
+                .unwrap();
+            (
+                s(&granted, "id").to_string(),
+                s(&granted, "capability").to_string(),
+            )
+        };
+        let (restricted, restricted_token) = grant("restricted");
+        let (_, plain_token) = grant("plain");
+        let usable = |token: &str, permission: &str| {
+            store
+                .authorized(workspace, token, permission, |_, _| Ok(()))
+                .is_ok()
+        };
+        let db = store.connect().unwrap();
+        assert!(required_capabilities(&db, &restricted).unwrap().is_empty());
+        db.execute_batch(
+            "CREATE TABLE credential_requirements(credential_id TEXT, capability TEXT)",
+        )
+        .unwrap();
+        // A capability every build has.
+        db.execute(
+            "INSERT INTO credential_requirements VALUES(?,'memory')",
+            [&restricted],
+        )
+        .unwrap();
+        assert!(usable(&restricted_token, "propose"));
+        // One no installed extension sets.
+        db.execute(
+            "INSERT INTO credential_requirements VALUES(?,'unknown_restriction')",
+            [&restricted],
+        )
+        .unwrap();
+        assert_eq!(
+            required_capabilities(&db, &restricted).unwrap(),
+            ["memory", "unknown_restriction"]
+        );
+        assert!(!usable(&restricted_token, "read"));
+        assert!(!usable(&restricted_token, "propose"));
+        assert!(usable(&plain_token, "propose"));
+        assert!(usable(owner, "admin"));
+        db.execute("DELETE FROM credential_requirements", [])
+            .unwrap();
+        assert!(usable(&restricted_token, "propose"));
     }
 }

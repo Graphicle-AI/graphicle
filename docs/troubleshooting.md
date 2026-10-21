@@ -64,7 +64,9 @@ To fit:
   is), or the `GRAPHICLE_MAX_PROJECT_FILES` or `GRAPHICLE_MAX_PROJECT_BYTES`
   environment variable. [Limits](configuration.md#limits) lists every limit.
 - Or leave out folders you do not need. Add them to `.gitignore`, or to
-  `.git/info/exclude` to keep the change to your machine.
+  `.git/info/exclude` to keep the change to your machine. A file Git tracks
+  is read whatever these say, unless `graphicle config set
+  sync.tracked_ignored false`; an `.ignore` file leaves out tracked files too.
 - Or set up a part of the repository: `cd services/api && graphicle setup`.
 
 Graphicle already skips `.git`, `node_modules`, `target`, `dist`, `build`,

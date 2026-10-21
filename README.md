@@ -172,6 +172,17 @@ Every figure is labelled, and [docs/benchmarks.md](docs/benchmarks.md) has the f
 - **Answering questions** (the same setup). On Graphify's showcase corpus (30 questions), the 0.1.1 agent defaults (a pre-release build) found 99.2% of the facts, against 94.7% for plain Claude Code (a tie) and 87.8% for Graphify 0.9.91: more facts than Graphify, with fewer tokens. On 60 questions about our own project all three tied, and Graphify used about 48k more tokens per question than Graphicle (pre-release 0.1.1 plus a prototype context hook) ([every agent test](docs/benchmarks.md#coding-agents-with-graphicle-graphify-or-neither)).
 - **Agent memory.** In a comparison with seven memory systems, registered before any answer was scored and run with one open model as every system's reader and judge, a pre-release build of Graphicle trails none on three development sets. [Every score, with its method and caveats](docs/benchmarks.md#agent-memory-comparison-with-seven-memory-systems).
 
+### Finding the files a fix changes
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/retrieval-dark.svg">
+    <img src="docs/assets/retrieval-light.svg" alt="Finding the files a fix changes: 100 SWE-bench Verified issues, held out from tuning. Top 1: Graphicle 0.1.3 43, Graphicle 0.1.2 13, BM25 (SWE-bench style) 35, grep for the issue's names 20; Top 5: Graphicle 0.1.3 75, Graphicle 0.1.2 30, BM25 (SWE-bench style) 61, grep for the issue's names 54; Top 10: Graphicle 0.1.3 82, Graphicle 0.1.2 30, BM25 (SWE-bench style) 77, grep for the issue's names 71; MRR: Graphicle 0.1.3 0.562, Graphicle 0.1.2 0.191, BM25 (SWE-bench style) 0.478, grep for the issue's names 0.365.">
+  </picture>
+</p>
+
+**Offline ranking, 100 SWE-bench Verified issues never used for tuning.** Graphicle 0.1.3 put a file the fix changed in its first 5 files for 75 issues, against 61 for BM25 (SWE-bench style), a significant difference (McNemar exact p = 0.013); for the first file (43 vs 35) and the first 10 (82 vs 77) the differences are not significant. This measures ranking, not whether a coding agent fixes more issues; the agent test of 0.1.3 is pending ([method, task lists and limits](docs/benchmarks/retrieval.md)).
+
 ## FAQ
 
 ### Privacy and local first

@@ -453,7 +453,7 @@ fn check_at(
     Ok(check)
 }
 
-/// The files under `folder` (the sync's walk) whose inode changed after
+/// The files under `folder` (the sync's walk, [`local::folder_entries`]) whose inode changed after
 /// `since_ns`, and the synced files (`heads`, path to SHA-256) that are gone;
 /// `None` when the folder holds more than [`MAX_SCAN`] entries or the scan
 /// takes longer than [`SCAN_TIME`]. A file whose inode changed within
@@ -476,7 +476,7 @@ fn scan(
     let threshold = since_ns.saturating_sub(MARGIN_NS);
     let mut seen = BTreeSet::new();
     let mut changed = BTreeSet::new();
-    for (count, entry) in local::folder_walk(folder).build().enumerate() {
+    for (count, entry) in local::folder_entries(folder).enumerate() {
         if count > MAX_SCAN || started.elapsed() > SCAN_TIME {
             return None;
         }
@@ -485,7 +485,9 @@ fn scan(
         let Some(kind) = entry.file_type() else {
             continue;
         };
-        if entry.depth() == 0 || kind.is_dir() {
+        // The folder itself or a directory; a tracked file the walk left
+        // out comes at depth 0 too, and is scanned.
+        if entry.path() == folder || kind.is_dir() {
             continue;
         }
         let Ok(relative) = entry.path().strip_prefix(folder) else {
@@ -700,7 +702,7 @@ fn porcelain(output: &[u8], prefix: &str) -> (String, Vec<(String, Vec<u8>)>, bo
 /// variables a git hook sets are removed, so git finds the folder's own
 /// repository, and optional locks are off, so the check never writes the
 /// index another git process may be using.
-fn git(folder: &Path, args: &[&str]) -> Option<Vec<u8>> {
+pub(crate) fn git(folder: &Path, args: &[&str]) -> Option<Vec<u8>> {
     let mut command = std::process::Command::new("git");
     // Git refuses Windows' verbatim `\\?\` paths.
     command

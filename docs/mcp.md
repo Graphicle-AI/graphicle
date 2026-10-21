@@ -63,7 +63,8 @@ these options:
   the new one. Without it, `connect` stops and leaves the entry alone.
 - `--hooks` (claude-code and codex only) adds session capture. After each
   answer, a background process stores the session's completed turns as sources
-  of the project. At the start of each session, the client receives the titles
+  of the project. At the start of each session, the client receives one line
+  on when to use Graphicle's tools and when grep is enough, then the titles
   of your reviewed memories and the latest turns (at most 8,000 characters,
   never drafts). The hooks never block the client. Claude Code's hooks go into
   `.claude/settings.local.json` in the current folder, and Codex's into
@@ -135,25 +136,38 @@ Any client that starts an MCP server over stdio can use the Graphicle server:
 - `--allow-learning` adds the tools that propose memory, and `--work-state`
   adds the work-state tools.
 - `--tools essentials` serves five tools: `query_graph`, `get_node`,
-  `get_neighbors`, `recall_project` and `read_project_source`, with one
-  sentence of instructions on when to call them. Their descriptions start
-  with what an agent looks for and say how answers cite code (file, lines
-  and `stable_id`). `--allow-learning`, `--work-state` and
+  `get_neighbors`, `recall_project` and `read_project_source`, with short
+  instructions on when to call them and when grep is enough. Their
+  descriptions start with what an agent looks for and say how answers cite
+  code (file, lines and `stable_id`). `--allow-learning`, `--work-state` and
   `--pull-requests` add `propose_memory`, the work-state tools and the
   pull-request tools. This is what setup gives Claude Code, which shows the
   agent every tool's name and the instructions in each request.
 - `--tools graph` serves every tool that reads the code graph: the graph
   tools and resources and the graph-history tools (`graph_episodes`,
-  `graph_as_of`, `graph_history_stats`, `graph_link`). `--tools memory`
+  `graph_as_of`, `graph_history_stats`, `graph_link`), and on a workspace
+  connection `workspace_map`. `--tools memory`
   serves the other tools. The default, `--tools all`, serves both. Two servers over one store,
   one of each, compare the integrated server with separate tools; the memory
   server's `recall_project` still reads the code graph unless it also has
   `--set graph_retrieval=false`.
 - `--set graph_retrieval=false` (or `memory_retrieval=false`, or
-  `doc_links=true` or `false`) fixes a switch of `recall_project` for the
-  whole session (below); `--set doc_links=true` makes every recall follow
-  documents' links to code. Repeat `--set` for several; a switch given twice
-  is refused.
+  `doc_links`, `symbol_links`, `cross_repo`, `notes_first` or
+  `identifier_route`, `true` or `false`, or `scope=project` or
+  `scope=workspace`) fixes a switch of
+  `recall_project` for the whole session (below); `--set doc_links=true`
+  makes every recall follow documents' links to code, and
+  `--set symbol_links=true` reviewed memory's links to code symbols. Repeat
+  `--set` for several; a switch given twice, or one the server does not
+  know, is refused. `--set scope=project` serves one project, so it is
+  refused with `--workspace`, and `--set scope=workspace` needs
+  `--workspace`.
+- `--manifest` prints the server's manifest as JSON and exits: the
+  program's version, edition and sha256, the tools and instructions it
+  would serve with their sha256, the switches it fixes and those a call may
+  set, the retrieval defaults, and the versions of the store's schema and
+  of its export and receipt formats. Run it with the same options as the
+  server to record exactly what a run used.
 - `--pull-requests` adds the graph's pull-request tools, `list_prs`,
   `get_pr_impact` and `triage_prs`. They run the GitHub CLI and `git`,
   read-only, in the folder the server starts in, which must be the project's
@@ -175,6 +189,9 @@ folder, as the stdio server does
 tools, and `serve --mcp-tools` and `serve --mcp-set` work as `--tools` and
 `--set` do. The pull-request tools are not served over HTTP, and a tool's
 `repo` names another project by its id or key there, never by a folder.
+The answer to `initialize` carries an `Mcp-Session-Id` header: a client that
+sends it back with its later requests has them counted as one agent session
+in the usage report, and a client that does not is served as before.
 
 ### Several projects in one connection
 
@@ -182,10 +199,13 @@ A workspace can hold several projects, for example a library and the
 application that imports it. A connection to one project (`graphicle mcp`, or
 `/mcp/WORKSPACE_ID/PROJECT_ID`) keeps recall, source reads and memory on that
 project: its `recall_project` and `read_project_source` take no `repo`, and it
-has no `list_projects`. Its graph tools and graph-history tools
-(`query_graph`, `get_node`, `get_neighbors`, `shortest_path`, `graph_as_of`
-and the others) do take `repo`: they read the code graph of another project
-the access key can read, and over stdio `repo` can also name a synced folder.
+has no `list_projects` or `workspace_map`. Its graph tools and graph-history
+tools (`query_graph`, `get_node`, `get_neighbors`, `shortest_path`,
+`graph_as_of` and the others) do take `repo`: they read the code graph of
+another project the access key can read, and over stdio `repo` can also name
+a synced folder. Memory and documents stay on the connection's project there
+too: `get_node` lists the reviewed memories linked to a symbol only for this
+project's own code graph, and only this project's documents that name it.
 `graphicle mcp` runs with the key saved in your data folder, normally the
 owner's, which can read every project of the store.
 
@@ -213,6 +233,8 @@ A workspace connection has no project of its own:
 
 - `list_projects` lists the projects your key can read, with their ids, 100
   at a time (`offset` and `limit` page through them).
+- `workspace_map` maps those projects ([The workspace
+  map](#the-workspace-map)).
 - `recall_project` searches every project you can read (at most 8, in the
   order they were created) unless `repo` names one: a project id or key, or
   with `graphicle mcp --workspace` a synced folder. A search over several
@@ -256,13 +278,46 @@ into it or out of it is followed, and it is not counted. Projects that
 starting with the current folder's project. Answers (`graphicle ask`, the
 `basic` and `reflect` jobs) still read one project.
 
+#### The workspace map
+
+`workspace_map` (the `graph.map` operation over HTTP, the SDK and
+`graphicle call`) shows the projects your key can read, 8 at a time
+(`offset` and `limit`, up to 32, page through them; a page reads its
+projects' documents, as a workspace recall does), in the order they were
+created:
+
+- `projects`: each project's id, name and times; `graph`, the file set its
+  code symbols were built from and whether that is the current one; and
+  `counts`:
+  - `files`, `documents` (connector documents your key can read now),
+    `symbols` (code symbols in its code graph) and `memories` (as
+    `project_memory` lists them);
+  - `links`: `imports_out` and `imports_in` (recorded imports from and into
+    the other projects on the map), `document_mentions` (mentions in its
+    documents linked to code, as the `graph.doc_links` operation counts them)
+    and `memory_symbols` (code symbols its memories are anchored to).
+- `imports`: one entry for each pair of projects where a project on this
+  page imports from another project on the map, with the number of recorded
+  imports and the modules imported (the first 20, and `modules_total`).
+  Paging through the map lists each pair once; `import_edges` counts every
+  import between the projects on the map.
+
+Each project is counted exactly as your key's own reads of that project
+would count it, and a project your key may not read is not on the map: no
+entry, no import into it or out of it, and no count that includes it.
+Projects that `graphicle pr` keeps for pull requests are left out unless
+`include_scratch` is true. A project whose counts cannot be read is listed
+with `status: "error"` and its message. The map is read-only, and the imports
+are the ones `graphicle sync` or `graph_link` last recorded.
+
 ### Tools
 
 | Tool | What it does |
 |---|---|
-| `recall_project` | Finds original source evidence and current reviewed memory for a question, within a token budget |
+| `recall_project` | Finds original source evidence and current reviewed memory for a question, within a token budget; an identifier, or a question that only asks where one is defined or used, gets its definitions and references from the code graph |
 | `read_project_source` | Reads a source by ID or path, continuing exactly where an excerpt stopped |
 | `list_projects` | Lists the workspace's projects you can read, with the ids `repo` takes (workspace connections only) |
+| `workspace_map` | Maps the projects you can read: their counts of files, documents, code symbols, memories and links, and the imports between them (workspace connections only) |
 | `repository_status` | Shows source coverage, revisions and memory state |
 | `repository_files` | Lists source paths and IDs |
 | `project_memory` | Lists memories and drafts with their review state and freshness |
@@ -271,7 +326,7 @@ starting with the current folder's project. Answers (`graphicle ask`, the
 | `prepare_memory_refresh` | Prepares current evidence for updating a memory |
 | `workflow_status` | Shows queued jobs and their model usage |
 | `graph_episodes`, `graph_as_of`, `graph_history_stats` | Read the project's recorded code-graph history and its storage |
-| `graph_link` | Links imports across the workspace's repositories, then recomputes the links from documents to the code they name |
+| `graph_link` | Links imports across the workspace's repositories, then recomputes the links from documents to the code they name. Only the projects that changed, or that import from a project whose exports changed, are linked again (`relinked`); the others keep their links (`reused`) |
 | `prepare_observations` | Prepares source excerpts so the agent's own model can propose facts |
 | `session_timeline` | Browses captured Claude Code and Codex turns |
 | `query_graph` | Searches the code graph breadth-first or depth-first around a question and returns the relevant nodes and edges |
@@ -281,6 +336,13 @@ starting with the current folder's project. Answers (`graphicle ask`, the
 | `god_nodes` | Returns the most connected nodes |
 | `graph_stats` | Returns node, edge and community counts and the confidence breakdown |
 | `shortest_path` | Finds the shortest path between two nodes |
+
+The server's instructions say when to call `recall_project` and
+`query_graph` (where or how something works, questions across files or
+history, before changing unfamiliar code) and that grep is enough for an
+exact identifier the agent already knows. The descriptions of
+`recall_project`, `query_graph`, `get_node`, `get_neighbors` and
+`shortest_path` end with when to use each instead of grep.
 
 The graph tools answer with the same text as the graph-only server, read on
 the project's recorded code graph. They take two more arguments: `repo` reads
@@ -295,7 +357,13 @@ range, and, when the file's current bytes are the ones the graph recorded,
 its checked `file:` byte range and the file's sha256: the same `stable_id`
 and window that `recall_project` cites for that symbol, which
 `read_project_source` reads. A node whose file changed since is listed with
-`checked: false`.
+`checked: false`. The node of a `get_node` answer also lists, under
+`linked`, the current reviewed memories anchored to that symbol (`memories`:
+id, kind, title and how the link was made) and the documents you may read
+that name it (`documents`); a stale, draft or retired memory is never listed.
+Its citations block names them too. On a connection to one project, they are
+that project's only ([Several projects in one
+connection](#several-projects-in-one-connection)).
 While a newer sync waits for its graph, the graph tools read the previous one
 and say so (`episode_lag`); a node the answer reaches only through relations
 read from changed files is listed with `relation_checked: false`, because
@@ -365,16 +433,42 @@ the links of the excerpts it returns (the packet's `doc_links`, status
 connector documents: an excerpt of a document brings in the definitions it
 names, and an excerpt of code brings in the passages that name its
 definitions. `false` reads no link and keeps documents and their links to
-code out of the code graph and the property graph. The packet's `mechanisms`
-report all three. On a workspace connection a harness can likewise pass
-`scope`, `project` or `workspace`, to search one project or all of them; a
-project connection takes `project` only.
+code out of the code graph and the property graph. `symbol_links`, also
+unlisted, is about reviewed memory's links to the code symbols it is anchored
+to. Left out, recall counts the links it would follow (the packet's
+`symbol_links`, status `counted`) and follows none. `true` follows them one
+step: an excerpt of code brings in the current reviewed memories linked to a
+symbol inside it (marked `via: link`, with the link under `link`), and a
+reviewed memory brings in the current code of the symbols it is linked to.
+`false` reads no such link. `cross_repo`, also unlisted, is about the step
+of a workspace recall that follows imports between projects: `false` turns
+that step alone off, and `true` turns it on even with
+`graph_retrieval: false`; left out, it follows `graph_retrieval`.
+`notes_first: true`, also unlisted and off by default, orders notes and
+documents first for a question in prose, quotes one window per file and
+dates each excerpt ([Configuration](configuration.md#retrieval)); `--tools
+all`, `graph` and `memory` keep 0.1.0's packet whatever it says.
+`identifier_route`, also unlisted and on in the essentials set, answers an
+identifier, or a question that only asks where named identifiers are
+defined or used, with their definitions and references from the code graph
+as `path:line` lines ([Configuration](configuration.md#retrieval)); `false`
+keeps the full retrieval, and `--tools all`, `graph` and `memory` take the
+route only when a call asks for it. The packet's `route` says which path
+ran. On a
+workspace connection a harness can likewise pass `scope`, `project` or
+`workspace`, to search one project or all of them; a project connection takes
+`project` only. Every packet's `mechanisms` echoes the values in force under
+`switches` (`doc_links` and `symbol_links` read `counted` when left out), and
+a switch that is not `true` or `false`, or a field the tool does not list, is
+refused.
 
 `recall_project`'s switches can also be fixed for a whole server:
-`graphicle mcp --set graph_retrieval=false` (or `memory_retrieval`, or
-`doc_links`; `serve --mcp-set …` over HTTP) applies the value to every call,
-refuses a call that asks for the other value, and reports the fixed switches
-in the packet's `mechanisms` under `server_fixed`. For example,
+`graphicle mcp --set graph_retrieval=false` (or `memory_retrieval`,
+`doc_links`, `symbol_links`, `cross_repo`, `notes_first`,
+`identifier_route` or `scope`;
+`serve --mcp-set …` over HTTP) applies the value to every call, refuses a
+call that asks for the other value, and reports the fixed switches in the
+packet's `mechanisms` under `server_fixed`. For example,
 `graphicle mcp --set doc_links=true` follows documents' links to code in
 every recall of that server.
 

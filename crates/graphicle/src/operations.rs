@@ -116,6 +116,12 @@ impl Store {
                     if known.is_some(){Ok(json!({"memory":versions.last(),"historical":true}))}else{Ok(json!({"versions":versions}))}
                 },
                 "memory.export"=>Ok(json!({"format":"graphicle.memories.v1","repository_id":identifier,"memories":memory::list(db,&repository,p,true)?})),
+                // Reviewed procedures and decisions with an allow-list of
+                // fields and no client-identifying text.
+                "memory.template"=>{
+                    let docs=memory::documents(db,&repository,p)?;let memories=memory::list_of(db,&repository,&docs,false)?;
+                    crate::packs::template(db,&p.workspace,&repository,&docs,&memories,args)
+                },
                 "history"=>Ok(json!({"snapshots":rows(db,"SELECT sha256,metadata,created_at FROM repo_snapshots WHERE repository_id=? ORDER BY created_at DESC LIMIT 100",[identifier])?})),
                 _=>Err(Error::bad("Unsupported project read"))
             }
@@ -129,7 +135,10 @@ impl Store {
         args: &Value,
     ) -> Result<Value> {
         let permission = match operation {
-            "learning.refresh.propose" | "memory.import" | "memory.propose" => "propose",
+            "learning.refresh.propose"
+            | "memory.import"
+            | "memory.import_pack"
+            | "memory.propose" => "propose",
             "sync.abort" => "collect",
             _ => "approve",
         };
@@ -225,6 +234,13 @@ impl Store {
                     // Only an import that carried symbol links reports them.
                     if regrounded+unresolved>0{result["symbol_links"]=json!({"regrounded":regrounded,"unresolved":unresolved});}
                     Ok(result)
+                },
+                // Reviewed memories of another project, as drafts whose
+                // evidence and symbol links are rebuilt here.
+                "memory.import_pack"=>{
+                    let values=args["memories"].as_array().ok_or_else(||Error::bad("Expected memories, a list"))?;
+                    let docs=memory::documents(db,&repository,p)?;
+                    crate::packs::import(db,identifier,&docs,values)
                 },
                 _=>Err(Error::bad("Unsupported project mutation"))
             }

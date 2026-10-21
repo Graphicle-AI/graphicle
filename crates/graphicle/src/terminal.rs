@@ -122,11 +122,24 @@ pub fn color_with(no_color: Option<&OsStr>, term: Option<&str>, terminal: bool) 
 
 /// Print `value` as JSON, or its readable view (`render`) when [`human`].
 pub fn emit(value: &Value, json: bool, render: impl FnOnce(&Value, Style) -> String) -> Result<()> {
-    if human(json) {
-        say(&render(value, Style::detect()))
+    emit_text(value, json, render).map(|_| ())
+}
+
+/// [`emit`], returning the text it printed (without the newline [`say`]
+/// ends it with), for a command that counts what it serves
+/// (`crate::metering`).
+pub fn emit_text(
+    value: &Value,
+    json: bool,
+    render: impl FnOnce(&Value, Style) -> String,
+) -> Result<String> {
+    let text = if human(json) {
+        render(value, Style::detect())
     } else {
-        crate::cli::print(value)
-    }
+        serde_json::to_string_pretty(value)?
+    };
+    say(&text)?;
+    Ok(text)
 }
 
 /// Print `text` on standard output, ending with one newline.
@@ -268,7 +281,10 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     ),
     ("Agents", &["connect", "disconnect", "mcp"]),
     ("Code graph", &["graph", "pr"]),
-    ("Data", &["sync", "sessions", "backup", "restore"]),
+    (
+        "Data",
+        &["sync", "sessions", "backup", "restore", "offboard"],
+    ),
     ("Server", &["serve", "init", "login"]),
 ];
 
@@ -321,6 +337,10 @@ const SUMMARIES: &[(&str, &str)] = &[
     ),
     ("backup", "Back up the store without stopping the app"),
     ("restore", "Restore a backup into a new data folder"),
+    (
+        "offboard",
+        "Remove one project's data, its backups included, with a receipt",
+    ),
     ("serve", "Run the app and the HTTP MCP server"),
     (
         "init",
@@ -2959,6 +2979,9 @@ pub fn config_command(
             let answering = configured_model(directory, &config);
             let mut shown = config_show(&path, answering.as_ref())?;
             shown["freshness"] = json!(crate::fresh::mode(&config));
+            // GRAPHICLE_SYNC_TRACKED_IGNORED overrides the file.
+            shown["sync"] =
+                json!({"tracked_ignored": crate::local::tracked_ignored_setting(Some(&config))});
             shown["limits"] = crate::limits::Limits::from_environment(&config.limits)?.view();
             emit(&shown, json, config_show_text)
         }
@@ -2969,6 +2992,9 @@ pub fn config_command(
             } else if key == "freshness" {
                 // GRAPHICLE_FRESHNESS overrides the file (ux-fresh).
                 Some(json!(crate::fresh::mode(&load()?)))
+            } else if key == "sync.tracked_ignored" {
+                // GRAPHICLE_SYNC_TRACKED_IGNORED overrides the file.
+                Some(json!(crate::local::tracked_ignored_setting(Some(&load()?))))
             } else if key == crate::update_notice::SETTING {
                 // GRAPHICLE_NO_UPDATE_NOTIFIER overrides the file.
                 Some(json!(crate::update_notice::on(&path)))
@@ -3054,10 +3080,15 @@ fn location(source: &Value) -> String {
         .or_else(|| source["title"].as_str())
         .or_else(|| source["id"].as_str())
         .unwrap_or("source");
-    match (source["line"].as_u64(), source["end_line"].as_u64()) {
+    let place = match (source["line"].as_u64(), source["end_line"].as_u64()) {
         (Some(line), Some(end)) if end > line => format!("{path}:{line}-{end}"),
         (Some(line), _) => format!("{path}:{line}"),
         _ => path.to_string(),
+    };
+    // The date its file last changed, when the packet dated it.
+    match source["changed"].as_str().filter(|c| !c.is_empty()) {
+        Some(changed) => format!("{place} (changed {changed})"),
+        None => place,
     }
 }
 
@@ -3122,6 +3153,33 @@ fn excerpts_of(packet: &Value) -> Vec<(&Value, &str)> {
 /// A `context` packet for people: the numbered excerpts with their place
 /// and why each was chosen, the reviewed memories and the budget.
 pub fn context_text(packet: &Value, style: Style) -> String {
+    // The identifier route's answer: definitions and references, as
+    // path:line lines (crate::identifier_route).
+    if packet[crate::identifier_route::REPORT]["path"] == "identifier" {
+        let mut out = format!(
+            "{} {}\n",
+            style.bold("Definitions and references for"),
+            style.bold(&format!("\"{}\"", s(packet, "question")))
+        );
+        let _ = writeln!(
+            out,
+            "{}",
+            style.dim(&format!(
+                "from the code graph · {} of {} tokens",
+                count(packet["tokens"].as_u64().unwrap_or(0)),
+                count(packet["max_tokens"].as_u64().unwrap_or(0))
+            ))
+        );
+        // The lines between the header and the footer: the footer tells an
+        // agent which tool reads on, and the budget, which the line above
+        // gives.
+        for line in s(packet, "markdown").lines().skip(1).filter(|line| {
+            *line != crate::identifier_route::READ_ON && !line.starts_with("Budget: ")
+        }) {
+            let _ = writeln!(out, "{line}");
+        }
+        return out;
+    }
     let sources = excerpts_of(packet);
     let mut out = format!(
         "{} {}\n",
@@ -3154,7 +3212,28 @@ pub fn context_text(packet: &Value, style: Style) -> String {
             style.bold(&format!("[{}]", index + 1)),
             location(source)
         );
+        for mark in source["age_marks"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+        {
+            let _ = writeln!(out, "    {} {mark}", style.warn("!"));
+        }
         out.push_str(&excerpt(text, 12, "    "));
+    }
+    // The files that rank next, which the excerpts do not quote.
+    let more: Vec<&str> = packet["more_files"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if !more.is_empty() {
+        let _ = writeln!(out, "\n{}", style.bold("Next ranked files:"));
+        for path in more {
+            let _ = writeln!(out, "  - {path}");
+        }
     }
     let memories = packet["memories"].as_array().cloned().unwrap_or_default();
     if !memories.is_empty() {

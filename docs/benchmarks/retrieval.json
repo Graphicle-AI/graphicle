@@ -1,0 +1,1276 @@
+{
+ "about": "Graphicle's offline retrieval benchmark (docs/benchmarks/retrieval.md): for each issue, the rank of the first file its fix changed in each system's list (null: not in the list). retrieval_chart.py draws docs/assets/retrieval-*.svg and .png and prints the page's tables from this file.",
+ "measured": "2026-10-21",
+ "systems": {
+  "graphicle-0.1.3": {
+   "label": "Graphicle 0.1.3",
+   "legend": "Graphicle 0.1.3",
+   "short": "0.1.3"
+  },
+  "graphicle-0.1.2": {
+   "label": "Graphicle 0.1.2",
+   "legend": "Graphicle 0.1.2",
+   "short": "0.1.2"
+  },
+  "bm25": {
+   "label": "BM25, SWE-bench style",
+   "legend": "BM25 (SWE-bench style)",
+   "short": "BM25"
+  },
+  "grep": {
+   "label": "grep for the names in the issue (rg 14.1.1)",
+   "legend": "grep for the issue's names",
+   "short": "grep"
+  },
+  "graphicle-0.1.3-ranked": {
+   "label": "Graphicle 0.1.3, its ranking before the packet",
+   "legend": "",
+   "short": ""
+  },
+  "graphicle-0.1.2-ranked": {
+   "label": "Graphicle 0.1.2, its ranking before the packet",
+   "legend": "",
+   "short": ""
+  }
+ },
+ "compare": [
+  "graphicle-0.1.3",
+  "bm25"
+ ],
+ "sets": {
+  "held-out": {
+   "table_title": "Held-out set: SWE-bench Verified, never used for tuning",
+   "tasks": [
+    {
+     "id": "astropy__astropy-13453",
+     "repo": "astropy/astropy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "astropy__astropy-13579",
+     "repo": "astropy/astropy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "astropy__astropy-7336",
+     "repo": "astropy/astropy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "astropy__astropy-8872",
+     "repo": "astropy/astropy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-10914",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-11163",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-11239",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-11400",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 3
+    },
+    {
+     "id": "django__django-11477",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-11790",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-12155",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 2
+    },
+    {
+     "id": "django__django-12273",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-12406",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 2
+    },
+    {
+     "id": "django__django-12774",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-12965",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13158",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13195",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 3
+    },
+    {
+     "id": "django__django-13212",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 2
+    },
+    {
+     "id": "django__django-13315",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13343",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13406",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13410",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13551",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13741",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13810",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13821",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13837",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13933",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-13964",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-14155",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-14349",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-14373",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-14493",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-14580",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-14765",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-14855",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-14999",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-15252",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-15277",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-15382",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-15629",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 4
+    },
+    {
+     "id": "django__django-15695",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-16082",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-16315",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 2
+    },
+    {
+     "id": "django__django-16333",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-16485",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-16493",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-16527",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-16819",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "django__django-9296",
+     "repo": "django/django",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "matplotlib__matplotlib-20676",
+     "repo": "matplotlib/matplotlib",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "matplotlib__matplotlib-23412",
+     "repo": "matplotlib/matplotlib",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "matplotlib__matplotlib-23476",
+     "repo": "matplotlib/matplotlib",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "matplotlib__matplotlib-24570",
+     "repo": "matplotlib/matplotlib",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "matplotlib__matplotlib-25287",
+     "repo": "matplotlib/matplotlib",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "matplotlib__matplotlib-26113",
+     "repo": "matplotlib/matplotlib",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "matplotlib__matplotlib-26466",
+     "repo": "matplotlib/matplotlib",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "psf__requests-1142",
+     "repo": "psf/requests",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "psf__requests-5414",
+     "repo": "psf/requests",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "pydata__xarray-3095",
+     "repo": "pydata/xarray",
+     "language": "Python",
+     "gold_files": 2
+    },
+    {
+     "id": "pydata__xarray-3677",
+     "repo": "pydata/xarray",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "pydata__xarray-4356",
+     "repo": "pydata/xarray",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "pydata__xarray-4695",
+     "repo": "pydata/xarray",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "pylint-dev__pylint-4661",
+     "repo": "pylint-dev/pylint",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "pylint-dev__pylint-6528",
+     "repo": "pylint-dev/pylint",
+     "language": "Python",
+     "gold_files": 2
+    },
+    {
+     "id": "pytest-dev__pytest-10051",
+     "repo": "pytest-dev/pytest",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "pytest-dev__pytest-10081",
+     "repo": "pytest-dev/pytest",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "pytest-dev__pytest-5809",
+     "repo": "pytest-dev/pytest",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "pytest-dev__pytest-6202",
+     "repo": "pytest-dev/pytest",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "scikit-learn__scikit-learn-10297",
+     "repo": "scikit-learn/scikit-learn",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "scikit-learn__scikit-learn-10908",
+     "repo": "scikit-learn/scikit-learn",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "scikit-learn__scikit-learn-13124",
+     "repo": "scikit-learn/scikit-learn",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "scikit-learn__scikit-learn-13328",
+     "repo": "scikit-learn/scikit-learn",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "scikit-learn__scikit-learn-25747",
+     "repo": "scikit-learn/scikit-learn",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "scikit-learn__scikit-learn-25931",
+     "repo": "scikit-learn/scikit-learn",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "scikit-learn__scikit-learn-9288",
+     "repo": "scikit-learn/scikit-learn",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-10323",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-11445",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-11510",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-7985",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-8459",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-8721",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-9229",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-9281",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sphinx-doc__sphinx-9602",
+     "repo": "sphinx-doc/sphinx",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-11618",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-12096",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-12419",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-13091",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 21
+    },
+    {
+     "id": "sympy__sympy-14248",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 3
+    },
+    {
+     "id": "sympy__sympy-14976",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-15875",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-16450",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-17630",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-18211",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-19637",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-19783",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 2
+    },
+    {
+     "id": "sympy__sympy-22080",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 2
+    },
+    {
+     "id": "sympy__sympy-24213",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    },
+    {
+     "id": "sympy__sympy-24562",
+     "repo": "sympy/sympy",
+     "language": "Python",
+     "gold_files": 1
+    }
+   ],
+   "n": 100,
+   "results": {
+    "graphicle-0.1.3": {
+     "hit@1": 43,
+     "hit@5": 75,
+     "hit@10": 82,
+     "mrr": 0.5617
+    },
+    "graphicle-0.1.2": {
+     "hit@1": 13,
+     "hit@5": 30,
+     "hit@10": 30,
+     "mrr": 0.1912
+    },
+    "bm25": {
+     "hit@1": 35,
+     "hit@5": 61,
+     "hit@10": 77,
+     "mrr": 0.4776
+    },
+    "grep": {
+     "hit@1": 20,
+     "hit@5": 54,
+     "hit@10": 71,
+     "mrr": 0.3653
+    },
+    "graphicle-0.1.3-ranked": {
+     "hit@1": 42,
+     "hit@5": 76,
+     "hit@10": 82,
+     "mrr": 0.5639
+    },
+    "graphicle-0.1.2-ranked": {
+     "hit@1": 16,
+     "hit@5": 29,
+     "hit@10": 35,
+     "mrr": 0.2251
+    }
+   },
+   "mcnemar": {
+    "1": {
+     "only_a": 19,
+     "only_b": 11
+    },
+    "5": {
+     "only_a": 21,
+     "only_b": 7
+    },
+    "10": {
+     "only_a": 13,
+     "only_b": 8
+    }
+   }
+  },
+  "dev": {
+   "table_title": "Development set: issues filed in July 2026, used for tuning",
+   "tasks": [
+    {
+     "id": "DynamoRIO__dynamorio-8017",
+     "repo": "DynamoRIO/dynamorio",
+     "language": "C",
+     "gold_files": 3
+    },
+    {
+     "id": "IfcOpenShell__IfcOpenShell-8887",
+     "repo": "IfcOpenShell/IfcOpenShell",
+     "language": "C++",
+     "gold_files": 1
+    },
+    {
+     "id": "JasperFx__marten-5080",
+     "repo": "JasperFx/marten",
+     "language": "C#",
+     "gold_files": 1
+    },
+    {
+     "id": "JasperFx__wolverine-3456",
+     "repo": "JasperFx/wolverine",
+     "language": "C#",
+     "gold_files": 5
+    },
+    {
+     "id": "JasperFx__wolverine-3582",
+     "repo": "JasperFx/wolverine",
+     "language": "C#",
+     "gold_files": 1
+    },
+    {
+     "id": "JasperFx__wolverine-3695",
+     "repo": "JasperFx/wolverine",
+     "language": "C#",
+     "gold_files": 3
+    },
+    {
+     "id": "SubtitleEdit__subtitleedit-12151",
+     "repo": "SubtitleEdit/subtitleedit",
+     "language": "C#",
+     "gold_files": 2
+    },
+    {
+     "id": "SubtitleEdit__subtitleedit-12763",
+     "repo": "SubtitleEdit/subtitleedit",
+     "language": "C#",
+     "gold_files": 1
+    },
+    {
+     "id": "SubtitleEdit__subtitleedit-12895",
+     "repo": "SubtitleEdit/subtitleedit",
+     "language": "C#",
+     "gold_files": 1
+    },
+    {
+     "id": "agentgateway__agentgateway-2452",
+     "repo": "agentgateway/agentgateway",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "agentscope-ai__agentscope-java-2189",
+     "repo": "agentscope-ai/agentscope-java",
+     "language": "Java",
+     "gold_files": 2
+    },
+    {
+     "id": "agentscope-ai__agentscope-java-2257",
+     "repo": "agentscope-ai/agentscope-java",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "agentscope-ai__agentscope-java-2260",
+     "repo": "agentscope-ai/agentscope-java",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "apache__paimon-8536",
+     "repo": "apache/paimon",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "apache__paimon-8874",
+     "repo": "apache/paimon",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "apache__parquet-java-3642",
+     "repo": "apache/parquet-java",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "apache__parquet-java-3645",
+     "repo": "apache/parquet-java",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "apache__parquet-java-3669",
+     "repo": "apache/parquet-java",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "apache__shardingsphere-39104",
+     "repo": "apache/shardingsphere",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "apache__shardingsphere-39137",
+     "repo": "apache/shardingsphere",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "apache__shardingsphere-39237",
+     "repo": "apache/shardingsphere",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "btraceio__btrace-894",
+     "repo": "btraceio/btrace",
+     "language": "Java",
+     "gold_files": 3
+    },
+    {
+     "id": "btraceio__btrace-895",
+     "repo": "btraceio/btrace",
+     "language": "Java",
+     "gold_files": 5
+    },
+    {
+     "id": "btraceio__btrace-910",
+     "repo": "btraceio/btrace",
+     "language": "Java",
+     "gold_files": 4
+    },
+    {
+     "id": "c-ares__c-ares-1190",
+     "repo": "c-ares/c-ares",
+     "language": "C",
+     "gold_files": 4
+    },
+    {
+     "id": "colbymchenry__codegraph-1317",
+     "repo": "colbymchenry/codegraph",
+     "language": "C",
+     "gold_files": 2
+    },
+    {
+     "id": "colbymchenry__codegraph-1318",
+     "repo": "colbymchenry/codegraph",
+     "language": "C",
+     "gold_files": 1
+    },
+    {
+     "id": "colbymchenry__codegraph-1370",
+     "repo": "colbymchenry/codegraph",
+     "language": "C",
+     "gold_files": 1
+    },
+    {
+     "id": "duckdb__ducklake-1339",
+     "repo": "duckdb/ducklake",
+     "language": "C++",
+     "gold_files": 2
+    },
+    {
+     "id": "duckdb__ducklake-1340",
+     "repo": "duckdb/ducklake",
+     "language": "C++",
+     "gold_files": 3
+    },
+    {
+     "id": "elsa-workflows__elsa-core-7898",
+     "repo": "elsa-workflows/elsa-core",
+     "language": "C#",
+     "gold_files": 1
+    },
+    {
+     "id": "floci-io__floci-1837",
+     "repo": "floci-io/floci",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "floci-io__floci-1870",
+     "repo": "floci-io/floci",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "floci-io__floci-2015",
+     "repo": "floci-io/floci",
+     "language": "Java",
+     "gold_files": 2
+    },
+    {
+     "id": "fluent__fluent-bit-12029",
+     "repo": "fluent/fluent-bit",
+     "language": "C",
+     "gold_files": 2
+    },
+    {
+     "id": "gitbutlerapp__gitbutler-14920",
+     "repo": "gitbutlerapp/gitbutler",
+     "language": "Rust",
+     "gold_files": 2
+    },
+    {
+     "id": "gleam-lang__gleam-5958",
+     "repo": "gleam-lang/gleam",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "gleam-lang__gleam-6021",
+     "repo": "gleam-lang/gleam",
+     "language": "Rust",
+     "gold_files": 3
+    },
+    {
+     "id": "h4ckf0r0day__obscura-412",
+     "repo": "h4ckf0r0day/obscura",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "h4ckf0r0day__obscura-421",
+     "repo": "h4ckf0r0day/obscura",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "h4ckf0r0day__obscura-440",
+     "repo": "h4ckf0r0day/obscura",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "jsonata-js__jsonata-814",
+     "repo": "jsonata-js/jsonata",
+     "language": "JS/TS",
+     "gold_files": 4
+    },
+    {
+     "id": "kvcache-ai__Mooncake-2892",
+     "repo": "kvcache-ai/Mooncake",
+     "language": "C++",
+     "gold_files": 1
+    },
+    {
+     "id": "kvcache-ai__Mooncake-2964",
+     "repo": "kvcache-ai/Mooncake",
+     "language": "C++",
+     "gold_files": 2
+    },
+    {
+     "id": "lakehq__sail-2292",
+     "repo": "lakehq/sail",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "lance-format__lance-7618",
+     "repo": "lance-format/lance",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "lance-format__lance-8049",
+     "repo": "lance-format/lance",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "langchain4j__langchain4j-5755",
+     "repo": "langchain4j/langchain4j",
+     "language": "Java",
+     "gold_files": 1
+    },
+    {
+     "id": "langchain4j__langchain4j-5847",
+     "repo": "langchain4j/langchain4j",
+     "language": "Java",
+     "gold_files": 2
+    },
+    {
+     "id": "langchain4j__langchain4j-5869",
+     "repo": "langchain4j/langchain4j",
+     "language": "Java",
+     "gold_files": 2
+    },
+    {
+     "id": "luau-lang__luau-2506",
+     "repo": "luau-lang/luau",
+     "language": "C++",
+     "gold_files": 1
+    },
+    {
+     "id": "modelcontextprotocol__rust-sdk-1005",
+     "repo": "modelcontextprotocol/rust-sdk",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "modelcontextprotocol__rust-sdk-1021",
+     "repo": "modelcontextprotocol/rust-sdk",
+     "language": "Rust",
+     "gold_files": 4
+    },
+    {
+     "id": "modelcontextprotocol__rust-sdk-996",
+     "repo": "modelcontextprotocol/rust-sdk",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "nearai__ironclaw-6706",
+     "repo": "nearai/ironclaw",
+     "language": "Rust",
+     "gold_files": 4
+    },
+    {
+     "id": "nearai__ironclaw-6712",
+     "repo": "nearai/ironclaw",
+     "language": "Rust",
+     "gold_files": 2
+    },
+    {
+     "id": "notionnext-org__NotionNext-4290",
+     "repo": "notionnext-org/NotionNext",
+     "language": "JS/TS",
+     "gold_files": 1
+    },
+    {
+     "id": "nunit__nunit-5351",
+     "repo": "nunit/nunit",
+     "language": "C#",
+     "gold_files": 3
+    },
+    {
+     "id": "open-gsd__gsd-core-2079",
+     "repo": "open-gsd/gsd-core",
+     "language": "JS/TS",
+     "gold_files": 1
+    },
+    {
+     "id": "open-gsd__gsd-core-2233",
+     "repo": "open-gsd/gsd-core",
+     "language": "JS/TS",
+     "gold_files": 1
+    },
+    {
+     "id": "open-gsd__gsd-core-2261",
+     "repo": "open-gsd/gsd-core",
+     "language": "JS/TS",
+     "gold_files": 2
+    },
+    {
+     "id": "playcanvas__engine-9000",
+     "repo": "playcanvas/engine",
+     "language": "JS/TS",
+     "gold_files": 1
+    },
+    {
+     "id": "playcanvas__engine-9002",
+     "repo": "playcanvas/engine",
+     "language": "JS/TS",
+     "gold_files": 2
+    },
+    {
+     "id": "playcanvas__engine-9066",
+     "repo": "playcanvas/engine",
+     "language": "JS/TS",
+     "gold_files": 2
+    },
+    {
+     "id": "prefix-dev__pixi-6518",
+     "repo": "prefix-dev/pixi",
+     "language": "Rust",
+     "gold_files": 4
+    },
+    {
+     "id": "prefix-dev__pixi-6529",
+     "repo": "prefix-dev/pixi",
+     "language": "Rust",
+     "gold_files": 4
+    },
+    {
+     "id": "root-project__root-22854",
+     "repo": "root-project/root",
+     "language": "C++",
+     "gold_files": 1
+    },
+    {
+     "id": "root-project__root-22857",
+     "repo": "root-project/root",
+     "language": "C++",
+     "gold_files": 1
+    },
+    {
+     "id": "rust-lang__rust-analyzer-22751",
+     "repo": "rust-lang/rust-analyzer",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "rust-lang__rust-analyzer-22804",
+     "repo": "rust-lang/rust-analyzer",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "rust-lang__rust-analyzer-22855",
+     "repo": "rust-lang/rust-analyzer",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "web-infra-dev__rspack-14794",
+     "repo": "web-infra-dev/rspack",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "web-infra-dev__rspack-14803",
+     "repo": "web-infra-dev/rspack",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "web-infra-dev__rspack-14882",
+     "repo": "web-infra-dev/rspack",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "xroche__httrack-599",
+     "repo": "xroche/httrack",
+     "language": "C",
+     "gold_files": 1
+    },
+    {
+     "id": "xroche__httrack-618",
+     "repo": "xroche/httrack",
+     "language": "C",
+     "gold_files": 1
+    },
+    {
+     "id": "xroche__httrack-811",
+     "repo": "xroche/httrack",
+     "language": "C",
+     "gold_files": 1
+    },
+    {
+     "id": "yvgude__lean-ctx-1179",
+     "repo": "yvgude/lean-ctx",
+     "language": "Rust",
+     "gold_files": 1
+    },
+    {
+     "id": "yvgude__lean-ctx-816",
+     "repo": "yvgude/lean-ctx",
+     "language": "Rust",
+     "gold_files": 4
+    },
+    {
+     "id": "yvgude__lean-ctx-969",
+     "repo": "yvgude/lean-ctx",
+     "language": "Rust",
+     "gold_files": 1
+    }
+   ],
+   "n": 80,
+   "results": {
+    "graphicle-0.1.3": {
+     "hit@1": 38,
+     "hit@5": 63,
+     "hit@10": 69,
+     "mrr": 0.6112
+    },
+    "graphicle-0.1.2": {
+     "hit@1": 12,
+     "hit@5": 27,
+     "hit@10": 27,
+     "mrr": 0.2269
+    },
+    "bm25": {
+     "hit@1": 34,
+     "hit@5": 51,
+     "hit@10": 57,
+     "mrr": 0.5225
+    },
+    "grep": {
+     "hit@1": 30,
+     "hit@5": 51,
+     "hit@10": 59,
+     "mrr": 0.5014
+    },
+    "graphicle-0.1.3-ranked": {
+     "hit@1": 37,
+     "hit@5": 63,
+     "hit@10": 69,
+     "mrr": 0.6024
+    },
+    "graphicle-0.1.2-ranked": {
+     "hit@1": 8,
+     "hit@5": 26,
+     "hit@10": 29,
+     "mrr": 0.2133
+    }
+   },
+   "mcnemar": {
+    "1": {
+     "only_a": 11,
+     "only_b": 7
+    },
+    "5": {
+     "only_a": 16,
+     "only_b": 4
+    },
+    "10": {
+     "only_a": 14,
+     "only_b": 2
+    }
+   }
+  }
+ },
+ "chart": {
+  "set": "held-out",
+  "systems": [
+   "graphicle-0.1.3",
+   "graphicle-0.1.2",
+   "bm25",
+   "grep"
+  ],
+  "tagline": "Offline retrieval benchmark, 21 October 2026",
+  "title": "Finding the files a fix changes: 100 SWE-bench Verified issues, held out from tuning",
+  "subtitle": "For each issue: is a file the fix changed among the first k files? Graphicle: the files its context packet cites, then lists. No model calls. Higher is better.",
+  "panels": {
+   "hit@1": {
+    "title": "Top 1",
+    "sub": "Issues of {n} with a changed file first"
+   },
+   "hit@5": {
+    "title": "Top 5",
+    "sub": "Issues of {n} with a changed file in the first 5"
+   },
+   "hit@10": {
+    "title": "Top 10",
+    "sub": "Issues of {n} with a changed file in the first 10"
+   },
+   "mrr": {
+    "title": "MRR",
+    "sub": "Mean reciprocal rank of the first changed file",
+    "note": "1 when it comes first, 0.5 when second, 0 past rank 100."
+   }
+  },
+  "compare_label": "0.1.3 vs BM25, McNemar exact:",
+  "footer": [
+   "Graphicle 0.1.3 and the 0.1.2 release binary run graphicle context on the issue's prompt, with their defaults. BM25: SWE-bench style, one document per source file. grep: rg 14.1.1 for the identifiers and paths the issue names, files ranked by names matched.",
+   "This measures ranking, not whether a coding agent fixes more issues. The agent test of 0.1.3 is pending."
+  ],
+  "url_label": "Method, task list and limits:",
+  "url": "github.com/graphicle-ai/graphicle/blob/main/docs/benchmarks/retrieval.md"
+ }
+}

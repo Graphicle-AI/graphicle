@@ -113,14 +113,29 @@ Only as drafts for a person to review.
 - **Work state.** `--work-state` gives the agent its own to-do lists. Recall
   never uses them as memory.
 
+## Can I reuse reviewed memory in another project?
+
+Yes, as drafts that a person reviews there. `graphicle call memory.template`
+exports the current project's reviewed procedures and decisions with only
+their kind, title and body: the project's names, the files, symbols and
+quotes they cite, URLs, e-mail addresses, credentials and the `terms` you
+list become placeholders such as `[quote]`. Other words stay, so read a
+template before you share it. `graphicle call memory.import_pack --project
+OTHER --arguments pack.json`, with `{"memories": [...]}` from a template or
+from `memory.export`, imports the reviewed ones as drafts: symbol links are
+matched to that project's code, and quotes are kept only where its own
+sources hold them
+([details](../crates/graphicle/README.md#memory-anchored-to-code-symbols)).
+
 ## My repository is large. Will sync handle it?
 
 Yes. `graphicle sync` takes up to 100,000 text files and 1 GiB of text per
 project, and you can raise both: set `limits.project_files` and
 `limits.project_bytes` in `models.json`, or `GRAPHICLE_MAX_PROJECT_FILES` and
 `GRAPHICLE_MAX_PROJECT_BYTES`. A larger folder stops with a message that names
-the count, the limit and the setting. You can also extend `.gitignore` or sync
-a subfolder.
+the count, the limit and the setting. You can also extend `.gitignore` (for
+files Git does not track; `graphicle config set sync.tracked_ignored false`
+applies it to tracked files too) or sync a subfolder.
 
 One large or unusual file never stops a sync. A file over 4 MiB, or with more
 than 50,000 calls or 2,000,000 syntax nodes, is analysed as far as the limit
@@ -148,6 +163,17 @@ project.
   project and returns a hash-chained receipt. The file holds
   `{"expected_snapshot": "…"}`, the `repository.snapshot` that
   `graphicle status` prints. Backups you made are separate.
+- `graphicle offboard --project PROJECT` removes one project's data from the
+  data folder, with its graph cache and its copies in the backups in the data
+  folder's `backups/` folder, and returns a hash-chained receipt that lists
+  what it removed. Other projects stay, in those backups too. Without
+  `--apply PLAN_HASH` it only shows the plan. Run `graphicle disconnect` in
+  the project's folders first. Backups written elsewhere and the project's
+  `.graphicle/` folder are outside the data folder: delete them yourself.
+  Memories that `memory.import_pack` copied into other projects belong to
+  those projects and stay. A path it refuses (a link, or a backup with
+  another name) is never changed and may still hold the project, so the
+  offboarding then reports that it is not fully verified.
 - The app retires memories and deletes connectors.
 - To remove everything, delete the data folder ([install.md](install.md#uninstall)).
 

@@ -39,7 +39,8 @@ pub const MAX_BACKOFF_SECONDS: i64 = 30 * 60;
 pub const INTERACTIVE: &[&str] = &["context", "search", "impact", "status", "read", "source"];
 
 /// Kinds whose cost is dominated by local CPU (extraction, local inference)
-/// rather than remote provider latency.
+/// rather than remote provider latency. Installed extensions add the kinds
+/// they declare CPU-bound (`extension::JobKind::cpu`).
 pub const CPU_BOUND: &[&str] = &["project", "link", "embed", "semantic_overlay"];
 
 pub fn interactive(kind: &str) -> bool {
@@ -47,6 +48,9 @@ pub fn interactive(kind: &str) -> bool {
 }
 pub fn cpu_bound(kind: &str) -> bool {
     CPU_BOUND.contains(&kind)
+        || crate::extension::installed()
+            .job_kind(kind)
+            .is_some_and(|declared| declared.cpu)
 }
 /// Every non-source, non-projection job may call a model.
 pub fn model_bound(kind: &str) -> bool {
@@ -192,6 +196,7 @@ impl Limiter {
         let mut excluded = Vec::new();
         if admission.cpu.is_none() {
             excluded.extend(CPU_BOUND.iter().copied());
+            excluded.extend(crate::extension::installed().cpu_bound_kinds());
         }
         if admission.model.is_none() {
             excluded.extend(

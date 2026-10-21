@@ -650,6 +650,8 @@ fn import_link_job(store: &Store, job: &Job) -> Result<Value> {
             "repositories": summary["repositories"].as_array().map_or(0, Vec::len),
             "hidden_repositories": summary["hidden_repositories"],
             "unprojected_repositories": summary["unprojected_repositories"],
+            "relinked": summary["relinked"],
+            "reused": summary["reused"],
             "trigger": job.payload["trigger"],
             "episode": job.payload["episode"],
         });
@@ -946,6 +948,8 @@ pub fn check(args: &Value, config: &model::Config) -> Result<&'static str> {
         "memory_retrieval",
         "graph_retrieval",
         "doc_links",
+        "symbol_links",
+        "notes_first",
         "observer_notes",
         "verify_answer",
     ] {
@@ -1216,7 +1220,7 @@ impl Store {
             if p.role != "owner" && s(&old, "principal_hash") != p.hash {
                 return Err(Error::denied());
             }
-            if !p.permits(permission(s(&old, "kind"))?) {
+            if !crate::store::permitted(db, p, permission(s(&old, "kind"))?)? {
                 return Err(Error::denied());
             }
             if !["failed", "cancelled"].contains(&s(&old, "state")) {

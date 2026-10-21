@@ -80,6 +80,8 @@ const HISTORY: &[&str] = &[
     "am_projection_cleanup",
     TOMBSTONES,
     "am_oauth_pending",
+    // What Graphicle served (`metering`): counters per day and credential.
+    "am_served_usage",
 ];
 /// Columns holding digests of capabilities minted per store (the owner's and
 /// granted credentials'). Like minted identifiers, they never take part in
@@ -140,6 +142,9 @@ const SINCE_VISIBLE: &[(&str, &str, &str)] = &[
     ("anchors", "gf_anchor_edges", "created_at"),
     ("overlay_communities", "gf_communities", "created_at"),
     ("overlay_aliases", "gf_alias_proposals", "created_at"),
+    // The export index the incremental link pass keeps; the next pass
+    // rebuilds it from the graph.
+    ("cross_link_state", "gf_cross_link_state", "created_at"),
 ];
 
 /// What one forget request covers: every document of a connector, or named

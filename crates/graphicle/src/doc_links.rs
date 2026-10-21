@@ -2369,6 +2369,9 @@ pub struct Lookup<'a> {
     db: &'a Connection,
     repository: String,
     producers: String,
+    /// The folder the project was last synced from, when the caller names
+    /// it ([`Lookup::with_folder`]): `source_age` dates files there.
+    folder: Option<std::path::PathBuf>,
 }
 
 /// One link row as a query reads it.
@@ -2399,7 +2402,38 @@ impl<'a> Lookup<'a> {
             db,
             repository: repository.to_string(),
             producers: json!(producers()).to_string(),
+            folder: None,
         }
+    }
+    /// This lookup, naming the project's folder.
+    pub fn with_folder(mut self, folder: Option<std::path::PathBuf>) -> Self {
+        self.folder = folder;
+        self
+    }
+    /// The project's folder, when named.
+    pub fn folder(&self) -> Option<&std::path::Path> {
+        self.folder.as_deref()
+    }
+    /// The code an excerpt names: the linked mentions inside `[a, b)` of the
+    /// project's `document` at its bytes `sha256` whose definition is in
+    /// this project, as (mention, path of the definition's file).
+    pub fn code_named_in(
+        &self,
+        document: &str,
+        sha256: &str,
+        a: usize,
+        b: usize,
+    ) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .mentions_in(document, a, b)?
+            .into_iter()
+            .filter(|link| {
+                link.document_sha256 == sha256
+                    && link.target_repository == self.repository
+                    && !link.relpath.is_empty()
+            })
+            .map(|link| (link.mention, link.relpath))
+            .collect())
     }
     fn links(&self, sql: &str, arguments: impl rusqlite::Params) -> Result<Vec<Link>> {
         let found = rows(self.db, sql, arguments)?;
@@ -2428,6 +2462,14 @@ impl<'a> Lookup<'a> {
                 }
             })
             .collect())
+    }
+    /// The store this lookup reads (the `symbol_links` step reads it too).
+    pub fn db(&self) -> &'a Connection {
+        self.db
+    }
+    /// The project whose links this lookup reads.
+    pub fn repository(&self) -> &str {
+        &self.repository
     }
     /// Linked mentions inside `[a, b)` of one of the project's documents.
     fn mentions_in(&self, document: &str, a: usize, b: usize) -> Result<Vec<Link>> {
@@ -2476,6 +2518,18 @@ fn line_of(content: &str, at: usize) -> usize {
 /// A window `[a, b)` of `document` as a candidate no passage covers (as the
 /// code arm synthesizes its anchors).
 fn window(document: &Value, a: usize, b: usize, identity: String, facts: Value) -> Option<Value> {
+    window_with(ARM, document, a, b, identity, facts)
+}
+
+/// [`window`], its facts under `arm` (the `symbol_links` step's windows).
+pub(crate) fn window_with(
+    arm: &str,
+    document: &Value,
+    a: usize,
+    b: usize,
+    identity: String,
+    facts: Value,
+) -> Option<Value> {
     let content = s(document, "content");
     let text = content.get(a..b)?;
     if text.trim().is_empty() {
@@ -2493,7 +2547,7 @@ fn window(document: &Value, a: usize, b: usize, identity: String, facts: Value) 
     source.insert("total_bytes".into(), json!(content.len()));
     source.insert("complete".into(), json!(a == 0 && b == content.len()));
     source.insert("truncated".into(), json!(b < content.len()));
-    source.insert(ARM.into(), facts);
+    source.insert(arm.into(), facts);
     Some(
         json!({"identity":identity,"kind":"source","origin":document["id"],"title":document["title"],
         "text":text,"source_sha":document["sha256"],"source":source}),
@@ -2771,6 +2825,45 @@ struct Listed {
     session: bool,
 }
 
+/// A project's documents as one reader may read them (`memory::documents`
+/// for that reader), by id.
+fn listing(documents: &[Value]) -> HashMap<String, Listed> {
+    documents
+        .iter()
+        .map(|d| {
+            (
+                s(d, "id").to_string(),
+                Listed {
+                    sha: s(d, "sha256").to_string(),
+                    session: sdk_session(d),
+                },
+            )
+        })
+        .collect()
+}
+
+/// The mentions in `project`'s documents that are linked to code, as the
+/// coverage of `graph.doc_links` counts them for `p` (its `total.linked`):
+/// `documents` are the project's documents as `memory::documents` gives them
+/// to `p`, who may read the project. The workspace map's count.
+pub fn linked_mentions(
+    db: &Connection,
+    p: &Principal,
+    project: &str,
+    documents: &[Value],
+) -> Result<u64> {
+    let mut readable = Readable::new(db, p);
+    readable
+        .documents
+        .insert(project.to_string(), Some(listing(documents)));
+    let producers = json!(producers()).to_string();
+    Ok(
+        coverage(db, project, &mut readable, &producers)?["coverage"]["total"]["linked"]
+            .as_u64()
+            .unwrap_or(0),
+    )
+}
+
 /// What a reader may read, per project (the snapshot's filter: access,
 /// connector sharing and freshness).
 struct Readable<'a> {
@@ -2837,20 +2930,11 @@ impl<'a> Readable<'a> {
         if !self.documents.contains_key(project) {
             let listed = if self.project(project)? {
                 let repository = crate::store::repo(self.db, self.p, project)?;
-                Some(
-                    crate::memory::documents(self.db, &repository, self.p)?
-                        .iter()
-                        .map(|d| {
-                            (
-                                s(d, "id").to_string(),
-                                Listed {
-                                    sha: s(d, "sha256").to_string(),
-                                    session: sdk_session(d),
-                                },
-                            )
-                        })
-                        .collect(),
-                )
+                Some(listing(&crate::memory::documents(
+                    self.db,
+                    &repository,
+                    self.p,
+                )?))
             } else {
                 None
             };
@@ -2909,28 +2993,7 @@ pub fn read(store: &Store, workspace: &str, token: &str, args: &Value) -> Result
                 .as_str()
                 .filter(|v| !v.is_empty() && v.len() <= 200)
                 .ok_or_else(|| Error::bad("stable_id must be 1–200 bytes"))?;
-            let mut out = Vec::new();
-            for link in rows(
-                db,
-                "SELECT * FROM gf_doc_links WHERE target_repository_id=? AND stable_id=? AND state='linked' \
-                 AND producer IN (SELECT value FROM json_each(?)) ORDER BY repository_id,document_id,byte_start,id",
-                params![project, stable, producers],
-            )? {
-                let document = s(&link, "document_id");
-                if readable
-                    .document(s(&link, "repository_id"), document)?
-                    .is_none_or(|listed| listed.sha != s(&link, "document_sha256"))
-                    || readable.state(&link)? != "linked"
-                {
-                    continue;
-                }
-                if out.len() < limit {
-                    out.push(json!({"repository_id":link["repository_id"],"document_id":document,
-                        "source_kind":link["source_kind"],"byte_start":link["byte_start"],"byte_end":link["byte_end"],
-                        "mention":link["mention"],"mark":link["mark"],"rung":link["rung"],"producer":link["producer"],
-                        "scope":link["scope"],"target_relpath":link["target_relpath"]}));
-                }
-            }
+            let out = naming(&mut readable, &project, stable, &producers, limit)?;
             return Ok(json!({"repository_id":project,"stable_id":stable,"documents":out,"rules":RULES}));
         }
         if let Some(document) = args.get("document_id").filter(|v| !v.is_null()) {
@@ -2983,6 +3046,83 @@ pub fn read(store: &Store, workspace: &str, token: &str, args: &Value) -> Result
         }
         coverage(db, &project, &mut readable, &producers)
     })
+}
+
+/// The documents the reader may read now that mention the definition
+/// `stable` of `project` (from any project of the workspace), at most
+/// `limit`: `graph.doc_links` with `stable_id`, and the back-links of the
+/// graph tools' `get_node`.
+pub fn documents_naming(
+    db: &Connection,
+    p: &Principal,
+    project: &str,
+    stable: &str,
+    limit: usize,
+) -> Result<Vec<Value>> {
+    Naming::new(db, p).documents(project, stable, limit)
+}
+
+/// [`documents_naming`] for many definitions read by one reader (the
+/// back-links of one `get_node` call): each project's documents are listed
+/// once for all of them, not once per definition.
+pub struct Naming<'a> {
+    readable: Readable<'a>,
+    producers: String,
+}
+
+impl<'a> Naming<'a> {
+    pub fn new(db: &'a Connection, p: &'a Principal) -> Self {
+        Self {
+            readable: Readable::new(db, p),
+            producers: json!(producers()).to_string(),
+        }
+    }
+    /// Use `documents`, the project's documents as `memory::documents` gives
+    /// them to this reader (who may read `project`), instead of listing them
+    /// again.
+    pub fn knowing(mut self, project: &str, documents: &[Value]) -> Self {
+        self.readable
+            .documents
+            .insert(project.to_string(), Some(listing(documents)));
+        self
+    }
+    /// The documents that mention `stable` of `project`, as
+    /// [`documents_naming`].
+    pub fn documents(&mut self, project: &str, stable: &str, limit: usize) -> Result<Vec<Value>> {
+        naming(&mut self.readable, project, stable, &self.producers, limit)
+    }
+}
+
+fn naming(
+    readable: &mut Readable<'_>,
+    project: &str,
+    stable: &str,
+    producers: &str,
+    limit: usize,
+) -> Result<Vec<Value>> {
+    let mut out = Vec::new();
+    for link in rows(
+        readable.db,
+        "SELECT * FROM gf_doc_links WHERE target_repository_id=? AND stable_id=? AND state='linked' \
+         AND producer IN (SELECT value FROM json_each(?)) ORDER BY repository_id,document_id,byte_start,id",
+        params![project, stable, producers],
+    )? {
+        let document = s(&link, "document_id");
+        if readable
+            .document(s(&link, "repository_id"), document)?
+            .is_none_or(|listed| listed.sha != s(&link, "document_sha256"))
+            || readable.state(&link)? != "linked"
+        {
+            continue;
+        }
+        if out.len() < limit {
+            out.push(json!({"repository_id":link["repository_id"],"document_id":document,
+                "source_kind":link["source_kind"],"byte_start":link["byte_start"],"byte_end":link["byte_end"],
+                "mention":link["mention"],"mark":link["mark"],"rung":link["rung"],"producer":link["producer"],
+                "scope":link["scope"],"target_relpath":link["target_relpath"]}));
+        }
+    }
+    Ok(out)
 }
 
 fn coverage(

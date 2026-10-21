@@ -143,6 +143,54 @@ async fn provider_permission_work_waits_for_graphicle_pro() {
     assert_eq!(info(&store)["provider_permission_sync"], false);
 }
 
+/// Jira and Confluence provider sharing, and connector kinds the core does
+/// not have, need an installed extension that provides them: without one,
+/// they are refused with the errors Core always gave. Jira and Confluence
+/// identities are Atlassian accounts in every edition.
+#[test]
+fn provider_sharing_and_added_connector_kinds_need_an_extension() {
+    let (_dir, store, w, key, r, _connector) = provider_store();
+    let credential = store
+        .put_credential(
+            &w,
+            &key,
+            &json!({"name":"Provider token","value":"fixture-only-access"}),
+        )
+        .unwrap();
+    let acl = json!({"workspace_readers":true,"credentials":[]});
+    let jira = store.connector_add(&w,&key,&json!({"repository_id":r,"name":"Jira","kind":"jira","credential_ref":credential["credential_ref"],
+        "config":{"base_url":"https://example.atlassian.net","site_url":"https://example.atlassian.net","auth_type":"bearer",
+        "jql":"project = OPS","permission_mode":"provider","acl":acl}}));
+    let added = store.connector_add(&w,&key,&json!({"repository_id":r,"name":"Added","kind":"no_such_kind","credential_ref":credential["credential_ref"],
+        "config":{"acl":acl}}));
+    let mut config = model::Config::default();
+    config
+        .connector_endpoints
+        .insert("no_such_kind".into(), "http://127.0.0.1:9/v1".into());
+    let synced = graphicle_runtime::connectors::provider_permission_kinds();
+    if synced.iter().any(|kind| kind == "jira") {
+        jira.unwrap();
+    } else {
+        assert_eq!(
+            jira.unwrap_err().message,
+            "This provider does not expose the required source ACL API; use explicit sharing"
+        );
+    }
+    if graphicle_runtime::extension::installed().is_empty() {
+        assert!(synced.is_empty());
+    }
+    assert_eq!(added.unwrap_err().message, "Unsupported source connector");
+    assert_eq!(
+        config.validate().unwrap_err().message,
+        "Unknown connector endpoint"
+    );
+    let provider = graphicle_runtime::connectors::identity_provider;
+    assert_eq!(provider("jira"), "atlassian");
+    assert_eq!(provider("confluence"), "atlassian");
+    assert_eq!(provider("gdrive"), "gdrive");
+    assert_eq!(provider("no_such_kind"), "no_such_kind");
+}
+
 #[test]
 fn portable_backup_excludes_encrypted_credentials_and_pauses_their_connections() {
     crate::edition_setup();

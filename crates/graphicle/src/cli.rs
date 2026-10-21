@@ -81,6 +81,13 @@ enum Command {
         /// the guard hooks an earlier setup installed.
         #[arg(long)]
         guards: bool,
+        /// Also give Claude Code a prompt hook: before each prompt that is a
+        /// code question, it adds `graphicle context`'s packet (at most 8,400
+        /// characters); nothing for other or short prompts, or when it fails
+        /// or takes over 10 seconds. Without it, setup leaves an earlier
+        /// setup's prompt hook as it is (`graphicle disconnect` removes it).
+        #[arg(long)]
+        prompt_context: bool,
         /// The tools each client's entry publishes: all (every tool, as in
         /// 0.1.0), essentials (query_graph, get_node, get_neighbors,
         /// recall_project, read_project_source), graph or memory. Default:
@@ -212,8 +219,9 @@ enum Command {
         #[arg(long, default_value = "all", value_parser = ["all", "essentials", "graph", "memory"])]
         mcp_tools: String,
         /// Fix a switch of recall_project on the HTTP MCP endpoint, for
-        /// example graph_retrieval=false: no request can change it. Each
-        /// switch at most once.
+        /// example graph_retrieval=false or scope=project: no request can
+        /// change it, and every recall packet echoes it. Each switch at most
+        /// once; an unknown switch is refused.
         #[arg(long = "mcp-set", value_name = "SWITCH=VALUE")]
         mcp_set: Vec<String>,
         /// HTTPS origin of a reverse proxy. Public workspace creation is disabled.
@@ -291,6 +299,7 @@ enum Command {
     },
     /// Retrieve evidence without calling a model.
     Context {
+        /// The question; `-` reads it from standard input (at most 1 MiB).
         question: String,
         /// The project: an id, a key or a synced folder (default: this
         /// folder's project, else the last synced one).
@@ -300,8 +309,43 @@ enum Command {
         /// this folder's project (or --project) first, then the others.
         #[arg(long)]
         workspace: bool,
-        #[arg(long, default_value_t = 3000)]
-        max_tokens: usize,
+        /// The packet's budget in tokens [default: 3000].
+        #[arg(long)]
+        max_tokens: Option<usize>,
+        /// Most characters of the packet. Without it, 4 per token of
+        /// --max-tokens when that is given, else 8,400, which keeps a prompt
+        /// hook that prints the packet below the 10,000 characters Claude
+        /// Code shows in full.
+        #[arg(long)]
+        max_chars: Option<usize>,
+        /// Order notes and documents first for a question in prose, quote one
+        /// window per file and date each excerpt (the packet's notes_first
+        /// says what applied).
+        #[arg(long)]
+        notes_first: bool,
+        /// Answer a question that is an identifier, or only asks where named
+        /// identifiers are defined or used, with the full retrieval instead
+        /// of their definitions and references from the code graph (the
+        /// packet's route says which path ran).
+        #[arg(long)]
+        no_identifier_route: bool,
+        /// Rank source files ahead of documentation, tests and vendored code:
+        /// auto (for a code question, the default), true or false.
+        #[arg(long, value_name = "WHEN", value_parser = ["auto", "true", "false"])]
+        code_first: Option<String>,
+        /// Search a code question by its content, not its instructions:
+        /// auto (the default), true or false.
+        #[arg(long, value_name = "WHEN", value_parser = ["auto", "true", "false"])]
+        query_focus: Option<String>,
+        /// Rank the files that hold or define the identifiers and paths the
+        /// question names: auto (for a code question, the default), true or
+        /// false.
+        #[arg(long, value_name = "WHEN", value_parser = ["auto", "true", "false"])]
+        identifier_arm: Option<String>,
+        /// After the excerpts, list the paths of this many next-ranked files
+        /// (0 to 40; default 10 for a code question, 0 otherwise).
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(0..=40))]
+        more_files: Option<u64>,
         /// Configured local ONNX embedding profile; requires a prepared vector index.
         #[arg(long)]
         local_embedding_profile: Option<String>,
@@ -411,15 +455,22 @@ enum Command {
         /// graph-history tools), memory (the other tools; recall still
         /// reads the code graph unless --set graph_retrieval=false) or
         /// essentials (query_graph, get_node, get_neighbors, recall_project
-        /// and read_project_source, with one sentence of instructions: what
-        /// setup gives Claude Code).
+        /// and read_project_source, with short instructions on when to call
+        /// them and when grep is enough: what setup gives Claude Code).
         #[arg(long, default_value = "all", value_parser = ["all", "essentials", "graph", "memory"])]
         tools: String,
         /// Fix a switch of recall_project for the session, for example
-        /// graph_retrieval=false: no request can change it. Each switch at
-        /// most once.
+        /// graph_retrieval=false or scope=project: no request can change it,
+        /// and every recall packet echoes it. Each switch at most once; an
+        /// unknown switch is refused.
         #[arg(long = "set", value_name = "SWITCH=VALUE")]
         set: Vec<String>,
+        /// Print this server's manifest as JSON and exit: the program's
+        /// version, edition and sha256, the tools and instructions it would
+        /// serve with their sha256, the switches it fixes, and the schema
+        /// versions, for a record of exactly what a run used.
+        #[arg(long)]
+        manifest: bool,
         /// Also publish the graph engine's pull-request tools (list_prs,
         /// get_pr_impact, triage_prs), which run gh here: start the server in
         /// the project's own folder. Not with --workspace, which has no
@@ -462,7 +513,10 @@ enum Command {
         arguments: Option<PathBuf>,
     },
     /// Create a consistent, private SQLite backup without stopping the app.
-    Backup { path: PathBuf },
+    ///
+    /// Without PATH, the backup goes to the data folder's `backups` folder,
+    /// where `graphicle offboard` finds it.
+    Backup { path: Option<PathBuf> },
     /// Restore a database into a new data directory; existing data is never overwritten.
     Restore { path: PathBuf },
     /// Show or change settings, such as the answer model.
@@ -487,6 +541,27 @@ enum Command {
         /// Download into this directory without installing or running the artifact.
         #[arg(long, requires = "feed")]
         output: Option<PathBuf>,
+        /// Print JSON (the default when the output is not a terminal).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove one project's data from the data folder, with a hash-chained
+    /// deletion receipt that lists what was removed.
+    ///
+    /// The project's sources, memory, code graph and history go from the
+    /// store, with its graph cache and its copies in the backups `graphicle
+    /// backup` keeps in the data folder; other projects, in those backups
+    /// too, stay. Without --apply, only the plan is shown and nothing
+    /// changes; it ends with the command that carries it out. Nothing
+    /// outside the data folder is touched: the plan names what it does not
+    /// cover, such as backups written elsewhere.
+    Offboard {
+        /// The project: an id, a key or a synced folder.
+        #[arg(long)]
+        project: String,
+        /// Carry out the plan with this hash, as the plan printed it.
+        #[arg(long, value_name = "PLAN_HASH")]
+        apply: Option<String>,
         /// Print JSON (the default when the output is not a terminal).
         #[arg(long)]
         json: bool,
@@ -644,6 +719,10 @@ pub fn main_with(extensions: Extensions) -> i32 {
                     1
                 }
             };
+            // This process's served-token counts (`crate::metering`), waiting
+            // at most a second for the store: a capture hook must not hold
+            // up its client.
+            crate::metering::flush_all(std::time::Duration::from_secs(1));
             crate::local_inference::exit_if_loaded(code);
             if code != 0 {
                 std::process::exit(code);
@@ -867,6 +946,13 @@ where
         Command::Sync { quiet: true, .. } if !directory.join("reviews.sqlite3").is_file() => {
             return Ok(());
         }
+        // Offboarding never creates one.
+        Command::Offboard { .. } if !directory.join("reviews.sqlite3").is_file() => {
+            return Err(Error::bad(format!(
+                "There is no Graphicle data folder at {}: nothing to offboard",
+                directory.display()
+            )));
+        }
         // An agent's server never creates one either: it says what to run.
         Command::Mcp { .. } if !directory.join("reviews.sqlite3").is_file() => {
             return Err(Error::bad(format!(
@@ -891,6 +977,8 @@ where
     // file's `limits`, then `GRAPHICLE_MAX_*`.
     let limits = crate::limits::Limits::from_environment(&config.limits)?;
     crate::limits::install(limits);
+    // Whether a sync reads tracked files an ignore pattern matches.
+    crate::local::install_tracked_ignored(&config);
     let store = store.with_limits(limits);
     let app = App::new(store.clone(), config.clone(), vec![])?;
     match command {
@@ -903,6 +991,7 @@ where
             no_instructions,
             switch_from_graphify,
             guards,
+            prompt_context,
             tools,
             json,
         } => crate::setup::setup(
@@ -919,6 +1008,7 @@ where
                 json,
                 config: config_path.clone(),
                 guards,
+                prompt_context,
                 tools: tools.as_deref().map(api::ToolSet::parse).transpose()?,
             },
         ),
@@ -1043,7 +1133,25 @@ where
             false,
             crate::terminal::update_text,
         ),
-        Command::Backup { path } => print(&store.backup(&path)?),
+        Command::Backup { path } => {
+            let path = match path {
+                Some(path) => path,
+                None => crate::offboard::backup_path(&store)?,
+            };
+            print(&store.backup(&path)?)
+        }
+        Command::Offboard {
+            project,
+            apply,
+            json,
+        } => {
+            let session = local::session(&store, false)?;
+            let reply = match apply {
+                Some(hash) => crate::offboard::apply(&store, &session, &project, &hash)?,
+                None => crate::offboard::plan(&store, &session, &project)?,
+            };
+            crate::terminal::emit(&reply, json, crate::offboard::text)
+        }
         Command::DocumentWorker { .. } => unreachable!(),
         Command::Restore { .. } => unreachable!(),
         Command::RedisWorker { .. } => unreachable!(),
@@ -1241,6 +1349,7 @@ where
             tools,
             set,
             pull_requests,
+            manifest,
         } => {
             let session = local::session(&store, false)?;
             // A project connection, or with --workspace a workspace
@@ -1287,6 +1396,34 @@ where
                 pull_requests,
                 cwd: Some(cwd),
             };
+            // A fixed scope must match the connection.
+            match (
+                app.mcp
+                    .fixed
+                    .get(api::RECALL_SCOPE)
+                    .and_then(|v| v.as_str()),
+                workspace,
+            ) {
+                (Some("project"), true) => {
+                    return Err(Error::bad(
+                        "--set scope=project serves one project: leave out --workspace",
+                    ));
+                }
+                (Some("workspace"), false) => {
+                    return Err(Error::bad(
+                        "--set scope=workspace serves the workspace: add --workspace",
+                    ));
+                }
+                _ => {}
+            }
+            if manifest {
+                return print(&api::manifest(
+                    &app,
+                    &session.workspace,
+                    &session.capability,
+                    project.as_deref(),
+                )?);
+            }
             // SIGTERM and SIGINT end the session as a closed input does:
             // handled, they no longer kill the process in the middle
             // of a projection. Installed before the drain starts.
@@ -1434,10 +1571,29 @@ where
             project,
             workspace,
             max_tokens,
+            max_chars,
+            notes_first,
+            no_identifier_route,
+            code_first,
+            query_focus,
+            identifier_arm,
+            more_files,
             local_embedding_profile,
             local_reranker_profile,
             json,
         } => {
+            // `-`: the question on standard input (the prompt hook's way, so
+            // a prompt never meets the command line's size limits).
+            let question = if question == "-" {
+                use std::io::Read;
+                let mut read = String::new();
+                std::io::stdin()
+                    .take(1024 * 1024)
+                    .read_to_string(&mut read)?;
+                read
+            } else {
+                question
+            };
             let session = crate::phase::phase("context_session", || local::session(&store, false))?;
             // With --workspace the project only comes first,
             // and none is needed outside every synced folder.
@@ -1466,10 +1622,41 @@ where
                 }),
                 None => crate::fresh::Outcome::default(),
             };
-            let mut args = json!({"repository_id":project,"question":question,"max_tokens":max_tokens,"max_chars":max_tokens.saturating_mul(4).clamp(2000,64000),"local_embedding_profile":local_embedding_profile,"local_reranker_profile":local_reranker_profile});
+            // A budget in tokens alone keeps 4 characters a token, as before;
+            // neither keeps the packet hook-sized.
+            let max_chars = match (max_chars, max_tokens) {
+                (Some(chars), _) => chars,
+                (None, Some(tokens)) => tokens.saturating_mul(4),
+                (None, None) => crate::query::PUSH_CHARS,
+            };
+            let max_tokens = max_tokens.unwrap_or(3000);
+            let mut args = json!({"repository_id":project,"question":question,"max_tokens":max_tokens,"max_chars":max_chars.clamp(2000,64000),"local_embedding_profile":local_embedding_profile,"local_reranker_profile":local_reranker_profile});
             if workspace {
                 args["scope"] = json!("workspace");
             }
+            if notes_first {
+                args["notes_first"] = json!(true);
+            }
+            // The code-question switches, when given (crate::code_question).
+            for (field, value) in [
+                ("code_first", code_first),
+                ("query_focus", query_focus),
+                ("identifier_arm", identifier_arm),
+            ] {
+                if let Some(value) = value {
+                    args[field] = match value.as_str() {
+                        "true" => json!(true),
+                        "false" => json!(false),
+                        _ => json!("auto"),
+                    };
+                }
+            }
+            if let Some(count) = more_files {
+                args["more_files"] = json!(count);
+            }
+            // The identifier route unless --no-identifier-route (the HTTP
+            // API and the SDKs leave it off unless a call asks).
+            args[crate::identifier_route::FIELD] = json!(!no_identifier_route);
             let mut packet = crate::phase::phase("context_packet", || {
                 api::command(
                     &app,
@@ -1480,17 +1667,30 @@ where
                 )
             })?;
             fresh.attach(&mut packet);
+            if !no_identifier_route && packet[crate::identifier_route::REPORT].is_object() {
+                packet[crate::identifier_route::REPORT]["defaulted"] = json!(true);
+            }
             // On a terminal the note is part of the readable packet.
             if !crate::terminal::human(json) {
                 fresh.tell();
             }
-            crate::terminal::emit(&packet, json, |packet, style| {
+            let printed = crate::terminal::emit_text(&packet, json, |packet, style| {
                 crate::terminal::with_origin(
                     origin.as_deref(),
                     style,
                     crate::terminal::context_text(packet, style),
                 )
-            })
+            })?;
+            // Served on the command line: metered (`crate::metering`).
+            crate::metering::served_locally(
+                &store,
+                &session.workspace,
+                &session.capability,
+                project.as_deref().unwrap_or(""),
+                "context",
+                &printed,
+            );
+            Ok(())
         }
         Command::Ask {
             question,
@@ -1635,13 +1835,25 @@ where
             if let Some(project) = project {
                 args["repository_id"] = json!(project);
             }
-            print(&api::command(
+            let value = api::command(
                 &app,
                 &session.workspace,
                 &session.capability,
                 &operation,
                 &args,
-            )?)
+            )?;
+            let printed = serde_json::to_string_pretty(&value)?;
+            crate::terminal::say(&printed)?;
+            // A metered operation is counted (`crate::metering::meter`).
+            crate::metering::served_locally(
+                &store,
+                &session.workspace,
+                &session.capability,
+                args["repository_id"].as_str().unwrap_or(""),
+                &operation,
+                &printed,
+            );
+            Ok(())
         }
         Command::ConfigExample
         | Command::Help { .. }
@@ -1885,32 +2097,58 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
             };
             let directory = directory.to_path_buf();
             let (sender, receiver) = std::sync::mpsc::channel();
+            // The agent's session, for metering: a digest of its id.
+            let agent_session = payload["session_id"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .map(|id| crate::metering::session_label(client.as_str(), id))
+                .unwrap_or_default();
             // A plain thread: returning from main does not wait for it.
             std::thread::spawn(move || {
-                let context = (|| -> Result<Option<String>> {
+                let context = (|| -> Result<Option<(String, Store, crate::metering::Call)>> {
                     let store = Store::open(directory)?;
                     let session = local::session(&store, false)?;
                     let Some(project) = crate::capture::project_for_cwd(&store, &session, &cwd)?
                     else {
                         return Ok(None);
                     };
-                    // An empty context (nothing reviewed, open or stale)
-                    // prints nothing, so the session gets no Graphicle text.
+                    // The context starts with the line on when to use
+                    // Graphicle (crate::agent_instructions::SESSION_ROUTING),
+                    // so every session in a project gets it; an empty one
+                    // would print nothing.
                     let context = store.session_start_context(
                         &session.workspace,
                         &session.capability,
                         &project,
                     )?;
-                    Ok((!context.is_empty()).then_some(context))
+                    if context.is_empty() {
+                        return Ok(None);
+                    }
+                    let credential =
+                        crate::metering::principal(&store, &session.workspace, &session.capability)
+                            .map(|principal| principal.credential)
+                            .unwrap_or_default();
+                    let call = crate::metering::Call {
+                        workspace: session.workspace,
+                        repository: project,
+                        credential,
+                        session: agent_session,
+                        channel: crate::metering::Channel::Hook,
+                        kind: "session_start".into(),
+                    };
+                    Ok(Some((context, store, call)))
                 })();
                 let _ = sender.send(context);
             });
-            if let Ok(Ok(Some(context))) =
+            if let Ok(Ok(Some((context, store, call)))) =
                 receiver.recv_timeout(std::time::Duration::from_millis(2500))
             {
                 use std::io::Write;
                 let output = json!({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":context}});
-                let _ = writeln!(std::io::stdout(), "{output}");
+                if writeln!(std::io::stdout(), "{output}").is_ok() && !call.credential.is_empty() {
+                    // Served: written when the program ends (`main_with`).
+                    crate::metering::record(&store, &call, crate::metering::tokens(&context));
+                }
             }
         }
         "stop" | "sessionend" | "precompact" => {
@@ -1936,6 +2174,8 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
             // timeout does not stop the import.
             let _ = crate::platform::spawn_detached(&mut command);
         }
+        // The prompt hook of `setup --prompt-context` (crate::prompt_hook).
+        "promptcontext" => crate::prompt_hook::run(directory, &payload),
         // The guard hooks of `connect --graph`.
         "guardsearch" | "guardread" => {
             use std::io::Write;

@@ -968,6 +968,7 @@ async fn one_workspace_connection_answers_repo_and_workspace_recall() {
         "graph_episodes",
         "graph_as_of",
         "graph_link",
+        "workspace_map",
         "graph_history_stats",
         "query_graph",
         "get_node",
@@ -1421,6 +1422,158 @@ fn a_project_connections_graph_tools_read_another_project_until_access_is_revoke
     assert!(own.to_string().contains("invoice.py"), "{own}");
 }
 
+/// A note of another project that names the money library's function.
+const CLIENT_NOTE: &str =
+    "# Client X ledger\n\nThe Client X ledger rounds with `quantize_cents` before posting.\n";
+/// The money library's own page about the same function.
+const ROUNDING_PAGE: &str = "# Rounding\n\n`quantize_cents` rounds half up to whole cents.\n";
+
+/// `get_node` on a connection: to one project (`Some`), or to the workspace.
+fn get_node(f: &Fixture, app: &App, connection: Option<&str>, arguments: Value) -> Value {
+    let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+        "params":{"name":"get_node","arguments":structured("get_node", arguments)}});
+    match connection {
+        Some(project) => api::mcp(app, &f.workspace, &f.key, project, &request),
+        None => api::mcp_workspace(app, &f.workspace, &f.key, &request),
+    }
+    .unwrap()
+}
+
+/// The back-links of a `get_node` reply's nodes under `key` (`memories` or
+/// `documents`).
+fn back_links(reply: &Value, key: &str) -> Vec<Value> {
+    reply["result"]["structuredContent"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|node| node["linked"][key].as_array().cloned().unwrap_or_default())
+        .collect()
+}
+
+/// A project connection keeps documents on its project: `get_node` lists
+/// the project's own page about its function, never another project's note
+/// that names it, in its structured answer or its citations text. A
+/// workspace connection lists both.
+#[test]
+fn a_project_connections_get_node_lists_no_other_projects_documents() {
+    let f = Fixture::new();
+    let mut files = money_files();
+    files.push(("docs/rounding.md", ROUNDING_PAGE));
+    let money = f.project("moneylib", "Money", &files);
+    let notes = f.project(
+        "clientx-notes",
+        "Client X notes",
+        &[("docs/ledger.md", CLIENT_NOTE)],
+    );
+    f.store.graph_link(&f.workspace, &f.key).unwrap();
+    let app = f.app();
+    let in_workspace = get_node(
+        &f,
+        &app,
+        None,
+        json!({"label":"quantize_cents","repo":money}),
+    );
+    let all: Vec<Value> = back_links(&in_workspace, "documents")
+        .iter()
+        .map(|d| d["repository_id"].clone())
+        .collect();
+    assert!(all.contains(&json!(notes)), "{in_workspace}");
+    assert!(all.contains(&json!(money)), "{in_workspace}");
+    let reply = get_node(
+        &f,
+        &app,
+        Some(money.as_str()),
+        json!({"label":"quantize_cents"}),
+    );
+    let documents = back_links(&reply, "documents");
+    assert!(
+        documents.iter().all(|d| d["repository_id"] == json!(money)),
+        "a connection to {money} lists documents of {notes}: {documents:?}"
+    );
+    assert!(
+        documents
+            .iter()
+            .any(|d| d["document_id"] == "file:docs/rounding.md"),
+        "{documents:?}"
+    );
+    let text = reply["result"]["content"].to_string();
+    assert!(!text.contains("docs/ledger.md"), "{text}");
+}
+
+/// A project connection keeps memory on its project: through `repo`,
+/// `get_node` reads another project's code graph but lists none of that
+/// project's reviewed memories; it lists its own project's. A workspace
+/// connection lists the other project's memory.
+#[test]
+fn a_project_connections_get_node_with_repo_lists_no_other_projects_memories() {
+    let (f, shop, money) = Fixture::shop_and_money();
+    let note = |project: &str, title: &str, path: &str, name: &str| {
+        f.store
+            .note(
+                &f.workspace,
+                &f.key,
+                &json!({"repository_id":project,"title":title,"body":"Ask the desk first.",
+                    "kind":"decision","symbols":[{"path":path,"qualified_name":name}]}),
+            )
+            .unwrap()
+    };
+    let refunds = note(
+        &shop,
+        "Client X refund rule",
+        "shopapp/invoice.py",
+        "settle_invoice",
+    );
+    let rounding = note(
+        &money,
+        "Rounding stays half up",
+        "moneylib/rounding.py",
+        "quantize_cents",
+    );
+    let app = f.app();
+    let ids = |reply: &Value| -> Vec<Value> {
+        back_links(reply, "memories")
+            .iter()
+            .map(|m| m["id"].clone())
+            .collect()
+    };
+    let in_workspace = get_node(
+        &f,
+        &app,
+        None,
+        json!({"label":"settle_invoice","repo":shop}),
+    );
+    assert_eq!(
+        ids(&in_workspace),
+        vec![refunds["id"].clone()],
+        "{in_workspace}"
+    );
+    let through_repo = get_node(
+        &f,
+        &app,
+        Some(money.as_str()),
+        json!({"label":"settle_invoice","repo":shop}),
+    );
+    assert!(
+        through_repo.to_string().contains("invoice.py"),
+        "{through_repo}"
+    );
+    assert!(
+        ids(&through_repo).is_empty(),
+        "a connection to {money} lists reviewed memories of {shop}: {through_repo}"
+    );
+    assert!(
+        !through_repo.to_string().contains("Client X refund rule"),
+        "{through_repo}"
+    );
+    let own = get_node(
+        &f,
+        &app,
+        Some(money.as_str()),
+        json!({"label":"quantize_cents"}),
+    );
+    assert_eq!(ids(&own), vec![rounding["id"].clone()], "{own}");
+}
+
 /// A workspace connection remembers what it showed per project (`shown` and
 /// `skip_shown`; source ids repeat across projects): the second recall
 /// answers each project's windows with references naming that project.
@@ -1613,4 +1766,340 @@ fn graphicle_mcp_workspace_serves_every_project_over_stdio() {
             String::from_utf8_lossy(&refused.stderr)
         );
     }
+}
+
+/// A page of the shop's documentation that names the function it documents.
+const INVOICES: &str = "# Invoices\n\nInvoices are settled by `settle_invoice`.\n";
+
+/// The money library with a memory anchored to its rounding, and the shop
+/// with a documentation page, linked; a PR scratch project beside them.
+fn mapped() -> (Fixture, String, String, String) {
+    let f = Fixture::new();
+    let money = f.project("moneylib", "Money", &money_files());
+    let mut shop_files = shop_files();
+    shop_files.push(("docs/invoices.md", INVOICES));
+    let shop = f.project("shopapp", "Shop", &shop_files);
+    let linked = f.store.graph_link(&f.workspace, &f.key).unwrap();
+    assert!(linked["edges"].as_u64().unwrap() >= 1, "{linked}");
+    f.store
+        .note(
+            &f.workspace,
+            &f.key,
+            &json!({"repository_id":money,"kind":"decision","title":"Cents round half up",
+                "body":"quantize_cents rounds half up to whole cents.",
+                "evidence":[{"id":"file:moneylib/rounding.py","quote":"scaled = int(value * 100 + 0.5)"}]}),
+        )
+        .unwrap();
+    let scratch = f.project("git:scratch", "Scratch", &[("notes.txt", "scratch copy\n")]);
+    f.store
+        .mark_pr_scratch(&f.workspace, &f.key, &scratch)
+        .unwrap();
+    (f, shop, money, scratch)
+}
+
+/// The workspace map lists the projects the caller may read (creation
+/// order, no PR scratch project unless asked), the imports `graph.link`
+/// recorded between them by pair, and per project what the caller's own
+/// single-project reads count: files, documents, code symbols, memories and
+/// links. It writes nothing, and paging lists each pair once.
+#[test]
+fn the_workspace_map_lists_projects_imports_and_counts() {
+    let (f, shop, money, scratch) = mapped();
+    let watcher = f.db();
+    let version = |db: &rusqlite::Connection| {
+        db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
+            .unwrap()
+    };
+    let before = version(&watcher);
+    let map = f
+        .store
+        .workspace_map(&f.workspace, &f.key, &json!({}))
+        .unwrap();
+    assert_eq!(version(&watcher), before, "the map wrote to the store");
+    let projects = map["projects"].as_array().unwrap();
+    let ids: Vec<&str> = projects.iter().map(|p| s(p, "id")).collect();
+    assert_eq!(ids, [money.as_str(), shop.as_str()], "{map:#}");
+    assert_eq!(map["total"], 2);
+    assert!(map["next_offset"].is_null());
+    assert!(!map.to_string().contains(&scratch));
+    for project in projects {
+        // Ids, names and times: a project's key can carry a path or a user id.
+        assert!(project.get("project_key").is_none(), "{project}");
+        assert_eq!(project["status"], "ok", "{project}");
+        assert_eq!(project["graph"]["current"], true, "{project}");
+    }
+    // One pair: the shop imports from the money library.
+    let imports = map["imports"].as_array().unwrap();
+    assert_eq!(imports.len(), 1, "{map:#}");
+    let pair = &imports[0];
+    assert_eq!(pair["source_repository_id"], shop.as_str());
+    assert_eq!(pair["target_repository_id"], money.as_str());
+    let edges = pair["edges"].as_u64().unwrap();
+    assert!(edges >= 1);
+    assert_eq!(map["import_edges"], edges);
+    assert!(
+        pair["modules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m.as_str().unwrap().contains("moneylib")),
+        "{pair}"
+    );
+    assert_eq!(
+        pair["modules_total"],
+        pair["modules"].as_array().unwrap().len()
+    );
+    let (money_entry, shop_entry) = (&projects[0], &projects[1]);
+    assert_eq!(shop_entry["counts"]["links"]["imports_out"], edges);
+    assert_eq!(shop_entry["counts"]["links"]["imports_in"], 0);
+    assert_eq!(money_entry["counts"]["links"]["imports_in"], edges);
+    assert_eq!(money_entry["counts"]["links"]["imports_out"], 0);
+    // Each count is what the caller's reads of that project show.
+    for (entry, id) in [(money_entry, &money), (shop_entry, &shop)] {
+        let counts = &entry["counts"];
+        let args = json!({"repository_id":id});
+        let files = f
+            .store
+            .project_read(&f.workspace, &f.key, "files", &args)
+            .unwrap();
+        assert_eq!(counts["files"], files["total"], "{entry}");
+        assert_eq!(counts["documents"], 0);
+        let symbols: i64 = watcher
+            .query_row(
+                "SELECT COUNT(*) FROM gf_symbol_heads WHERE repository_id=?",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(symbols >= 1);
+        assert_eq!(counts["symbols"], symbols);
+        let memories = f
+            .store
+            .project_read(&f.workspace, &f.key, "memories", &args)
+            .unwrap();
+        let memories = memories.as_array().unwrap();
+        assert_eq!(counts["memories"], memories.len());
+        let anchored: u64 = memories
+            .iter()
+            .map(|m| m["symbol_links"]["links"].as_u64().unwrap_or(0))
+            .sum();
+        assert_eq!(counts["links"]["memory_symbols"], anchored);
+        let coverage =
+            graphicle_runtime::doc_links::read(&f.store, &f.workspace, &f.key, &args).unwrap();
+        assert_eq!(
+            counts["links"]["document_mentions"],
+            coverage["coverage"]["total"]["linked"]
+                .as_u64()
+                .unwrap_or(0),
+            "{coverage}"
+        );
+    }
+    assert_eq!(money_entry["counts"]["memories"], 1);
+    assert_eq!(money_entry["counts"]["links"]["memory_symbols"], 1);
+    assert_eq!(shop_entry["counts"]["memories"], 0);
+    assert!(
+        shop_entry["counts"]["links"]["document_mentions"]
+            .as_u64()
+            .unwrap()
+            >= 1,
+        "{shop_entry}"
+    );
+    // A page at a time: each pair on its source's page.
+    let first = f
+        .store
+        .workspace_map(&f.workspace, &f.key, &json!({"limit":1}))
+        .unwrap();
+    assert_eq!(first["projects"][0]["id"], money.as_str());
+    assert_eq!(first["next_offset"], 1);
+    assert_eq!(first["imports"], json!([]));
+    assert_eq!(first["import_edges"], edges);
+    let second = f
+        .store
+        .workspace_map(&f.workspace, &f.key, &json!({"offset":1,"limit":1}))
+        .unwrap();
+    assert_eq!(second["projects"][0]["id"], shop.as_str());
+    assert!(second["next_offset"].is_null());
+    assert_eq!(second["imports"], map["imports"]);
+    // Scratch projects on request, marked.
+    let all = f
+        .store
+        .workspace_map(&f.workspace, &f.key, &json!({"include_scratch":true}))
+        .unwrap();
+    assert_eq!(all["total"], 3);
+    assert_eq!(all["projects"][2]["id"], scratch.as_str());
+    assert_eq!(all["projects"][2]["role"], "pr_scratch");
+    for bad in [
+        json!({"include_scratch":"yes"}),
+        json!({"limit":201}),
+        json!({"offset":-1}),
+    ] {
+        assert!(
+            f.store.workspace_map(&f.workspace, &f.key, &bad).is_err(),
+            "{bad}"
+        );
+    }
+}
+
+/// A project the caller may not read is not on the map: no entry, no
+/// import edge to or from it, no count that includes it, over the API and
+/// over a workspace MCP connection; a project connection has no map.
+#[test]
+fn an_unreadable_project_is_not_on_the_workspace_map() {
+    let (f, shop, money, _) = mapped();
+    let (reader_id, reader) = f.reader("reader");
+    let full = f
+        .store
+        .workspace_map(&f.workspace, &reader, &json!({}))
+        .unwrap();
+    assert_eq!(full["total"], 2, "{full:#}");
+    f.revoke(&money, &reader_id);
+    let app = f.app();
+    let call = |connection: Option<&str>, arguments: Value| {
+        let request = json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+            "params":{"name":"workspace_map","arguments":arguments}});
+        match connection {
+            None => api::mcp_workspace(&app, &f.workspace, &reader, &request),
+            Some(project) => api::mcp(&app, &f.workspace, &reader, project, &request),
+        }
+        .unwrap()
+    };
+    let map = f
+        .store
+        .workspace_map(&f.workspace, &reader, &json!({}))
+        .unwrap();
+    let over_mcp = call(None, json!({}));
+    assert_eq!(over_mcp["result"]["isError"], false, "{over_mcp}");
+    assert_eq!(over_mcp["result"]["structuredContent"], map);
+    let over_http = api::command(&app, &f.workspace, &reader, "graph.map", &json!({})).unwrap();
+    assert_eq!(over_http, map);
+    assert_eq!(map["total"], 1, "{map:#}");
+    assert_eq!(map["projects"][0]["id"], shop.as_str());
+    assert_eq!(map["imports"], json!([]));
+    assert_eq!(map["import_edges"], 0);
+    assert_eq!(map["projects"][0]["counts"]["links"]["imports_out"], 0);
+    assert!(!map.to_string().contains(&money), "{map:#}");
+    // The owner still maps both.
+    let owner = f
+        .store
+        .workspace_map(&f.workspace, &f.key, &json!({}))
+        .unwrap();
+    assert_eq!(owner["total"], 2);
+    // A project connection reads its own project only: no map.
+    let refused = call(Some(&shop), json!({}));
+    assert!(
+        s(&refused["error"], "message").contains("Tool unavailable"),
+        "{refused}"
+    );
+    let listed = api::mcp(
+        &app,
+        &f.workspace,
+        &reader,
+        &shop,
+        &json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+    )
+    .unwrap();
+    assert!(!listed.to_string().contains("workspace_map"), "{listed}");
+}
+
+/// The packet fields a measurement of the integrated build reads, as JSON
+/// pointers: present in every recall packet, of a project or a workspace.
+const MEASURED_FIELDS: &[&str] = &[
+    "/graph_source",
+    "/code_graph/status",
+    "/code_graph/cited",
+    "/code_graph/episode_lag",
+    "/doc_links/status",
+    "/symbol_links/status",
+    "/mechanisms/switches/graph_retrieval",
+    "/mechanisms/switches/memory_retrieval",
+    "/mechanisms/switches/doc_links",
+    "/mechanisms/switches/symbol_links",
+    "/mechanisms/switches/cross_repo",
+    "/mechanisms/switches/notes_first",
+    "/mechanisms/switches/scope",
+    "/mechanisms/memories_withheld/by_file",
+    "/mechanisms/memories_withheld/by_symbol",
+    "/mechanisms/links_used/memory",
+    "/mechanisms/links_used/document",
+    "/mechanisms/links_used/by_rung",
+    "/mechanisms/links_followed_through_move",
+    "/mechanisms/links_pending_projection",
+    "/mechanisms/workspace/projects_searched",
+    "/mechanisms/workspace/cross_edges_used",
+    "/coverage/passage_limit_reached",
+    "/coverage/omitted_documents",
+];
+
+/// Conformance (the cross-repository step's own switch): `cross_repo: false`
+/// turns off only the step (the code arm still reads each project's graph),
+/// `cross_repo: true` turns it on with `graph_retrieval: false`, left out it
+/// follows `graph_retrieval`; every packet echoes the switches in force and
+/// carries the fields a measurement reads.
+#[test]
+fn conformance_cross_repo_switches_the_import_step_alone() {
+    let (f, shop, money) = Fixture::shop_and_money();
+    let args = |extra: Value| {
+        let mut args = json!({"question":ABOUT_THE_SHOP,"scope":"workspace","repository_id":shop});
+        for (key, value) in extra.as_object().unwrap() {
+            args[key] = value.clone();
+        }
+        args
+    };
+    let off = f.context(&f.key, args(json!({"cross_repo":false})));
+    assert_eq!(off["workspace"]["cross_repo"]["enabled"], false);
+    assert!(
+        window(&off, &money, "moneylib/rounding.py").is_none(),
+        "{}",
+        off["evidence"]
+    );
+    assert_eq!(off["mechanisms"]["switches"]["cross_repo"], false);
+    assert_eq!(off["mechanisms"]["switches"]["graph_retrieval"], true);
+    assert_eq!(off["mechanisms"]["code_graph_enabled"], true);
+    assert_eq!(off["mechanisms"]["workspace"]["cross_edges_used"], 0);
+
+    let on = f.context(
+        &f.key,
+        args(json!({"cross_repo":true,"graph_retrieval":false})),
+    );
+    assert!(
+        window(&on, &money, "moneylib/rounding.py").is_some(),
+        "{}",
+        on["evidence"]
+    );
+    assert!(on["workspace"]["cross_repo"]["lifted"].as_u64().unwrap() >= 1);
+    assert_eq!(
+        on["mechanisms"]["switches"],
+        json!({"graph_retrieval":false,"memory_retrieval":true,"doc_links":"counted",
+            "symbol_links":"counted","cross_repo":true,"notes_first":false,
+            "identifier_route":false,"code_first":"auto","query_focus":"auto",
+            "identifier_arm":"auto","more_files":"auto","scope":"workspace"})
+    );
+
+    let default = f.context(&f.key, args(json!({})));
+    assert_eq!(default["mechanisms"]["switches"]["cross_repo"], true);
+    assert!(window(&default, &money, "moneylib/rounding.py").is_some());
+
+    let project = f.context(
+        &f.key,
+        json!({"question":ABOUT_THE_SHOP,"repository_id":shop}),
+    );
+    assert_eq!(project["mechanisms"]["switches"]["scope"], "project");
+    for packet in [&off, &on, &default, &project] {
+        for pointer in MEASURED_FIELDS {
+            assert!(
+                packet.pointer(pointer).is_some(),
+                "{pointer} is missing: {}",
+                packet["mechanisms"]
+            );
+        }
+    }
+    let refused = f
+        .store
+        .project_context(&f.workspace, &f.key, &args(json!({"cross_repo":"no"})))
+        .unwrap_err();
+    assert!(
+        refused.message.contains("cross_repo must be true or false"),
+        "{}",
+        refused.message
+    );
 }

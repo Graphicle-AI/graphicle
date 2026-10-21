@@ -640,8 +640,26 @@ pub fn rank(request: &Value) -> Result<Value> {
         .iter()
         .map(|n| weight_of(n))
         .collect::<Result<Vec<_>>>()?;
+    // Opt-in `origin_prior`: a weight between 0 and 1 per origin (the
+    // runtime's code-first prior gives a code question's documentation and
+    // test files less than their source). Every fused score of the origin's
+    // rows, and every score the relationship lift gives them, is multiplied
+    // by it before the order is taken, so selection and packing see it.
+    let priors = origin_priors(request)?;
+    let prior = |i: usize| -> f64 {
+        rows[i]
+            .get("origin")
+            .and_then(Value::as_str)
+            .and_then(|origin| priors.get(origin))
+            .copied()
+            .unwrap_or(1.0)
+    };
     let mut scores: BTreeMap<String, f64> = rrf_weighted(&rankings, &weights, rrf_k, 0.0)?
         .into_iter()
+        .map(|(id, score)| {
+            let weight = ids.get(&id).map_or(1.0, |&i| prior(i));
+            (id, score * weight)
+        })
         .collect();
     let mut reasons: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for ((name, ranking), weight) in names.iter().zip(&rankings).zip(&weights) {
@@ -730,7 +748,7 @@ pub fn rank(request: &Value) -> Result<Value> {
                     .filter(|t| features[i].words.contains_key(t))
                     .count() as f64
                     / q.len().max(1) as f64;
-                let score = top * (0.45 + 0.15 * overlap) / (hop as f64);
+                let score = top * (0.45 + 0.15 * overlap) / (hop as f64) * prior(i);
                 let entry = scores.entry(id.to_owned()).or_default();
                 *entry = entry.max(score);
                 reasons
@@ -980,6 +998,9 @@ pub fn rank(request: &Value) -> Result<Value> {
     if quota.is_some() {
         output["origin_quota"] = json!({"origins":origin_count});
     }
+    if !priors.is_empty() {
+        output["origin_prior"] = json!({"origins":priors.len()});
+    }
     if stem {
         output["stemmer"] = json!("porter");
     }
@@ -996,6 +1017,29 @@ pub fn rank(request: &Value) -> Result<Value> {
         output["static_edges"] = static_edges;
     }
     Ok(output)
+}
+
+/// The request's `origin_prior`: origin → weight, each between 0 and 1;
+/// absent or `null`, none. At most [`MAX_ROWS`] origins.
+fn origin_priors(request: &Value) -> Result<BTreeMap<String, f64>> {
+    let Some(value) = request.get("origin_prior").filter(|v| !v.is_null()) else {
+        return Ok(BTreeMap::new());
+    };
+    let refused = || "origin_prior must map origins to weights between 0 and 1".into();
+    let entries = value
+        .as_object()
+        .filter(|entries| entries.len() <= MAX_ROWS)
+        .ok_or_else(refused)?;
+    entries
+        .iter()
+        .map(|(origin, weight)| {
+            weight
+                .as_f64()
+                .filter(|w| (0.0..=1.0).contains(w))
+                .map(|w| (origin.clone(), w))
+                .ok_or_else(refused)
+        })
+        .collect()
 }
 
 /// Most static relationship edges [`rank`] reads.

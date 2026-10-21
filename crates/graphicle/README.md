@@ -55,7 +55,7 @@ operations through the extension registry (`src/extension.rs`).
   provider permission mode ("is not part of Graphicle Core"), while it still enforces
   the provider permissions an existing store holds.
 - `build.info` reports the edition and its capabilities, and
-  `graphicle --version` prints it (`graphicle 0.1.2 (core)`).
+  `graphicle --version` prints it (`graphicle 0.1.3 (core)`).
 - A store keeps every table when either edition opens it, and Core keeps the
   other edition's guarantees on a store it has used (`src/store_compat.rs`).
 
@@ -63,7 +63,9 @@ Extensions add operations, native operations and subcommands under names they
 declare, and each name reaches only the extension that declared it. A job of a
 kind the core does not run goes to the first installed extension whose job
 hook accepts it, so an extension's hook must decline every kind it does not
-run itself.
+run itself. An extension may also add connector kinds (`extension::Source`):
+the core adds, schedules, stages, shares and enforces their connectors like
+its own, and the source only reads its provider through the connector job.
 
 ## The browser app and the API
 
@@ -465,6 +467,26 @@ symbol picker. `memory.import` re-grounds the links in the target project by
 their path, qualified name, kind and ordinal, and marks the ones it cannot
 match. Observer notes are not linked to symbols.
 
+**Reuse across clients.** `memory.template` exports a project's reviewed
+procedures and decisions as an engagement template (`graphicle.template.v1`).
+Each memory is rebuilt from an allow-list of fields (kind, title, body and
+state), so no quote, link, dependency, id, date or author leaves the project.
+In the title and body, the memory's quotes, the sources and symbols it cites,
+the project's and workspace's names, the `terms` the caller lists (client
+names, for example), URLs, e-mail addresses, credentials, words with a path
+separator, and the project's file names and code-shaped symbol names become
+placeholders such as `[quote]` and `[symbol]`; `redactions` counts them. Other
+words stay, so read a template before sharing it. `memory.import_pack` imports
+the reviewed memories of a `memory.export` or a template into another project
+as drafts (other states are skipped and counted). Only kind, title and body
+are copied. Each symbol anchor lands on the live symbol of the same path,
+qualified name, kind and ordinal, or, when the symbol moved, on the only
+symbol of that qualified name and kind elsewhere in the project; each quote
+stays evidence only where one of the project's current sources holds it: the
+same source, or the file its anchored symbol moved to, inside that symbol.
+What cannot be grounded is dropped and counted by reason in the draft's
+`data.pack`. Recall metadata is not carried.
+
 Later windows keep the exact original header and continuation coordinates.
 Packing merges overlapping intervals, includes bounded adjacent paragraphs and
 enforces the serialized evidence-token ceiling across the final answer context.
@@ -664,7 +686,20 @@ has the details. For HTTP MCP use `POST /mcp/WORKSPACE_ID/PROJECT_ID` (or
 ```sh
 graphicle backup /safe/private/path/graphicle.sqlite3
 graphicle --data-dir /new/restore/directory restore /safe/private/path/graphicle.sqlite3
+graphicle offboard --project PROJECT                       # the plan; nothing changes
+graphicle offboard --project PROJECT --apply PLAN_HASH     # carry out that plan
 ```
+
+`graphicle backup` without a path writes to the data folder's `backups/`
+folder. `graphicle offboard` removes one project from the store (the
+certified `project.delete`, PR scratch copies included), its graph cache and
+its copies in `backups/`, where each backup keeps its other projects and
+records its own receipt; the project's receipt lists the backups and files
+removed. It touches nothing outside the data folder: links are refused, and
+backups written elsewhere, the project's `.graphicle/` folder, what `setup`
+added to its folders (`graphicle disconnect`) and memories `memory.import_pack`
+copied into other projects are named as not covered. The result is
+`verified` only when every deletion checks out and no path was refused.
 
 Portable backups omit provider secrets and the device key, and pause
 connections and pending external cleanup that need reauthorization. Reconnect

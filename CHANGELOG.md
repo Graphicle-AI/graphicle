@@ -3,7 +3,31 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## Unreleased
+## 0.1.3 - 2026-10-21
+
+Every crate is at 0.1.3, and `graphicle --version` prints
+`graphicle 0.1.3 (core)`.
+
+### Code graph
+
+- Markdown front matter that opens a bracketed list or mapping on a key's
+  line (`key: [` or `key: {`) and continues it on lines indented no further
+  than the key, such as a closing `]` at the start of a line, is now read as
+  YAML. Graphify's YAML parser (PyYAML) ignores indentation inside brackets,
+  but Graphicle's rejected such lines, so the page's stored front matter fell
+  back to plain text: its fields became strings and the list's entries were
+  lost. An `apm.yml` manifest written this way, which the same parser reads,
+  gave a manifest parse error and is now read too. This was the cause of the
+  known difference in the graph after `graphicle graph update` on
+  gohugoio/hugo.
+- Linking imports across a workspace's projects is incremental. After a sync,
+  a project's imports are linked again only when the project changed, when a
+  project it can import from changed what it exports, or when the set of
+  linked projects changed. The other projects keep their links, and their
+  graphs are not loaded again: each project's export index is kept with the
+  links. The links recorded are the same as those of a full pass. The
+  `graph_link` result lists the projects linked again (`relinked`) and those
+  whose links were kept (`reused`).
 
 ### MCP Registry
 
@@ -11,6 +35,365 @@ library (`graphicle-memory`) and the `graphicle` program.
   the extension, and the registry entry links to the same icon
   (`packaging/mcpb/icon.png`). The workflow builds a release's bundles with
   the scripts on main, so the bundles of 0.1.2 have the icon too.
+
+### Agents
+
+- Agents are told when Graphicle helps and when grep is enough, in the same
+  words wherever they read it: use `recall_project` or `query_graph` for
+  where or how something works, for questions across files or history, and
+  before changing unfamiliar code; for an exact identifier you already know,
+  grep is enough. Answers cite file and lines.
+  - Claude Code's and Codex's session-start hook prints this as one line at
+    the start of every session in a project (Claude Code still skips a
+    resumed conversation), before the reviewed memory, open work and stale
+    memory it printed already. A project with nothing reviewed, open or
+    stale used to get no session-start text.
+  - The server's instructions start with it, in the essentials set and in
+    the whole server.
+  - The descriptions of `recall_project`, `query_graph`, `get_node`,
+    `get_neighbors` and `shortest_path` end with one sentence on when to use
+    the tool instead of grep. Apart from these sentences, the whole server's
+    instructions and tools (`--tools all`, which the other agents get) are
+    0.1.0's.
+  - The Graphicle section that setup writes in `AGENTS.md` and `CLAUDE.md`
+    says it. Running setup again brings an existing section up to date, and
+    `graphicle disconnect` removes it as before. `setup --tools all` still
+    writes 0.1.0's section.
+  - The opt-in guard hook's reminder before a search says it too.
+- `graphicle setup --prompt-context` (off by default) adds a Claude Code
+  UserPromptSubmit hook: before each prompt that is a code question (the
+  classifier `context` uses), it runs `graphicle context` and gives the
+  packet's Markdown, at most 8,400 characters, as the prompt's additional
+  context. Short prompts, questions in plain words, folders of no project,
+  failures and answers slower than 10 seconds add nothing; the prompt is
+  never refused, and the hook waits up to about 10 seconds. The prompt
+  reaches `graphicle context` on its standard input (`graphicle context -`
+  reads the question there). `graphicle disconnect` removes the hook.
+
+### Context and recall
+
+- `graphicle context` prints at most 8,400 characters by default (new
+  `--max-chars`; it was 4 characters per `--max-tokens` token, 12,000 by
+  default), so a prompt hook that prints the packet under a header stays
+  below the 10,000 characters Claude Code shows in full. With only
+  `--max-tokens`, the packet still holds 4 characters per token.
+- A `notes_first` option, off by default: `notes_first: true` in `context`,
+  `graphicle call context`, the SDKs and answers, `graphicle context
+  --notes-first`, or over MCP beside `recall_project`'s arguments (and
+  `graphicle mcp --set notes_first=true` for a server). Every packet's
+  `notes_first` says what applied. It turns on three changes:
+  - A question that names no code (no backtick span, `snake_case` or
+    `camelCase` name, `Type::member`, `call()` or code file) takes the first
+    50 files of the fused ranking, one passage each. Code files keep their
+    places; the notes and documents among them are ordered again among the
+    notes' places: a note whose name or folder matches the question's words
+    (Porter stems, so close variants match), whose headings match, or with a
+    newer date (the latest ISO date, up to today, in its path or text) comes
+    first. A question that names code keeps the code ranking.
+  - A packet quotes one window per file, and one of files with identical
+    bytes; the next files take the freed places (`notes_first.one_per_file`
+    counts what was dropped). `include_tests: true`, which `--tools all`,
+    `graph` and `memory` send for `recall_project`, and an explicit
+    `origin_quota` keep the windows as ranked.
+  - Excerpts say how old they are. Each excerpt of a project file cites the
+    date its file last changed (`(changed 2026-10-15 05:10 UTC)`: the last
+    commit when Git tracks the file unchanged, else its modification time).
+    An excerpt that names code (a code-shaped document link) whose file
+    changed later says `may be stale: <file> (defines <name>) changed
+    <date>`. Excerpts are not compared with one another, and dates do not
+    reorder them. Imported notes and documents carry no review state, so the
+    stale flags of reviewed memory never applied to them. `source_age: true`
+    or `false` sets the dates alone.
+- An identifier route for `context`: a question that is an identifier, or
+  names identifiers and only asks where they are defined or used
+  (`` `parse_config` ``, `where is Store::open defined`, `who calls
+  ParseConfig`), gets each name's definitions and references from the code
+  graph as `path:line` lines within the call's budget, and one line with the
+  titles of the reviewed memories linked to them, instead of the full
+  retrieval's excerpts (the packet's `evidence` is empty). `recall_project`
+  in the essentials set and `graphicle context` take it unless told
+  otherwise (`identifier_route: false`, `graphicle context
+  --no-identifier-route`, `graphicle mcp --set identifier_route=false`); the
+  HTTP API, `graphicle call context`, the SDKs, the app and `--tools all`,
+  `graph` and `memory` take it only when a call sets `identifier_route:
+  true`. A name is a backtick span, a `snake_case` word, a camelCase or
+  PascalCase word with a capital inside it, a dotted or `::` path, or a
+  call `name()`. A name alone takes the route; other words may only ask
+  where the names are or what uses them, and one of them must. A question
+  in plain words, one that asks for more (what a name is, its code or
+  members, what it calls, where it is mentioned), a call with `needs`, and
+  a name the code graph does not define keep the retrieval. Every project
+  packet's `route` says which path ran, and why the retrieval did.
+- Code questions rank source files first (`code_first`, `"auto"` by
+  default). A question that names code (an identifier or a code file) or
+  reads like an issue or bug report (a code block, a stack trace or error
+  line, or two report words such as crash, error, fails, expected) counts
+  the passages of documentation, test and vendored or generated files at a
+  quarter of their fused score, in the ranking itself, so the excerpts and
+  the budget go to source files first; the code-graph arm leaves Markdown
+  nodes out for such a question. Tests are recognised by folder and name in
+  Rust, Python, Go, Java, Kotlin, C#, JavaScript, TypeScript, C, C++ and
+  Ruby. A question about documents, notes or decisions that is not a report
+  keeps 0.1.2's order, and test files keep their weight when a question
+  that is not a report names a test or the call sets `include_tests: true`.
+  A test or document that defines a code name the question names (with an
+  underscore or an inner capital, such as a test helper or a fixture) keeps
+  its weight when no source file defines that name.
+  A camelCase name needs two lowercase letters before its capital, digits
+  between allowed (`getChoices`, `utf8Decoder`; not `iPhone` or `eBay`);
+  a PascalCase name counts when it has a capital inside it, as for the
+  identifier route (`IsNull`, `ParseConfig`).
+  `code_first: false` keeps 0.1.2's order for any question, `true` ranks
+  source first for any question. The packet's `code_first` says what
+  applied and how many files of each kind it lowered.
+- A code question's query is its content, not its instructions
+  (`query_focus`, `"auto"` by default): when the question marks its content
+  (tags of its own such as `<issue>` or `<pr_description>`, opening at the
+  start of a line, or `--- BEGIN ISSUE ---` / `--- END ISSUE ---` lines),
+  the marked text with every word, followed by the names of code in the
+  prose outside (placeholders such as `ClassName.method_name` and fenced
+  examples left out); without marks, the question without general words of
+  instructions (find, fix, change, list, file, function, please, ...).
+  Either way a code host's links to files (`.../blob/<ref>/src/x.rs#L10`)
+  become the files' paths, and other web addresses and commit hashes are
+  left out. BM25, the code-graph arm, the choice of files past the passage
+  bound, a local reranker and the excerpts' focus read it; the packet keeps
+  the question, and its `query_focus` says what was marked and left out. A
+  prompt that wraps an issue in instructions used to rank by the
+  instructions' words as much as the issue's. `query_focus: false` reads the
+  whole question.
+- The identifiers and file paths a code question names rank their files
+  (`identifier_arm`, `"auto"` by default). The identifier route kept the
+  retrieval for a question that asks more than where names are, and dropped
+  the names it had found; now a code question's identifiers (from code
+  blocks and spans: every identifier; from prose: `snake_case`, camelCase,
+  calls, qualified names) are matched as whole words, case-sensitively, in
+  the project's passages, and found at their definitions in the code graph.
+  Each file scores the weights of the names it holds (rarer names weigh
+  more, a definition counts twice) plus a bonus when the question names its
+  path, and its two best passages join the fusion as the arm `identifiers`
+  (`arm_weights` key `identifiers`). The packet's `identifier_arm` lists the
+  names and paths used; the route's report says `names_fused`.
+  `identifier_arm: false` leaves the arm out.
+- After its excerpts, a code question's packet lists the paths of the next
+  10 ranked files that no excerpt quotes, one line each (`more_files`, 0 to
+  40; left out, 10 for a code question and 0 for any other). The room is
+  kept from the excerpts' share, at most an eighth of the budget, so the
+  packet stays within `max_chars` and `max_tokens`; at `graphicle
+  context`'s 8,400 characters the excerpts quote three or four files, and
+  the files after them used to be cut. The packet's `more_files` lists
+  them, and `graphicle context` prints them under "Next ranked files".
+- `code_first`, `query_focus`, `identifier_arm` and `more_files` are flags
+  of `graphicle context` (`--code-first`, `--query-focus`,
+  `--identifier-arm`: auto, true or false; `--more-files N`) and switches
+  of `recall_project` over MCP that `graphicle mcp --set` can fix; packets
+  echo them in `mechanisms.switches`.
+- A `context` question over 16,000 bytes is shortened instead of refused:
+  to its tagged content when that fits, else to its beginning, cut at a
+  line end, followed by the identifiers and file paths of the part cut
+  (within 3,000 bytes). The packet's `question_shortened` gives the
+  question's size, what was kept and how many names were added. A long
+  issue pasted into a prompt hook used to get no packet.
+- Past the per-question bounds (50,000 documents or 40,000 passages), the
+  files a question reads are chosen by a BM25 score of its words in each
+  file (rarer words weigh more, a word's count is divided by the file's
+  length, a word in the path counts twice more), among at most 64 words,
+  those written as code first. The count of the first 24 words a file
+  holds chose them before, so large files filled the bound.
+
+### Memory, recall and answers
+
+- `get_node` lists, for its symbol, the current reviewed memories anchored to
+  it and the documents the reader may read that name it (`linked` in its
+  structured answer, and a line in its citations text). Stale, draft and
+  retired memories are never listed. A connection to one project lists that
+  project's only, also when `repo` reads another project's code graph.
+- Recall and answers take a `symbol_links` switch for the links between
+  reviewed memory and code symbols. Left out, a packet counts the links of
+  its excerpts and memories (`symbol_links`, status `counted`) and follows
+  none. `symbol_links: true` follows them one step each way: an excerpt of
+  code brings in the current reviewed memories linked to a symbol inside it,
+  and a reviewed memory brings in the current code of the symbols it is
+  linked to. `symbol_links: false` reads none. `graphicle mcp --set
+  symbol_links=true` (or `false`) fixes it for a server.
+- The packet's `mechanisms` now fill `symbol_links_enabled`, and
+  `links_used.memory` counts the memory links an answer used.
+- `memory.template` exports a project's reviewed procedures and decisions as
+  an engagement template. Each memory keeps only its kind, title, body and
+  state: quotes, links, ids, dates and authors are left out, and the
+  project's names, the files and symbols it cites, e-mail addresses, links,
+  credentials and terms you list are replaced by placeholders.
+- `memory.import_pack` imports reviewed memories, from an export or a
+  template, into another project as drafts to review. Symbol links are
+  matched to that project's code by path, qualified name, kind and ordinal,
+  and follow a symbol that moved to another file. Quotes are kept only where
+  that project's own sources hold them. Whatever cannot be matched is
+  dropped and counted.
+
+### MCP
+
+- `workspace_map`, a tool of workspace connections (the `graph.map`
+  operation over HTTP, the SDKs and `graphicle call`), maps the projects an
+  access key can read, 8 at a time: for each project, its files, documents,
+  code symbols, memories and links (imports from and into the other
+  projects, document mentions linked to its code, code symbols its memories
+  are anchored to), and the recorded imports between the projects, by pair.
+  Each project is counted as the key's own reads of it count it, and a
+  project the key may not read is left off the map.
+- `recall_project` takes a `cross_repo` switch for the step of a workspace
+  recall that follows imports between projects: `false` turns that step
+  alone off, and `true` turns it on even with `graph_retrieval: false`. Left
+  out, it follows `graph_retrieval`.
+- Every recall packet echoes the switches in force under
+  `mechanisms.switches`. `graphicle mcp --set` (and `serve --mcp-set`) also
+  fixes `cross_repo` and `scope` (`project` or `workspace`), and refuses a
+  switch it does not know.
+- `graphicle mcp --manifest` prints what the server would serve, as JSON,
+  and exits: the program's version, edition and sha256, the tools and
+  instructions with their sha256, the switches it fixes, and the schema and
+  format versions.
+
+### Sync
+
+- A folder sync reads the files Git tracks even when a `.gitignore`
+  pattern (or `.git/info/exclude`, or the global excludes) matches them
+  (`git ls-files --cached --ignored --exclude-standard`): Git versions them
+  with the rest, so they are the project's sources, as in a repository that
+  ignores its build output `jsonata.js` and tracks `src/jsonata.js`. Files
+  Git does not track are left out by those patterns as before, and
+  `node_modules`, `target`, credentials and the other skipped names stay
+  out, and so does a file an `.ignore` file leaves out. The freshness check
+  reads the same files, and the sync's output counts them
+  (`tracked_ignored`). `graphicle config set sync.tracked_ignored false`
+  leaves tracked files that a pattern matches out, as 0.1.2 did; the
+  environment variable `GRAPHICLE_SYNC_TRACKED_IGNORED` overrides the
+  setting. The refusals of a project or folder too large say that
+  `.gitignore` and `.git/info/exclude` cover untracked files only.
+
+### Data
+
+- `graphicle offboard --project PROJECT` removes one project's data from the
+  data folder: its sources, memory, code graph and history in the store, its
+  graph cache, and its copies in the backups kept in the data folder's
+  `backups/` folder. Other projects stay, in those backups too. It shows the
+  plan first and changes nothing until it runs again with
+  `--apply PLAN_HASH`, which carries out exactly that plan. It writes a
+  hash-chained deletion receipt that lists what it removed, touches nothing
+  outside the data folder, and names what it does not cover, such as backups
+  written elsewhere. A path it refuses (a link, or a backup with another
+  name) is never changed and may still hold the project, so the offboarding
+  is then reported as not fully verified.
+- `graphicle backup` without a path writes the backup to the data folder's
+  `backups/` folder.
+- On Windows, `graphicle offboard` leaves every backup in `backups/` as it is
+  and lists it as refused: Windows does not tell Graphicle whether a backup
+  file has another name outside the data folder.
+
+### Usage report
+
+- The owner's usage report (`GET /v1/workspaces/WORKSPACE_ID/usage`) and the
+  Usage view of the app now show what Graphicle served this month (`served`):
+  - the tokens of every MCP tool result and MCP resource read;
+  - over HTTP and through `graphicle call` and `graphicle context`, of every
+    operation an MCP tool runs and of the other reads of a project's
+    sources, memory, evidence or graph (such as `memory.export` and
+    `document.original`);
+  - of the session-start context that capture hooks give a coding agent.
+
+  Tokens are counted with cl100k_base on the text served, by credential,
+  agent session, channel, tool or operation, project and UTC day. A result
+  that names no project but serves several, such as a recall over every
+  project of a workspace, is counted on those projects: its tokens split by
+  the bytes served from each, and the call once, on the largest share.
+  Operations that return only settings, counts or listings, such as
+  `list_projects`, are not counted. These are the tokens Graphicle returned,
+  not your agents' bill: Graphicle does not see your agents' own model calls.
+- These counts never leave your machine. Graphicle keeps counters only, in a
+  new `am_served_usage` table of the local store: no question, result,
+  source id or client session id.
+  - Counting adds no write to a call; counts are written in batches a few
+    seconds later and when the program ends.
+  - Rows go with their project and are kept 25 months, and an agent
+    session's rows are folded into rows without a session after 90 days. One
+    access key keeps at most 200 agent sessions a UTC day; the calls of
+    further sessions that day are counted under one shared session,
+    `other-sessions`.
+  - `deletion.state` lists the table as history.
+  - The table is created the first time the new version opens an existing
+    store.
+- Beside them, the report lists Graphicle's own recorded model tokens by
+  credential and by model (`model_usage_by_credential`,
+  `model_usage_by_model`). `cost` stays null.
+- The MCP endpoints over HTTP (`/mcp/WORKSPACE_ID` and
+  `/mcp/WORKSPACE_ID/PROJECT_ID`) send an `Mcp-Session-Id` header with their
+  answer to `initialize`.
+  - The server signs the id, and the usage report uses it only to group a
+    client's calls into one agent session. An id the server did not sign is
+    counted under one shared session, `mcp:unverified`.
+  - A client that does not send the id back is served as before.
+  - Each `graphicle mcp` connection over stdio is one agent session. A
+    capture hook labels its start context with a digest of the coding
+    agent's session id, never the id itself.
+
+### Store
+
+- A store can record the oldest Graphicle that may open it, as a store format
+  (a new `store_readers` table, created when the new version first opens an
+  existing store). From this version on, Graphicle checks it before it
+  changes anything in a store, and refuses a store that needs a newer
+  program, naming the version it needs. Versions before 0.1.3 do not check.
+- A store can name credentials that a program must refuse unless it
+  enforces their restrictions itself: a table or view
+  `credential_requirements` (`credential_id`, `capability`). Graphicle
+  refuses each credential it names with a capability that `build.info` does
+  not list, instead of granting the credential its role's full access, also
+  in a restored portable backup. Graphicle Core lists none of these
+  capabilities. Graphicle 0.1.2 and older do not read the view and grant
+  such credentials their role's full access, so do not open a store that
+  names credentials there with them.
+
+### Extension interface
+
+- `Extension::authorize` lets an installed extension refuse or narrow a
+  request of a credential other than the owner capability wherever Graphicle
+  authorizes one (`Access`): a permission, a repository, a route that names
+  a workspace, an operation, an MCP tool. It may narrow an operation's
+  arguments and set the most tokens a read's result may hold: a larger read
+  result is refused with 413, and a write's result is never refused once it
+  is saved. `Extension::role_permits` lets it define roles beside
+  Graphicle's, and `Extension::grant_role` may refuse a new credential on a
+  role it defines. The caller of a request is resolved by authentication
+  alone, so these hooks see every credential, whatever its role grants; an
+  error other than a refusal while resolving it fails the request.
+- `Extension::served_allowed` lets an installed extension refuse a metered
+  MCP tool call, MCP resource read or HTTP operation of a credential other
+  than the owner capability, once `authorize` allowed it, for example for a
+  quota. `Extension::metered_operations` meters an extension's own reads of
+  project text.
+  - A refusal with status 429 carries `Retry-After` until the next UTC month.
+  - Core installs no extension, so it refuses and caps nothing, and the
+    command line and capture hooks are never refused for a quota.
+  - A commercial edition for teams is in private preview.
+- `Extension::sources` adds connector kinds beside Graphicle's (the `Source`
+  trait): their connectors are added, scheduled, synced and enforced on read
+  as Graphicle's own.
+- `Extension::vault_key` lets an extension hold the key that seals the
+  store's vault, for example a key held by an external key service; the
+  vault then never falls back to the device key file.
+- `Extension::cross_site_post` names a POST route that an extension
+  authenticates by itself, such as a sign-in callback that another site's
+  page posts to. Such a request skips the origin and browser-mutation
+  checks; the host check stays.
+- `JobKind::cpu_bound()` marks an extension's job kind as CPU-bound, so a
+  worker leases it only with a CPU permit, as it does Core's projections.
+- Routes under `/v1/workspaces/WORKSPACE_ID/usage/` are outside the monthly
+  request budget, like the usage report.
+
+### Other changes
+
+- rustls-webpki 0.103.16, webpki-roots 1.0.10 and webpki-root-certs 1.0.10:
+  certificate paths through the distrusted emSign intermediates are refused
+  (RUSTSEC-2026-0382 and RUSTSEC-2026-0381).
 
 ## 0.1.2 - 2026-10-18
 

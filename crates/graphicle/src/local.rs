@@ -212,6 +212,151 @@ pub(crate) fn folder_walk(root: &Path) -> ignore::WalkBuilder {
     walk
 }
 
+/// The environment variable that turns reading the tracked files an
+/// ignore pattern matches ([`tracked_ignored`]) off (`0`, `false`, `off` or
+/// `no`) or on (any other value); it wins over the configuration file's
+/// `sync.tracked_ignored` ([`tracked_ignored_setting`]).
+pub const TRACKED_IGNORED_VARIABLE: &str = "GRAPHICLE_SYNC_TRACKED_IGNORED";
+
+/// The configuration file's `sync.tracked_ignored`, installed by the command
+/// line after it loads the file ([`install_tracked_ignored`]).
+static TRACKED_IGNORED_SETTING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Make the configuration's `sync.tracked_ignored` this process's setting.
+pub fn install_tracked_ignored(config: &crate::model::Config) {
+    if let Some(on) = config.sync.as_ref().and_then(|sync| sync.tracked_ignored) {
+        let _ = TRACKED_IGNORED_SETTING.set(on);
+    }
+}
+
+/// Whether a folder sync reads the tracked files an ignore pattern matches:
+/// [`TRACKED_IGNORED_VARIABLE`] when it is set, else the configuration
+/// file's `sync.tracked_ignored` (`config`, or the installed one), else yes.
+pub fn tracked_ignored_setting(config: Option<&crate::model::Config>) -> bool {
+    if let Ok(value) = std::env::var(TRACKED_IGNORED_VARIABLE) {
+        return !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "off" | "no"
+        );
+    }
+    config
+        .and_then(|config| config.sync.as_ref())
+        .and_then(|sync| sync.tracked_ignored)
+        .or_else(|| TRACKED_IGNORED_SETTING.get().copied())
+        .unwrap_or(true)
+}
+
+/// The files under `root` that its Git repository tracks although a
+/// `.gitignore` (or `.git/info/exclude`, or the global excludes) pattern
+/// matches them (`git ls-files --cached --ignored --exclude-standard`),
+/// which [`folder_walk`] leaves out: Git still versions them, so they are
+/// the project's sources (a repository that ignores `jsonata.js` for its
+/// build output and tracks `src/jsonata.js`). A file an `.ignore` file
+/// leaves out stays out, as in the walk; so do [`SKIPPED_NAMES`] and
+/// [`skipped_file`]'s files, and only regular files count. Empty outside a
+/// Git work tree, when Git fails, or when [`tracked_ignored_setting`] says
+/// no.
+pub(crate) fn tracked_ignored(root: &Path) -> Vec<PathBuf> {
+    if !tracked_ignored_setting(None)
+        || !root.ancestors().any(|folder| folder.join(".git").exists())
+    {
+        return Vec::new();
+    }
+    let Some(listed) = crate::fresh::git(
+        root,
+        &[
+            "ls-files",
+            "-z",
+            "--cached",
+            "--ignored",
+            "--exclude-standard",
+        ],
+    ) else {
+        return Vec::new();
+    };
+    let mut dot_ignore = DotIgnore::new(root);
+    listed
+        .split(|byte| *byte == 0)
+        .filter_map(|path| std::str::from_utf8(path).ok())
+        .filter(|relative| {
+            !relative.is_empty()
+                && !relative
+                    .split('/')
+                    .any(|part| SKIPPED_NAMES.contains(&part))
+                && !skipped_file(relative)
+        })
+        .filter(|relative| !dot_ignore.ignores(relative))
+        .map(|relative| root.join(relative))
+        .filter(|path| std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()))
+        .collect()
+}
+
+/// The `.ignore` files of a folder, read once each: the walk honours them
+/// (as ripgrep does), so the tracked files they leave out stay out too.
+struct DotIgnore {
+    root: PathBuf,
+    folders: std::collections::HashMap<PathBuf, Option<ignore::gitignore::Gitignore>>,
+}
+
+impl DotIgnore {
+    fn new(root: &Path) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            folders: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Whether the `.ignore` files from `relative`'s folder up to the root
+    /// leave it out: the deepest one that matches decides (`!pattern`
+    /// takes it back in).
+    fn ignores(&mut self, relative: &str) -> bool {
+        let path = self.root.join(relative);
+        let mut folder = path.parent().map(Path::to_path_buf);
+        while let Some(current) = folder {
+            if !current.starts_with(&self.root) {
+                break;
+            }
+            let matcher = self.folders.entry(current.clone()).or_insert_with(|| {
+                let file = current.join(".ignore");
+                file.is_file().then(|| {
+                    let mut builder = ignore::gitignore::GitignoreBuilder::new(&current);
+                    builder.add(&file);
+                    builder.build().ok()
+                })?
+            });
+            if let Some(matcher) = matcher {
+                let found = matcher.matched_path_or_any_parents(&path, false);
+                if found.is_ignore() {
+                    return true;
+                }
+                if found.is_whitelist() {
+                    return false;
+                }
+            }
+            folder = current.parent().map(Path::to_path_buf);
+        }
+        false
+    }
+}
+
+/// [`folder_walk`]'s entries, then one for each of [`tracked_ignored`]'s
+/// files: what a folder sync and the freshness scan read. The folder itself
+/// is the first entry.
+pub(crate) fn folder_entries(
+    root: &Path,
+) -> impl Iterator<Item = std::result::Result<ignore::DirEntry, ignore::Error>> {
+    let tracked = tracked_ignored(root);
+    folder_walk(root)
+        .build()
+        .chain(tracked.into_iter().flat_map(|path| {
+            ignore::WalkBuilder::new(path)
+                .standard_filters(false)
+                .follow_links(false)
+                .max_depth(Some(0))
+                .build()
+        }))
+}
+
 /// Graphicle's own writes are not the project's evidence:
 /// the Graphicle section of an AGENTS.md or CLAUDE.md reads as blank lines,
 /// so the file's other lines keep their numbers, and a file left blank is
@@ -451,7 +596,18 @@ pub fn sync_folder(
     // Past a project limit: the files and text counted so far, the rest
     // counted without reading it.
     let mut over: Option<(usize, usize, bool)> = None;
-    for entry in folder_walk(&root).build() {
+    // The tracked files an ignore pattern matches, which the walk is
+    // followed by: counted when read (`tracked_ignored` in the result).
+    let tracked: std::collections::HashSet<PathBuf> = tracked_ignored(&root).into_iter().collect();
+    let tracked_entries = tracked.clone().into_iter().flat_map(|path| {
+        ignore::WalkBuilder::new(path)
+            .standard_filters(false)
+            .follow_links(false)
+            .max_depth(Some(0))
+            .build()
+    });
+    let mut tracked_read = 0usize;
+    for entry in folder_walk(&root).build().chain(tracked_entries) {
         let entry = match entry {
             Ok(entry) => entry,
             Err(error) => {
@@ -463,7 +619,9 @@ pub fn sync_folder(
                 continue;
             }
         };
-        if entry.depth() == 0 || entry.file_type().is_some_and(|t| t.is_dir()) {
+        // The folder, a directory, or (depth 0 too) a tracked file the walk
+        // left out, which is read.
+        if entry.path() == root.as_path() || entry.file_type().is_some_and(|t| t.is_dir()) {
             continue;
         }
         let path = entry.path();
@@ -572,7 +730,7 @@ pub fn sync_folder(
             binary_bytes += contents.len();
             if binary_bytes > limits.folder_document_bytes {
                 return Err(Error::bad(format!(
-                    "This folder's documents exceed {} (PDF, Office, EPUB, HTML and image files together). Raise the limit with {}, or leave some out with .gitignore or .git/info/exclude, or set up a subfolder: graphicle setup path/to/subfolder",
+                    "This folder's documents exceed {} (PDF, Office, EPUB, HTML and image files together). Raise the limit with {}, or leave untracked ones out with .gitignore or .git/info/exclude (they cover only files Git does not track; graphicle config set sync.tracked_ignored false, or GRAPHICLE_SYNC_TRACKED_IGNORED=0, leaves out the tracked files they match too), or set up a subfolder: graphicle setup path/to/subfolder",
                     crate::limits::size(limits.folder_document_bytes),
                     crate::limits::raise("folder_document_bytes")
                 )));
@@ -612,6 +770,9 @@ pub fn sync_folder(
             continue;
         }
         bytes += content.len();
+        if tracked.contains(path) {
+            tracked_read += 1;
+        }
         files.insert(relative, content);
     }
     if let Some((count, size, about)) = over {
@@ -683,6 +844,11 @@ pub fn sync_folder(
     skipped.extend(not_analysed);
     skipped.sort_by(|a, b| s(a, "path").cmp(s(b, "path")));
     let mut result = json!({"repository_id":repository,"files":file_count,"binary_documents":binaries.len(),"original_bytes":binary_bytes,"bytes":bytes,"excluded":excluded.len(),"snapshot":prepared["snapshot"],"replayed":prepared["replayed"]});
+    // Files read although an ignore pattern matches them, because Git tracks
+    // them (`sync.tracked_ignored`).
+    if tracked_read > 0 {
+        result["tracked_ignored"] = json!(tracked_read);
+    }
     if !limited.is_empty() {
         result["limited"] = json!(limited);
     }
@@ -1168,4 +1334,83 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
     Ok(
         json!({"restored":true,"data_dir":directory,"next":"Use graphicle login with your saved workspace access key. Reconnect source accounts and model API keys in Connections; device credentials are excluded from portable backups."}),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn git(root: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(root)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// A file Git tracks although `.gitignore` matches it is read by the
+    /// sync's walk; an untracked file the pattern matches is not.
+    #[test]
+    fn a_tracked_file_that_gitignore_matches_is_read() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".gitignore"), "jsonata.js\n").unwrap();
+        std::fs::write(root.join("src/jsonata.js"), "function jsonata() {}\n").unwrap();
+        std::fs::write(root.join("jsonata.js"), "built output\n").unwrap();
+        std::fs::write(root.join("a.js"), "a\n").unwrap();
+        git(&root, &["add", ".gitignore", "a.js"]);
+        git(&root, &["add", "-f", "src/jsonata.js"]);
+        assert_eq!(tracked_ignored(&root), [root.join("src/jsonata.js")]);
+        let read: Vec<String> = folder_entries(&root)
+            .flatten()
+            .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+            .map(|entry| {
+                let path = entry.path().strip_prefix(&root).unwrap();
+                path.to_string_lossy().replace('\\', "/")
+            })
+            .collect();
+        assert!(read.contains(&"src/jsonata.js".to_string()), "{read:?}");
+        assert!(read.contains(&"a.js".to_string()), "{read:?}");
+        assert!(!read.contains(&"jsonata.js".to_string()), "{read:?}");
+        // A tracked file an `.ignore` file leaves out stays out, as in the
+        // walk; `!pattern` in a deeper one takes a file back in.
+        std::fs::create_dir_all(root.join("gen/keep")).unwrap();
+        std::fs::write(root.join(".gitignore"), "jsonata.js\ngen/\n").unwrap();
+        std::fs::write(root.join("gen/out.js"), "out\n").unwrap();
+        std::fs::write(root.join("gen/keep/kept.js"), "kept\n").unwrap();
+        git(&root, &["add", "-f", "gen/out.js", "gen/keep/kept.js"]);
+        std::fs::write(root.join(".ignore"), "gen/\n").unwrap();
+        std::fs::write(root.join("gen/keep/.ignore"), "!kept.js\n").unwrap();
+        let tracked = tracked_ignored(&root);
+        assert!(
+            tracked.contains(&root.join("src/jsonata.js")),
+            "{tracked:?}"
+        );
+        assert!(!tracked.contains(&root.join("gen/out.js")), "{tracked:?}");
+        assert!(
+            tracked.contains(&root.join("gen/keep/kept.js")),
+            "{tracked:?}"
+        );
+        // Outside a Git work tree nothing is added.
+        let plain = tempfile::TempDir::new().unwrap();
+        assert!(tracked_ignored(plain.path()).is_empty());
+        // The configuration file's sync.tracked_ignored turns it off (the
+        // environment variable, unset here, would win over it).
+        if std::env::var_os(TRACKED_IGNORED_VARIABLE).is_none() {
+            let off: crate::model::Config =
+                serde_json::from_value(serde_json::json!({"sync":{"tracked_ignored":false}}))
+                    .unwrap();
+            assert!(!tracked_ignored_setting(Some(&off)));
+            assert!(tracked_ignored_setting(Some(
+                &crate::model::Config::default()
+            )));
+        }
+    }
 }

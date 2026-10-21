@@ -6,6 +6,12 @@ const sourceServices = [...oauthServices.filter(([id]) => id !== "atlassian"), [
 // An installed edition can add choices and notes (/extensions.js).
 const connectionSharing = [["owner", "Only me"], ["explicit", "All workspace readers — I authorize this copy"]];
 const connectionNotes = ["Drive folders include subfolders."];
+// Connection kinds an installed edition adds (/extensions.js), by kind: the
+// scope field's label and placeholder, the OAuth provider of its accounts
+// and the configuration built from the dialog's values.
+const sourceForms = {};
+// The kinds whose provider sharing the installed edition syncs.
+const providerSharingKinds = ["github", "slack", "gdrive"];
 const workspaceCommand = (operation, args = {}) => api(`${base()}/repositories/command`, {operation, arguments: args});
 function can(permission) {
   return state.role === "owner" || ({reviewer: ["collect", "propose", "approve"], collector: ["collect", "propose"], runner: ["propose", "run"], agent: ["propose", "run"], reader: []}[state.role] || []).includes(permission);
@@ -64,17 +70,17 @@ async function openConnectionDialog() {
     field(form, "Update frequency", "interval", {choices: [["900", "Every 15 minutes"], ["3600", "Every hour"], ["0", "Sync manually"]]});
     const sharing = field(form, "Who can read these sources?", "sharing", {choices: connectionSharing});
     const labels = () => {
-      const atlassian = ["jira", "confluence"].includes(service.value), oauth = credential.value.startsWith("oauth:");
+      const atlassian = ["jira", "confluence"].includes(service.value), oauth = credential.value.startsWith("oauth:"), added = sourceForms[service.value];
       driveMode.parentElement.hidden = service.value !== "gdrive";
-      scope.previousSibling.textContent = ({github: "Repository", slack: "Channel IDs", notion: "Page IDs", gdrive: driveMode.value === "folder" ? "Folder ID" : "File IDs", jira: "Issue selection (JQL)", confluence: "Space key"})[service.value];
-      scope.placeholder = ({github: "owner/repository", slack: "C0123456789, C9876543210", notion: "Page IDs, separated by commas", gdrive: driveMode.value === "folder" ? "The ID after /folders/ in the Drive URL" : "File IDs, separated by commas", jira: 'project = "PRODUCT" ORDER BY updated ASC', confluence: "PRODUCT"})[service.value];
+      scope.previousSibling.textContent = added ? added.label : ({github: "Repository", slack: "Channel IDs", notion: "Page IDs", gdrive: driveMode.value === "folder" ? "Folder ID" : "File IDs", jira: "Issue selection (JQL)", confluence: "Space key"})[service.value];
+      scope.placeholder = added ? added.placeholder : ({github: "owner/repository", slack: "C0123456789, C9876543210", notion: "Page IDs, separated by commas", gdrive: driveMode.value === "folder" ? "The ID after /folders/ in the Drive URL" : "File IDs, separated by commas", jira: 'project = "PRODUCT" ORDER BY updated ASC', confluence: "PRODUCT"})[service.value];
       site.parentElement.hidden = !atlassian || !oauth; site.required = atlassian && oauth;
       siteURL.parentElement.hidden = !atlassian || oauth; siteURL.required = atlassian && !oauth;
       email.parentElement.hidden = !atlassian || oauth;
       token.parentElement.hidden = oauth;
       const provider = sharing.querySelector('option[value="provider"]');
       if (provider) {
-        provider.disabled = !["github", "slack", "gdrive"].includes(service.value);
+        provider.disabled = !providerSharingKinds.includes(service.value);
         if (provider.disabled && sharing.value === "provider") sharing.value = "owner";
       }
     };
@@ -90,7 +96,7 @@ async function openConnectionDialog() {
     };
     const refill = () => {
       credential.replaceChildren();
-      const provider = ["jira", "confluence"].includes(service.value) ? "atlassian" : service.value;
+      const provider = sourceForms[service.value]?.account || (["jira", "confluence"].includes(service.value) ? "atlassian" : service.value);
       const choices = [["", "Choose an account, or enter a token below"], ...accounts.accounts.filter(a => a.provider === provider && a.state === "active").map(a => [`oauth:${a.id}`, a.display_name]), ...secrets.map(s => [`secret:${s.id}`, s.name])];
       for (const [value, label] of choices) { const option = el("option", label); option.value = value; credential.append(option); }
       labels();
@@ -115,7 +121,8 @@ async function openConnectionDialog() {
         config.base_url = `https://api.atlassian.com/ex/${values.kind}/${encodeURIComponent(site.id)}`; config.site_url = site.url; config.auth_type = "bearer";
       } else { config.base_url = values.site_url.replace(/\/$/, ""); config.site_url = config.base_url; config.auth_type = "basic"; }
       config[values.kind === "jira" ? "jql" : "space_key"] = values.scope.trim();
-    } else if (values.kind === "github") config.repository = values.scope.trim();
+    } else if (sourceForms[values.kind]) Object.assign(config, sourceForms[values.kind].config(values));
+    else if (values.kind === "github") config.repository = values.scope.trim();
     else if (values.kind === "gdrive" && values.drive_mode === "folder") config.folder_id = values.scope.trim();
     else config[({slack: "channels", notion: "page_ids", gdrive: "file_ids"})[values.kind]] = values.scope.split(",").map(v => v.trim()).filter(Boolean);
     if (values.kind === "gdrive") config.recursive = true;

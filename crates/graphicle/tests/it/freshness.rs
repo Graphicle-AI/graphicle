@@ -237,7 +237,13 @@ fn context_and_status_sync_a_few_changed_files_first() {
 
     std::fs::write(h.app.join("a.py"), A_V2).unwrap();
     std::fs::write(h.app.join("c.py"), "def delta():\n    return 4\n").unwrap();
-    let packet = h.json(&["context", "where is gamma_helper defined"]);
+    // The retrieval's excerpts (a question that only asks where a name is
+    // defined takes the identifier route unless asked otherwise).
+    let packet = h.json(&[
+        "context",
+        "where is gamma_helper defined",
+        "--no-identifier-route",
+    ]);
     let fresh = &packet["folder_freshness"];
     assert_eq!(fresh["status"], "refreshed", "{packet:#}");
     assert_eq!(fresh["changed"], 2);
@@ -278,6 +284,9 @@ fn context_and_status_sync_a_few_changed_files_first() {
         "{}",
         again["code_graph"]
     );
+    // The identifier route reads the new definition on the current graph.
+    assert_eq!(again["route"]["path"], "identifier", "{again:#}");
+    assert_eq!(again["symbols"][0]["definitions"][0]["relpath"], "a.py");
 
     // A deleted file, before `status`.
     std::fs::remove_file(h.app.join("b.py")).unwrap();
@@ -521,7 +530,8 @@ fn mcp_tool_calls_sync_changed_files_before_answering() {
         "initialize",
         json!({"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fresh","version":"0"}}),
     );
-    let recall = json!({"name":"recall_project","arguments":{"question":"where is gamma_helper defined","structured":true}});
+    // The retrieval's excerpts, not the identifier route's definitions.
+    let recall = json!({"name":"recall_project","arguments":{"question":"where is gamma_helper defined","structured":true,"identifier_route":false}});
     let first = call(2, "tools/call", recall.clone());
     assert!(
         first["result"]["structuredContent"]

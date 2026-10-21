@@ -152,9 +152,11 @@ fn test_files_follow_the_code_unless_the_question_names_tests() {
         graph: json!({"edges":[]}),
         state: "fixture-v1".into(),
     };
+    // The presentation alone: `code_first: false` keeps the ranking's
+    // order (the default ranks the source file first, below).
     let files = |question: &str, include_tests: Option<Value>| {
-        let mut args =
-            json!({"question":question,"max_tokens":2000,"limit":4,"expand_context":false});
+        let mut args = json!({"question":question,"max_tokens":2000,"limit":4,
+            "expand_context":false,"code_first":false});
         if let Some(value) = include_tests {
             args["include_tests"] = value;
         }
@@ -229,4 +231,113 @@ fn test_files_follow_the_code_unless_the_question_names_tests() {
         )
         .is_err()
     );
+    // Left out, `code_first` ranks the source file before the test for
+    // this code question, in the ranking itself: nothing is left to move.
+    let packet = query::context(
+        &snap,
+        &json!({"question":question,"max_tokens":2000,"limit":4,"expand_context":false}),
+        json!({}),
+    )
+    .unwrap();
+    let ranked: Vec<&str> = packet["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|window| window["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ranked, ["file:parser.py", "file:tests/test_parser.py"]);
+    assert_eq!(
+        packet["code_first"]["applied"], true,
+        "{}",
+        packet["code_first"]
+    );
+    assert_eq!(packet["code_first"]["files_lowered"], json!({"test": 1}));
+    assert_eq!(packet["test_files"]["moved"], 0, "{}", packet["test_files"]);
+    // `include_tests: true` keeps the tests' weight.
+    let kept = query::context(
+        &snap,
+        &json!({"question":question,"max_tokens":2000,"limit":4,"expand_context":false,
+            "include_tests":true}),
+        json!({}),
+    )
+    .unwrap();
+    assert_eq!(kept["code_first"]["tests"], false);
+    assert_eq!(kept["evidence"][0]["id"], "file:tests/test_parser.py");
+}
+
+/// With `notes_first: true`, a question in prose takes the named note first
+/// and one window per file; left out, the packet is 0.1.2's.
+#[test]
+fn a_question_in_prose_ranks_named_notes_first_one_window_per_file() {
+    let document = |path: &str, content: &str| {
+        json!({"id":format!("file:{path}"),"path":path,"title":path,
+            "content":content,"sha256":text::sha256(content.as_bytes()),
+            "source_kind":"repository_file","recorded_at":null})
+    };
+    let long_log: String = (0..40)
+        .map(|i| format!("Entry {i}: heron counts went up again.\n\n"))
+        .collect();
+    let snap = Snapshot {
+        repository: json!({"id":"notes-first","name":"Notes first"}),
+        documents: vec![
+            document(
+                "src/counts.rs",
+                "// heron heron heron counts\nfn tally() {}\n",
+            ),
+            document("notes/log.md", &format!("# Log\n\n{long_log}")),
+            document("notes/copy-of-log.md", &format!("# Log\n\n{long_log}")),
+            document(
+                "notes/heron-survey.md",
+                "# Heron survey\n\nThe survey moved to the north marsh on 2026-10-14.\n",
+            ),
+        ],
+        memories: vec![],
+        graph: json!({"edges":[]}),
+        state: "fixture-v1".into(),
+    };
+    let ask_with = |question: &str, notes_first: Value| {
+        query::context(
+            &snap,
+            &json!({"question":question,"max_tokens":3000,"limit":4,"expand_context":false,
+                "notes_first":notes_first}),
+            json!({}),
+        )
+        .unwrap()
+    };
+    let ask = |question: &str| ask_with(question, json!(true));
+    // Left out: off, as query::NOTES_FIRST_DEFAULT says.
+    let plain = ask_with("Where did the heron survey move?", Value::Null);
+    assert_eq!(
+        plain["notes_first"],
+        json!({"status":"off","defaulted":true}),
+        "{}",
+        plain["notes_first"]
+    );
+    let packet = ask("Where did the heron survey move?");
+    assert_eq!(packet["notes_first"]["defaulted"], false);
+    assert_eq!(packet["notes_first"]["status"], "reranked", "{packet}");
+    let files: Vec<&str> = packet["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        files.first(),
+        Some(&"file:notes/heron-survey.md"),
+        "{files:?}"
+    );
+    // One window of the long log, and none of its identical copy.
+    assert_eq!(
+        files.iter().filter(|f| f.contains("log.md")).count(),
+        1,
+        "{files:?}"
+    );
+    let mut unique = files.clone();
+    unique.sort_unstable();
+    unique.dedup();
+    assert_eq!(unique.len(), files.len(), "{files:?}");
+    // A question that names code keeps the fused ranking.
+    let code = ask("Where is `tally` defined?");
+    assert_eq!(code["notes_first"]["status"], "code_question");
 }

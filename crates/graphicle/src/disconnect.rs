@@ -450,17 +450,34 @@ fn undo_file(path: &Path, targets: &[Target], all: bool, data: &Path) -> Result<
                         // (setup, `connect --graph`).
                         let capture = agent_setup::holds_capture_hooks(&document, client, data);
                         let guard = agent_setup::holds_guard_hooks(&document, client, data);
+                        let prompt = agent_setup::holds_prompt_hooks(&document, client, data);
                         let gone = agent_setup::remove_hooks(&mut document, client, data);
                         if gone {
                             text = None;
                         }
                         gone.then(|| {
-                            match (capture, guard) {
-                                (true, true) => "removed the capture and graph guard hooks",
-                                (false, true) => "removed the graph guard hooks",
-                                _ => "removed the capture hooks",
+                            let mut kinds = Vec::new();
+                            if capture || !(guard || prompt) {
+                                kinds.push("capture");
                             }
-                            .to_string()
+                            if guard {
+                                kinds.push("graph guard");
+                            }
+                            if prompt {
+                                kinds.push("prompt-context");
+                            }
+                            let last = kinds.pop().unwrap_or("capture");
+                            let named = if kinds.is_empty() {
+                                last.to_string()
+                            } else {
+                                format!("{} and {last}", kinds.join(", "))
+                            };
+                            let noun = if named == "prompt-context" {
+                                "hook"
+                            } else {
+                                "hooks"
+                            };
+                            format!("removed the {named} {noun}")
                         })
                     }
                     "removed-mcp" => match change.replaced.as_ref().map(|r| r["value"].clone()) {

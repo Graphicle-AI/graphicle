@@ -10,7 +10,7 @@ use serde_json::{Map, Value, json};
 use std::{collections::HashMap, sync::LazyLock};
 use yaml_rust2::{
     parser::{Event, EventReceiver, Parser, Tag},
-    scanner::{Scanner, TScalarStyle, TokenType},
+    scanner::{Scanner, TScalarStyle, Token, TokenType},
 };
 
 static INT: LazyLock<Regex> = LazyLock::new(|| {
@@ -380,15 +380,100 @@ fn expand(nodes: &[Node], id: usize, depth: usize) -> Result<Value> {
         }
     }
 }
-pub fn parse(text: &str) -> Result<Value> {
+/// One scan of `text`: refuses duplicate anchors and, when the scan stops at an
+/// indentation error inside a flow collection, returns `text` with the rejected
+/// line moved right of the outermost open bracket.
+///
+/// PyYAML ignores indentation in flow context (`Scanner.unwind_indent`: "In the
+/// flow context, indentation is ignored. We make the scanner less restrictive
+/// then specification requires."); yaml-rust2 does not. Front matter such as
+/// Hugo's
+///
+/// ```yaml
+/// aliases: [
+///   '/templates/base/',
+/// ]
+/// ```
+///
+/// (the closing bracket at the key's column) is therefore YAML upstream but a
+/// scan error here, and the flat fallback stored `"aliases": "["` and string
+/// scalars. Leading spaces inside a flow collection carry no content, so the
+/// repaired text has the reference's value. The scanner hands over a bracket
+/// only once it knows that the bracket does not start a key, so a flow
+/// collection that opens a line or follows `- ` is not repaired. Any other scan
+/// error is left for the parser to report.
+fn scan_repairing_flow_indentation(text: &str) -> Result<Option<String>> {
     let mut anchors = std::collections::HashSet::new();
-    for token in Scanner::new(text.chars()) {
-        if let TokenType::Anchor(name) = token.1
-            && !anchors.insert(name)
-        {
-            return Err("Duplicate YAML anchor".into());
+    let mut flows = vec![];
+    let mut scanner = Scanner::new(text.chars());
+    for Token(mark, token) in &mut scanner {
+        match token {
+            TokenType::Anchor(name) if anchors.contains(&name) => {
+                return Err("Duplicate YAML anchor".into());
+            }
+            TokenType::Anchor(name) => {
+                anchors.insert(name);
+            }
+            TokenType::FlowSequenceStart | TokenType::FlowMappingStart => flows.push(mark),
+            TokenType::FlowSequenceEnd | TokenType::FlowMappingEnd => {
+                flows.pop();
+            }
+            _ => (),
         }
     }
+    let (Some(error), Some(outer)) = (scanner.get_error(), flows.first()) else {
+        return Ok(None);
+    };
+    if !error.info().contains("indentation") {
+        return Ok(None);
+    }
+    let (col, target) = (error.marker().col(), outer.col() + 1);
+    let Some(index) = error.marker().line().checked_sub(1) else {
+        return Ok(None);
+    };
+    let lines = text.split('\n').collect::<Vec<_>>();
+    // Only rightwards, and only a line whose first character after its leading
+    // spaces is where the scan stopped.
+    match lines.get(index) {
+        Some(line) if col < target && line.len() - line.trim_start_matches(' ').len() == col => {}
+        _ => return Ok(None),
+    }
+    let mut out = String::with_capacity(text.len() + target);
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if i == index {
+            out.push_str(&" ".repeat(target - col));
+        }
+        out.push_str(line);
+    }
+    Ok(Some(out))
+}
+/// Bytes that the rescans of one `parse` may read in all. Each moved line costs
+/// one more scan of the whole text, so a text with very many of them would take
+/// quadratic time; front matter (`markdown::FRONTMATTER_MAX_LINES` lines at
+/// most) and manifests of ordinary size stay far below this.
+const FLOW_REPAIR_READ_LIMIT: usize = 16 << 20;
+/// `text` scanned again after each line that `scan_repairing_flow_indentation`
+/// moves, until a scan moves none. A repaired line clears every flow indent, so
+/// each line is moved at most once; past `limit` bytes read by the rescans, the
+/// text is refused and the caller keeps its flat fallback.
+fn repair_flow_indentation(text: &str, limit: usize) -> Result<std::borrow::Cow<'_, str>> {
+    let mut text = std::borrow::Cow::Borrowed(text);
+    let mut read = 0;
+    while let Some(repaired) = scan_repairing_flow_indentation(&text)? {
+        read += text.len();
+        if read > limit {
+            return Err("Too many YAML flow collection lines to move".into());
+        }
+        text = std::borrow::Cow::Owned(repaired);
+    }
+    Ok(text)
+}
+pub fn parse(text: &str) -> Result<Value> {
+    let text = repair_flow_indentation(text, FLOW_REPAIR_READ_LIMIT)?;
+    let text = text.as_ref();
     let mut builder = Builder::default();
     Parser::new_from_str(text)
         .load(&mut builder, true)
@@ -402,5 +487,94 @@ pub fn parse(text: &str) -> Result<Value> {
     match builder.roots.first() {
         Some(&root) => expand(&builder.nodes, root, 0),
         None => Ok(Value::Null),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse, repair_flow_indentation};
+    use serde_json::json;
+
+    // gohugoio/hugo 3fff6fb5, docs/content/en/templates/types.md: the closing
+    // bracket of a flow sequence at the key's column. Expected values are
+    // PyYAML 6.0.3's yaml.safe_load, which Graphify 0.9.91 uses.
+    const HUGO: [&str; 16] = [
+        "title: Template types",
+        "description: Create templates of different types to render your content, resources, and data.",
+        "categories: []",
+        "keywords: []",
+        "weight: 30",
+        "aliases: [",
+        "  '/templates/base/',",
+        "  '/templates/content-view/',",
+        "  '/templates/home/',",
+        "  '/templates/lists/',",
+        "  '/templates/partial/',",
+        "  '/templates/section/',",
+        "  '/templates/single/',",
+        "  '/templates/taxonomy/',",
+        "  '/templates/term/',",
+        "]",
+    ];
+
+    #[test]
+    fn flow_collection_lines_at_the_block_indent_parse_as_pyyaml_does() {
+        assert_eq!(
+            parse(&HUGO.join("\n")).unwrap(),
+            json!({"title": "Template types",
+                "description": "Create templates of different types to render your content, resources, and data.",
+                "categories": [], "keywords": [], "weight": 30,
+                "aliases": ["/templates/base/", "/templates/content-view/", "/templates/home/",
+                    "/templates/lists/", "/templates/partial/", "/templates/section/",
+                    "/templates/single/", "/templates/taxonomy/", "/templates/term/"]})
+        );
+        for (text, expected) in [
+            ("- [\n  a,\n]", json!([["a"]])),
+            ("a:\n  b: [\n  x,\n  ]", json!({"a": {"b": ["x"]}})),
+            ("m: {\n  k: 1,\n}", json!({"m": {"k": 1}})),
+            (
+                "tags: [\ngo,\nyaml\n]\nweight: 5",
+                json!({"tags": ["go", "yaml"], "weight": 5}),
+            ),
+            ("a: [[\n1,\n],\n2]", json!({"a": [[1], 2]})),
+            (
+                "a: {\n'k': 'v',\n'l': [\n'w'\n]\n}",
+                json!({"a": {"k": "v", "l": ["w"]}}),
+            ),
+            ("- key: [\n'v',\n]", json!([{"key": ["v"]}])),
+            ("a: &x [\n'1'\n]\nb: *x", json!({"a": ["1"], "b": ["1"]})),
+            ("a: [\r\nb\r\n]", json!({"a": ["b"]})),
+        ] {
+            assert_eq!(parse(text).unwrap(), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn other_scan_errors_still_reach_the_fallback() {
+        // PyYAML rejects both; the caller keeps its flat fallback for them.
+        assert!(parse("a: [\n  x").is_err());
+        assert!(parse("a:\n  b: 1\n c: 2").is_err());
+        // The text is scanned again after a moved line, so a duplicate anchor
+        // after it is still refused, as PyYAML refuses it.
+        assert!(parse("a: &x [\n'1'\n]\nb: &x 2").is_err());
+    }
+
+    #[test]
+    fn rescans_stop_at_their_read_limit() {
+        // 101 moved lines: each entry and the closing bracket.
+        let text = format!("a: [\n{}]", "'x',\n".repeat(100));
+        assert_eq!(
+            parse(&text).unwrap()["a"].as_array().map(Vec::len),
+            Some(100)
+        );
+        assert!(repair_flow_indentation(&text, 10 * text.len()).is_err());
+    }
+
+    #[test]
+    fn hugo_front_matter_keeps_its_types_on_the_page_node() {
+        let fm = crate::extractors::markdown::parse_frontmatter(&HUGO);
+        assert_eq!(fm["weight"], json!(30));
+        assert_eq!(fm["categories"], json!([]));
+        assert_eq!(fm["aliases"].as_array().map(Vec::len), Some(9));
     }
 }

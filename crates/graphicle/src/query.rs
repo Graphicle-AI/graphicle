@@ -24,6 +24,53 @@ pub const SEMANTIC_WEIGHT: f64 = 0.5;
 /// order.
 pub const MAX_RERANK_DEPTH: usize = 300;
 
+/// `graphicle context`'s default `max_chars`. A UserPromptSubmit hook
+/// prints the packet as JSON (`additionalContext`) under a short header, and
+/// Claude Code (2.1.287) shows the model only a preview of hook output over
+/// 10,000 characters. 0.1.1's default (4 characters per `max_tokens` token,
+/// 12,000 at 3,000 tokens) could go over; at 8,400 characters the escaped
+/// JSON, header included, stays below 9,500.
+pub const PUSH_CHARS: usize = 8_400;
+
+/// `notes_first` when a call leaves it out: off, so `context` (and so
+/// `recall_project`, `graphicle context` and answers) builds 0.1.2's packet.
+/// `notes_first: true` turns on, for one call, the notes-first order of a
+/// question in prose and one window per file ([`crate::notes_first`]), and
+/// dated excerpts ([`crate::source_age`], which `source_age` also turns on or
+/// off by itself). The packet's `notes_first` says what applied.
+pub const NOTES_FIRST_DEFAULT: bool = false;
+
+/// `identifier_route` when a call to `context` leaves it out: off, so the
+/// HTTP API, `graphicle call context`, the SDKs and the app's evidence
+/// button keep the retrieval unless a call asks for the route
+/// (`identifier_route: true`). `recall_project` in the essentials set
+/// ([`crate::api::identifier_route_default`]) and `graphicle context` ask
+/// for it unless told otherwise: a question that is an identifier, or only
+/// asks where named identifiers are defined or used, then gets their
+/// definitions and references from the code graph instead of the full
+/// retrieval ([`crate::identifier_route`]). The packet's `route` says which
+/// path ran.
+pub const IDENTIFIER_ROUTE_DEFAULT: bool = false;
+
+/// Sources `rank` offers past a call's `limit`, so the windows that
+/// [`crate::notes_first::one_per_file`] drops are replaced.
+pub const EXTRA_SOURCES: usize = 4;
+
+/// Passages of the fused order `rank` returns for a question in prose, from
+/// which [`crate::notes_first::rerank`] takes its first files.
+pub const NOTES_FUSED: usize = 400;
+
+/// `more_files` when a call leaves it out, for a code question
+/// ([`crate::code_question::is_code_question`]); other questions list none.
+/// After its excerpts a packet lists the paths of this many files that rank
+/// next (one line each, from at most an eighth of the budget), so an agent
+/// sees the files the budget cut.
+pub const MORE_FILES_DEFAULT: usize = 10;
+
+/// Passages of the fused order `rank` returns for the files a packet lists
+/// after its excerpts.
+pub const MORE_FILES_FUSED: usize = 200;
+
 /// Retrieval options that are on unless a call turns them off. An absent or
 /// `null` option takes its value here and is listed in the packet's
 /// `retrieval_defaults`; `false` turns it off. Porter-stemmed BM25 (Lucene's
@@ -489,7 +536,7 @@ impl Filter {
         };
         Ok((include.is_some() || metadata.is_some()).then_some(Self { include, metadata }))
     }
-    fn keeps(&self, document: &Value) -> bool {
+    pub(crate) fn keeps(&self, document: &Value) -> bool {
         let id = s(document, "id");
         self.include
             .as_ref()
@@ -574,10 +621,13 @@ pub fn passages(snapshot: &Snapshot) -> Result<Passages> {
 /// ([`graphicle_memory::ingest::MAX_DOCUMENTS`] documents and
 /// [`graphicle_memory::ingest::MAX_PASSAGES`] passages) this is
 /// [`passages`]. Past them, which documents are read is decided by the
-/// question: the documents are ordered so those that match more of its
-/// words (in the path or title twice) are taken first among documents of
-/// equal time, and the coverage says so (`selected_by_question`), instead
-/// of leaving out the earliest listed paths of a large project.
+/// question: the documents are ordered by a BM25 score of the question's
+/// words in each (a word in the path or title counts twice more), so the
+/// best are taken first among documents of equal time, and the coverage
+/// says so (`selected_by_question`), instead of leaving out the earliest
+/// listed paths of a large project. The score divides by length as BM25
+/// does: a long file that holds many of the words no longer fills the bound
+/// before a short one that holds the rare ones.
 pub fn passages_for(snapshot: &mut Snapshot, question: &str) -> Result<Passages> {
     if snapshot.documents.len() <= graphicle_memory::ingest::MAX_DOCUMENTS {
         let within = passages(snapshot)?;
@@ -595,8 +645,14 @@ pub fn passages_for(snapshot: &mut Snapshot, question: &str) -> Result<Passages>
     Ok(selected)
 }
 
+/// Most words of a question that choose the documents read past the bounds.
+const SELECTION_TERMS: usize = 64;
+
 /// The words of a question that select documents: letters, digits and `_`,
-/// at least three characters, without common words, at most 24.
+/// at least three characters, without common words, each once, at most
+/// [`SELECTION_TERMS`]: words written as code (with `_`, a digit or a
+/// capital inside) first, then the others in the question's order. The
+/// scores weigh each by how few documents hold it.
 fn question_terms(question: &str) -> Vec<String> {
     const COMMON: [&str; 40] = [
         "the", "and", "for", "with", "what", "which", "where", "when", "does", "how", "why", "who",
@@ -604,29 +660,46 @@ fn question_terms(question: &str) -> Vec<String> {
         "about", "there", "their", "they", "them", "then", "than", "its", "our", "your", "you",
         "all", "any", "did", "should", "would",
     ];
-    let mut terms = Vec::new();
+    let coded = |word: &str| {
+        word.contains('_')
+            || word.chars().any(|c| c.is_ascii_digit())
+            || word.chars().skip(1).any(char::is_uppercase)
+    };
+    let mut code = Vec::new();
+    let mut plain = Vec::new();
     for word in question.split(|c: char| !(c.is_alphanumeric() || c == '_')) {
-        let word = word.to_lowercase();
-        if word.chars().count() >= 3 && !COMMON.contains(&word.as_str()) && !terms.contains(&word) {
-            terms.push(word);
+        let lower = word.to_lowercase();
+        if lower.chars().count() < 3
+            || COMMON.contains(&lower.as_str())
+            || code.contains(&lower)
+            || plain.contains(&lower)
+        {
+            continue;
         }
-        if terms.len() == 24 {
-            break;
+        if coded(word) {
+            code.push(lower);
+        } else {
+            plain.push(lower);
         }
     }
-    terms
+    code.extend(plain);
+    code.truncate(SELECTION_TERMS);
+    code
 }
 
-/// Order `documents` by how many of the question's words each matches
-/// (its path or title counts twice), fewest first: the chunker takes
-/// documents of equal time from the end of the list. Stable, so documents
-/// that match equally keep their order. False when the question has no
-/// words to select by.
+/// Order `documents` by a BM25 score (k1 1.2, b 0.75, case-insensitive
+/// matches of the question's words in the content, each word's weight by
+/// how few documents hold it, plus twice the weight of a word in the path
+/// or title), lowest first: the chunker takes documents of equal time from
+/// the end of the list. Stable, so documents that score equally keep their
+/// order. False when the question has no words to select by.
 fn order_by_question(documents: &mut Vec<Value>, question: &str) -> bool {
-    let terms = question_terms(question);
+    let mut terms = question_terms(question);
     if terms.is_empty() {
         return false;
     }
+    // Longest first, so `parse_config` is counted before `config`.
+    terms.sort_by_key(|term| std::cmp::Reverse(term.len()));
     let pattern: Vec<String> = terms.iter().map(|term| regex::escape(term)).collect();
     let Ok(matcher) = regex::RegexBuilder::new(&format!("(?:{})", pattern.join("|")))
         .case_insensitive(true)
@@ -634,25 +707,62 @@ fn order_by_question(documents: &mut Vec<Value>, question: &str) -> bool {
     else {
         return false;
     };
-    let matched = |text: &str| {
-        let mut found = BTreeSet::new();
-        for hit in matcher.find_iter(text) {
-            found.insert(hit.as_str().to_lowercase());
-            if found.len() == terms.len() {
-                break;
-            }
-        }
-        found.len()
-    };
-    let mut scored: Vec<(usize, Value)> = documents
-        .drain(..)
+    let index: std::collections::HashMap<&str, usize> = terms
+        .iter()
+        .enumerate()
+        .map(|(i, term)| (term.as_str(), i))
+        .collect();
+    // Per document: each word's count in the content, the words of its
+    // path or title, and its length.
+    let counted: Vec<(Vec<u32>, BTreeSet<usize>, usize)> = documents
+        .iter()
         .map(|document| {
-            let named = format!("{}\n{}", s(&document, "path"), s(&document, "title"));
-            let score = 2 * matched(&named) + matched(s(&document, "content"));
+            let mut counts = vec![0u32; terms.len()];
+            let content = s(document, "content");
+            for hit in matcher.find_iter(content) {
+                if let Some(&i) = index.get(hit.as_str().to_lowercase().as_str()) {
+                    counts[i] += 1;
+                }
+            }
+            let named = format!("{}\n{}", s(document, "path"), s(document, "title"));
+            let names = matcher
+                .find_iter(&named)
+                .filter_map(|hit| index.get(hit.as_str().to_lowercase().as_str()).copied())
+                .collect();
+            (counts, names, content.len())
+        })
+        .collect();
+    let n = counted.len() as f64;
+    let average =
+        (counted.iter().map(|(_, _, length)| *length).sum::<usize>() as f64 / n.max(1.0)).max(1.0);
+    let weights: Vec<f64> = (0..terms.len())
+        .map(|i| {
+            let held = counted
+                .iter()
+                .filter(|(counts, names, _)| counts[i] > 0 || names.contains(&i))
+                .count() as f64;
+            (1.0 + (n - held + 0.5) / (held + 0.5)).ln()
+        })
+        .collect();
+    let mut scored: Vec<(f64, Value)> = documents
+        .drain(..)
+        .zip(counted)
+        .map(|(document, (counts, names, length))| {
+            let norm = 1.2 * (0.25 + 0.75 * length as f64 / average);
+            let mut score = 0.0;
+            for (i, &weight) in weights.iter().enumerate() {
+                let tf = f64::from(counts[i]);
+                if tf > 0.0 {
+                    score += weight * tf * 2.2 / (tf + norm);
+                }
+                if names.contains(&i) {
+                    score += 2.0 * weight;
+                }
+            }
             (score, document)
         })
         .collect();
-    scored.sort_by_key(|(score, _)| *score);
+    scored.sort_by(|a, b| a.0.total_cmp(&b.0));
     documents.extend(scored.into_iter().map(|(_, document)| document));
     true
 }
@@ -796,10 +906,61 @@ pub fn context_scored(
     )
 }
 
+/// The recall switches in force for one call, echoed in every packet's
+/// `mechanisms.switches` so a caller can verify them (a server's fixed
+/// values arrive as the request's): `graph_retrieval`, `memory_retrieval`,
+/// `cross_repo` (which follows `graph_retrieval` when left out) and
+/// `notes_first` (left out: [`NOTES_FIRST_DEFAULT`]) and `identifier_route`
+/// (left out: [`IDENTIFIER_ROUTE_DEFAULT`]) as booleans;
+/// `doc_links` and `symbol_links` as `true`, `false` or `"counted"` (left
+/// out: counted, not followed); `code_first`, `query_focus`,
+/// `identifier_arm` and `more_files` as asked, else `"auto"`; and `scope`.
+/// A switch outside its values ([`crate::api::switch_refusal`]) is refused.
+pub fn switches(args: &Value, scope: &str) -> Result<Value> {
+    for field in crate::api::RECALL_SWITCHES {
+        if let Some(refused) = args
+            .get(field)
+            .filter(|v| !v.is_null())
+            .and_then(|v| crate::api::switch_refusal(field, v))
+        {
+            return Err(Error::bad(refused));
+        }
+    }
+    let graph = args["graph_retrieval"] != false;
+    let linked = |field: &str| match args.get(field) {
+        Some(Value::Bool(on)) => json!(on),
+        _ => json!("counted"),
+    };
+    // The code-question switches: as asked, else "auto".
+    let auto = |field: &str| {
+        args.get(field)
+            .filter(|v| !v.is_null())
+            .cloned()
+            .unwrap_or(json!("auto"))
+    };
+    Ok(json!({
+        "graph_retrieval": graph,
+        "memory_retrieval": args["memory_retrieval"] != false,
+        "doc_links": linked("doc_links"),
+        "symbol_links": linked("symbol_links"),
+        "cross_repo": args["cross_repo"].as_bool().unwrap_or(graph),
+        "notes_first": args["notes_first"].as_bool().unwrap_or(NOTES_FIRST_DEFAULT),
+        "identifier_route": args["identifier_route"].as_bool().unwrap_or(IDENTIFIER_ROUTE_DEFAULT),
+        "code_first": auto("code_first"),
+        "query_focus": auto("query_focus"),
+        "identifier_arm": auto("identifier_arm"),
+        "more_files": auto("more_files"),
+        "scope": scope,
+    }))
+}
+
 /// [`context_scored`] over passages already chunked from `snapshot`
 /// ([`passages`]); `None` chunks the snapshot here. `doc_links` reads the
 /// project's document links ([`crate::doc_links::lift`]): followed with
-/// `doc_links: true`, else only counted; without it no link is read.
+/// `doc_links: true`, else only counted; without it no link is read. The
+/// same lookup reads reviewed memory's links to code symbols
+/// ([`crate::symbol_links::lift`]): followed with `symbol_links: true`,
+/// else only counted (`false` reads none).
 pub fn context_on(
     snapshot: &Snapshot,
     args: &Value,
@@ -816,11 +977,20 @@ pub fn context_on(
         }
     }
     let links = crate::doc_links::Options::parse(args)?;
+    let symbol_links = crate::symbol_links::Mode::parse(args)?;
     // `graph_local`'s status when it did not rank (degraded past its
     // budget), passed beside the rankings; never fused.
     let local_status = extra_rankings
         .as_object_mut()
         .and_then(|m| m.shift_remove(crate::graph::LOCAL_STATUS));
+    // The files that define a code name the question names when no source
+    // file defines it (the identifier arm), which the code-first prior
+    // leaves their weight; never fused.
+    let defining: Vec<String> = extra_rankings
+        .as_object_mut()
+        .and_then(|m| m.shift_remove(crate::code_question::DEFINING))
+        .and_then(|files| serde_json::from_value(files).ok())
+        .unwrap_or_default();
     let graph_enabled = args["graph_retrieval"] != false;
     if !graph_enabled && let Some(rankings) = extra_rankings.as_object_mut() {
         // A precomputed property-graph arm must obey the same switch as the
@@ -861,15 +1031,60 @@ pub fn context_on(
     }
     let question = string(args, "question", 16000)?;
     let (include_tests, tests_defaulted) = IncludeTests::parse(args)?;
+    // A code question's query is its content, not its instructions
+    // (crate::code_question::focus): what `rank`, the reranker and the
+    // packer's focus read. The packet keeps the question.
+    let focus = crate::code_question::focus(args, question)?;
+    let query = focus.text.as_str();
+    // A code question ranks source files ahead of documentation, tests and
+    // vendored code (crate::code_question), in `rank` itself.
+    let code_first = crate::code_question::decide(args, question, query)?;
     let max_tokens = integer(args, "max_tokens", 3000, 16000)?.max(256);
     let max_chars = integer(args, "max_chars", 12000, 64000)?.max(2000);
     let limit = integer(args, "limit", 8, 40)?.max(1);
     let rerank_depth = integer(args, "rerank_depth", 32, MAX_RERANK_DEPTH)?.max(limit.min(32));
     let debug_candidates = integer(args, "debug_candidates", 0, 400)?;
+    // Files listed after the excerpts: `more_files` (0 to 40), left out
+    // MORE_FILES_DEFAULT for a code question and none for another.
+    let more_files = match args.get("more_files") {
+        None | Some(Value::Null) => {
+            if crate::code_question::is_code_question(question) {
+                MORE_FILES_DEFAULT
+            } else {
+                0
+            }
+        }
+        Some(_) => integer(
+            args,
+            "more_files",
+            0,
+            graphicle_memory::packing::MAX_NEXT_FILES,
+        )?,
+    };
+    // `notes_first: true` (left out: NOTES_FIRST_DEFAULT) asks for the
+    // notes-first order of a question in prose and one window per file.
+    // Windows stay as ranked without it, and also with `include_tests: true`
+    // (`--tools all` sends it: 0.1.0's packet) or an explicit `origin_quota`
+    // (its windows per origin).
+    let (notes_first, notes_first_defaulted) = crate::notes_first::switch(args)?;
+    let as_ranked = !notes_first
+        || include_tests == IncludeTests::Yes
+        || args.get("origin_quota").is_some_and(|v| !v.is_null());
+    // Dated excerpts: `source_age` when the call sets it, else `notes_first`.
+    let dated = match args.get("source_age") {
+        None | Some(Value::Null) => notes_first,
+        Some(Value::Bool(on)) => *on,
+        Some(_) => return Err(Error::bad("source_age must be true or false")),
+    };
+    // Past the call's limit, `rank` offers EXTRA_SOURCES more sources, so
+    // the windows [`crate::notes_first::one_per_file`] drops (a second window
+    // of a file, a copy of another file) are replaced from the fused order.
     let rank_limit = if rescoring {
         rerank_depth.min(graphicle_memory::retrieval::MAX_RANK_LIMIT)
-    } else {
+    } else if as_ranked {
         limit
+    } else {
+        (limit + EXTRA_SOURCES).min(graphicle_memory::retrieval::MAX_RANK_LIMIT)
     };
     for (field, check) in [
         ("compact_citations", Value::is_boolean as fn(&Value) -> bool),
@@ -977,12 +1192,16 @@ pub fn context_on(
         .map(|r| r["identity"].clone())
         .take(12)
         .collect();
-    let mut rank_request = json!({"scope":snapshot.repository["id"],"question":question,"rows":[],"needs":args.get("needs").cloned().unwrap_or(json!([])),
+    let mut rank_request = json!({"scope":snapshot.repository["id"],"question":query,"rows":[],"needs":args.get("needs").cloned().unwrap_or(json!([])),
         "limit":rank_limit,"mode":args["mode"].as_str().unwrap_or("auto"),"edges":[],"global_notes":global,"rankings":extra_rankings});
     // Plain copies: `json!` would serialize every passage row and graph edge
     // one by one.
     rank_request["rows"] = Value::Array(rows.clone());
     rank_request["edges"] = edges.clone();
+    let (priors, code_first_report) = code_first.priors(&rows, &defining);
+    if !priors.is_empty() {
+        rank_request["origin_prior"] = Value::Object(priors);
+    }
     // Retrieval tuning, validated by `rank`: weighted fusion, per-origin
     // quotas, stemmed BM25, a ranking of one speaker's turns and
     // caller-supplied query variants (rephrasings, keywords, hypothetical
@@ -1032,6 +1251,19 @@ pub fn context_on(
     } else {
         0
     });
+    // A question that names no code takes its sources from the fused order
+    // ordered again (crate::notes_first), so `rank` returns that order.
+    let prose = !rescoring && !as_ranked && !crate::notes_first::names_code(question);
+    let fused_depth = if prose {
+        fused_depth.max(NOTES_FUSED)
+    } else {
+        fused_depth
+    };
+    let fused_depth = if more_files > 0 {
+        fused_depth.max(MORE_FILES_FUSED)
+    } else {
+        fused_depth
+    };
     if fused_depth > 0 {
         rank_request["debug_fused"] = json!(fused_depth);
     }
@@ -1048,7 +1280,11 @@ pub fn context_on(
         bound("max", 3).max(bound("min", 1))
     });
     let mut ranked = native("rank", rank_request)?;
-    let strength = ranked["evidence_strength"].clone();
+    let mut strength = ranked["evidence_strength"].clone();
+    // `rank` was asked for EXTRA_SOURCES more; the packet's limit is the call's.
+    if !rescoring {
+        strength["limit"] = json!(limit);
+    }
     let by_id: BTreeMap<&str, &Value> = rows.iter().map(|r| (s(r, "identity"), r)).collect();
     let mut reranker_usage = Value::Null;
     if let Some(reranker) = reranker {
@@ -1104,7 +1340,7 @@ pub fn context_on(
         let mut scores = Vec::with_capacity(texts.len());
         let mut tokens = 0;
         for chunk in texts.chunks(32) {
-            let (part, used) = crate::local_inference::rerank_counted(reranker, question, chunk)?;
+            let (part, used) = crate::local_inference::rerank_counted(reranker, query, chunk)?;
             scores.extend(part);
             tokens += used;
         }
@@ -1136,6 +1372,38 @@ pub fn context_on(
             memories.truncate(limit);
         }
     }
+    // Notes first: the sources of a question in prose are the first files of
+    // the fused order, one passage each; code files keep their places, and
+    // the notes are ordered again among the notes' places by name, headings
+    // and recency.
+    let mut notes_report = json!({"status": if !notes_first {
+        "off"
+    } else if rescoring {
+        "local_reranker"
+    } else if as_ranked {
+        "windows_as_ranked"
+    } else {
+        "code_question"
+    }});
+    if prose {
+        let fused: Vec<&Value> = ranked["fused"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| by_id.get(id.as_str()?).copied())
+            .collect();
+        let today = crate::now();
+        let (order, report) = crate::notes_first::rerank(
+            &fused,
+            &snapshot.documents,
+            question,
+            today.get(..10).unwrap_or(&today),
+        );
+        notes_report = report;
+        if let Some(order) = order {
+            ranked["sources"] = json!(order.into_iter().take(limit).collect::<Vec<_>>());
+        }
+    }
     let selected = |key: &str| {
         ranked[key]
             .as_array()
@@ -1146,6 +1414,14 @@ pub fn context_on(
             .collect::<Vec<_>>()
     };
     let mut sources = selected("sources");
+    // One window per file and one copy of identical files, then the call's
+    // limit (`rank` offered EXTRA_SOURCES more).
+    let (mut repeated, mut copies) = if as_ranked {
+        (0, 0)
+    } else {
+        crate::notes_first::one_per_file(&mut sources, &snapshot.documents)
+    };
+    sources.truncate(limit);
     for source in &mut sources {
         if let Some(facts) = code_graph_facts.get(s(source, "identity")) {
             source["source"][crate::code_graph_arm::ARM] = facts.clone();
@@ -1232,6 +1508,38 @@ pub fn context_on(
             Err(error) => doc_links_report = json!({"status":"error","error":error.message}),
         }
     }
+    // Reviewed memory's links to code symbols, one hop, after the document
+    // links (with `symbol_links: true`; left out, they are counted and
+    // nothing is lifted; `false` reads none). A failed read leaves the
+    // packet as it was and says so. A caller that reads no link at all (no
+    // lookup) reports the step `unavailable`, never as if it had not been
+    // asked for.
+    let mut symbol_links_report = json!({"status": match symbol_links {
+        crate::symbol_links::Mode::Off => "disabled",
+        _ => "unavailable",
+    }});
+    let mut linked_memories = Vec::new();
+    if symbol_links != crate::symbol_links::Mode::Off
+        && let Some(lookup) = doc_links
+    {
+        match crate::symbol_links::lift(
+            lookup.db(),
+            lookup.repository(),
+            symbol_links,
+            snapshot,
+            &rows,
+            &sources,
+            &selected_memories,
+            &candidates,
+        ) {
+            Ok(lifted) => {
+                candidates.extend(lifted.windows);
+                linked_memories = lifted.memories;
+                symbol_links_report = lifted.report;
+            }
+            Err(error) => symbol_links_report = json!({"status":"error","error":error.message}),
+        }
+    }
     // Test files after the other excerpts (`include_tests`): the packer
     // presents them last once the budget has gone to the windows in rank
     // order, so the bound and the budget below see 0.1.0's order.
@@ -1240,12 +1548,33 @@ pub fn context_on(
         IncludeTests::Yes => false,
         IncludeTests::No => true,
         IncludeTests::Auto => {
-            let named = question_names_tests(question);
+            let named = question_names_tests(query);
             test_files["question_names_tests"] = json!(named);
             !named
         }
     };
+    // Linked memories' windows, the code arm's anchors and lifted windows of
+    // a file already quoted give way too.
+    if !as_ranked {
+        let (more_repeated, more_copies) =
+            crate::notes_first::one_per_file(&mut candidates, &snapshot.documents);
+        repeated += more_repeated;
+        copies += more_copies;
+        notes_report["one_per_file"] =
+            json!({"repeated_windows":repeated,"identical_copies":copies});
+    }
     candidates.truncate(40);
+    if let Some(offered) = symbol_links_report
+        .get("lifted_windows")
+        .and_then(Value::as_u64)
+    {
+        let kept = candidates
+            .iter()
+            .filter(|c| c["source"].get(crate::symbol_links::ARM).is_some())
+            .count() as u64;
+        symbol_links_report["lifted_windows"] = json!(kept);
+        symbol_links_report["over_candidate_limit"] = json!(offered.saturating_sub(kept));
+    }
     // Lifted windows come last: count those the candidate bound kept.
     if let Some(offered) = doc_links_report.get("lifted").and_then(Value::as_u64) {
         let kept = candidates
@@ -1264,7 +1593,22 @@ pub fn context_on(
     if demote {
         mark_test_files_last(&mut hits);
     }
-    let mut pack_request = json!({"repo":snapshot.repository,"question":question,"hits":hits,"memories":selected_memories,
+    // Each excerpt's age, when dated: its file's last change in the
+    // citation, and code it names whose file changed since. Reads files and
+    // Git only; the order stays the ranking's.
+    let source_age = match doc_links {
+        Some(lookup) if dated => crate::phase::phase("context_age", || {
+            crate::source_age::annotate(lookup, &mut hits)
+        })
+        .unwrap_or_else(|error| json!({"status":"error","error":error.message})),
+        Some(_) => json!({"status":"disabled"}),
+        None => json!({"status":"not_requested"}),
+    };
+    // Memories lifted through links follow the selected ones.
+    let pack_memories: Vec<&Value> = selected_memories.iter().chain(&linked_memories).collect();
+    // The packer centres excerpts on the query's words; the packet names the
+    // question (below).
+    let mut pack_request = json!({"repo":snapshot.repository,"question":query,"hits":hits,"memories":pack_memories,
         "max_tokens":max_tokens,"max_chars":max_chars,"reasons":ranked["reasons"],"coverage":coverage,"needs":args.get("needs").cloned().unwrap_or(json!([])),
         "semantic":{"loaded":extra_rankings.get("semantic").is_some()},"mode":ranked["mode"]});
     let focus_options = args.get("pack_focus").filter(|v| v.is_object());
@@ -1292,7 +1636,27 @@ pub fn context_on(
             pack_request[option] = value.clone();
         }
     }
+    // The project files of the fused order, each once: the packer lists
+    // those its excerpts do not quote after them.
+    if more_files > 0 {
+        let mut seen = BTreeSet::new();
+        let paths: Vec<&str> = ranked["fused"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| by_id.get(id.as_str()?))
+            .filter(|row| s(&row["source"], "id").starts_with("file:"))
+            .map(|row| s(&row["source"], "path"))
+            .filter(|path| !path.is_empty() && seen.insert(*path))
+            .take(limit + 3 * more_files)
+            .collect();
+        pack_request["next_files"] = json!({"paths": paths, "limit": more_files});
+    }
     let mut packet = native("pack", pack_request)?;
+    packet["question"] = json!(question);
+    if let Some(listed) = packet.as_object_mut().and_then(|p| p.remove("next_files")) {
+        packet["more_files"] = listed;
+    }
     // How many delivered test-file excerpts had another excerpt after them
     // in rank order (0 under chronological presentation).
     if demote {
@@ -1316,7 +1680,11 @@ pub fn context_on(
             .get(a..b)
             .ok_or_else(|| Error::bad("Invalid packed source coordinates"))?;
         let mut window = crate::evidence::from_range(doc, a, b)?;
-        for arm in [crate::code_graph_arm::ARM, crate::doc_links::ARM] {
+        for arm in [
+            crate::code_graph_arm::ARM,
+            crate::doc_links::ARM,
+            crate::symbol_links::ARM,
+        ] {
             if let Some(facts) = source.get(arm) {
                 window[arm] = facts.clone();
             }
@@ -1389,6 +1757,42 @@ pub fn context_on(
     let before = mechanisms["links_pending_projection"].as_u64().unwrap_or(0);
     mechanisms["links_pending_projection"] = json!(before + pending);
     mechanisms["doc_links_pending_documents"] = json!(pending_documents);
+    // Memory links used: the lifted memories the packet kept and the lifted
+    // code windows it cites, by the rung of the link followed.
+    let mut memory_rungs: BTreeMap<String, u64> = BTreeMap::new();
+    let mut memories_included = 0u64;
+    for memory in packet["memories"].as_array().into_iter().flatten() {
+        if memory["via"] == "link" {
+            memories_included += 1;
+            *memory_rungs
+                .entry(s(&memory["link"], "rung").to_string())
+                .or_default() += 1;
+        }
+    }
+    let mut windows_cited = 0u64;
+    for window in &evidence {
+        if let Some(facts) = window.get(crate::symbol_links::ARM) {
+            windows_cited += 1;
+            *memory_rungs
+                .entry(s(facts, "rung").to_string())
+                .or_default() += 1;
+        }
+    }
+    if symbol_links_report.get("considered").is_some() {
+        symbol_links_report["memories_included"] = json!(memories_included);
+        symbol_links_report["cited"] = json!(windows_cited);
+    }
+    packet[crate::symbol_links::ARM] = symbol_links_report;
+    let mechanisms = &mut packet["mechanisms"];
+    mechanisms["symbol_links_enabled"] = json!(symbol_links.enabled());
+    mechanisms["switches"] = switches(args, "project")?;
+    let used = &mut mechanisms["links_used"];
+    used["memory"] =
+        json!(used["memory"].as_u64().unwrap_or(0) + memories_included + windows_cited);
+    for (rung, count) in memory_rungs {
+        let before = used["by_rung"][&rung].as_u64().unwrap_or(0);
+        used["by_rung"][rung] = json!(before + count);
+    }
     packet["evidence"] = json!(evidence);
     packet["source_state"] = json!(snapshot.state);
     packet["evidence_strength"] = strength;
@@ -1396,6 +1800,11 @@ pub fn context_on(
     packet["arm_weights"] = arm_weights;
     packet["retrieval_defaults"] = json!(defaulted);
     packet["test_files"] = test_files;
+    packet["code_first"] = code_first_report;
+    packet["query_focus"] = focus.report;
+    packet["source_age"] = source_age;
+    notes_report["defaulted"] = json!(notes_first_defaulted);
+    packet[crate::notes_first::FIELD] = notes_report;
     if let Some(stemmer) = ranked.get("stemmer") {
         packet["stemmer"] = stemmer.clone();
     }
@@ -1437,7 +1846,8 @@ pub fn context_on(
 /// other `mechanisms`:
 /// - one switch per mechanism: `code_graph_enabled`, `static_edges_enabled`
 ///   and `graph_local_enabled` (today all follow `graph_retrieval`), and
-///   `symbol_links_enabled`, `doc_links_enabled` and `scope`, reserved;
+///   `symbol_links_enabled`, `doc_links_enabled` and `scope`, which the
+///   query fills after the links steps;
 /// - the guards: `static_edges_aggregated` and `static_edges_capped` (with
 ///   `static_edges_bound` when either applied) and `graph_local_status`
 ///   (`searched`, `not_requested`, `disabled` or `degraded`, with
@@ -1448,9 +1858,9 @@ pub fn context_on(
 ///   `links_followed_through_move` (links of served reviewed memories that
 ///   followed an exact move) and `links_pending_projection` (links and
 ///   quotes of reviewed memories waiting for a projection: their own
-///   `symbol_links.pending`); 0 until a later
-///   batch fills them: `links_used` and `workspace` (one project searched
-///   until workspace scope).
+///   `symbol_links.pending`); 0 until the links steps add theirs:
+///   `links_used` (`memory` and `document`, and `by_rung`), and `workspace`
+///   (one project searched until workspace scope).
 fn graph_mechanisms(
     mechanisms: &mut Value,
     graph_enabled: bool,
@@ -1617,22 +2027,65 @@ impl Store {
             }
         }
         let scope = crate::workspace::Scope::parse(args)?;
+        // A question over the bound is shortened, keeping its content and
+        // the names it gives, instead of refused (crate::code_question).
+        let shortened = args
+            .get("question")
+            .and_then(Value::as_str)
+            .and_then(crate::code_question::shorten);
+        let owned;
+        let args = match &shortened {
+            Some((question, _)) => {
+                let mut copy = args.clone();
+                copy["question"] = json!(question);
+                owned = copy;
+                &owned
+            }
+            None => args,
+        };
+        let report = shortened.map(|(_, report)| report);
         // Retrieval runs on a read-only snapshot and records nothing about the
         // request, so a query never takes the write lock.
-        self.authorized_read(workspace, token, "read", |db, p| match scope {
+        let mut packet = self.authorized_read(workspace, token, "read", |db, p| match scope {
             crate::workspace::Scope::Project => {
                 if args.get("max_projects").is_some() {
                     return Err(Error::bad("max_projects applies only with scope workspace"));
                 }
                 let repository = repo(db, p, string(args, "repository_id", 100)?)?;
-                Ok(project_packet(db, p, &repository, args, embedding, reranker)?.1)
+                // An identifier, or a question that only asks where named
+                // identifiers are defined or used: their definitions and
+                // references from the code graph (crate::identifier_route).
+                let route = match crate::identifier_route::answer(db, p, &repository, args)? {
+                    crate::identifier_route::Routed::Answered(packet) => return Ok(packet),
+                    crate::identifier_route::Routed::Retrieval(route) => route,
+                };
+                let mut packet = project_packet(db, p, &repository, args, embedding, reranker)?.1;
+                let mut route = route;
+                // A question that asks more about the names it gives keeps
+                // them: the identifier arm ranks their files.
+                if route["reason"] == "asks_more" {
+                    route["names_fused"] = json!(packet["identifier_arm"]["status"] == "fused");
+                }
+                packet[crate::identifier_route::REPORT] = route;
+                Ok(packet)
             }
             // Every project of the workspace the principal may read, each
-            // read as this project is above.
+            // read as this project is above; the identifier route answers
+            // one project's questions only.
             crate::workspace::Scope::Workspace => {
-                crate::workspace::context(db, p, args, embedding, reranker)
+                let (on, defaulted) = crate::identifier_route::switch(args)?;
+                let mut packet = crate::workspace::context(db, p, args, embedding, reranker)?;
+                let mut route =
+                    json!({"path":"retrieval","reason":"workspace","defaulted":defaulted});
+                route[crate::identifier_route::FIELD] = json!(on);
+                packet[crate::identifier_route::REPORT] = route;
+                Ok(packet)
             }
-        })
+        })?;
+        if let Some(report) = report {
+            packet["question_shortened"] = report;
+        }
+        Ok(packet)
     }
 }
 
@@ -1658,14 +2111,18 @@ pub fn project_packet(
         crate::graph::for_query(db, repository, p, &snap, args)
     })?;
     let question = string(args, "question", 16000)?;
+    // What the arms read: a code question's content, not its instructions
+    // (crate::code_question::focus).
+    let focus = crate::code_question::focus(args, question)?;
+    let query = focus.text.as_str();
     // One chunking of the snapshot serves `graph_local`'s seed and
     // walk, the dense arm and the query itself; past
     // the per-question bounds the question chooses what it reads.
     let shared = crate::phase::phase("context_passages", || {
-        passages_for(&mut snap, question).map(Some)
+        passages_for(&mut snap, query).map(Some)
     })?;
     let mut rankings = crate::phase::phase("context_rankings", || {
-        crate::graph::add_rankings_on(&snap, graph.as_ref(), question, json!({}), shared.as_ref())
+        crate::graph::add_rankings_on(&snap, graph.as_ref(), query, json!({}), shared.as_ref())
     })?;
     let mut dense_report = json!({"status":"disabled"});
     let mut dense_calls = 0;
@@ -1696,7 +2153,7 @@ pub fn project_packet(
         if !vectors.is_empty() {
             let started = std::time::Instant::now();
             let (query, tokens, _) =
-                crate::local_inference::embed_query(profile, &[question.to_string()])?;
+                crate::local_inference::embed_query(profile, &[query.to_string()])?;
             if crate::model::key(profile) != key {
                 return Err(Error::conflict(
                     "Local embedding manifest changed during query",
@@ -1754,8 +2211,10 @@ pub fn project_packet(
         }
     }
     // A degraded graph arm never fails an interactive query. With
-    // `doc_links: false` it leaves document nodes out.
+    // `doc_links: false` it leaves document nodes out, and so does a code
+    // question that ranks source files first (crate::code_question).
     let links = crate::doc_links::Options::parse(args)?;
+    let code_first = crate::code_question::decide(args, question, query)?;
     let arm = if args["graph_retrieval"] == false {
         crate::code_graph_arm::Arm::skipped("disabled")
     } else {
@@ -1764,8 +2223,8 @@ pub fn project_packet(
                 db,
                 s(repository, "id"),
                 &snap,
-                question,
-                links.documents(),
+                query,
+                links.documents() && !code_first.applied,
             )
         })
         .unwrap_or_else(|error| {
@@ -1774,7 +2233,31 @@ pub fn project_packet(
             arm
         })
     };
-    let lookup = crate::doc_links::Lookup::new(db, s(repository, "id"));
+    // The identifiers and paths a code question names, found in the
+    // passages and at their definitions, as one more arm
+    // (crate::identifier_arm).
+    let identifier_report = match &shared {
+        Some(passages) => {
+            let found = crate::phase::phase("context_identifiers", || {
+                crate::identifier_arm::arm(db, s(repository, "id"), passages, args, question, query)
+            })?;
+            if !rankings.is_object() {
+                rankings = json!({});
+            }
+            if let Some(ranking) = found.ranking {
+                rankings[crate::identifier_arm::ARM] = json!(ranking);
+            }
+            // Beside the rankings, never fused: files the code-first prior
+            // leaves their weight.
+            if !found.defining.is_empty() {
+                rankings[crate::code_question::DEFINING] = json!(found.defining);
+            }
+            found.report
+        }
+        None => json!({"status":"no_passages"}),
+    };
+    let lookup = crate::doc_links::Lookup::new(db, s(repository, "id"))
+        .with_folder(crate::folders::current_folder(db, s(repository, "id"))?);
     if crate::observer::KeyMode::parse(args.get("note_keys"))?.is_some() {
         rankings[crate::observer::NOTE_KEYS] = json!(crate::observer::notes_for(
             db,
@@ -1794,6 +2277,7 @@ pub fn project_packet(
         )
     })?;
     packet["local_dense"] = dense_report;
+    packet["identifier_arm"] = identifier_report;
     if let Some(filter) = filter {
         packet["filter"] = filter;
     }
@@ -2270,7 +2754,7 @@ mod tests {
         );
         // Reserved until their batches: switches and counters at null or 0.
         assert_eq!(mechanisms["code_graph_enabled"], true);
-        assert_eq!(mechanisms["symbol_links_enabled"], serde_json::Value::Null);
+        assert_eq!(mechanisms["symbol_links_enabled"], false);
         assert_eq!(mechanisms["scope"], "project");
         assert_eq!(
             mechanisms["memories_withheld"],

@@ -328,6 +328,37 @@ fn packed_utf8_excerpts_have_exact_byte_offsets_and_never_cut_procedures() {
 }
 
 #[test]
+fn dated_excerpts_cite_their_change_and_age_marks_and_keep_them_when_focused() {
+    let mut body = "unrelated words\n\n".repeat(400);
+    body.push_str("The build host is ci-runner-07.\n");
+    let request = |focus: bool| {
+        let mut request = json!({"repo":{"id":"r","name":"Repo","snapshot":"one"},"question":"which build host","hits":[
+            {"identity":"a","text":body,"source":{"source_kind":"repository_file","path":"notes/node.md","id":"file:notes/node.md",
+                "sha256":"hash","byte_start":0,"line":1,"changed":"2026-10-15 06:52 UTC",
+                "age_marks":["may be stale: src/sync.rs (defines `sync_all`) changed 2026-10-15 07:00 UTC"]}},
+            {"identity":"b","text":"plain text\n","source":{"source_kind":"repository_file","path":"plain.md","id":"file:plain.md",
+                "sha256":"hash2","byte_start":0,"line":1}}],
+            "memories":[],"max_tokens":3000,"max_chars":6000});
+        if focus {
+            request["pack_focus"] = json!(true);
+        }
+        request
+    };
+    for focus in [false, true] {
+        let result = packing::pack(&request(focus)).unwrap();
+        let markdown = result["markdown"].as_str().unwrap();
+        let line = result["sources"][0]["line"].as_u64().unwrap();
+        assert!(markdown.contains(&format!(
+            "\nSource [repository_file]: notes/node.md:{line} (changed 2026-10-15 06:52 UTC)\nNote: may be stale: src/sync.rs (defines `sync_all`) changed 2026-10-15 07:00 UTC\n"
+        )));
+        // An undated source is cited as before.
+        assert!(markdown.contains("\nSource [repository_file]: plain.md:1\nID: file:plain.md\n"));
+        assert_eq!(result["sources"][0]["changed"], "2026-10-15 06:52 UTC");
+        assert_eq!(focus, line > 1);
+    }
+}
+
+#[test]
 fn abi_and_in_process_boundaries_reject_malformed_input_without_panics() {
     for bytes in [
         b"not json".as_slice(),
@@ -1439,6 +1470,89 @@ fn origin_quotas_let_the_best_origin_give_more_and_counting_keeps_the_limit() {
     assert!(counted["evidence_strength"].get("adaptive_depth").is_none());
     assert_eq!(counted["sources"].as_array().unwrap().len(), 2, "{counted}");
     assert_eq!(counted["fused"].as_array().unwrap().len(), 5);
+}
+
+#[test]
+fn an_origin_prior_scales_its_rows_before_the_order_is_taken() {
+    let rows = vec![
+        passage(
+            "doc",
+            "file:docs/parser.md",
+            "The parser reads the header and the parser checks the header length.",
+        ),
+        passage(
+            "code",
+            "file:src/parser.rs",
+            "fn read_header() { let length = 4; }",
+        ),
+    ];
+    let base = json!({"scope":"prior-test","question":"parser header length","rows":rows,
+        "limit":2,"debug_fused":2});
+    let order = |ranked: &Value| ranked["fused"].clone();
+    let plain = retrieval::rank(&base).unwrap();
+    assert_eq!(order(&plain), json!(["doc", "code"]));
+    assert!(plain.get("origin_prior").is_none());
+    let mut prior = base.clone();
+    prior["origin_prior"] = json!({"file:docs/parser.md": 0.1});
+    let ranked = retrieval::rank(&prior).unwrap();
+    assert_eq!(order(&ranked), json!(["code", "doc"]), "{ranked}");
+    assert_eq!(ranked["sources"], json!(["code", "doc"]));
+    assert_eq!(ranked["origin_prior"]["origins"], 1);
+    // A weight of 1 changes nothing; weights outside 0 to 1 are refused.
+    prior["origin_prior"] = json!({"file:docs/parser.md": 1.0});
+    assert_eq!(order(&retrieval::rank(&prior).unwrap()), order(&plain));
+    for bad in [
+        json!({"file:docs/parser.md": 1.5}),
+        json!({"x": "a"}),
+        json!([0.5]),
+    ] {
+        prior["origin_prior"] = bad;
+        assert!(retrieval::rank(&prior).is_err());
+    }
+}
+
+#[test]
+fn a_packet_lists_the_next_files_its_excerpts_do_not_quote() {
+    let body = "fn parse() {}\n".repeat(400);
+    let hit = json!({"identity":"a","text":body,"source":{"id":"file:src/a.rs","path":"src/a.rs",
+        "source_kind":"repository_file","byte_start":0,"byte_end":body.len(),"line":1,"sha256":"x"}});
+    let request = |next: Value| {
+        json!({"repo":{"name":"r","snapshot":"s"},"question":"parse","hits":[hit.clone()],
+            "memories":[],"max_tokens":3000,"max_chars":8400,"next_files":next})
+    };
+    let packed = packing::pack(&request(
+        json!({"paths":["src/a.rs","src/b.rs","src/c.rs","src/d.rs"],"limit":2}),
+    ))
+    .unwrap();
+    let markdown = packed["markdown"].as_str().unwrap();
+    assert_eq!(packed["next_files"], json!(["src/b.rs", "src/c.rs"]));
+    assert!(markdown.contains(packing::NEXT_FILES_HEADING), "{markdown}");
+    assert!(markdown.contains("- src/b.rs\n- src/c.rs\n"), "{markdown}");
+    assert!(!markdown.contains("- src/a.rs") && !markdown.contains("- src/d.rs"));
+    // The list is after the excerpt and before the budget line, within the
+    // budget, which the excerpt otherwise fills.
+    let list = markdown.find("- src/b.rs").unwrap();
+    assert!(markdown.find("fn parse").unwrap() < list);
+    assert!(list < markdown.find("\nBudget: ").unwrap());
+    assert!(packed["characters"].as_u64().unwrap() <= 8400);
+    // Without the option, or with a limit of 0, no list.
+    let plain = packing::pack(&request(Value::Null)).unwrap();
+    assert!(plain.get("next_files").is_none());
+    assert!(
+        !plain["markdown"]
+            .as_str()
+            .unwrap()
+            .contains(packing::NEXT_FILES_HEADING)
+    );
+    let none = packing::pack(&request(json!({"paths":["src/b.rs"],"limit":0}))).unwrap();
+    assert!(none.get("next_files").is_none());
+    for bad in [
+        json!({"paths":["src/b.rs"],"limit":41}),
+        json!({"paths":[1],"limit":2}),
+        json!({"limit":2}),
+    ] {
+        assert!(packing::pack(&request(bad)).is_err());
+    }
 }
 
 #[test]

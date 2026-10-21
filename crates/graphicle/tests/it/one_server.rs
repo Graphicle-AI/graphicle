@@ -21,7 +21,7 @@ use graphicle_runtime::platform::CanonicalExt;
 use graphicle_runtime::{
     api::{self, App, McpOptions, ToolSet},
     extension::McpTool,
-    graph_projection, graph_tools, jobs, model,
+    graph_projection, graph_tools, jobs, model, query,
     store::{Store, s},
 };
 use serde_json::{Value, json};
@@ -878,9 +878,9 @@ fn server_fixed_switches_apply_are_reported_and_cannot_be_overridden() {
     assert!(refused.contains("doc_links is fixed to false"), "{refused}");
     let refused = api::fixed_switches(&["code_graph=false".into()]).unwrap_err();
     assert!(
-        refused
-            .message
-            .contains("the server fixes graph_retrieval, memory_retrieval and doc_links"),
+        refused.message.contains(
+            "the server fixes graph_retrieval, memory_retrieval, doc_links, symbol_links, cross_repo, notes_first, identifier_route, code_first, query_focus, identifier_arm, more_files and scope"
+        ),
         "{}",
         refused.message
     );
@@ -980,20 +980,24 @@ fn a_tool_set_serves_one_half_of_the_server() {
     assert!(refused.contains("Tool unavailable"), "{refused}");
 }
 
-/// The 0.1.0 server, frozen: `graphicle mcp --project . --allow-learning`
-/// (what setup writes for every client but Claude Code, and for Claude Code
-/// with `--tools all`) initializes and lists exactly this (an edition adds
-/// its tools after these).
+/// The 0.1.0 server, frozen but for 0.1.4's routing (a sentence on when to
+/// call recall and the code graph and when grep is enough first in the
+/// instructions, and one on when to use it instead of grep at the end of
+/// each search tool's description): `graphicle mcp --project .
+/// --allow-learning` (what setup writes for every client but Claude Code,
+/// and for Claude Code with `--tools all`) initializes and lists exactly
+/// this (an edition adds its tools after these).
 const FROZEN_ALL: &str = include_str!("../fixtures/one_server_tools.json");
-/// What setup gives Claude Code (`--tools essentials`): five tools and one
-/// sentence of instructions.
+/// What setup gives Claude Code (`--tools essentials`): five tools and short
+/// instructions on when to call them and when grep is enough.
 const FROZEN_ESSENTIALS: &str = include_str!("../fixtures/one_server_essentials_tools.json");
 
-/// The whole server (`--tools all`) is 0.1.0's, byte for byte. The
-/// essentials are the five tools setup gives Claude Code: the whole server's
-/// schemas, descriptions that start with what an agent searches for and
-/// carry the citation details, and one sentence of instructions; they
-/// answer, the other tools do not, and the server's opt-ins add their tools.
+/// The whole server (`--tools all`) is 0.1.0's but for the routing
+/// sentences. The essentials are the five tools setup gives Claude Code:
+/// the whole server's schemas, descriptions that start with what an agent
+/// searches for and carry the citation details, and short instructions;
+/// they answer, the other tools do not, and the server's opt-ins add their
+/// tools.
 #[test]
 fn all_is_the_0_1_0_server_and_the_essentials_are_five_tools() {
     let f = Fixture::new(&[("a.py", A), ("b.py", B)]);
@@ -2094,4 +2098,438 @@ fn serve_publishes_its_tool_set_and_fixed_switches_over_http() {
         "params":{"name":"query_graph","arguments":{"question":"beta"}}}));
     assert_eq!(unpublished["error"]["message"], "Tool unavailable");
     drop(server);
+}
+
+/// Conformance (the integration switches): every recall packet echoes the
+/// switches in force (`mechanisms.switches`), whether a request set them,
+/// the server fixed them or they kept their defaults; `cross_repo` and
+/// `scope` are fixed like the others; an unknown switch is refused, never
+/// ignored, by `--set` and in a request.
+#[test]
+fn conformance_switches_are_echoed_fixed_and_never_ignored() {
+    let f = Fixture::new(&[("a.py", A), ("b.py", B)]);
+    let app = f.app();
+    let recall = |app: &App, arguments: Value| {
+        call(&f, app, "recall_project", arguments).map(|r| r["structuredContent"].clone())
+    };
+    let packet = recall(&app, json!({"question":"who calls beta"})).unwrap();
+    assert_eq!(
+        packet["mechanisms"]["switches"],
+        json!({"graph_retrieval":true,"memory_retrieval":true,"doc_links":"counted",
+            "symbol_links":"counted","cross_repo":true,"notes_first":false,
+            "identifier_route":false,"code_first":"auto","query_focus":"auto",
+            "identifier_arm":"auto","more_files":"auto","scope":"project"})
+    );
+    let packet = recall(
+        &app,
+        json!({"question":"who calls beta","graph_retrieval":false,"doc_links":true,
+            "symbol_links":false,"cross_repo":false,"notes_first":true}),
+    )
+    .unwrap();
+    assert_eq!(
+        packet["mechanisms"]["switches"],
+        json!({"graph_retrieval":false,"memory_retrieval":true,"doc_links":true,
+            "symbol_links":false,"cross_repo":false,"notes_first":true,
+            "identifier_route":false,"code_first":"auto","query_focus":"auto",
+            "identifier_arm":"auto","more_files":"auto","scope":"project"})
+    );
+    // `cross_repo` follows `graph_retrieval` when left out.
+    let packet = recall(
+        &app,
+        json!({"question":"who calls beta","graph_retrieval":false}),
+    )
+    .unwrap();
+    assert_eq!(packet["mechanisms"]["switches"]["cross_repo"], false);
+    // The essentials set builds 0.1.2's packet unless a call turns
+    // `notes_first` on; `--tools all` keeps 0.1.0's windows whatever it says.
+    let mut essentials = f.app();
+    essentials.mcp.tools = ToolSet::Essentials;
+    let plain = recall(&essentials, json!({"question":"who calls beta"})).unwrap();
+    assert_eq!(
+        plain["notes_first"],
+        json!({"status":"off","defaulted":true}),
+        "{}",
+        plain["notes_first"]
+    );
+    assert_eq!(plain["source_age"]["status"], "disabled");
+    let first = recall(
+        &essentials,
+        json!({"question":"who calls beta","notes_first":true}),
+    )
+    .unwrap();
+    assert_eq!(
+        first["notes_first"]["status"], "reranked",
+        "{}",
+        first["notes_first"]
+    );
+    assert_eq!(first["notes_first"]["defaulted"], false);
+    assert_eq!(first["mechanisms"]["switches"]["notes_first"], true);
+    let all = recall(
+        &app,
+        json!({"question":"who calls beta","notes_first":true}),
+    )
+    .unwrap();
+    assert_eq!(all["notes_first"]["status"], "windows_as_ranked");
+    // Fixed by the server: echoed, listed under `server_fixed`, and a request
+    // for another value is refused.
+    let mut fixed = f.app();
+    fixed.mcp.fixed = api::fixed_switches(&[
+        "graph_retrieval=false".into(),
+        "memory_retrieval=false".into(),
+        "doc_links=false".into(),
+        "symbol_links=false".into(),
+        "cross_repo=false".into(),
+        "notes_first=true".into(),
+        "scope=project".into(),
+    ])
+    .unwrap();
+    let packet = recall(&fixed, json!({"question":"who calls beta"})).unwrap();
+    assert_eq!(
+        packet["mechanisms"]["switches"],
+        json!({"graph_retrieval":false,"memory_retrieval":false,"doc_links":false,
+            "symbol_links":false,"cross_repo":false,"notes_first":true,
+            "identifier_route":false,"code_first":"auto","query_focus":"auto",
+            "identifier_arm":"auto","more_files":"auto","scope":"project"})
+    );
+    assert_eq!(packet["mechanisms"]["server_fixed"]["cross_repo"], false);
+    assert_eq!(packet["mechanisms"]["server_fixed"]["notes_first"], true);
+    assert_eq!(packet["mechanisms"]["server_fixed"]["scope"], "project");
+    for (switch, other) in [
+        ("cross_repo", json!(true)),
+        ("symbol_links", json!(true)),
+        ("notes_first", json!(false)),
+        ("scope", json!("workspace")),
+    ] {
+        let refused =
+            recall(&fixed, json!({"question":"who calls beta", switch: other})).unwrap_err();
+        assert!(refused.contains("fixed to"), "{switch}: {refused}");
+    }
+    // Unknown names and values are refused, by `--set` and in a request.
+    for bad in [
+        "code_graph=false",
+        "cross_repo=maybe",
+        "notes_first=yes",
+        "scope=everything",
+        "scope=true",
+        "links=true",
+    ] {
+        assert!(api::fixed_switches(&[bad.into()]).is_err(), "{bad}");
+    }
+    let refused = api::fixed_switches(&["links=true".into()]).unwrap_err();
+    assert!(
+        refused.message.contains(
+            "the server fixes graph_retrieval, memory_retrieval, doc_links, symbol_links, cross_repo, notes_first, identifier_route, code_first, query_focus, identifier_arm, more_files and scope"
+        ),
+        "{}",
+        refused.message
+    );
+    let refused = recall(
+        &app,
+        json!({"question":"who calls beta","code_graph":false}),
+    )
+    .unwrap_err();
+    assert!(refused.contains("published contract"), "{refused}");
+    let refused = recall(&app, json!({"question":"who calls beta","cross_repo":"no"})).unwrap_err();
+    assert!(
+        refused.contains("cross_repo must be true or false"),
+        "{refused}"
+    );
+    // The code-question switches: taken beside the published arguments,
+    // fixed by `--set`, and refused outside their values.
+    let packet = recall(
+        &app,
+        json!({"question":"who calls beta","code_first":false,"query_focus":"auto",
+            "identifier_arm":true,"more_files":3}),
+    )
+    .unwrap();
+    let switches = &packet["mechanisms"]["switches"];
+    assert_eq!(switches["code_first"], false, "{switches}");
+    assert_eq!(switches["query_focus"], "auto");
+    assert_eq!(switches["identifier_arm"], true);
+    assert_eq!(switches["more_files"], 3);
+    assert_eq!(packet["code_first"]["applied"], false);
+    for (switch, bad, takes) in [
+        ("code_first", json!("maybe"), "true, false or auto"),
+        ("query_focus", json!(1), "true, false or auto"),
+        ("more_files", json!(41), "a number from 0 to 40"),
+    ] {
+        let refused = recall(&app, json!({"question":"who calls beta", switch: bad})).unwrap_err();
+        assert!(
+            refused.contains(&format!("{switch} must be {takes}")),
+            "{refused}"
+        );
+    }
+    let mut chosen = f.app();
+    chosen.mcp.fixed = api::fixed_switches(&[
+        "code_first=false".into(),
+        "identifier_arm=auto".into(),
+        "more_files=0".into(),
+    ])
+    .unwrap();
+    let packet = recall(&chosen, json!({"question":"who calls beta"})).unwrap();
+    assert_eq!(packet["mechanisms"]["switches"]["code_first"], false);
+    assert_eq!(packet["mechanisms"]["switches"]["identifier_arm"], "auto");
+    assert_eq!(packet["mechanisms"]["switches"]["more_files"], 0);
+    for bad in [
+        "code_first=maybe",
+        "more_files=41",
+        "more_files=-1",
+        "query_focus=yes",
+    ] {
+        assert!(api::fixed_switches(&[bad.into()]).is_err(), "{bad}");
+    }
+    // A server that fixes the scope to the workspace serves no project
+    // connection.
+    let mut whole = f.app();
+    whole.mcp.fixed = api::fixed_switches(&["scope=workspace".into()]).unwrap();
+    let refused = recall(&whole, json!({"question":"who calls beta"})).unwrap_err();
+    assert!(refused.contains("fixes scope to workspace"), "{refused}");
+}
+
+/// Conformance (the manifest): `graphicle mcp --manifest` records the
+/// program (version, edition, sha256), the tools a connection lists with
+/// their hash, the switches the server fixes and those a request may set,
+/// and the schema and format versions. Fixing a switch changes the
+/// switches, not the tools.
+#[test]
+fn conformance_the_manifest_records_program_tools_switches_and_schemas() {
+    let f = Fixture::new(&[("a.py", A)]);
+    let mut app = f.app();
+    app.mcp.fixed =
+        api::fixed_switches(&["doc_links=false".into(), "scope=project".into()]).unwrap();
+    let manifest = api::manifest(&app, &f.workspace, &f.key, Some(&f.repo)).unwrap();
+    assert_eq!(manifest["format"], api::MANIFEST_FORMAT);
+    // The runtime's version, as `initialize` reports it (a test built in
+    // another crate has that crate's version).
+    let initialized = rpc(&f, &app, &f.key, "initialize", json!({}));
+    assert_eq!(
+        manifest["program"]["version"],
+        initialized["result"]["serverInfo"]["version"]
+    );
+    assert_eq!(
+        manifest["program"]["sha256"].as_str().map(str::len),
+        Some(64),
+        "{manifest}"
+    );
+    assert_eq!(manifest["connection"], "project");
+    let listed = rpc(&f, &app, &f.key, "tools/list", json!({}));
+    let listed: BTreeSet<String> = names(&listed["result"]).into_iter().collect();
+    let recorded: BTreeSet<String> = manifest["tools"]["names"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(recorded, listed);
+    assert_eq!(
+        manifest["switches"]["server_fixed"],
+        json!({"doc_links":false,"scope":"project"})
+    );
+    assert_eq!(
+        manifest["switches"]["request"],
+        json!([
+            "graph_retrieval",
+            "memory_retrieval",
+            "doc_links",
+            "symbol_links",
+            "cross_repo",
+            "notes_first",
+            "identifier_route",
+            "code_first",
+            "query_focus",
+            "identifier_arm",
+            "more_files",
+            "scope"
+        ])
+    );
+    assert_eq!(
+        manifest["switches"]["notes_first_default"],
+        query::NOTES_FIRST_DEFAULT
+    );
+    for field in [
+        "compiled_sha256",
+        "deletion",
+        "state",
+        "export",
+        "template",
+        "cross_link_state",
+    ] {
+        assert!(
+            manifest["schemas"][field].is_string(),
+            "{field}: {manifest}"
+        );
+    }
+    assert!(manifest["schemas"]["store"]["tables"].as_u64().unwrap() > 10);
+    assert!(manifest["retrieval_defaults"].is_object(), "{manifest}");
+    let plain = api::manifest(&f.app(), &f.workspace, &f.key, Some(&f.repo)).unwrap();
+    assert_eq!(plain["tools"]["sha256"], manifest["tools"]["sha256"]);
+    assert_eq!(plain["schemas"], manifest["schemas"]);
+    assert_ne!(plain["switches"], manifest["switches"]);
+}
+
+/// The identifier route: a question that is an identifier, or only asks
+/// where named identifiers are defined or used, gets their definitions and
+/// references from the code graph as path:line lines, in the essentials set
+/// and through `context`, within the budget. A question in plain words, one
+/// that asks more about a name, and a name the code graph does not define
+/// in the caller's view keep the retrieval; so do `identifier_route: false`
+/// and the whole server unless a call asks for the route. The packet's
+/// `route` says which path ran.
+#[test]
+fn identifier_questions_take_the_code_graph_route() {
+    let f = Fixture::new(&[("a.py", A), ("b.py", B)]);
+    let mut essentials = f.app();
+    essentials.mcp.tools = ToolSet::Essentials;
+    let recall = |app: &App, arguments: Value| {
+        call(&f, app, "recall_project", arguments)
+            .map(|r| r["structuredContent"].clone())
+            .unwrap()
+    };
+    // An identifier alone: its definition in a.py and its uses in b.py.
+    let packet = recall(&essentials, json!({"question":"`beta`"}));
+    assert_eq!(packet["route"]["path"], "identifier", "{packet:#}");
+    assert_eq!(packet["route"]["defaulted"], true);
+    assert_eq!(packet["mechanisms"]["switches"]["identifier_route"], true);
+    let symbol = &packet["symbols"][0];
+    assert_eq!(symbol["name"], "beta");
+    assert_eq!(symbol["definitions"][0]["relpath"], "a.py", "{symbol:#}");
+    assert_eq!(symbol["definitions"][0]["line"], 4, "{symbol:#}");
+    assert!(
+        symbol["references"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reference| reference["relpath"] == "b.py"),
+        "{symbol:#}"
+    );
+    let markdown = s(&packet, "markdown");
+    assert!(markdown.contains("a.py:4"), "{markdown}");
+    assert!(markdown.contains("- reference b.py:"), "{markdown}");
+    assert!(packet["sources"].as_array().unwrap().is_empty());
+    assert!(packet["tokens"].as_u64() <= packet["max_tokens"].as_u64());
+    // The default reply is that text and nothing else.
+    let reply = rpc(
+        &f,
+        &essentials,
+        &f.key,
+        "tools/call",
+        json!({"name":"recall_project","arguments":{"question":"`beta`"}}),
+    );
+    assert!(
+        reply["result"].get("structuredContent").is_none(),
+        "{reply}"
+    );
+    assert_eq!(reply["result"]["content"][0]["text"], packet["markdown"]);
+    // Mixed: names with words that only ask where they are and who uses
+    // them take the route; words that ask more keep the retrieval.
+    for question in [
+        "Where is `alpha` defined, and who calls it?",
+        "who calls alpha() and beta()",
+        "find the callers of run()",
+    ] {
+        let packet = recall(&essentials, json!({"question":question}));
+        assert_eq!(
+            packet["route"]["path"], "identifier",
+            "{question}: {packet:#}"
+        );
+    }
+    let both = recall(
+        &essentials,
+        json!({"question":"who calls alpha() and beta()"}),
+    );
+    assert_eq!(both["route"]["names"], json!(["alpha", "beta"]));
+    let more = recall(
+        &essentials,
+        json!({"question":"how does `run` add alpha and beta together"}),
+    );
+    assert_eq!(more["route"]["path"], "retrieval");
+    assert_eq!(more["route"]["reason"], "asks_more");
+    assert_eq!(more["route"]["names"], json!(["run"]));
+    assert!(!more["sources"].as_array().unwrap().is_empty(), "{more:#}");
+    // Content, outgoing calls and mentions keep it too.
+    for question in [
+        "what is `beta` used for",
+        "callees of run()",
+        "show me the code of run()",
+    ] {
+        let packet = recall(&essentials, json!({"question":question}));
+        assert_eq!(packet["route"]["reason"], "asks_more", "{question}");
+    }
+    // Plain words, a name the code graph does not define, the switch, and
+    // a call that names needs.
+    for (arguments, reason) in [
+        (json!({"question":"who calls beta"}), "plain_words"),
+        (json!({"question":"`gamma_delta`"}), "not_in_code_graph"),
+        (json!({"question":"`beta`","identifier_route":false}), "off"),
+        (
+            json!({"question":"`beta`","needs":["the return value"]}),
+            "needs",
+        ),
+    ] {
+        let packet = recall(&essentials, arguments.clone());
+        assert_eq!(packet["route"]["path"], "retrieval", "{arguments}");
+        assert_eq!(packet["route"]["reason"], reason, "{arguments}");
+    }
+    // The whole server keeps 0.1.0's recall unless a call asks for the route.
+    let all = f.app();
+    let packet = recall(&all, json!({"question":"`beta`"}));
+    assert_eq!(packet["route"]["reason"], "off");
+    assert_eq!(packet["route"]["defaulted"], true);
+    let packet = recall(&all, json!({"question":"`beta`","identifier_route":true}));
+    assert_eq!(packet["route"]["path"], "identifier");
+    // `context` (the HTTP API, the SDKs, the app's evidence button): the
+    // retrieval unless a call asks for the route; the route's packet has no
+    // evidence, and cites only within the caller's view (`include`).
+    let context = |arguments: Value| {
+        let mut arguments = arguments;
+        arguments["repository_id"] = json!(f.repo);
+        f.store
+            .project_context(&f.workspace, &f.key, &arguments)
+            .unwrap()
+    };
+    let packet = context(json!({"question":"beta()"}));
+    assert_eq!(packet["route"]["reason"], "off", "{packet:#}");
+    assert_eq!(packet["route"]["defaulted"], true);
+    assert!(!packet["evidence"].as_array().unwrap().is_empty());
+    let packet = context(json!({"question":"beta()","identifier_route":true}));
+    assert_eq!(packet["route"]["path"], "identifier", "{packet:#}");
+    assert_eq!(packet["evidence"], json!([]));
+    let packet = context(json!({"question":"beta()","identifier_route":true,
+        "include":["file:b.py"]}));
+    assert_eq!(packet["route"]["reason"], "not_in_code_graph", "{packet:#}");
+    let packet = context(json!({"question":"how is the sum returned","identifier_route":true}));
+    assert_eq!(packet["route"]["reason"], "plain_words");
+}
+
+/// Within the budget: past it, the route lists what fits and counts the
+/// rest.
+#[test]
+fn the_identifier_route_keeps_to_the_budget() {
+    let many: String = std::iter::once("from a import beta\n\n".to_string())
+        .chain((0..300).map(|i| format!("def caller_{i}():\n    return beta()\n\n")))
+        .collect();
+    let f = Fixture::new(&[("a.py", A), ("c.py", &many)]);
+    let packet = f
+        .store
+        .project_context(
+            &f.workspace,
+            &f.key,
+            &json!({"repository_id":f.repo,"question":"`beta`","max_tokens":256,"max_chars":2000,
+                "identifier_route":true}),
+        )
+        .unwrap();
+    assert_eq!(packet["route"]["path"], "identifier", "{packet:#}");
+    assert!(packet["characters"].as_u64().unwrap() <= 2000, "{packet:#}");
+    assert!(packet["tokens"].as_u64().unwrap() <= 256, "{packet:#}");
+    assert!(
+        packet["symbols"][0]["reference_count"].as_u64().unwrap() > 100,
+        "{packet:#}"
+    );
+    assert!(
+        packet["omitted"]["definitions_and_references"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(s(&packet, "markdown").contains("Budget: 256"));
 }

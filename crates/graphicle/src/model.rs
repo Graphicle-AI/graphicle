@@ -90,6 +90,21 @@ pub struct Config {
     /// variable `GRAPHICLE_NO_UPDATE_NOTIFIER` does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub update_notifier: Option<bool>,
+    /// The folder sync's settings ([`SyncSettings`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync: Option<SyncSettings>,
+}
+
+/// The folder sync's settings (`sync.*` in the configuration file).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SyncSettings {
+    /// `sync.tracked_ignored`: whether a sync reads the files Git tracks
+    /// although an ignore pattern matches them (left out: yes;
+    /// [`crate::local::tracked_ignored_setting`]). The environment variable
+    /// `GRAPHICLE_SYNC_TRACKED_IGNORED` wins over it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tracked_ignored: Option<bool>,
 }
 fn concurrency_default() -> usize {
     1
@@ -108,6 +123,7 @@ impl Default for Config {
             freshness: None,
             limits: BTreeMap::new(),
             update_notifier: None,
+            sync: None,
         }
     }
 }
@@ -140,6 +156,7 @@ impl Config {
                 "confluence",
             ]
             .contains(&kind.as_str())
+                && crate::extension::installed().source(kind).is_none()
             {
                 return Err(Error::bad("Unknown connector endpoint"));
             }

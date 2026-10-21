@@ -465,8 +465,13 @@ class Project:
         ``max_tokens`` is at most 16,000. Options include ``limit`` (excerpts, at most 40),
         ``max_chars`` (default four characters per token), ``mode``, ``needs``,
         ``memory_retrieval`` / ``graph_retrieval`` / ``doc_links`` (booleans; ``doc_links=True``
-        follows documents' links to the code they name, which are otherwise only counted) and
-        the local ONNX profiles ``local_embedding_profile`` / ``local_reranker_profile``.
+        follows documents' links to the code they name, which are otherwise only counted),
+        ``notes_first`` (``True`` orders notes first for a question in prose, quotes one window
+        per file and dates each excerpt; off by default), ``identifier_route`` (``True`` answers a
+        question that is an identifier, or only asks where named identifiers are defined or used,
+        with their definitions and references from the code graph and no excerpts; off by
+        default, and the packet's ``route`` says which path ran) and the local ONNX profiles
+        ``local_embedding_profile`` / ``local_reranker_profile``.
         ``include`` (1-32 source-id prefixes such as ``connector:<id>:``) and ``metadata`` (1-16
         exact values of a document's metadata) limit the search to matching sources before
         ranking; the packet's ``filter``

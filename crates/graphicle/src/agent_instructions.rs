@@ -10,6 +10,26 @@
 //! so setup adds none when it is the only agent connected. `setup --tools
 //! all` writes 0.1.0's section instead ([`section_0_1_0`]), whichever agents
 //! are connected.
+//!
+//! **Routing.** Every place an agent reads when to use Graphicle says the
+//! same thing: the tools for where or how something works, for questions
+//! across files or history and before changing unfamiliar code, and grep
+//! for an exact identifier the agent already knows ([`ROUTING_WHEN`],
+//! [`ROUTING_GREP`]). The places are this section, the session-start
+//! context ([`SESSION_ROUTING`]), the server's instructions
+//! ([`crate::api::ESSENTIAL_INSTRUCTIONS`] and the whole server's) and the
+//! search tools' descriptions ([`crate::api::instead_of_grep`]). Each costs
+//! tokens in every session, so each is a sentence or two.
+
+/// When Graphicle's tools are the ones to call, as every routing text says
+/// it.
+pub const ROUTING_WHEN: &str = "for where or how something works, for questions across files or history, and before changing unfamiliar code";
+/// When a text search is enough, as every routing text says it.
+pub const ROUTING_GREP: &str = "for an exact identifier you already know, grep is enough";
+/// The first line of the session-start context
+/// ([`crate::store::Store::session_start_context`]), which Claude Code's and
+/// Codex's session-start hooks print.
+pub const SESSION_ROUTING: &str = "Graphicle: use its MCP tools (recall_project, query_graph) for where or how something works, for questions across files or history, and before changing unfamiliar code; for an exact identifier you already know, grep is enough. Answers cite file and lines.";
 
 /// The first line of the section.
 pub const START: &str =
@@ -18,13 +38,13 @@ pub const START: &str =
 pub const END: &str = "<!-- graphicle:end -->";
 
 /// The section, markers included, without a final newline: the heading and
-/// two lines, on when to call the tools that every connection publishes and
-/// what to run without them.
+/// two lines, on when to call the tools that every connection publishes
+/// (and when grep is enough) and what to run without them.
 pub fn section() -> String {
     [
         START,
         "## Graphicle",
-        "When you do not yet know where the code for a task is, who calls it or why it was written that way, ask the `graphicle` MCP server before searching files by hand: `query_graph` or `recall_project` with the question, then `get_node` and `get_neighbors` for one symbol; answers cite file and lines.",
+        "Use the `graphicle` MCP server for where or how something works, for questions across files or history, and before changing unfamiliar code: `recall_project` or `query_graph` with the question, then `get_node` and `get_neighbors` for one symbol; answers cite file and lines. For an exact identifier you already know, grep is enough.",
         "Without the server, run `graphicle context \"<question>\"` in a terminal.",
         END,
     ]
@@ -287,6 +307,26 @@ mod tests {
         assert!(!named.is_empty(), "{section}");
         for name in named {
             assert!(crate::api::ESSENTIAL_TOOLS.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn every_routing_text_says_when_to_call_and_when_grep_is_enough() {
+        for text in [
+            section(),
+            SESSION_ROUTING.to_string(),
+            crate::api::ESSENTIAL_INSTRUCTIONS.to_string(),
+            crate::api::routing(true, true).unwrap(),
+            crate::api::routing(false, true).unwrap(),
+        ] {
+            let text = text.to_lowercase();
+            assert!(text.contains(ROUTING_WHEN), "{text}");
+            assert!(text.contains(ROUTING_GREP), "{text}");
+            assert!(!text.contains('\u{2014}'), "no em dash: {text}");
+        }
+        for name in ["recall_project", "query_graph", "get_node", "get_neighbors"] {
+            let sentence = crate::api::instead_of_grep(name).unwrap();
+            assert!(sentence.starts_with("Use it instead of grep"), "{name}");
         }
     }
 

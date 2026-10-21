@@ -554,6 +554,69 @@ fn ask_without_a_model_prints_the_evidence_and_the_command_that_adds_one() {
     assert_eq!(packet["question"], "how does login work");
 }
 
+/// `context` builds 0.1.2's packet unless asked: no excerpt dates and no
+/// notes-first order. `--notes-first` dates each excerpt from Git, in the
+/// packet and on a terminal, and reports the order it used. The packet holds
+/// 8,400 characters at most, or 4 per token of `--max-tokens` when only that
+/// is given, or `--max-chars`.
+#[test]
+fn context_dates_excerpts_with_notes_first_and_sizes_itself_by_its_flags() {
+    let sandbox = Sandbox::new();
+    sandbox.sync();
+    let question = "how does login work";
+    let context = |extra: &[&str]| {
+        let mut args = vec!["context", question];
+        args.extend_from_slice(extra);
+        json_of(&sandbox.run(&sandbox.repo(), &args, &[]))
+    };
+    let dated = |packet: &Value| {
+        packet["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|source| source.get("changed").is_some())
+            .count()
+    };
+    let plain = context(&[]);
+    assert_eq!(
+        plain["notes_first"],
+        json!({"status":"off","defaulted":true}),
+        "{plain:#}"
+    );
+    assert_eq!(plain["source_age"]["status"], "disabled");
+    assert_eq!(dated(&plain), 0, "{}", plain["sources"]);
+    assert!(!plain["markdown"].as_str().unwrap().contains("(changed "));
+    assert_eq!(plain["max_chars"], 8400);
+    let first = context(&["--notes-first"]);
+    assert_eq!(first["notes_first"]["defaulted"], false, "{first:#}");
+    assert_eq!(first["notes_first"]["status"], "reranked", "{first:#}");
+    assert_eq!(
+        first["source_age"]["status"], "dated",
+        "{}",
+        first["source_age"]
+    );
+    assert!(dated(&first) >= 1, "{}", first["sources"]);
+    assert!(
+        first["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|source| source.get("changed").is_some())
+            .all(|source| source["changed_basis"] == "git"),
+        "{}",
+        first["sources"]
+    );
+    assert!(first["markdown"].as_str().unwrap().contains(" (changed "));
+    let text = ok(&sandbox.text(&sandbox.repo(), &["context", question, "--notes-first"]));
+    assert!(text.contains("(changed "), "{text}");
+    assert_eq!(context(&["--max-tokens", "1000"])["max_chars"], 4000);
+    assert_eq!(
+        context(&["--max-tokens", "1000", "--max-chars", "3000"])["max_chars"],
+        3000
+    );
+    assert_eq!(context(&["--max-chars", "5000"])["max_chars"], 5000);
+}
+
 /// A stand-in Responses provider: a `basic` reader quotes its first two
 /// sources.
 async fn respond(Json(request): Json<Value>) -> Json<Value> {
