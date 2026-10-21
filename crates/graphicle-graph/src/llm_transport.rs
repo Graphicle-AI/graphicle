@@ -531,11 +531,11 @@ impl NativeTransport {
         llm_parse::cli_envelope(&stdout).map_err(Error::runtime)
     }
     fn http(&self, r: &Request) -> Result<Value> {
-        let client = reqwest::blocking::Client::builder()
-            .timeout(duration(r.timeout)?)
-            .connect_timeout(duration(r.timeout)?)
-            .build()
-            .map_err(|e| Error::transport(e.to_string()))?;
+        let timeout = duration(r.timeout)?;
+        let client = crate::net::blocking_client(|builder| {
+            builder.timeout(timeout).connect_timeout(timeout)
+        })
+        .map_err(|e| Error::transport(crate::net::describe(e)))?;
         let bytes = serde_json::to_vec(&r.body).map_err(|e| Error::value(e.to_string()))?;
         for attempt in 0..=r.retries {
             let mut request = client
@@ -557,11 +557,7 @@ impl NativeTransport {
                                 self.sleep(retry_delay(&headers, attempt));
                                 continue;
                             }
-                            return Err(if e.is_timeout() {
-                                Error::timeout(e.to_string())
-                            } else {
-                                Error::transport(e.to_string())
-                            });
+                            return Err(transport_error(e));
                         }
                     };
                     if status.is_success() {
@@ -595,15 +591,20 @@ impl NativeTransport {
                         ));
                         continue;
                     }
-                    return Err(if e.is_timeout() {
-                        Error::timeout(e.to_string())
-                    } else {
-                        Error::transport(e.to_string())
-                    });
+                    return Err(transport_error(e));
                 }
             }
         }
         Err(Error::runtime("HTTP retry budget was invalid"))
+    }
+}
+/// A failed request as a timeout or a transport error, with its causes
+/// ([`crate::net::describe`]).
+fn transport_error(e: reqwest::Error) -> Error {
+    if e.is_timeout() {
+        Error::timeout(crate::net::describe(e))
+    } else {
+        Error::transport(crate::net::describe(e))
     }
 }
 fn duration(s: f64) -> Result<Duration> {

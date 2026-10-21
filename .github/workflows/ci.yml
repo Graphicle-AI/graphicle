@@ -170,6 +170,20 @@ jobs:
         env:
           CRATE: ${{ matrix.crate }}
         run: echo "::warning title=Windows tests::$CRATE has failing tests on Windows (not gating yet); see the Tests step"
+      # The HTTPS clients trust the Windows certificate store: the test adds
+      # its own certificate authority to Cert:\LocalMachine\Root, connects
+      # without SSL_CERT_FILE and removes the authority again. Not gating yet.
+      - name: Windows certificate store
+        id: root_store
+        if: matrix.crate == 'graphicle-graph'
+        continue-on-error: true
+        working-directory: ${{ matrix.dir }}
+        env:
+          GRAPHICLE_TEST_ROOT_STORE: windows
+        run: cargo test --locked --test tls_roots
+      - name: Report the certificate store test (not gating)
+        if: steps.root_store.outcome == 'failure'
+        run: echo "::warning title=Windows certificate store::the tls_roots test failed; see the Windows certificate store step"
 
   licences:
     runs-on: ubuntu-latest

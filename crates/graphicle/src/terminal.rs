@@ -789,9 +789,11 @@ pub fn this_folders_server(directory: &Path, port: u16) -> bool {
 
 /// An HTTP client for this computer's own servers: never through a proxy
 /// (`HTTP_PROXY` would send a request, and its credentials, elsewhere),
-/// never following a redirect.
+/// never following a redirect. It speaks plain HTTP to 127.0.0.1 only, so it
+/// does not read the system's certificate authorities.
 fn loopback_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
+        .tls_built_in_native_certs(false)
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(Duration::from_secs(2))
@@ -3547,6 +3549,8 @@ pub fn job_failure(job: &Value, model: Option<&ModelState>) -> String {
         "The provider is limiting requests for this key, or its credit ran out. Wait a minute and ask again, or check your plan.".into()
     } else if status.is_some_and(|code| code >= 500) {
         "The provider failed. Ask again in a minute.".into()
+    } else if graphicle::net::certificate_refused(error) {
+        format!("Could not reach {address}: its certificate is not trusted.")
     } else if error.contains("Could not establish the provider connection")
         || error.contains("connection timed out")
     {
@@ -5979,6 +5983,22 @@ args = ["-y", "thing"]
             )
             .contains("ollama serve")
         );
+        // A refused certificate names the provider and keeps the causes and the hint.
+        let untrusted = job_failure(
+            &failed(&graphicle::net::with_hint(
+                "Could not establish the provider connection: client error (Connect): invalid peer certificate: UnknownIssuer".into(),
+            )),
+            Some(&model),
+        );
+        assert!(
+            untrusted.starts_with(&format!(
+                "Could not reach {}: its certificate is not trusted.",
+                model.base_url
+            )),
+            "{untrusted}"
+        );
+        assert!(untrusted.contains("UnknownIssuer"), "{untrusted}");
+        assert!(untrusted.contains("set SSL_CERT_FILE"), "{untrusted}");
         assert!(
             job_failure(&failed("Provider returned HTTP 404"), Some(&ollama))
                 .contains("ollama pull qwen3:4b")

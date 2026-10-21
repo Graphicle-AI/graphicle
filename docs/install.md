@@ -16,7 +16,7 @@ step.
 
 ```sh
 brew install graphicle-ai/tap/graphicle
-graphicle --version          # graphicle 0.1.3 (core)
+graphicle --version          # graphicle 0.1.4 (core)
 ```
 
 `brew upgrade graphicle` installs a new release. Afterwards, read
@@ -149,7 +149,7 @@ folder with both programs, `LICENSE`, `NOTICE`, `NOTICE.md`, `README.md`,
 | Windows, x86-64 (preview) | `x86_64-pc-windows-msvc`, a `.zip` |
 
 ```sh
-version=0.1.3
+version=0.1.4
 target=aarch64-apple-darwin
 base=https://github.com/graphicle-ai/graphicle/releases/download/v$version
 curl -fLO "$base/graphicle-$version-$target.tar.gz"
@@ -243,7 +243,7 @@ in them.
 ## Check the installation
 
 ```sh
-graphicle --version          # graphicle 0.1.3 (core)
+graphicle --version          # graphicle 0.1.4 (core)
 graphicle graph --help       # the code-graph engine's commands
 graphicle doctor             # checks the programs, the data folder and your agents
 ```

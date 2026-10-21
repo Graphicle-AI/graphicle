@@ -352,13 +352,27 @@ pub fn provider_url_with(value: &str, credential: bool, hosts: &[String]) -> Res
 pub fn client() -> Result<reqwest::Client> {
     client_with_timeout(Duration::from_secs(180))
 }
+/// An HTTP client for model providers and other services: it trusts the
+/// operating system's certificate authorities as well as the bundled roots
+/// (`graphicle::net::client`), and never follows a redirect.
 pub fn client_with_timeout(timeout: Duration) -> Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(timeout)
-        .build()
-        .map_err(|_| Error::bad("Cannot construct HTTP client"))
+    graphicle::net::client(|builder| {
+        builder
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(timeout)
+    })
+    .map_err(|_| Error::bad("Cannot construct HTTP client"))
+}
+/// `what`, then the causes of `error` (`graphicle::net::causes`) and a hint
+/// when the server's certificate was refused. The URL is left out.
+fn request_failure(what: &str, error: &reqwest::Error) -> String {
+    let causes = graphicle::net::causes(error);
+    if causes.is_empty() {
+        what.to_string()
+    } else {
+        graphicle::net::with_hint(format!("{what}: {causes}"))
+    }
 }
 pub async fn bounded_json(mut response: reqwest::Response) -> Result<Value> {
     if !response.status().is_success() {
@@ -689,7 +703,7 @@ pub async fn generate_with_credential(
         .send()
         .await
         .map_err(|error| {
-            Error::bad(if error.is_timeout() && error.is_connect() {
+            let what = if error.is_timeout() && error.is_connect() {
                 "Provider connection timed out before a response"
             } else if error.is_timeout() {
                 "Provider request timed out; usage may be unknown"
@@ -697,7 +711,8 @@ pub async fn generate_with_credential(
                 "Could not establish the provider connection"
             } else {
                 "Provider request failed before a response; usage may be unknown"
-            })
+            };
+            Error::bad(request_failure(what, &error))
         })?;
     let value = provider_json(response, credential).await?;
     reply(p, &value, estimated, start)
@@ -1172,7 +1187,9 @@ pub async fn embed_role(
             .json(&body)
             .send()
             .await
-            .map_err(|_| Error::bad("Embedding provider request failed"))?,
+            .map_err(|error| {
+                Error::bad(request_failure("Embedding provider request failed", &error))
+            })?,
         credential,
     )
     .await?;

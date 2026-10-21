@@ -55,7 +55,7 @@ operations through the extension registry (`src/extension.rs`).
   provider permission mode ("is not part of Graphicle Core"), while it still enforces
   the provider permissions an existing store holds.
 - `build.info` reports the edition and its capabilities, and
-  `graphicle --version` prints it (`graphicle 0.1.3 (core)`).
+  `graphicle --version` prints it (`graphicle 0.1.4 (core)`).
 - A store keeps every table when either edition opens it, and Core keeps the
   other edition's guarantees on a store it has used (`src/store_compat.rs`).
 

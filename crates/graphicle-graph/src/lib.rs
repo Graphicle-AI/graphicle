@@ -101,6 +101,7 @@ pub mod markdown_resolution;
 pub mod mcp_ingest;
 pub mod minhash;
 pub mod multigraph_compat;
+pub mod net;
 pub mod par;
 pub mod pascal_resolution;
 mod path_syntax;

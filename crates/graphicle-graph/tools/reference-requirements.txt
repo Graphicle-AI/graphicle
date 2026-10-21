@@ -17,6 +17,7 @@
 # Rebuild: uv venv --python 3.12.13 .reference-venv
 #          uv pip install --python .reference-venv/bin/python -r tools/reference-requirements.txt
 #          then write the .pth file naming the comparison venv's site-packages.
+# pillow is 13.0.0 (security advisories) instead of the recorded 12.3.0.
 annotated-types==0.8.0
 anthropic==1.8.0
 anyio==4.15.1
@@ -39,7 +40,7 @@ lxml==6.1.3
 neo4j==6.3.1
 numpy==2.5.3
 openpyxl==3.1.5
-pillow==12.3.0
+pillow==13.0.0
 psycopg==3.3.6
 psycopg-binary==3.3.6
 pydantic==2.13.5

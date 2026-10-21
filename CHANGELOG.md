@@ -3,6 +3,38 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.4 - 2026-10-21
+
+Every crate is at 0.1.4, and `graphicle --version` prints
+`graphicle 0.1.4 (core)`.
+
+### Connections
+
+- HTTPS connections trust the certificate authorities of the operating
+  system as well as the roots bundled with Graphicle: the Windows
+  certificate store, the macOS keychains and the system bundle on Linux. A
+  model provider whose certificate comes from a company's own certificate
+  authority is now reached once that authority is in the system trust
+  store, as curl and browsers reach it. Before, only the bundled roots were
+  trusted, so such a provider could not be reached (#7, reported by
+  @Mohammed-Tabiza). When `SSL_CERT_FILE` or `SSL_CERT_DIR` is set, its
+  certificates are read instead of the system's. If the system's
+  certificates cannot be used, Graphicle still connects with the bundled
+  roots.
+- A failed connection to a model provider now gives its cause, for example
+  `invalid peer certificate: UnknownIssuer`. When the server's certificate
+  is refused, the error also says what to do: install the certificate
+  authority in the system trust store, or set `SSL_CERT_FILE` to a PEM file
+  that holds it. `graphicle ask` reports that the provider's certificate is
+  not trusted, instead of suggesting a network or proxy problem. The graph
+  engine's model, pull request triage and URL fetch requests give the same
+  causes and hint.
+
+### Other changes
+
+- The Python environments of the engine's comparison suite pin Pillow
+  13.0.0 and certifi 2026.10.19, which fix security advisories.
+
 ## 0.1.3 - 2026-10-21
 
 Every crate is at 0.1.3, and `graphicle --version` prints

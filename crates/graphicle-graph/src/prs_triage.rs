@@ -241,10 +241,9 @@ impl Triage for NativeTriage {
             )
         };
         let body = json!({"model":model,"max_tokens":1024,"stream":true,"messages":[{"role":"user","content":prompt}]});
-        let client = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()
-            .map_err(crate::Error::from)?;
+        let client =
+            crate::net::blocking_client(|builder| builder.timeout(Duration::from_secs(600)))
+                .map_err(crate::Error::from)?;
         for attempt in 0..3 {
             let mut request = client
                 .post(&url)
@@ -277,7 +276,7 @@ impl Triage for NativeTriage {
                     .runtime
                     .transport
                     .sleep(Duration::from_millis(500u64 << attempt)),
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(crate::Error::External(crate::net::describe(e))),
             }
         }
         unreachable!()

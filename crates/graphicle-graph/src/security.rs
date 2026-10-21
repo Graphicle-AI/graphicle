@@ -234,19 +234,20 @@ fn http_error(error: reqwest::Error) -> String {
         details.push(error.to_string());
         cause = error.source();
     }
-    format!("URLError: {}", details.join(": "))
+    crate::net::with_hint(format!("URLError: {}", details.join(": ")))
 }
 impl Transport for PinnedHttpTransport {
     fn get(&mut self, url: &Url, address: SocketAddr, timeout: Duration) -> Result<FetchResponse> {
         let host = url.host_str().ok_or("ValueError: URL has no hostname")?;
-        let client = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(timeout)
-            .resolve_to_addrs(host, &[address])
-            .user_agent(concat!("Mozilla/5.0 graphicle/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(http_error)?;
+        let client = crate::net::blocking_client(|builder| {
+            builder
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(timeout)
+                .resolve_to_addrs(host, &[address])
+                .user_agent(concat!("Mozilla/5.0 graphicle/", env!("CARGO_PKG_VERSION")))
+        })
+        .map_err(http_error)?;
         // The URL keeps the original hostname for Host, SNI and certificate checks.
         let response = client.get(url.clone()).send().map_err(http_error)?;
         let status = response.status().as_u16();
