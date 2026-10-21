@@ -27,8 +27,22 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::open(false)
+    }
+    /// With `linked`, the store is opened through a symbolic link to the
+    /// folder that holds it, so the store's path is not the data folder's
+    /// resolved path: on macOS the temporary folder is such a path (/var is
+    /// a link to /private/var).
+    fn open(linked: bool) -> Self {
         let dir = TempDir::new().unwrap();
-        let store = Store::open(dir.path().join("store")).unwrap();
+        let parent = if linked {
+            std::fs::create_dir(dir.path().join("real")).unwrap();
+            std::os::unix::fs::symlink(dir.path().join("real"), dir.path().join("link")).unwrap();
+            dir.path().join("link")
+        } else {
+            dir.path().to_path_buf()
+        };
+        let store = Store::open(parent.join("store")).unwrap();
         let session = local::session(&store, true).unwrap();
         let root = dir.path().canonicalize().unwrap().join("work");
         std::fs::create_dir_all(&root).unwrap();
@@ -153,12 +167,28 @@ fn paths(value: &Value) -> Vec<String> {
 
 #[test]
 fn offboarding_removes_one_project_with_its_backups_and_keeps_the_other() {
+    offboard_one_then_the_other(false);
+}
+
+/// The same with the data folder reached through a symbolic link, as the
+/// temporary folder is on macOS: what is inside the data folder and its
+/// backups folder is decided on resolved paths, so the plan, its hash and
+/// what is removed are the same.
+#[test]
+fn offboarding_through_a_link_to_the_data_folder_is_the_same() {
+    offboard_one_then_the_other(true);
+}
+
+fn offboard_one_then_the_other(linked: bool) {
     crate::edition_setup();
-    let mut f = Fixture::new();
+    let mut f = Fixture::open(linked);
     let a = f.project("client-a", "zebracorn-alpha-7731");
     let b = f.project("client-b", "quokka-beta-5512");
     f.drain();
     let data = f.store.directory.canonicalize().unwrap();
+    if linked {
+        assert_ne!(data, *f.store.directory);
+    }
     for id in [&a, &b] {
         let cache = data.join("gf-cache").join(id);
         std::fs::create_dir_all(&cache).unwrap();
@@ -170,8 +200,15 @@ fn offboarding_removes_one_project_with_its_backups_and_keeps_the_other() {
         .store
         .backup(&offboard::backup_path(&f.store).unwrap())
         .unwrap();
+    // The backup's path is spelled as the store's path is (through the
+    // link, or under /var on macOS): it resolves inside the backups folder.
     let kept = PathBuf::from(s(&backup, "path"));
-    assert!(kept.starts_with(data.join(offboard::BACKUPS)), "{kept:?}");
+    assert!(
+        kept.canonicalize()
+            .unwrap()
+            .starts_with(data.join(offboard::BACKUPS)),
+        "{kept:?}"
+    );
     let outside = f.root.join("elsewhere.sqlite3");
     f.store.backup(&outside).unwrap();
     let backups = data.join(offboard::BACKUPS);
@@ -195,6 +232,7 @@ fn offboarding_removes_one_project_with_its_backups_and_keeps_the_other() {
     let plan = offboard::plan(&f.store, &f.session, &a).unwrap();
     assert_eq!(plan["dry_run"], true);
     assert_eq!(plan["blocked"], false, "{plan:#}");
+    assert_eq!(plan["data_dir"], json!(data), "{plan:#}");
     assert_eq!(plan["project"]["id"], json!(a));
     assert!(
         plan["store_rows"]["repo_objects"].as_i64().unwrap() > 0,
@@ -325,4 +363,41 @@ fn offboarding_removes_one_project_with_its_backups_and_keeps_the_other() {
     // Outside the data folder, still nothing changed.
     assert_eq!(sha(&outside), outside_sha);
     assert_eq!(sha(&hard), hard_sha);
+}
+
+/// A `gf-cache` beside the backups that links out of the data folder, to a
+/// folder named as the project, is refused and never followed: removing the
+/// project from a backup changes the backup file only.
+#[test]
+fn offboarding_a_backup_never_follows_a_link_beside_it() {
+    crate::edition_setup();
+    let mut f = Fixture::new();
+    let a = f.project("client-a", "zebracorn-alpha-7731");
+    f.drain();
+    let data = f.store.directory.canonicalize().unwrap();
+    f.store
+        .backup(&offboard::backup_path(&f.store).unwrap())
+        .unwrap();
+    let outside = f.root.join("elsewhere");
+    std::fs::create_dir_all(outside.join(&a)).unwrap();
+    std::fs::write(outside.join(&a).join("marker"), "outside").unwrap();
+    std::os::unix::fs::symlink(&outside, data.join(offboard::BACKUPS).join("gf-cache")).unwrap();
+    let plan = offboard::plan(&f.store, &f.session, &a).unwrap();
+    assert_eq!(
+        paths(&plan["refused"]),
+        vec![format!("{}/gf-cache", offboard::BACKUPS)],
+        "{plan:#}"
+    );
+    assert_eq!(paths(&plan["backups"]).len(), 1, "{plan:#}");
+    let done = offboard::apply(&f.store, &f.session, &a, s(&plan, "plan_hash")).unwrap();
+    assert_eq!(done["offboarded"], true);
+    assert_eq!(done["backups"][0]["verified"], true, "{done:#}");
+    assert_eq!(done["verified"], false, "{done:#}");
+    assert!(!f.exists(&a));
+    // The folder outside is as it was: nothing removed, no lock file added.
+    let left: Vec<String> = std::fs::read_dir(outside.join(&a))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(left, vec!["marker".to_string()]);
 }

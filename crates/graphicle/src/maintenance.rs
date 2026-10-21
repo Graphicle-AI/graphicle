@@ -28,15 +28,18 @@ fn still_present(
 }
 
 /// Delete one project: queue the cleanup of its published projections,
-/// forget its dependency-index entries, purge its graph cache, delete its
-/// rows (they cascade) and sign its receipt, with `removed` added to the
-/// receipt's `removed`. Offboarding runs it on its backups too
-/// ([`crate::offboard`]).
+/// forget its dependency-index entries, purge its graph cache (with
+/// `graph_cache`), delete its rows (they cascade) and sign its receipt,
+/// with `removed` added to the receipt's `removed`. Offboarding runs it on
+/// its backups too ([`crate::offboard`]), without `graph_cache`: a backup
+/// has no graph cache, and the `gf-cache` folder beside it, which may be a
+/// link out of the data folder, is never followed.
 pub(crate) fn delete_project(
     db: &Connection,
     p: &store::Principal,
     identifier: &str,
     mut removed: Value,
+    graph_cache: bool,
 ) -> Result<Value> {
     let connectors: Vec<String> = rows(
         db,
@@ -49,7 +52,7 @@ pub(crate) fn delete_project(
     crate::projection::enqueue(db, identifier, "project_deleted")?;
     removed["references"] =
         deletion::forget_project_references(db, &p.workspace, identifier, &connectors)?;
-    if let Some(cache) = crate::graph_projection::cache_root(db, identifier) {
+    if graph_cache && let Some(cache) = crate::graph_projection::cache_root(db, identifier) {
         crate::graph_materialize::purge(&cache)?;
     }
     db.execute("DELETE FROM repo_projects WHERE id=?", [identifier])?;
@@ -70,12 +73,12 @@ fn delete_with_copies(
     let copies = crate::folders::scratch_projects(db, identifier)?;
     let mut scratch = Vec::with_capacity(copies.len());
     for copy in &copies {
-        scratch.push(delete_project(db, p, copy, json!({}))?);
+        scratch.push(delete_project(db, p, copy, json!({}), true)?);
     }
     if !copies.is_empty() {
         removed["pr_scratch_projects"] = json!(copies);
     }
-    let receipt = delete_project(db, p, identifier, removed)?;
+    let receipt = delete_project(db, p, identifier, removed, true)?;
     let mut result = json!({"deleted":true,"local_backups_are_separate":true,"receipt":receipt});
     if !scratch.is_empty() {
         result["pr_scratch_projects"] = json!(scratch);

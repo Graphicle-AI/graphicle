@@ -283,6 +283,7 @@ Every crate is at 0.1.3, and `graphicle --version` prints
   written elsewhere. A path it refuses (a link, or a backup with another
   name) is never changed and may still hold the project, so the offboarding
   is then reported as not fully verified.
+- Offboarding never follows a link in `backups/`, such as a `gf-cache` link.
 - `graphicle backup` without a path writes the backup to the data folder's
   `backups/` folder.
 - On Windows, `graphicle offboard` leaves every backup in `backups/` as it is

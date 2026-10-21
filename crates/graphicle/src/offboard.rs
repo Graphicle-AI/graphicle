@@ -600,6 +600,8 @@ fn scrub(
         return Err(changed());
     }
     // The PR scratch copies first, then the project, as `project.delete`.
+    // Only the backup file changes: a graph cache would be the `gf-cache`
+    // folder beside it, which the plan never covers and may be a link.
     let mut order = held.ids.clone();
     order.sort_by_key(|id| id == project);
     let mut receipts = Vec::with_capacity(order.len());
@@ -609,6 +611,7 @@ fn scrub(
             p,
             id,
             json!({"offboarding": {"backup": relative}}),
+            false,
         )?;
         receipts.push(json!({
             "sequence": receipt["sequence"],
