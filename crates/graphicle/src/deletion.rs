@@ -111,7 +111,15 @@ fn history(db: &Connection) -> Result<Vec<&'static str>> {
 /// Caches whose rows depend on when invalidation happened, not only on the
 /// sources. Excluded from state equality; forgetting removes every entry
 /// computed while the documents were visible.
-const CACHES: &[&str] = &["am_model_cache", "am_query_cache"];
+/// The passage index (`crate::passage_index`) is one too: it is derived
+/// from the project's files, and its segments follow the order of its syncs.
+const CACHES: &[&str] = &[
+    "am_model_cache",
+    "am_query_cache",
+    "am_passage_segments",
+    "am_passage_files",
+    "am_passage_terms",
+];
 /// Where a project's folders are on this machine: the folder
 /// aliases a local sync records, with canonical paths. Location, not
 /// content: excluded from state equality, so two stores that hold the same

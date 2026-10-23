@@ -16,7 +16,7 @@ step.
 
 ```sh
 brew install graphicle-ai/tap/graphicle
-graphicle --version          # graphicle 0.1.4 (core)
+graphicle --version          # graphicle 0.1.5 (core)
 ```
 
 `brew upgrade graphicle` installs a new release. Afterwards, read
@@ -99,21 +99,26 @@ Notes for the preview:
 
 ### Windows signing
 
-The Windows programs are not code-signed yet, so Windows may warn before it
-runs them (see **SmartScreen or Smart App Control** below). We plan to have
-them signed through the SignPath Foundation, which signs open-source projects
-for free; the [Code signing policy](code-signing.md) says what will be signed
-and who approves each signed release.
+Release builds are not yet signed with a trusted certificate. The release
+workflow has `graphicle.exe` and `graphicle-graph.exe` signed through SignPath
+with a test certificate, which Windows does not trust, so Windows treats them
+as unsigned programs and may warn before it runs them (see **SmartScreen or
+Smart App Control** below). When that signing fails, the release ships the
+programs unsigned; each release's notes say which. Signing with the SignPath
+Foundation's certificate, which Windows trusts, is planned. The
+[Code signing policy](code-signing.md) says what is signed, who approves it,
+and when Graphicle contacts the network.
 
 ### Troubleshooting on Windows
 
-- **SmartScreen or Smart App Control.** The preview programs are not
-  code-signed yet. `install.ps1` downloads with PowerShell, which SmartScreen
-  does not check; a zip downloaded with a web browser can show "Windows
-  protected your PC": choose **More info**, then **Run anyway**, or run
-  `Unblock-File` on the zip before you unpack it. Windows 11's Smart App
-  Control, when it is on, can block unsigned programs; use WSL2 on such a
-  machine until signed programs ship.
+- **SmartScreen or Smart App Control.** The preview programs are not signed
+  with a trusted certificate yet. `install.ps1` downloads with PowerShell,
+  which SmartScreen does not check; a zip downloaded with a web browser can
+  show "Windows protected your PC": choose **More info**, then **Run anyway**,
+  or run `Unblock-File` on the zip before you unpack it. Windows 11's Smart
+  App Control, when it is on, can block programs that lack a trusted
+  signature; use WSL2 on such a machine until programs signed with a trusted
+  certificate ship.
 - **Microsoft Defender.** Defender scans each new program when it first runs,
   so the first start can take a few seconds. For builds from source, a
   [Dev Drive](https://learn.microsoft.com/windows/dev-drive/) keeps scanning
@@ -149,7 +154,7 @@ folder with both programs, `LICENSE`, `NOTICE`, `NOTICE.md`, `README.md`,
 | Windows, x86-64 (preview) | `x86_64-pc-windows-msvc`, a `.zip` |
 
 ```sh
-version=0.1.4
+version=0.1.5
 target=aarch64-apple-darwin
 base=https://github.com/graphicle-ai/graphicle/releases/download/v$version
 curl -fLO "$base/graphicle-$version-$target.tar.gz"
@@ -243,7 +248,7 @@ in them.
 ## Check the installation
 
 ```sh
-graphicle --version          # graphicle 0.1.4 (core)
+graphicle --version          # graphicle 0.1.5 (core)
 graphicle graph --help       # the code-graph engine's commands
 graphicle doctor             # checks the programs, the data folder and your agents
 ```
@@ -279,7 +284,8 @@ You do not have to watch for releases: at most once a day, when you run a
 command in a terminal, `graphicle` asks GitHub for the latest release. When it is
 newer, `graphicle` prints the version and the upgrade command for your install.
 `GRAPHICLE_NO_UPDATE_NOTIFIER=1` or `graphicle config set update_notifier false`
-turns this off.
+turns this off. The [privacy policy](code-signing.md#privacy-policy) lists
+every case in which Graphicle contacts the network.
 
 ## Uninstall
 

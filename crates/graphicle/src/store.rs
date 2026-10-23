@@ -371,6 +371,8 @@ impl Store {
         crate::fresh::migrate(&db)?;
         // Documents' mention links to code symbols.
         crate::doc_links::migrate(&db)?;
+        // Each project's passage index, which `context` reads.
+        crate::passage_index::migrate(&db)?;
         ensure_column(
             &db,
             "gf_cross_unresolved",

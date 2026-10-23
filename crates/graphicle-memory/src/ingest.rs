@@ -217,6 +217,42 @@ fn passages(
     tokens: usize,
 ) -> Result<Vec<Value>> {
     let spans = layout(scope, source_sha, content, characters, tokens)?;
+    rows_at(object, id, title, source_sha, content, &spans)
+}
+
+/// The passage rows of one document (`document`, with its `content`) at
+/// `spans`, as [`chunks`] returns them when it lays the document out at those
+/// spans ([`spans_of`]). A passage index stores the spans, so a query builds
+/// only the rows it ranks.
+pub fn document_rows(document: &Value, spans: &[cache::Span]) -> Result<Vec<Value>> {
+    let object = document.as_object().ok_or("Document must be an object")?;
+    let content = object
+        .get("content")
+        .and_then(Value::as_str)
+        .ok_or("Document content is required")?;
+    let id = crate::string(document, "id")?;
+    let title = crate::string(document, "title")?;
+    let source_sha = crate::string(document, "sha256")?;
+    if spans
+        .iter()
+        .any(|span| span.start >= span.end || span.end > content.len())
+        || !spans
+            .iter()
+            .all(|span| content.is_char_boundary(span.start) && content.is_char_boundary(span.end))
+    {
+        return Err("Passage spans do not fit the document".into());
+    }
+    rows_at(object, id, title, source_sha, content, spans)
+}
+
+fn rows_at(
+    object: &serde_json::Map<String, Value>,
+    id: &str,
+    title: &str,
+    source_sha: &str,
+    content: &str,
+    spans: &[cache::Span],
+) -> Result<Vec<Value>> {
     let mut metadata = object.clone();
     metadata.remove("content");
     let mut rows = Vec::with_capacity(spans.len());
@@ -250,6 +286,16 @@ fn layout(
     tokens: usize,
 ) -> Result<std::sync::Arc<Vec<cache::Span>>> {
     cache::layout(scope, source_sha, characters, tokens, || {
+        spans_of(content, characters, tokens)
+    })
+}
+
+/// The passage spans [`chunks`] lays `content` out at with these limits,
+/// without the cache: each passage at most `characters` characters and
+/// `tokens` cl100k tokens, ended at a paragraph or line break when that keeps
+/// at least 40% of it.
+pub fn spans_of(content: &str, characters: usize, tokens: usize) -> Result<Vec<cache::Span>> {
+    {
         let mut spans = Vec::new();
         let mut start = 0;
         let mut line = 1;
@@ -286,7 +332,7 @@ fn layout(
             }
         }
         Ok(spans)
-    })
+    }
 }
 
 /// What the documents [`chunks`] left out are, read from the order it filled

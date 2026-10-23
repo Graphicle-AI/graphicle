@@ -283,9 +283,11 @@ pub fn arm(
     let graph = if args["graph_retrieval"] == false {
         None
     } else {
-        code_graph(db, repository)
+        crate::phase::phase("identifiers_graph", || code_graph(db, repository))
     };
-    let ranked = rank(&passages.rows, &named, graph.as_ref());
+    let ranked = crate::phase::phase("identifiers_rank", || {
+        rank(&passages.rows, &named, graph.as_ref())
+    });
     report["status"] = json!(if ranked.ranking.is_empty() {
         "no_match"
     } else {
@@ -619,6 +621,336 @@ fn rank(rows: &[Value], named: &Named, graph: Option<&CodeGraph>) -> Ranked {
         files: scored.len(),
         defining,
     }
+}
+
+/// The text of the passages of some files of a passage index, by (file,
+/// passage): what [`arm_indexed`] matches names with separators in.
+pub type PassageTexts<'a> =
+    dyn FnMut(&BTreeSet<usize>) -> Result<HashMap<(usize, u32), String>> + 'a;
+
+/// [`arm`] over a project's passage index ([`crate::passage_index`])
+/// instead of its chunked passages: the same ranking, from the index's
+/// counts of each name. A name with a separator (`Store::open`, `a.b`) is
+/// counted by matching the text of the passages that hold its words, with
+/// every name, as [`rank`] matches it; `text` gives those passages' text
+/// (file, passage), by index.
+pub fn arm_indexed(
+    db: &Connection,
+    repository: &str,
+    index: &crate::passage_index::Index,
+    text: &mut PassageTexts<'_>,
+    args: &Value,
+    question: &str,
+    query: &str,
+) -> Result<Identifiers> {
+    let (mode, defaulted) = match args.get("identifier_arm") {
+        None | Some(Value::Null) => (None, true),
+        Some(Value::Bool(on)) => (Some(*on), false),
+        Some(Value::String(mode)) if mode == "auto" => (None, false),
+        Some(_) => {
+            return Err(crate::Error::bad(
+                "identifier_arm must be true, false or auto",
+            ));
+        }
+    };
+    let setting = mode.map_or(json!("auto"), |on| json!(on));
+    let mut report = json!({"identifier_arm": setting, "defaulted": defaulted});
+    let on = mode.unwrap_or_else(|| crate::code_question::is_code_question(question));
+    let skipped = |report: Value| Identifiers {
+        ranking: None,
+        defining: Vec::new(),
+        report,
+    };
+    if !on {
+        report["status"] = json!("off");
+        return Ok(skipped(report));
+    }
+    let named = named(query);
+    if named.names.is_empty() && named.paths.is_empty() {
+        report["status"] = json!("no_names");
+        return Ok(skipped(report));
+    }
+    let graph = if args["graph_retrieval"] == false {
+        None
+    } else {
+        crate::phase::phase("identifiers_graph", || code_graph(db, repository))
+    };
+    let ranked = crate::phase::phase("identifiers_rank", || {
+        rank_indexed(db, index, text, &named, graph.as_ref())
+    })?;
+    report["status"] = json!(if ranked.ranking.is_empty() {
+        "no_match"
+    } else {
+        "fused"
+    });
+    report["names"] = json!(ranked.names);
+    report["paths"] = json!(ranked.paths);
+    report["defined"] = json!(ranked.defined);
+    report["files"] = json!(ranked.files);
+    report["candidates"] = json!(ranked.ranking.len());
+    report["code_graph"] = json!(graph.is_some());
+    report["defining_files_outside_source"] = json!(ranked.defining.len());
+    Ok(Identifiers {
+        ranking: (!ranked.ranking.is_empty()).then_some(ranked.ranking),
+        defining: ranked.defining,
+        report,
+    })
+}
+
+/// Whether `name` is one ASCII identifier, which the index counts whole.
+fn simple_name(name: &str) -> bool {
+    (3..=128).contains(&name.len())
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+/// [`rank`] over the passage index: the files in path order (the order the
+/// passages of a project's files come in), each name's counts per passage.
+fn rank_indexed(
+    db: &Connection,
+    index: &crate::passage_index::Index,
+    text: &mut PassageTexts<'_>,
+    named: &Named,
+    graph: Option<&CodeGraph>,
+) -> Result<Ranked> {
+    // Files with passages, as `rank` reads them from the rows.
+    let files: Vec<usize> = (0..index.files.len())
+        .filter(|&f| !index.files[f].passages.is_empty())
+        .collect();
+    let origin = |f: usize| format!("file:{}", index.files[f].path);
+    let total = files.len().max(1) as f64;
+    // (file, passage) → [(name, count)] by name, as `rank` counts them.
+    let mut counts: BTreeMap<(usize, u32), BTreeMap<usize, u32>> = BTreeMap::new();
+    let mut candidates: Vec<&String> = named.names.iter().collect();
+    candidates.sort_by_key(|name| std::cmp::Reverse(name.len()));
+    if !candidates.is_empty() {
+        let pattern = candidates
+            .iter()
+            .map(|name| regex::escape(name))
+            .collect::<Vec<_>>()
+            .join("|");
+        if let Ok(matcher) = regex::Regex::new(&format!(r"(?-u:\b)(?:{pattern})(?-u:\b)")) {
+            let mut verify: BTreeSet<(usize, u32)> = BTreeSet::new();
+            let mut stemmer = graphicle_memory::stem::Stemmer::default();
+            for (n, name) in named.names.iter().enumerate() {
+                if simple_name(name) {
+                    let term = format!("{}{name}", crate::passage_index::IDENT);
+                    for (file, passage, count) in index.postings(db, &term)? {
+                        counts.entry((file, passage)).or_default().insert(n, count);
+                    }
+                    continue;
+                }
+                // A name with separators: the passages that hold all its
+                // words, matched below.
+                let words = graphicle_memory::text::words(name);
+                let mut holding: Option<BTreeSet<(usize, u32)>> = None;
+                for word in words {
+                    let found: BTreeSet<(usize, u32)> = index
+                        .postings(db, &stemmer.stem(&word))?
+                        .into_iter()
+                        .map(|(file, passage, _)| (file, passage))
+                        .collect();
+                    holding = Some(match holding {
+                        None => found,
+                        Some(before) => before.intersection(&found).copied().collect(),
+                    });
+                }
+                verify.extend(holding.unwrap_or_default());
+            }
+            if !verify.is_empty() {
+                let wanted: BTreeSet<usize> = verify.iter().map(|(file, _)| *file).collect();
+                let texts = text(&wanted)?;
+                let position: HashMap<&str, usize> = named
+                    .names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| (name.as_str(), i))
+                    .collect();
+                for key in verify {
+                    let Some(passage_text) = texts.get(&key) else {
+                        continue;
+                    };
+                    let mut found: BTreeMap<usize, u32> = BTreeMap::new();
+                    for hit in matcher.find_iter(passage_text) {
+                        if let Some(&name) = position.get(hit.as_str()) {
+                            *found.entry(name).or_default() += 1;
+                        }
+                    }
+                    if found.is_empty() {
+                        counts.remove(&key);
+                    } else {
+                        counts.insert(key, found);
+                    }
+                }
+            }
+        }
+    }
+    // Files holding each name, by text and by definition.
+    let mut holders: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); named.names.len()];
+    for ((file, _), found) in &counts {
+        for &name in found.keys() {
+            holders[name].insert(*file);
+        }
+    }
+    let mut defined: Vec<Vec<(usize, usize)>> = vec![Vec::new(); named.names.len()];
+    if let Some(graph) = graph {
+        for (n, name) in named.names.iter().enumerate() {
+            let found = graph.definitions(name);
+            if found.is_empty() || found.len() > MAX_DEFINITIONS {
+                continue;
+            }
+            for i in found {
+                let (node, _, relpath) = &graph.symbols[i];
+                if graph
+                    .unchanged
+                    .as_ref()
+                    .is_some_and(|unchanged| !unchanged.contains(relpath))
+                {
+                    continue;
+                }
+                let Some(file) = index
+                    .file(relpath)
+                    .filter(|&f| !index.files[f].passages.is_empty())
+                else {
+                    continue;
+                };
+                let line = graphicle_memory::graph::span::start_line(
+                    &graph.handle.nodes()[*node].attributes,
+                );
+                defined[n].push((file, line.unwrap_or(0)));
+                holders[n].insert(file);
+            }
+        }
+    }
+    let mut kept: Vec<usize> = (0..named.names.len())
+        .filter(|&n| !holders[n].is_empty())
+        .collect();
+    kept.sort_by_key(|&n| (holders[n].len(), n));
+    kept.truncate(MAX_NAMES);
+    let weights: Vec<(usize, f64)> = kept
+        .iter()
+        .map(|&n| (n, (1.0 + total / holders[n].len() as f64).ln()))
+        .collect();
+    let path_weight = 2.0 * (1.0 + total).ln();
+    let mut path_bonus: HashMap<usize, f64> = HashMap::new();
+    let mut paths_found = Vec::new();
+    for path in &named.paths {
+        let path = path.replace('\\', "/");
+        let matching: Vec<usize> = files
+            .iter()
+            .copied()
+            .filter(|&f| {
+                let file = index.files[f].path.as_str();
+                file == path
+                    || file.ends_with(&format!("/{path}"))
+                    || path.ends_with(&format!("/{file}"))
+            })
+            .collect();
+        if matching.is_empty() {
+            continue;
+        }
+        paths_found.push(path.clone());
+        for &file in &matching {
+            *path_bonus.entry(file).or_default() += path_weight / matching.len() as f64;
+        }
+    }
+    let defines = |n: usize, file: usize| defined[n].iter().any(|(f, _)| *f == file);
+    let passage_defines = |n: usize, file: usize, passage: &crate::passage_index::Passage| {
+        let (start, end) = (passage.line, passage.end_line);
+        defined[n]
+            .iter()
+            .any(|(f, line)| *f == file && *line >= start.max(1) && (end == 0 || *line <= end))
+    };
+    // Per file, each name's count over its passages.
+    let mut in_file: BTreeMap<usize, BTreeMap<usize, u32>> = BTreeMap::new();
+    for ((file, _), found) in &counts {
+        let entry = in_file.entry(*file).or_default();
+        for (&name, &count) in found {
+            *entry.entry(name).or_default() += count;
+        }
+    }
+    let mut considered: BTreeSet<usize> = in_file.keys().copied().collect();
+    considered.extend(path_bonus.keys().copied());
+    for list in &defined {
+        considered.extend(list.iter().map(|(file, _)| *file));
+    }
+    let mut scored: Vec<(f64, u32, usize)> = Vec::new();
+    for &file in &considered {
+        let mut score = path_bonus.get(&file).copied().unwrap_or(0.0);
+        let mut hits = 0u32;
+        for &(n, w) in &weights {
+            let in_text = in_file
+                .get(&file)
+                .and_then(|names| names.get(&n))
+                .copied()
+                .unwrap_or(0);
+            let here = defines(n, file);
+            if in_text > 0 || here {
+                score += if here { 2.0 * w } else { w };
+                hits += in_text;
+            }
+        }
+        if score > 0.0 {
+            scored.push((score, hits, file));
+        }
+    }
+    scored.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then(b.1.cmp(&a.1))
+            .then(origin(a.2).cmp(&origin(b.2)))
+    });
+    let mut ranking = Vec::new();
+    for (_, _, file) in &scored {
+        let entry = &index.files[*file];
+        let mut passages: Vec<(f64, usize)> = entry
+            .passages
+            .iter()
+            .enumerate()
+            .map(|(p, passage)| {
+                let found = counts.get(&(*file, p as u32));
+                let mut score = 0.0;
+                for &(n, w) in &weights {
+                    let in_text = found.is_some_and(|names| names.contains_key(&n));
+                    let here = passage_defines(n, *file, passage);
+                    if in_text || here {
+                        score += if here { 2.0 * w } else { w };
+                    }
+                }
+                (score, p)
+            })
+            .collect();
+        passages.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+        let best = passages.first().map_or(0.0, |p| p.0);
+        for (score, p) in passages.into_iter().take(PER_FILE) {
+            if score <= 0.0 && best > 0.0 {
+                break;
+            }
+            ranking.push(format!("file:{}:{}", entry.path, entry.passages[p].start));
+            if best <= 0.0 {
+                break;
+            }
+        }
+        if ranking.len() >= RANKED {
+            break;
+        }
+    }
+    ranking.truncate(RANKED);
+    let mut names: Vec<String> = kept.iter().map(|&n| named.names[n].clone()).collect();
+    names.sort();
+    let defined_paths: Vec<Vec<(String, usize)>> = defined
+        .iter()
+        .map(|list| list.iter().map(|(f, line)| (origin(*f), *line)).collect())
+        .collect();
+    let defining = defining_outside_source(&named.names, &kept, &defined_paths);
+    Ok(Ranked {
+        ranking,
+        names,
+        paths: paths_found,
+        defined: kept.iter().filter(|&&n| !defined[n].is_empty()).count(),
+        files: scored.len(),
+        defining,
+    })
 }
 
 /// The files that define one of the `kept` names written as code

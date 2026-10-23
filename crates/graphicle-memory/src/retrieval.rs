@@ -13,6 +13,9 @@ pub const MAX_RECALL_MEMORIES: usize = 20_000;
 pub const MAX_ROWS: usize = crate::ingest::MAX_PASSAGES + MAX_RECALL_MEMORIES;
 /// Most sources one [`rank`] call selects (a reranker's candidate pool).
 pub const MAX_RANK_LIMIT: usize = 60;
+/// Most candidates [`rank`] keeps after fusion and the relationship lift,
+/// best first, ties by identity: selection reads no others.
+pub const MAX_FUSED: usize = 400;
 
 /// Counting and listing questions need every instance, not the best one.
 fn aggregate_question(lowercase: &str) -> bool {
@@ -324,7 +327,9 @@ fn bm25_rank(
     ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
     ranked
 }
-fn terms(value: &str) -> BTreeSet<String> {
+/// The words `rank` scores a question by: [`text::words`] without its stop
+/// words, each once.
+pub fn terms(value: &str) -> BTreeSet<String> {
     const STOP: &[&str] = &[
         "a", "an", "the", "to", "of", "in", "is", "are", "how", "what", "we", "do", "does", "can",
         "for", "and", "with", "this", "that", "should",
@@ -466,35 +471,65 @@ pub fn rank(request: &Value) -> Result<Value> {
     let average = (features.iter().map(|x| x.length).sum::<usize>() as f64
         / (rows.len().max(1) as f64))
         .max(1.0);
-    let term_weights: Vec<_> = q
-        .iter()
-        .map(|t| {
-            let frequency = features.iter().filter(|x| x.words.contains_key(t)).count() as f64;
-            let idf = (1.0 + (rows.len() as f64 - frequency + 0.5) / (frequency + 0.5)).ln();
-            (t, idf)
-        })
-        .collect();
-    let mut lexical = Vec::new();
     let question_lowercase = question.to_lowercase();
-    for (i, row) in rows.iter().enumerate() {
-        let feature = &features[i];
-        let mut score = 0.0;
-        for &(term, idf) in &term_weights {
-            let tf = feature.words.get(term) as f64;
-            if tf > 0.0 {
-                score +=
-                    idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * feature.length as f64 / average));
+    // A caller that holds a passage index gives the lexical order of its
+    // whole catalogue (`lexical_ranked`: [identity, score] pairs, best
+    // first, at least its first 200), scored as below over every passage,
+    // and sends only the rows it ranks; otherwise the rows are scored here.
+    let lexical: Vec<(String, f64)> = match request.get("lexical_ranked") {
+        Some(given) if !given.is_null() => {
+            let list = given
+                .as_array()
+                .ok_or("lexical_ranked must list [identity, score] pairs")?;
+            let mut lexical = Vec::with_capacity(list.len());
+            for pair in list {
+                let (Some(id), Some(score)) = (
+                    pair.get(0).and_then(Value::as_str),
+                    pair.get(1).and_then(Value::as_f64),
+                ) else {
+                    return Err("lexical_ranked must list [identity, score] pairs".into());
+                };
+                if !ids.contains_key(id) || !score.is_finite() || score <= 0.0 {
+                    return Err("lexical_ranked names a row that was not sent".into());
+                }
+                lexical.push((id.to_owned(), score));
             }
+            lexical
         }
-        let title = row["title"].as_str().unwrap_or("").to_lowercase();
-        if !title.is_empty() && question_lowercase.contains(&title) {
-            score += 5.0;
+        _ => {
+            let term_weights: Vec<_> = q
+                .iter()
+                .map(|t| {
+                    let frequency =
+                        features.iter().filter(|x| x.words.contains_key(t)).count() as f64;
+                    let idf =
+                        (1.0 + (rows.len() as f64 - frequency + 0.5) / (frequency + 0.5)).ln();
+                    (t, idf)
+                })
+                .collect();
+            let mut lexical = Vec::new();
+            for (i, row) in rows.iter().enumerate() {
+                let feature = &features[i];
+                let mut score = 0.0;
+                for &(term, idf) in &term_weights {
+                    let tf = feature.words.get(term) as f64;
+                    if tf > 0.0 {
+                        score += idf * tf * 2.2
+                            / (tf + 1.2 * (0.25 + 0.75 * feature.length as f64 / average));
+                    }
+                }
+                let title = row["title"].as_str().unwrap_or("").to_lowercase();
+                if !title.is_empty() && question_lowercase.contains(&title) {
+                    score += 5.0;
+                }
+                if score > 0.0 {
+                    lexical.push((row["identity"].as_str().unwrap().to_owned(), score));
+                }
+            }
+            lexical.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+            lexical
         }
-        if score > 0.0 {
-            lexical.push((row["identity"].as_str().unwrap().to_owned(), score));
-        }
-    }
-    lexical.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    };
     let mut rankings = vec![
         lexical
             .iter()
@@ -506,7 +541,26 @@ pub fn rank(request: &Value) -> Result<Value> {
     // Opt-in `speaker`: BM25 over the kept speakers' turns only, fused as one
     // more arm beside the whole-passage ranking.
     let mut speaker_report = auto_side.map_or(json!(null), |side| json!({"auto": side}));
-    if let Some(keep) = &speaker {
+    // The speaker arm of a caller's passage index (`speaker_ranked`: the
+    // roles it kept, the ranking and its `rows` and `ranked` counts over the
+    // whole catalogue), used when it kept the roles chosen here.
+    let given_speaker = match request.get("speaker_ranked") {
+        Some(given) if !given.is_null() => Some(given_speaker(given, &ids)?),
+        _ => None,
+    };
+    if let Some(keep) = &speaker
+        && let Some(given) = given_speaker.as_ref().filter(|given| &given.keep == keep)
+    {
+        let ranking = &given.ranking;
+        speaker_report = json!({"keep":keep,"rows":given.rows,"ranked":given.ranked});
+        if let Some(side) = auto_side {
+            speaker_report["auto"] = json!(side);
+        }
+        if !ranking.is_empty() {
+            rankings.push(ranking.iter().take(200).cloned().collect());
+            names.push("speaker".to_owned());
+        }
+    } else if let Some(keep) = &speaker {
         let mut bags = Vec::new();
         let spoken = cache::par_map(rows, crate::stem::Stemmer::default, |stemmer, row| {
             let spoken = speaker_text(row["text"].as_str().unwrap_or(""), keep);
@@ -718,10 +772,18 @@ pub fn rank(request: &Value) -> Result<Value> {
         })
         .collect();
     let hops = if mode == "relationships" { 2 } else { 1 };
+    let top = base.first().map(|(_, s)| *s).unwrap_or(0.0);
+    // A caller that sends only the relationship edges the lift reads asks
+    // for the files it starts from (`report_frontier`): the paths of the four
+    // best fused passages, before any edge is read, with what the lift
+    // scores their neighbours' passages by (the best fused score, `top`, and
+    // the question's terms), so that it can send only the passages that can
+    // be among the [`MAX_FUSED`] kept.
+    let frontier_report = (request.get("report_frontier") == Some(&json!(true)))
+        .then(|| json!({"paths":frontier,"hops":hops,"top":top,"terms":q}));
     let (bounded, static_edges) = bound_static_edges(received, &frontier, hops);
     let edges: &[Value] = bounded.as_deref().unwrap_or(received);
     let mut visited = frontier.clone();
-    let top = base.first().map(|(_, s)| *s).unwrap_or(0.0);
     for hop in 1..=hops {
         let mut next = BTreeSet::new();
         for edge in edges {
@@ -762,13 +824,13 @@ pub fn rank(request: &Value) -> Result<Value> {
     }
     let mut remaining: Vec<_> = scores.into_iter().collect();
     remaining.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    remaining.truncate(400);
+    remaining.truncate(MAX_FUSED);
     // Diagnostics: the fused order before selection (for recall harnesses).
     let debug_fused = request
         .get("debug_fused")
         .and_then(Value::as_u64)
         .unwrap_or(0)
-        .min(400) as usize;
+        .min(MAX_FUSED as u64) as usize;
     let fused: Vec<String> = remaining
         .iter()
         .filter(|(id, _)| rows[ids[id]]["kind"] != "memory")
@@ -1016,7 +1078,55 @@ pub fn rank(request: &Value) -> Result<Value> {
     if !static_edges.is_null() {
         output["static_edges"] = static_edges;
     }
+    if let Some(frontier) = frontier_report {
+        output["frontier"] = frontier;
+    }
+    // Diagnostics for comparing two callers' inputs (`debug_rankings`): each
+    // fused ranking, by arm.
+    if request.get("debug_rankings") == Some(&json!(true)) {
+        output["rankings_debug"] = json!(
+            names
+                .iter()
+                .zip(&rankings)
+                .map(|(name, list)| (name.clone(), json!(list)))
+                .collect::<serde_json::Map<_, _>>()
+        );
+    }
     Ok(output)
+}
+
+/// A caller's speaker arm (`speaker_ranked`, see [`rank`]).
+struct GivenSpeaker {
+    keep: BTreeSet<String>,
+    ranking: Vec<String>,
+    rows: u64,
+    ranked: u64,
+}
+
+fn given_speaker(given: &Value, ids: &BTreeMap<String, usize>) -> Result<GivenSpeaker> {
+    const REFUSED: &str = "speaker_ranked must give keep, ranking, rows and ranked";
+    let mut keep = BTreeSet::new();
+    for role in given.get("keep").and_then(Value::as_array).ok_or(REFUSED)? {
+        keep.insert(role.as_str().ok_or(REFUSED)?.to_owned());
+    }
+    let mut ranking = Vec::new();
+    for id in given
+        .get("ranking")
+        .and_then(Value::as_array)
+        .ok_or(REFUSED)?
+    {
+        match id.as_str() {
+            Some(id) if ids.contains_key(id) => ranking.push(id.to_owned()),
+            _ => return Err("speaker_ranked names a row that was not sent".into()),
+        }
+    }
+    let count = |key: &str| given.get(key).and_then(Value::as_u64).ok_or(REFUSED);
+    Ok(GivenSpeaker {
+        keep,
+        ranking,
+        rows: count("rows")?,
+        ranked: count("ranked")?,
+    })
 }
 
 /// The request's `origin_prior`: origin → weight, each between 0 and 1;

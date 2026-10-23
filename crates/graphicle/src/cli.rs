@@ -358,6 +358,10 @@ enum Command {
         /// terminal).
         #[arg(long)]
         json: bool,
+        /// The prompt hook's quick packet while the passage index is not
+        /// ready: the files that define the code names the question gives.
+        #[arg(long, hide = true)]
+        graph_only: bool,
     },
     /// Answer from the project's original sources with the configured model.
     ///
@@ -1581,6 +1585,7 @@ where
             local_embedding_profile,
             local_reranker_profile,
             json,
+            graph_only,
         } => {
             // `-`: the question on standard input (the prompt hook's way, so
             // a prompt never meets the command line's size limits).
@@ -1654,6 +1659,11 @@ where
             if let Some(count) = more_files {
                 args["more_files"] = json!(count);
             }
+            if graph_only {
+                args["graph_only"] = json!(true);
+            }
+            // Read outside MCP: excerpts continue at a line of the file.
+            args["continue_with"] = json!("file");
             // The identifier route unless --no-identifier-route (the HTTP
             // API and the SDKs leave it off unless a call asks).
             args[crate::identifier_route::FIELD] = json!(!no_identifier_route);

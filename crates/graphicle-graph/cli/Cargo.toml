@@ -1,6 +1,6 @@
 [package]
 name = "graphicle-graph"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.94.1"
 publish = false
@@ -52,6 +52,10 @@ libmimalloc-sys = { version = "0.1.49", default-features = false }
 [dev-dependencies]
 serde_json = { version = "1", features = ["preserve_order", "arbitrary_precision", "raw_value"] }
 tempfile = "3"
+
+# The Windows version resource (build.rs). Built only on Windows.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1.31", default-features = false }
 
 [package.metadata.dist]
 dist = true

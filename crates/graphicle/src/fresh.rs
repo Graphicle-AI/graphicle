@@ -990,7 +990,7 @@ fn refresh(store: &Store, session: &Session, project: &str, options: Options) ->
     if let Some(stale) = too_much(&check) {
         return Ok(stale);
     }
-    let synced = match local::sync_folder(store, session, &folder, Some(project)) {
+    let synced = match local::sync_folder_for_answer(store, session, &folder, Some(project)) {
         Ok(synced) => synced,
         Err(error) => return Ok(stale(&check, "error", Some(error.message))),
     };

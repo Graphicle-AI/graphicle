@@ -54,6 +54,10 @@ pub const MAX_LINKED_TITLES: usize = 8;
 /// (a terminal leaves it out, [`crate::terminal::context_text`]).
 pub const READ_ON: &str =
     "read_project_source reads any of these lines; a question in plain words gets excerpts.";
+/// [`READ_ON`] for an answer read outside MCP (`continue_with: "file"`:
+/// `graphicle context` and the prompt hook), which names no tool.
+pub const READ_ON_FILES: &str =
+    "Read these lines in the files; a question in plain words gets excerpts.";
 
 /// The call's switch, and whether the call left it out (then it is
 /// [`crate::query::IDENTIFIER_ROUTE_DEFAULT`]).
@@ -505,9 +509,14 @@ pub fn answer(db: &Connection, p: &Principal, repository: &Value, args: &Value) 
         "Graphicle code graph of {}: where the names in the question are defined and used, as path:line.\n",
         s(repository, "name")
     );
+    let read_on = if args["continue_with"] == "file" {
+        READ_ON_FILES
+    } else {
+        READ_ON
+    };
     let footer = |omitted: usize| {
         format!(
-            "{READ_ON}\nBudget: {max_tokens} cl100k_base reference tokens / {max_chars} characters. Omitted: {omitted} definitions and references.\n"
+            "{read_on}\nBudget: {max_tokens} cl100k_base reference tokens / {max_chars} characters. Omitted: {omitted} definitions and references.\n"
         )
     };
     let reserve = footer(usize::MAX);

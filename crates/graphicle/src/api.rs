@@ -2562,7 +2562,16 @@ fn mcp_in(
                             read,
                         },
                     )?;
-                    let narrowed = admission.take_arguments();
+                    let mut narrowed = admission.take_arguments();
+                    // A lean reply serves the packet's Markdown, which the
+                    // call's budgets bound (`cap_recall`), not its JSON: the
+                    // packet is not sized by its JSON for the per-call cap
+                    // (`query::RESPONSE_TOKENS`).
+                    if !structured
+                        && let Some(fields) = narrowed.as_mut().and_then(Value::as_object_mut)
+                    {
+                        fields.remove(crate::query::RESPONSE_TOKENS);
+                    }
                     let args = narrowed.as_ref().unwrap_or(&args);
                     let packet = if pull_request {
                         let repository = repository.ok_or_else(|| {

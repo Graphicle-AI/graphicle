@@ -1341,6 +1341,49 @@ fn the_prompt_hook_adds_the_packet_for_a_code_question_only() {
     }
 }
 
+/// The prompt hook asks a small project in full, also while its passage
+/// index is not built (a store from an earlier version), and a project with
+/// reviewed memory in full, so the packet holds its memories: neither gets
+/// the quick packet or its note.
+#[test]
+fn the_prompt_hook_asks_small_projects_and_reviewed_memory_in_full() {
+    let f = Fixture::new();
+    let cwd = f.root.join("deploy").to_string_lossy().into_owned();
+    let hook = |session: &str| {
+        let mut command = binary(&f);
+        command.args(["hook", "claude-code", "prompt-context"]);
+        let payload = json!({"session_id":session,"cwd":cwd,"hook_event_name":"UserPromptSubmit",
+            "prompt":"Why does the `assets` bucket in deploy/bucket.tf use us-east-1?"});
+        let (output, _) = run_timed(command, &payload.to_string());
+        assert!(output.status.success());
+        let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(printed.get("systemMessage").is_none(), "{printed}");
+        s(&printed["hookSpecificOutput"], "additionalContext").to_string()
+    };
+    {
+        let db = f.store.connect().unwrap();
+        for table in graphicle_runtime::passage_index::TABLES {
+            db.execute(
+                &format!("DELETE FROM {table} WHERE repository_id=?"),
+                [&f.repo],
+            )
+            .unwrap();
+        }
+    }
+    assert!(hook("route-index").contains("deploy/bucket.tf"));
+    f.store
+        .note(
+            f.ws(),
+            f.key(),
+            &f.args(json!({"kind":"decision","title":"Assets bucket region",
+                "body":"The assets bucket stays in us-east-1, next to the CDN.",
+                "evidence":[{"id":"file:deploy/bucket.tf","quote":"resource \"bucket\" \"assets\""}]})),
+        )
+        .unwrap();
+    let markdown = hook("route-memory");
+    assert!(markdown.contains("next to the CDN"), "{markdown}");
+}
+
 #[test]
 fn hooks_add_context_at_start_and_import_after_stop_without_blocking() {
     let f = Fixture::new();

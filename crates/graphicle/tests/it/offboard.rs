@@ -365,6 +365,46 @@ fn offboard_one_then_the_other(linked: bool) {
     assert_eq!(sha(&hard), hard_sha);
 }
 
+/// A backup taken before the passage index existed has none of its tables:
+/// offboarding removes the project from it as it is, without adding them.
+#[test]
+fn offboarding_a_backup_from_before_the_passage_index() {
+    crate::edition_setup();
+    let mut f = Fixture::new();
+    let a = f.project("client-a", "zebracorn-alpha-7731");
+    let b = f.project("client-b", "quokka-beta-5512");
+    f.drain();
+    let backup = f
+        .store
+        .backup(&offboard::backup_path(&f.store).unwrap())
+        .unwrap();
+    let kept = PathBuf::from(s(&backup, "path"));
+    {
+        let db = rusqlite::Connection::open(&kept).unwrap();
+        for table in graphicle_runtime::passage_index::TABLES {
+            db.execute_batch(&format!("DROP TABLE {table}")).unwrap();
+        }
+        db.execute_batch("VACUUM").unwrap();
+    }
+    let plan = offboard::plan(&f.store, &f.session, &a).unwrap();
+    assert_eq!(paths(&plan["backups"]).len(), 1, "{plan:#}");
+    let done = offboard::apply(&f.store, &f.session, &a, s(&plan, "plan_hash")).unwrap();
+    assert_eq!(done["offboarded"], true, "{done:#}");
+    assert_eq!(done["backups"][0]["verified"], true, "{done:#}");
+    assert_eq!(projects(&kept), vec![b]);
+    assert!(!holds(&kept, "zebracorn-alpha-7731"));
+    assert!(holds(&kept, "quokka-beta-5512"));
+    let db = rusqlite::Connection::open(&kept).unwrap();
+    let tables: i64 = db
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name LIKE 'am_passage%'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(tables, 0);
+}
+
 /// A `gf-cache` beside the backups that links out of the data folder, to a
 /// folder named as the project, is refused and never followed: removing the
 /// project from a backup changes the backup file only.

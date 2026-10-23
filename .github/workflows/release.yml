@@ -2,13 +2,16 @@
 # prerelease) builds graphicle and graphicle-graph on a native runner per
 # target, packages each target as graphicle-<version>-<target>.tar.gz (both
 # programs, LICENSE, NOTICE, README.md, CHANGELOG.md and the third-party
-# licence texts; a .zip for Windows) with packaging/release_build.py, writes
-# SHA256SUMS and the Homebrew formula, and publishes a GitHub release with the
-# archives, their .sha256 files, SHA256SUMS, install.sh, install.ps1 and
-# graphicle.rb. A final
-# (non-prerelease) tag also updates graphicle-ai/homebrew-tap when the
-# HOMEBREW_TAP_TOKEN secret is set.
-# Run by hand (workflow_dispatch), it builds and packages without releasing.
+# licence texts; a .zip for Windows) with packaging/release_build.py, has the
+# Windows programs signed through SignPath, writes SHA256SUMS and the Homebrew
+# formula, and publishes a GitHub release with the archives, their .sha256
+# files, SHA256SUMS, install.sh, install.ps1 and graphicle.rb. A final
+# (non-prerelease) tag also updates graphicle-ai/homebrew-tap.
+# The signing and the tap update run in the GitHub environments signpath and
+# homebrew. Each one accepts only v* tags, waits for its required reviewer and
+# holds its own secret, which no other job or workflow can read.
+# Run by hand (workflow_dispatch), it builds and packages without signing or
+# releasing.
 name: release
 
 on:
@@ -134,41 +137,43 @@ jobs:
 
   sign-windows:
     # Code signing of graphicle.exe and graphicle-graph.exe through SignPath
-    # (docs/code-signing.md). It signs only when the SIGNPATH_API_TOKEN secret
-    # is set; without it every step after the first is skipped and the release
-    # ships the unsigned archive, as before. With it, the Windows archive goes
-    # to SignPath as an artifact of this run, an approver approves the request
-    # there, and the signed archive and its new .sha256 replace the
-    # dist-x86_64-pc-windows-msvc artifact, so the release job's SHA256SUMS
-    # covers the signed archive. The repository variables name the SignPath
-    # organization, project, signing policy and artifact configuration.
+    # (docs/code-signing.md), for tags only. The job runs in the signpath
+    # environment: it starts once the approver approves it, and only it can
+    # read that environment's SIGNPATH_API_TOKEN secret. The repository
+    # variables name the SignPath organization, project, signing policy and
+    # artifact configuration; the configuration signs the two programs in the
+    # top folder of the archive that this job uploads as windows-unsigned. The
+    # signed archive must hold the same files as the unsigned one, with only
+    # the two programs changed. It then goes to the release job with its new
+    # .sha256 as the windows-signed artifact, and signed=true. Signing never
+    # stops the release: when this job fails, times out or is rejected, the
+    # release ships the unsigned archive and its notes say so.
     needs: build
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
+    environment: signpath
+    timeout-minutes: 45
+    continue-on-error: true
     permissions:
+      # The SignPath action reads this run's jobs and downloads its artifact.
       actions: read
       contents: read
     outputs:
-      signed: ${{ steps.token.outputs.present }}
+      signed: ${{ steps.done.outputs.signed }}
     steps:
       - name: Token
-        id: token
         env:
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
         run: |
-          if [ -n "$SIGNPATH_API_TOKEN" ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::SIGNPATH_API_TOKEN is not set: the Windows archive stays unsigned"
+          if [ -z "$SIGNPATH_API_TOKEN" ]; then
+            echo "::error::the signpath environment has no SIGNPATH_API_TOKEN secret"; exit 1
           fi
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        if: steps.token.outputs.present == 'true'
         with:
           name: dist-x86_64-pc-windows-msvc
           path: dist
       - name: Upload the unsigned archive
         id: unsigned
-        if: steps.token.outputs.present == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-unsigned
@@ -176,7 +181,6 @@ jobs:
           if-no-files-found: error
           overwrite: true
       - name: Sign with SignPath
-        if: steps.token.outputs.present == 'true'
         uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -186,30 +190,45 @@ jobs:
           artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
           github-artifact-id: ${{ steps.unsigned.outputs.artifact-id }}
           wait-for-completion: true
-          # The approval is manual, so allow an hour.
-          wait-for-completion-timeout-in-seconds: 3600
+          # A request that SignPath has not completed in 30 minutes fails the
+          # job, and the release goes ahead unsigned.
+          wait-for-completion-timeout-in-seconds: 1800
           output-artifact-directory: signed
-      - name: Put the signed archive in place
-        if: steps.token.outputs.present == 'true'
+      - name: Check the signed archive
         run: |
           set -- dist/graphicle-*-x86_64-pc-windows-msvc.zip
           name="${1##*/}"
+          folder="${name%.zip}"
           test -f "signed/$name" || { echo "::error::SignPath returned no $name"; exit 1; }
-          if cmp -s "dist/$name" "signed/$name"; then echo "::error::SignPath returned $name unchanged"; exit 1; fi
-          # The signed archive must hold the same files as the unsigned one.
+          # The same file list as the unsigned archive,
           diff <(unzip -Z1 "dist/$name" | grep -v '/$' | sort) <(unzip -Z1 "signed/$name" | grep -v '/$' | sort)
-          mv -f "signed/$name" "dist/$name"
-          cd dist && sha256sum "$name" > "$name.sha256" && cat "$name.sha256"
+          # the same contents but for the two programs,
+          unzip -q "dist/$name" -d check-unsigned
+          unzip -q "signed/$name" -d check-signed
+          diff -r --exclude=graphicle.exe --exclude=graphicle-graph.exe check-unsigned check-signed
+          # and the two programs changed by their signatures.
+          for program in graphicle.exe graphicle-graph.exe; do
+            if cmp -s "check-unsigned/$folder/$program" "check-signed/$folder/$program"; then
+              echo "::error::SignPath returned $program unchanged"; exit 1
+            fi
+          done
+          mkdir windows-signed
+          mv "signed/$name" "windows-signed/$name"
+          cd windows-signed && sha256sum "$name" > "$name.sha256" && cat "$name.sha256"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: steps.token.outputs.present == 'true'
         with:
-          name: dist-x86_64-pc-windows-msvc
-          path: dist/
+          name: windows-signed
+          path: windows-signed/
           if-no-files-found: error
           overwrite: true
+      - name: Done
+        id: done
+        run: echo "signed=true" >> "$GITHUB_OUTPUT"
 
   release:
     needs: [build, sign-windows]
+    # Goes ahead after a successful build whatever became of the signing.
+    if: ${{ !cancelled() && needs.build.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -225,6 +244,29 @@ jobs:
           pattern: dist-*
           path: dist
           merge-multiple: true
+      - name: Download the signed Windows archive
+        if: needs.sign-windows.outputs.signed == 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: windows-signed
+          path: signed
+      - name: Windows signing
+        id: signing
+        # The signed archive and its .sha256 replace the unsigned ones before
+        # SHA256SUMS is written. Without them the release ships the unsigned
+        # archive.
+        run: |
+          signed=false
+          set -- signed/graphicle-*-x86_64-pc-windows-msvc.zip
+          name="${1##*/}"
+          if [ -f "signed/$name" ] && [ -f "dist/$name" ] && (cd signed && sha256sum --check --strict "$name.sha256"); then
+            mv -f "signed/$name" "signed/$name.sha256" dist/
+            signed=true
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "::warning::the Windows programs are unsigned in this release (see the sign-windows job)"
+          fi
+          echo "signed=$signed" >> "$GITHUB_OUTPUT"
       - name: Version
         id: version
         run: |
@@ -254,7 +296,7 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
-          SIGNED: ${{ needs.sign-windows.outputs.signed }}
+          SIGNED: ${{ steps.signing.outputs.signed }}
         run: |
           python3 packaging/homebrew/fill_formula.py --version "$VERSION" --sums dist/SHA256SUMS --out dist/graphicle.rb
           cp install.sh dist/install.sh
@@ -284,8 +326,14 @@ jobs:
             printf '$env:GRAPHICLE_VERSION = '"'"'%s'"'"'; irm https://github.com/%s/releases/download/v%s/install.ps1 | iex\n' \
               "$VERSION" "$GITHUB_REPOSITORY" "$VERSION"
             printf '```\n\nEach archive'"'"'s SHA-256 sum is in SHA256SUMS and beside it in a .sha256 file.\n'
+            # Worded for SignPath's test-signing policy, whose certificate
+            # Windows does not trust. Reword it when the release-signing
+            # policy replaces it.
             if [ "$SIGNED" = true ]; then
-              printf '\nThe Windows programs are signed through SignPath: [Code signing policy](https://github.com/%s/blob/%s/docs/code-signing.md).\n' \
+              printf '\ngraphicle.exe and graphicle-graph.exe in the Windows archive carry a signature from a SignPath test certificate. Windows does not trust that certificate, so it treats them as unsigned programs and may warn before it runs them. [Code signing policy](https://github.com/%s/blob/%s/docs/code-signing.md)\n' \
+                "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
+            else
+              printf '\nThe Windows programs, graphicle.exe and graphicle-graph.exe, are not code-signed. [Code signing policy](https://github.com/%s/blob/%s/docs/code-signing.md)\n' \
                 "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
             fi
           } >> "$RUNNER_TEMP/notes.md"
@@ -320,24 +368,31 @@ jobs:
           fi
 
   homebrew-tap:
-    # Final releases only. Needs the HOMEBREW_TAP_TOKEN secret: a fine-grained
-    # token with contents read and write on graphicle-ai/homebrew-tap. Without
-    # it, copy graphicle.rb from the release to the tap's Formula/ by hand.
+    # Final releases only. The job runs in the homebrew environment: it starts
+    # once the approver approves it, and only it can read that environment's
+    # HOMEBREW_TAP_TOKEN secret, a fine-grained token with contents read and
+    # write on graphicle-ai/homebrew-tap. Without the secret, copy graphicle.rb
+    # from the release to the tap's Formula/ by hand. The condition names the
+    # release job's result because sign-windows may have failed.
     needs: release
-    if: github.ref_type == 'tag' && needs.release.outputs.prerelease == 'false'
+    if: ${{ !cancelled() && needs.release.result == 'success' && github.ref_type == 'tag' && needs.release.outputs.prerelease == 'false' }}
     runs-on: ubuntu-latest
+    environment: homebrew
+    permissions:
+      contents: read
     env:
-      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       VERSION: ${{ needs.release.outputs.version }}
     steps:
       - name: Token
         id: token
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           if [ -n "$TAP_TOKEN" ]; then
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::HOMEBREW_TAP_TOKEN is not set: copy graphicle.rb from the v$VERSION release to graphicle-ai/homebrew-tap/Formula/graphicle.rb"
+            echo "::warning::the homebrew environment has no HOMEBREW_TAP_TOKEN secret: copy graphicle.rb from the v$VERSION release to graphicle-ai/homebrew-tap/Formula/graphicle.rb"
           fi
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         if: steps.token.outputs.present == 'true'

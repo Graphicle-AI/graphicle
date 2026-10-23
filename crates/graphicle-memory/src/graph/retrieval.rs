@@ -460,6 +460,131 @@ pub fn resident_index(graph_ref: &str, handle: &GraphHandle) -> Arc<SearchIndex>
     index
 }
 
+/// Make `index` the cached index of the resident graph `handle` (opened as
+/// `graph_ref`): an index read from a snapshot of that graph
+/// (`graphicle::snapshot::from_bytes`), which [`resident_index`] then returns
+/// instead of building one.
+pub fn install_index(graph_ref: &str, handle: &GraphHandle, index: SearchIndex) {
+    static FORGET_ON_CLOSE: std::sync::Once = std::sync::Once::new();
+    FORGET_ON_CLOSE.call_once(|| session::on_close(forget_index));
+    INDEXES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(
+            graph_ref.to_string(),
+            CachedIndex {
+                graph: handle.downgrade(),
+                index: Arc::new(index),
+            },
+        );
+}
+
+/// [`expand`] at depth 1, breadth first, without building the traversal view
+/// of the whole graph: the seeds' neighbours in the same view (parallel and
+/// opposite arcs folded, the context filters applied, each pair's relation
+/// and confidence merged in edge order). The nodes are those `expand`
+/// returns, in its order; the edges are its edges from a seed to a node that
+/// is not one, in its order of seeds (it also lists the edges between
+/// reached nodes, which no caller of this one reads).
+pub fn expand_seeds(graph: &Graph, seed_ids: &[Value], question: &str) -> Result<Expansion> {
+    let mut seeds = vec![];
+    let mut unknown = vec![];
+    for seed in seed_ids {
+        match graph.node_index(seed) {
+            Some(i) if !seeds.contains(&i) => seeds.push(i),
+            Some(_) => {}
+            None => unknown.push(crate::graph::python_compat::string(seed)),
+        }
+    }
+    let (filters, _) = resolve_contexts(question, &[]);
+    let kept = |edge: &graphicle::graph::Edge| {
+        filters.is_empty()
+            || filters.contains(&edge.attributes.get("context").map(text).unwrap_or_default())
+    };
+    let seedset: BTreeSet<usize> = seeds.iter().copied().collect();
+    let mut visited = seedset.clone();
+    let mut edges = Vec::new();
+    for &i in &seedset {
+        // Every neighbour pair of the seed, folded as the view folds it.
+        let mut neighbours: BTreeSet<usize> = graph.neighbor_indices(i, false).collect();
+        if graph.is_directed() {
+            neighbours.extend(graph.neighbor_indices(i, true));
+        }
+        for nb in neighbours {
+            if seedset.contains(&nb) {
+                continue;
+            }
+            let (low, high) = if i <= nb { (i, nb) } else { (nb, i) };
+            let (a, b) = (&graph.nodes()[low].id, &graph.nodes()[high].id);
+            let mut list: Vec<&graphicle::graph::Edge> = graph.edges_between(a, b);
+            if low != high && graph.is_directed() {
+                list.extend(graph.edges_between(b, a));
+            }
+            // A plain graph's view keeps one merged entry per pair, kept when
+            // its last context passes; a multigraph's keeps every arc.
+            let surviving: Vec<&graphicle::graph::Edge> = if graph.is_multigraph() {
+                list.into_iter().filter(|edge| kept(edge)).collect()
+            } else {
+                let mut context = None;
+                for edge in &list {
+                    if let Some(value) = edge.attributes.get("context") {
+                        context = Some(text(value));
+                    }
+                }
+                if filters.is_empty() || filters.contains(&context.unwrap_or_default()) {
+                    list
+                } else {
+                    Vec::new()
+                }
+            };
+            if surviving.is_empty() {
+                continue;
+            }
+            let mut relation = String::new();
+            let mut confidence = String::new();
+            for edge in &surviving {
+                if let Some(value) = edge.attributes.get("relation") {
+                    relation = text(value);
+                }
+                if let Some(value) = edge.attributes.get("confidence") {
+                    confidence = text(value);
+                }
+            }
+            visited.insert(nb);
+            edges.push((i, nb, relation, confidence));
+        }
+    }
+    let nodes = visited
+        .iter()
+        .map(|&i| ExpandedNode {
+            node_id: id(graph, i),
+            label: label(graph, i),
+            seed: seedset.contains(&i),
+            source_file: attr(graph, i, "source_file"),
+            source_location: attr(graph, i, "source_location"),
+            stable_id: attr(graph, i, "stable_id"),
+            kind: attr(graph, i, "kind"),
+        })
+        .collect();
+    let edges = edges
+        .into_iter()
+        .map(|(u, v, relation, confidence)| ExpandedEdge {
+            source: id(graph, u),
+            target: id(graph, v),
+            relation,
+            confidence,
+        })
+        .collect();
+    Ok(Expansion {
+        depth: 1,
+        mode: Mode::Bfs,
+        filters,
+        nodes,
+        edges,
+        unknown_seeds: unknown,
+    })
+}
+
 /// Forget the cached index of a closed graph.
 pub fn forget_index(graph_ref: &str) {
     INDEXES

@@ -985,7 +985,8 @@ const CLAUDE_CODE_GUARDS: [HookSpec; 2] = [
 /// default): on each prompt, `graphicle hook claude-code prompt-context`
 /// adds `graphicle context`'s packet for a code question
 /// ([`crate::prompt_hook`]). Claude Code's timeout is a backstop: the hook
-/// gives up by itself after [`crate::prompt_hook::SECONDS`].
+/// gives up by itself after its budget ([`crate::prompt_hook::budget`], at
+/// most [`crate::prompt_hook::MAX_SECONDS`]).
 const CLAUDE_CODE_PROMPT_CONTEXT: HookSpec = HookSpec {
     event: "UserPromptSubmit",
     argument: "prompt-context",
@@ -1966,7 +1967,7 @@ mod tests {
             plan.document,
             json!({"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command",
                 "command":"'/usr/local/bin/graphicle' --data-dir '/d' hook claude-code prompt-context",
-                "timeout":15}]}]}})
+                "timeout":crate::prompt_hook::HOOK_TIMEOUT}]}]}})
         );
         assert_eq!(plan.outcomes.len(), 1);
         assert!(plan.outcomes[0].0.prompt && plan.outcomes[0].1);

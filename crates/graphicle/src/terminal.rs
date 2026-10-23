@@ -2984,6 +2984,9 @@ pub fn config_command(
             // GRAPHICLE_SYNC_TRACKED_IGNORED overrides the file.
             shown["sync"] =
                 json!({"tracked_ignored": crate::local::tracked_ignored_setting(Some(&config))});
+            // GRAPHICLE_PROMPT_CONTEXT_SECONDS overrides the file.
+            shown["prompt_context"] =
+                json!({"seconds": crate::prompt_hook::budget(Some(&config)).as_secs()});
             shown["limits"] = crate::limits::Limits::from_environment(&config.limits)?.view();
             emit(&shown, json, config_show_text)
         }
@@ -2997,6 +3000,9 @@ pub fn config_command(
             } else if key == "sync.tracked_ignored" {
                 // GRAPHICLE_SYNC_TRACKED_IGNORED overrides the file.
                 Some(json!(crate::local::tracked_ignored_setting(Some(&load()?))))
+            } else if key == "prompt_context.seconds" {
+                // GRAPHICLE_PROMPT_CONTEXT_SECONDS overrides the file.
+                Some(json!(crate::prompt_hook::budget(Some(&load()?)).as_secs()))
             } else if key == crate::update_notice::SETTING {
                 // GRAPHICLE_NO_UPDATE_NOTIFIER overrides the file.
                 Some(json!(crate::update_notice::on(&path)))
@@ -3176,7 +3182,9 @@ pub fn context_text(packet: &Value, style: Style) -> String {
         // agent which tool reads on, and the budget, which the line above
         // gives.
         for line in s(packet, "markdown").lines().skip(1).filter(|line| {
-            *line != crate::identifier_route::READ_ON && !line.starts_with("Budget: ")
+            *line != crate::identifier_route::READ_ON
+                && *line != crate::identifier_route::READ_ON_FILES
+                && !line.starts_with("Budget: ")
         }) {
             let _ = writeln!(out, "{line}");
         }
@@ -4805,6 +4813,30 @@ fn checks(options: &Doctor<'_>) -> Vec<Check> {
                         Err(error) => Check::new("graph", State::Fail, "Code graph", error.message)
                             .with_fix("graphicle sync"),
                     });
+                    // How fast questions are: the passage index and the saved
+                    // code graph (crate::indexed_query::readiness).
+                    if let Ok(check) = store.authorized_read(
+                        &session.workspace,
+                        &session.capability,
+                        "read",
+                        |db, _| crate::indexed_query::readiness(db, &resolved.id),
+                    ) {
+                        let state = match check["state"].as_str() {
+                            Some("ready") => State::Ok,
+                            Some("small") => State::Info,
+                            _ => State::Warn,
+                        };
+                        let mut line = Check::new(
+                            "context",
+                            state,
+                            "Questions",
+                            s(&check, "detail").to_string(),
+                        );
+                        if state == State::Warn {
+                            line = line.with_fix(s(&check, "fix").to_string());
+                        }
+                        checks.push(line);
+                    }
                     // Freshness (ux-fresh): the folder against its last
                     // sync, read only.
                     if let Ok(fresh) = crate::fresh::check(&store, &session, &resolved.id) {

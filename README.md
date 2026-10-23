@@ -252,7 +252,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). To report a security problem, follow [SE
 
 Graphicle is licensed under the [Apache License 2.0](LICENSE). Copyright 2026 KarLex AI, Inc.
 
-[Code signing policy](docs/code-signing.md): the Windows programs are not code-signed yet; signing through the SignPath Foundation is planned.
+[Code signing policy](docs/code-signing.md): release builds are not yet signed with a trusted certificate. The Windows programs are signed through SignPath with a test certificate, which Windows does not trust, or left unsigned when that signing fails; each release's notes say which. Signing with the SignPath Foundation's certificate is planned. The policy also lists every case in which Graphicle contacts the network.
 
 The code-graph engine is a Rust port of [Graphify](https://github.com/Graphify-Labs/graphify) by Safi Shamsi and the Graphify
 contributors, licensed under Apache-2.0, with portions that remain available under the MIT License. Thank you.

@@ -1935,7 +1935,7 @@ fn chronological_packing_spends_by_rank_and_presents_by_date_with_gap_markers() 
     let markdown = dated["markdown"].as_str().unwrap();
     assert_eq!(dated["gap_markers"], 1);
     let marker = markdown
-        .find("[Not shown: bytes 23–900 of this source lie between these excerpts; read them with read_project_evidence.]")
+        .find("[Not shown: bytes 23–900 of this source lie between these excerpts; read them with read_project_source.]")
         .unwrap();
     assert!(markdown.find("We visited the shelter.").unwrap() < marker);
     assert!(marker < markdown.find("Later that day").unwrap());

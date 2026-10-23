@@ -143,12 +143,12 @@ allows and stays searchable. A text file over 8 MiB, or one that cannot be
 read, is left out. The result of `sync` lists every such file with the reason.
 [Configuration](configuration.md#limits) lists every limit and its setting.
 
-One question searches at most 50,000 files and about 100 MB of text. In a
-larger project each question chooses the files that match it best, and the
-sync says so; pass `include` to choose the files yourself. Before it chooses,
-a question still reads the text of every file into memory: a 60,000-file
-project used about 1.1 GiB per question when this was measured. The code
-graph has no such limits.
+A question reads the project's passage index, which each sync keeps up to
+date, and ranks every passage of every file. Without the index (a store from
+an earlier version, until its next sync) one question searches at most 50,000
+files and about 100 MB of text: in a larger project each question chooses the
+files that match it best, and the sync says so; pass `include` to choose the
+files yourself. The code graph has no such limits.
 
 ## Where is my data, and how do I delete it?
 

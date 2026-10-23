@@ -3,6 +3,125 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.5 - 2026-10-22
+
+Every crate is at 0.1.5, and `graphicle --version` prints
+`graphicle 0.1.5 (core)`.
+
+### Questions on large projects
+
+- Each sync keeps a passage index of the project's files in the store, and
+  `graphicle context`, the memory server's `recall_project` and the prompt
+  hook look a question up in it instead of reading and scoring every file of
+  the project (#8, reported by @selimaytac). A sync reads only the files
+  that changed since the last one. After each code graph build, Graphicle
+  also saves the graph and its search index in the data folder
+  (`gf-cache/<project>/query/`), so a question reads them instead of
+  rebuilding them from the store.
+  - Over the 22 kubernetes questions of #8, on a shallow clone of
+    kubernetes (30,315 files) on 16 cores of a Linux server, a question to
+    `graphicle context` took a median of 3.1 seconds, against 27.9 seconds
+    with 0.1.4. On duckdb (14,309 files) the median over 10 questions was
+    2.6 seconds, against 20.9 seconds.
+  - A question ranks every passage of the project, as the full path does
+    within its bounds. A project past those bounds (50,000 documents or
+    40,000 passages) was ranked on the documents that matched the question
+    best, and is now ranked whole.
+  - The index takes room in the store and time at a first sync: on that
+    kubernetes clone the data folder held 6.22 GB after a first sync,
+    against 5.80 GB with 0.1.4, and the sync took 239.5 seconds, against
+    235.4 seconds. On duckdb a first sync took 125.9 seconds, against 112.4
+    seconds. Later syncs read only the files that changed; a sync merges
+    the index when the files that changed since it was built hold more than
+    30% of its passages, and `storage.prune` merges it too, so the entries
+    of files that went away go.
+  - A store from an earlier version builds its index at its next sync, and
+    its questions take the full path until then. Calls with options the
+    index does not serve, such as `include`, and projects with reviewed
+    memory also take the full path; `docs/configuration.md` lists them. The
+    packet says what it read in `passage_index`.
+    `GRAPHICLE_PASSAGE_INDEX=0` makes every question take the full path,
+    and `GRAPHICLE_SAVED_GRAPH=0` makes it read the code graph from the
+    store.
+
+### Prompt hook
+
+- The hook's time budget is a setting: `graphicle config set
+  prompt_context.seconds N` (1 to 25 seconds, 10 by default) or the
+  `GRAPHICLE_PROMPT_CONTEXT_SECONDS` variable. The hook's own timeout is 30
+  seconds.
+- While the passage index of a project of 2,000 files or more is not
+  ready, the hook gives the files that define the code names a prompt
+  gives, from the code graph, without reading the project's other files. A
+  smaller project, and a project with reviewed memory (whose memories only
+  the full read gives), are asked in full, as before.
+- When the hook gives up for time, or answers that way, Claude Code shows
+  one note a session that says so and what to run. For a project with
+  reviewed memory, the note says that a sync does not make it faster.
+- Graphicle 0.1.4 and earlier refuse a configuration that sets
+  `prompt_context`, a field they do not know. After setting it, do not run
+  an older Graphicle on the same data folder, such as an MCP server started
+  before the upgrade.
+- A prompt that asks where code is in plain words, such as "Which file and
+  functions compute this?" or "Where is that latency recorded?", is read as
+  a code question.
+- Over the same 22 kubernetes questions, the hook gave a packet within its
+  10-second budget for 20 of them, and read the other 2 as questions in
+  plain words. With 0.1.4 it gave none: it ran out of time on 11 and did
+  not read the other 11 as code questions.
+
+### Setup and doctor
+
+- `graphicle doctor` has a Questions check: whether the project's passage
+  index is built and current and its code graph saved, or what makes its
+  questions slow (a missing or stale index, reviewed memory), with the
+  command that fixes it. `graphicle setup` says the same in its `questions`
+  field and line. A project of fewer than 2,000 files is only described.
+
+### Packets
+
+- A packet tells its reader to read on with what the reader has:
+  `read_project_source` over MCP, and from `graphicle context` and the
+  prompt hook, the line of the file to continue at. It no longer names
+  `read_repository_file` or `read_project_evidence`, which no tool set has.
+
+### Sync
+
+- On a file system that ignores case (the default on macOS and Windows), a
+  tracked file that an ignore pattern matches only in another case, such as
+  `src/Foo.js` against `foo.js`, was read twice, and its bytes counted
+  twice. It is read once. Two hard links to one file are still read as two
+  files.
+
+### Extension interface
+
+- When an installed extension sets the most tokens a read's result may
+  hold, a `context` result over it is packed again with a smaller budget
+  until it fits (at most 4 rounds, down to 256 tokens, reported in
+  `response_sized`), instead of refused with 413. Other reads are still
+  refused.
+
+### Windows
+
+- `graphicle.exe` and `graphicle-graph.exe` are signed through SignPath with
+  a test certificate, which Windows does not trust, so Windows still treats
+  them as unsigned programs. When the signing fails, the release ships them
+  unsigned; the release notes say which.
+- `graphicle.exe` and `graphicle-graph.exe` carry version information
+  (product name, company, description and version), which Windows shows in
+  each file's properties.
+
+### Other changes
+
+- The install scripts and the Homebrew formula say that Graphicle checks for
+  a newer release at most once a day by default, and how to turn that off.
+- The code signing policy, `docs/code-signing.md`, lists every case in which
+  Graphicle contacts the network, what each one sends and how to turn it off
+  or avoid it.
+- The release workflow's signing and Homebrew tap jobs run in GitHub
+  environments that only version tags reach and a maintainer approves, and
+  only those jobs can read their tokens.
+
 ## 0.1.4 - 2026-10-21
 
 Every crate is at 0.1.4, and `graphicle --version` prints

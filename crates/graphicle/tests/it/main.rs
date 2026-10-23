@@ -58,6 +58,7 @@ mod memory_symbols;
 mod observer;
 mod offboard;
 mod one_server;
+mod passage_index;
 mod permissions_refresh;
 mod product_workspace;
 mod project_identity;

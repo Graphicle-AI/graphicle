@@ -360,7 +360,7 @@ fn node_text<'a>(attributes: &'a impl graphicle::record::Properties, key: &str) 
         .filter(|v| !v.is_empty())
 }
 /// `L5` / `L5-L9` → 5; the episode's `span.start_line` when present.
-fn node_line(attributes: &impl graphicle::record::Properties) -> Option<u64> {
+pub(crate) fn node_line_of(attributes: &impl graphicle::record::Properties) -> Option<u64> {
     if let Some(start) = attributes
         .get("span")
         .and_then(|span| span.get("start_line"))
@@ -425,7 +425,7 @@ pub fn episode_graph(graph: &Graph, episode: &str) -> Value {
             .and_then(Value::as_str)
             .and_then(|l| l.strip_prefix('L'))
             .and_then(|l| l.split(['-', ':']).next()?.trim().parse::<u64>().ok())
-            .or_else(|| node_line(&nodes[source].attributes))
+            .or_else(|| node_line_of(&nodes[source].attributes))
             .unwrap_or(1);
         if relation == "calls" && !is_file(source) && !is_file(target) {
             let record = (from.clone(), name(source), to.clone(), name(target), line);
@@ -470,8 +470,12 @@ pub fn source_graph(db: &Connection, repository: &Value, p: &Principal) -> Resul
     if !graph_projection::is_recorded(db, id, &episode)? {
         return legacy_graph(db, repository, p);
     }
-    match graph_projection::resident(db, id, &episode) {
-        Ok(handle) => Ok(episode_graph(&handle, &episode)),
+    match crate::phase::phase("snapshot_graph_resident", || {
+        graph_projection::resident(db, id, &episode)
+    }) {
+        Ok(handle) => Ok(crate::phase::phase("snapshot_graph_view", || {
+            episode_graph(&handle, &episode)
+        })),
         Err(error) => {
             let mut graph = legacy_graph(db, repository, p)?;
             graph["episode"] = json!(episode);
@@ -481,10 +485,14 @@ pub fn source_graph(db: &Connection, repository: &Value, p: &Principal) -> Resul
     }
 }
 pub fn snapshot(db: &Connection, repository: &Value, p: &Principal) -> Result<Snapshot> {
-    let documents = memory::documents(db, repository, p)?;
+    let documents = crate::phase::phase("snapshot_documents", || {
+        memory::documents(db, repository, p)
+    })?;
     // One read of the sources serves the memory listing too.
-    let memories = memory::list_of(db, repository, &documents, true)?;
-    let graph = source_graph(db, repository, p)?;
+    let memories = crate::phase::phase("snapshot_memories", || {
+        memory::list_of(db, repository, &documents, true)
+    })?;
+    let graph = crate::phase::phase("snapshot_graph", || source_graph(db, repository, p))?;
     let state = digest(
         &json!({"sources":memory::state(&documents),"memories":memories.iter().map(|m|json!([m["id"],m["revision"],m["state"],m["stale"]])).collect::<Vec<_>>(),"reviewed_state":memory::reviewed_state_for(db,repository,&memories)?}),
     );
@@ -597,6 +605,14 @@ pub fn candidates(snapshot: &Snapshot) -> Result<(Vec<Value>, Value)> {
 pub struct Passages {
     pub rows: Vec<Value>,
     report: Value,
+}
+
+impl Passages {
+    /// Rows chunked elsewhere (a passage index, [`crate::indexed_query`]),
+    /// with the coverage report `chunks` would give them.
+    pub fn from_parts(rows: Vec<Value>, report: Value) -> Self {
+        Self { rows, report }
+    }
 }
 
 /// The snapshot's passages. When the catalogue exceeds the passage bound,
@@ -964,11 +980,107 @@ pub fn switches(args: &Value, scope: &str) -> Result<Value> {
 pub fn context_on(
     snapshot: &Snapshot,
     args: &Value,
+    extra_rankings: Value,
+    code_graph: Option<&crate::code_graph_arm::Arm>,
+    reranker: Option<&crate::model::Profile>,
+    passages: Option<Passages>,
+    doc_links: Option<&crate::doc_links::Lookup<'_>>,
+) -> Result<Value> {
+    context_impl(
+        snapshot,
+        args,
+        extra_rankings,
+        code_graph,
+        reranker,
+        passages,
+        doc_links,
+        None,
+    )
+}
+
+/// What `context` reads from a project's passage index
+/// ([`crate::indexed_query`]) beside the passages it sends `rank`: the
+/// rankings and counts of the whole catalogue, and the passages and edges
+/// the relationship lift reaches.
+pub struct Indexed<'a> {
+    /// `rank`'s lexical order of every passage (`lexical_ranked`).
+    pub lexical: Value,
+    /// `rank`'s speaker arm over every passage (`speaker_ranked`), when the
+    /// question has one.
+    pub speaker: Option<Value>,
+    /// The catalogue's coverage fields, which replace those counted over the
+    /// passages sent.
+    pub coverage: Value,
+    /// Every project file's origin (`{"origin": "file:<path>"}`): what the
+    /// code-first report counts.
+    pub origins: Vec<Value>,
+    /// The passages of the files `rank`'s relationship lift reaches from
+    /// the frontier files in so many hops that it can keep, scored by
+    /// [`LiftScoring`], and the edges it reads.
+    pub lift: &'a mut LiftFn<'a>,
+    /// The documents with these ids, with their text: the snapshot holds the
+    /// text of the files the arms read only.
+    pub contents: &'a mut dyn FnMut(&BTreeSet<String>) -> Result<Vec<Value>>,
+}
+
+/// [`Indexed::lift`]: the frontier files, the hops and the scoring.
+pub type LiftFn<'a> = dyn FnMut(&[String], usize, &LiftScoring) -> Result<Lift> + 'a;
+
+/// What `rank`'s relationship lift scores a reached passage by: the first
+/// pass's best fused score (`top`), the share of the question's `terms` the
+/// passage holds, the hop and the prior of its origin.
+pub struct LiftScoring<'a> {
+    pub top: f64,
+    pub terms: Vec<String>,
+    pub prior: &'a dyn Fn(&str) -> f64,
+}
+
+/// What [`Indexed::lift`] gives `rank`'s second pass.
+pub struct Lift {
+    pub rows: Vec<Value>,
+    /// The relationship edges the lift reads (those touching the files it
+    /// starts from and, with two hops, the files the first hop reaches).
+    pub edges: Value,
+    /// `rank`'s `static_edges` report over the whole edge list, and its
+    /// length.
+    pub static_edges: Value,
+    pub edge_count: usize,
+}
+
+/// [`context_on`] over passages from a project's passage index, with the
+/// catalogue's rankings ([`Indexed`]).
+#[allow(clippy::too_many_arguments)]
+pub fn context_indexed(
+    snapshot: &Snapshot,
+    args: &Value,
+    extra_rankings: Value,
+    code_graph: Option<&crate::code_graph_arm::Arm>,
+    passages: Passages,
+    doc_links: Option<&crate::doc_links::Lookup<'_>>,
+    indexed: &mut Indexed<'_>,
+) -> Result<Value> {
+    context_impl(
+        snapshot,
+        args,
+        extra_rankings,
+        code_graph,
+        None,
+        Some(passages),
+        doc_links,
+        Some(indexed),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn context_impl(
+    snapshot: &Snapshot,
+    args: &Value,
     mut extra_rankings: Value,
     code_graph: Option<&crate::code_graph_arm::Arm>,
     reranker: Option<&crate::model::Profile>,
     passages: Option<Passages>,
     doc_links: Option<&crate::doc_links::Lookup<'_>>,
+    mut indexed: Option<&mut Indexed<'_>>,
 ) -> Result<Value> {
     let rescoring = reranker.is_some();
     for field in ["memory_retrieval", "graph_retrieval"] {
@@ -1135,7 +1247,15 @@ pub fn context_on(
         Some(passages) => passages,
         None => self::passages(snapshot)?,
     };
-    let (mut rows, coverage) = candidates_from(snapshot, passages, memories.iter().copied())?;
+    let (mut rows, mut coverage) = candidates_from(snapshot, passages, memories.iter().copied())?;
+    if let Some(indexed) = &indexed
+        && let (Some(fields), Some(catalogue)) =
+            (coverage.as_object_mut(), indexed.coverage.as_object())
+    {
+        for (key, value) in catalogue {
+            fields.insert(key.clone(), value.clone());
+        }
+    }
     // `note_keys`: observer notes key the passages they quote (LongMemEval's
     // key expansion). Callers pass the reader's notes beside the rankings;
     // they are never fused as a ranking.
@@ -1198,9 +1318,20 @@ pub fn context_on(
     // one by one.
     rank_request["rows"] = Value::Array(rows.clone());
     rank_request["edges"] = edges.clone();
-    let (priors, code_first_report) = code_first.priors(&rows, &defining);
+    let (priors, mut code_first_report) = code_first.priors(&rows, &defining);
     if !priors.is_empty() {
         rank_request["origin_prior"] = Value::Object(priors);
+    }
+    // From a passage index: the catalogue's lexical and speaker orders, and
+    // the relationship edges read once the frontier is known (below).
+    if let Some(indexed) = &indexed {
+        rank_request["lexical_ranked"] = indexed.lexical.clone();
+        if let Some(speaker) = &indexed.speaker {
+            rank_request["speaker_ranked"] = speaker.clone();
+        }
+        rank_request["report_frontier"] = json!(true);
+        rank_request["edges"] = json!([]);
+        code_first_report = code_first.priors(&indexed.origins, &defining).1;
     }
     // Retrieval tuning, validated by `rank`: weighted fusion, per-origin
     // quotas, stemmed BM25, a ranking of one speaker's turns and
@@ -1279,7 +1410,95 @@ pub fn context_on(
         };
         bound("max", 3).max(bound("min", 1))
     });
-    let mut ranked = native("rank", rank_request)?;
+    // GRAPHICLE_DEBUG_RANK=<file>: each rank call's fused rankings and
+    // fused order are appended to the file (diagnostics only).
+    let debug_rank = std::env::var("GRAPHICLE_DEBUG_RANK")
+        .ok()
+        .filter(|v| !v.is_empty());
+    if debug_rank.is_some() {
+        rank_request["debug_rankings"] = json!(true);
+        rank_request["debug_fused"] = json!(graphicle_memory::retrieval::MAX_FUSED);
+    }
+    let debug_record = |ranked: &Value, request: &Value| {
+        use std::io::Write;
+        let Some(path) = &debug_rank else {
+            return;
+        };
+        let record = json!({"rankings":ranked.get("rankings_debug"),"fused":ranked.get("fused"),
+            "rows":request["rows"].as_array().map_or(0, Vec::len),
+            "origin_prior":request.get("origin_prior").map(|p| p.as_object().map_or(0, |m| m.len())),
+            "edges":request["edges"].as_array().map_or(0, Vec::len),"static_edges":ranked.get("static_edges")});
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
+            let _ = writeln!(file, "{record}");
+        }
+    };
+    let mut ranked = crate::phase::phase("assemble_rank", || native("rank", rank_request.clone()))?;
+    debug_record(&ranked, &rank_request);
+    // The relationship lift reads the files the four best passages are in:
+    // their neighbours' passages join the rows, and `rank` runs again with
+    // the edges the lift reads.
+    let mut static_edge_count = edges.as_array().map_or(0, Vec::len);
+    if let Some(indexed) = indexed.as_mut() {
+        let frontier: Vec<String> = ranked["frontier"]["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|path| path.as_str().map(str::to_string))
+            .collect();
+        let hops = ranked["frontier"]["hops"].as_u64().unwrap_or(1) as usize;
+        let prior = |origin: &str| code_first.prior(origin, &defining);
+        let scoring = LiftScoring {
+            top: ranked["frontier"]["top"].as_f64().unwrap_or(0.0),
+            terms: ranked["frontier"]["terms"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|term| term.as_str().map(str::to_string))
+                .collect(),
+            prior: &prior,
+        };
+        let lift = crate::phase::phase("assemble_lift", || {
+            (indexed.lift)(&frontier, hops, &scoring)
+        })?;
+        static_edge_count = lift.edge_count;
+        let has_edges = lift.edges.as_array().is_some_and(|edges| !edges.is_empty());
+        if has_edges {
+            let known: BTreeSet<String> =
+                rows.iter().map(|r| s(r, "identity").to_string()).collect();
+            rows.extend(
+                lift.rows
+                    .into_iter()
+                    .filter(|row| !known.contains(s(row, "identity"))),
+            );
+            rank_request["rows"] = Value::Array(rows.clone());
+            let (priors, _) = code_first.priors(&rows, &defining);
+            if priors.is_empty() {
+                if let Some(fields) = rank_request.as_object_mut() {
+                    fields.remove("origin_prior");
+                }
+            } else {
+                rank_request["origin_prior"] = Value::Object(priors);
+            }
+            rank_request["edges"] = lift.edges;
+            ranked = crate::phase::phase("assemble_rank", || native("rank", rank_request.clone()))?;
+            debug_record(&ranked, &rank_request);
+        }
+        if let Some(fields) = ranked.as_object_mut() {
+            fields.remove("frontier");
+            if lift.static_edges.is_null() {
+                fields.remove("static_edges");
+            } else {
+                fields.insert("static_edges".into(), lift.static_edges);
+            }
+        }
+    }
+    if let Some(fields) = ranked.as_object_mut() {
+        fields.remove("rankings_debug");
+    }
     let mut strength = ranked["evidence_strength"].clone();
     // `rank` was asked for EXTRA_SOURCES more; the packet's limit is the call's.
     if !rescoring {
@@ -1585,11 +1804,22 @@ pub fn context_on(
         doc_links_report["over_candidate_limit"] = json!(offered.saturating_sub(kept));
     }
     let arms = arm_report(&ranked, &extra_rankings, &sources, &selected_memories);
-    let mut hits = crate::evidence::source_hits(
-        &snapshot.documents,
-        &candidates,
-        args["expand_context"] != false,
-    )?;
+    // From a passage index, the snapshot holds the text of the files the
+    // arms read: the candidates' documents are read here.
+    let read_here: Vec<Value>;
+    let documents: &[Value] = match indexed.as_mut() {
+        Some(indexed) => {
+            let ids: BTreeSet<String> = candidates
+                .iter()
+                .map(|c| s(&c["source"], "id").to_string())
+                .collect();
+            read_here = (indexed.contents)(&ids)?;
+            &read_here
+        }
+        None => &snapshot.documents,
+    };
+    let mut hits =
+        crate::evidence::source_hits(documents, &candidates, args["expand_context"] != false)?;
     if demote {
         mark_test_files_last(&mut hits);
     }
@@ -1636,6 +1866,12 @@ pub fn context_on(
             pack_request[option] = value.clone();
         }
     }
+    // How the packet says to read on past an excerpt: `read_project_source`
+    // (the MCP tool), or the file's line for a packet read outside MCP
+    // (`continue_with: "file"`: `graphicle context` and the prompt hook).
+    if let Some(value) = args.get("continue_with").filter(|v| !v.is_null()) {
+        pack_request["continue_with"] = value.clone();
+    }
     // The project files of the fused order, each once: the packer lists
     // those its excerpts do not quote after them.
     if more_files > 0 {
@@ -1652,7 +1888,7 @@ pub fn context_on(
             .collect();
         pack_request["next_files"] = json!({"paths": paths, "limit": more_files});
     }
-    let mut packet = native("pack", pack_request)?;
+    let mut packet = crate::phase::phase("assemble_pack", || native("pack", pack_request))?;
     packet["question"] = json!(question);
     if let Some(listed) = packet.as_object_mut().and_then(|p| p.remove("next_files")) {
         packet["more_files"] = listed;
@@ -1668,8 +1904,7 @@ pub fn context_on(
     }
     let mut evidence = Vec::new();
     for source in packet["sources"].as_array().into_iter().flatten() {
-        let doc = snapshot
-            .documents
+        let doc = documents
             .iter()
             .find(|d| d["id"] == source["id"])
             .ok_or_else(|| Error::bad("Packed source unavailable"))?;
@@ -1714,7 +1949,7 @@ pub fn context_on(
     packet["mechanisms"] = json!({"reviewed_memory_enabled":args["memory_retrieval"] != false,
         "reviewed_memory_available":memories.iter().filter(|m|m["state"] == "reviewed" && m["stale"] != true).count(),
         "reviewed_memory_included":packet["memories"].as_array().map_or(0,Vec::len),
-        "graph_retrieval_enabled":graph_enabled,"static_relationship_edges":edges.as_array().map_or(0,Vec::len),
+        "graph_retrieval_enabled":graph_enabled,"static_relationship_edges":static_edge_count,
         "graph_source":graph_source,"graph_episode":snapshot.graph.get("episode").cloned().unwrap_or(Value::Null),
         "graph_searched":extra_rankings.get("graph_local").is_some() || matches!(packet[crate::code_graph_arm::ARM]["status"].as_str(),Some("fused" | "no_match")),
         "graph_local_searched":extra_rankings.get("graph_local").is_some(),
@@ -2008,6 +2243,51 @@ pub fn semantic_ranking(
     pairs.sort_by(|(a, x), (b, y)| y.total_cmp(x).then(a.cmp(b)));
     Ok(json!({"semantic":pairs.into_iter().take(200).map(|(id,_)|id).collect::<Vec<_>>()}))
 }
+/// The argument that sizes a `context` reply to a caller's per-call token
+/// cap ([`fit_response`]): set by the admission of a credential an
+/// extension limits, never needed otherwise.
+pub const RESPONSE_TOKENS: &str = "response_tokens";
+
+/// Most times [`fit_response`] packs again with a smaller budget.
+const FIT_ROUNDS: usize = 4;
+
+/// `run` with the call's budgets, and again with smaller ones while the reply
+/// (as served: compact JSON) holds more than the call's `response_tokens`:
+/// each round lowers `max_tokens` by half the excess and a margin (and
+/// `max_chars` to four characters a token), down to 256. The packet then says
+/// what it did (`response_sized`). A reply that cannot fit is left to the
+/// caller's own size check.
+pub fn fit_response(args: &Value, mut run: impl FnMut(&Value) -> Result<Value>) -> Result<Value> {
+    let cap = args
+        .get(RESPONSE_TOKENS)
+        .and_then(Value::as_u64)
+        .map(|cap| cap as usize);
+    let mut packet = run(args)?;
+    let Some(cap) = cap else {
+        return Ok(packet);
+    };
+    let asked = integer(args, "max_tokens", 3000, 16000)?.max(256);
+    let mut budget = asked;
+    let mut sized = args.clone();
+    for _ in 0..FIT_ROUNDS {
+        let tokens = graphicle_memory::text::count(&packet.to_string());
+        if tokens <= cap {
+            break;
+        }
+        let next = budget.saturating_sub((tokens - cap) / 2 + 64).max(256);
+        if next >= budget {
+            break;
+        }
+        budget = next;
+        sized["max_tokens"] = json!(budget);
+        let chars = integer(args, "max_chars", 12000, 64000)?.max(2000);
+        sized["max_chars"] = json!(chars.min((budget * 4).max(2000)));
+        packet = run(&sized)?;
+        packet["response_sized"] = json!({"cap":cap,"max_tokens_asked":asked,"max_tokens":budget});
+    }
+    Ok(packet)
+}
+
 impl Store {
     pub fn project_context(&self, workspace: &str, token: &str, args: &Value) -> Result<Value> {
         self.project_context_local(workspace, token, args, None, None)
@@ -2020,6 +2300,15 @@ impl Store {
         embedding: Option<&crate::model::Profile>,
         reranker: Option<&crate::model::Profile>,
     ) -> Result<Value> {
+        if args.get(RESPONSE_TOKENS).is_some_and(|v| !v.is_null()) {
+            return fit_response(args, |args| {
+                let mut plain = args.clone();
+                if let Some(fields) = plain.as_object_mut() {
+                    fields.remove(RESPONSE_TOKENS);
+                }
+                self.project_context_local(workspace, token, &plain, embedding, reranker)
+            });
+        }
         crate::archived::check(crate::archived::Surface::Context, args)?;
         for profile in [embedding, reranker].into_iter().flatten() {
             if profile.protocol != "local_onnx" {
@@ -2102,6 +2391,21 @@ pub fn project_packet(
     embedding: Option<&crate::model::Profile>,
     reranker: Option<&crate::model::Profile>,
 ) -> Result<(Snapshot, Value)> {
+    // The prompt hook's quick packet while the passage index is not ready
+    // (crate::indexed_query::graph_only_packet).
+    if args["graph_only"] == true {
+        return crate::indexed_query::graph_only_packet(db, p, repository, args);
+    }
+    // The project's passage index, when it has one and the call keeps to
+    // what it serves (crate::indexed_query).
+    if embedding.is_none()
+        && reranker.is_none()
+        && let Some(done) = crate::phase::phase("context_indexed", || {
+            crate::indexed_query::packet(db, p, repository, args)
+        })?
+    {
+        return Ok(done);
+    }
     let mut snap = crate::phase::phase("context_snapshot", || snapshot(db, repository, p))?;
     if args["memory_retrieval"] == false {
         snap.memories.clear();

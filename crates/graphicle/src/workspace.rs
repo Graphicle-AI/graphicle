@@ -45,7 +45,7 @@
 use crate::{
     Error, Result, code_graph_arm, digest, evidence, graph_projection,
     graph_projection::CrossDirection,
-    integer, native, query,
+    integer, memory, native, query,
     store::{Principal, Store, repo, rows, s},
 };
 use graphicle::graph::Graph;
@@ -257,7 +257,7 @@ pub fn context(
     let step = if switches["cross_repo"] == true {
         // A graph mechanism: like the code arm, it degrades (and says why)
         // rather than failing the query.
-        cross_step(db, p, &reads, &order).unwrap_or_else(|error| Step::failed(&error))
+        cross_step(db, p, &mut reads, &order).unwrap_or_else(|error| Step::failed(&error))
     } else {
         Step::off()
     };
@@ -942,6 +942,69 @@ fn other_end(
     Some(located)
 }
 
+/// The text of the files [`cross_step`] can cite, read into the projects'
+/// views: a project read from its passage index holds the text of the files
+/// its own ranking read only. These are the files of a window that hold an
+/// edge's end in the window's project, and the files of those edges' other
+/// ends in the other projects.
+fn step_texts(
+    db: &Connection,
+    reads: &mut [Read],
+    ids: &[String],
+    index: &HashMap<&str, usize>,
+    edges: &[[Vec<Value>; 2]],
+    graphs: &mut Graphs<'_>,
+) -> Result<()> {
+    let mut wanted: Vec<BTreeSet<String>> = vec![BTreeSet::new(); reads.len()];
+    for (i, read) in reads.iter().enumerate() {
+        let windows: BTreeSet<&str> = read
+            .sources()
+            .iter()
+            .map(|source| s(source, "id"))
+            .collect();
+        for (slot, (own, other)) in [("source", "target"), ("target", "source")]
+            .into_iter()
+            .enumerate()
+        {
+            for edge in &edges[i][slot] {
+                let mut file = |repository: &str, side: &str| {
+                    graphs
+                        .get(repository, s(edge, &format!("{side}_episode")))
+                        .and_then(|g| {
+                            code_graph_arm::relpath_of(
+                                &g.handle,
+                                s(edge, &format!("{side}_node_id")),
+                            )
+                        })
+                        .map(|path| format!("file:{path}"))
+                };
+                let Some(own_file) = file(&ids[i], own).filter(|f| windows.contains(f.as_str()))
+                else {
+                    continue;
+                };
+                let j = index[s(edge, &format!("{other}_repository_id"))];
+                if let Some(other_file) = file(&ids[j], other) {
+                    wanted[j].insert(other_file);
+                }
+                wanted[i].insert(own_file);
+            }
+        }
+    }
+    for (read, wanted) in reads.iter_mut().zip(wanted) {
+        let missing: BTreeSet<String> = read
+            .snapshot
+            .documents
+            .iter()
+            .filter(|d| wanted.contains(s(d, "id")) && s(d, "content").is_empty())
+            .map(|d| s(d, "id").to_string())
+            .collect();
+        if !missing.is_empty() {
+            memory::load_contents(db, &read.repository, &mut read.snapshot.documents, &missing)?;
+        }
+    }
+    Ok(())
+}
+
 /// One hop of the recorded import edges between the projects of the scope,
 /// from the fused windows in fused order (see the module comment). At most
 /// [`CROSS_LIMIT`] windows are lifted. The other end is cited only while its
@@ -949,29 +1012,30 @@ fn other_end(
 fn cross_step(
     db: &Connection,
     p: &Principal,
-    reads: &[Read],
+    reads: &mut [Read],
     order: &[(usize, usize)],
 ) -> Result<Step> {
     let mut step = Step::on();
     if reads.len() < 2 {
         return Ok(step);
     }
-    let index: HashMap<&str, usize> = reads
+    let ids: Vec<String> = reads.iter().map(|read| read.id().to_string()).collect();
+    let index: HashMap<&str, usize> = ids
         .iter()
         .enumerate()
-        .map(|(i, read)| (read.id(), i))
+        .map(|(i, id)| (id.as_str(), i))
         .collect();
     // Per project: its outgoing and incoming live edges whose other end is a
     // project of the scope (both ends readable, through the shared reader).
     let mut edges: Vec<[Vec<Value>; 2]> = Vec::with_capacity(reads.len());
     let mut read_count = 0usize;
-    for read in reads {
+    for id in &ids {
         let mut pair: [Vec<Value>; 2] = [Vec::new(), Vec::new()];
         for (slot, direction, other) in [
             (0, CrossDirection::Outgoing, "target_repository_id"),
             (1, CrossDirection::Incoming, "source_repository_id"),
         ] {
-            pair[slot] = graph_projection::live_cross_edges(db, p, read.id(), direction)?
+            pair[slot] = graph_projection::live_cross_edges(db, p, id, direction)?
                 .into_iter()
                 .filter(|edge| index.contains_key(s(edge, other)))
                 .collect();
@@ -983,6 +1047,9 @@ fn cross_step(
     if read_count == 0 {
         return Ok(step);
     }
+    let mut graphs = Graphs::new(db);
+    step_texts(db, reads, &ids, &index, &edges, &mut graphs)?;
+    let reads: &[Read] = reads;
     let documents: Vec<HashMap<&str, &Value>> = reads
         .iter()
         .map(|read| {
@@ -1013,7 +1080,6 @@ fn cross_step(
             source["byte_end"].as_u64().unwrap_or(0) as usize,
         ));
     }
-    let mut graphs = Graphs::new(db);
     let mut followed: BTreeSet<(String, bool)> = BTreeSet::new();
     let mut lifted_at: BTreeSet<(usize, String, usize)> = BTreeSet::new();
     // This project's end of each edge: its file (cheap), then where it is.

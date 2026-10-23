@@ -959,6 +959,16 @@ pub fn resident(db: &Connection, repository: &str, episode: &str) -> Result<Grap
     if let Ok(handle) = registry().get(&reference) {
         return Ok(handle);
     }
+    // The episode's saved graph and index (crate::query_graph), else the
+    // graph read from the store's rows.
+    if let Some((graph, index)) = crate::phase::phase("graph_saved_read", || {
+        crate::query_graph::read(db, repository, episode)
+    }) {
+        let handle = GraphHandle::new(graph);
+        registry().open(handle.clone(), Some(&reference));
+        graphicle_memory::graph::retrieval::install_index(&reference, &handle, index);
+        return Ok(handle);
+    }
     let handle = GraphHandle::new(load(db, repository, episode)?);
     registry().open(handle.clone(), Some(&reference));
     Ok(handle)

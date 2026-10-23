@@ -249,10 +249,34 @@ pub fn names_tests(text: &str) -> bool {
             .any(|m| path_class(m.as_str()) == PathClass::Test)
 }
 
-/// Whether `question` is a code question: it names code or reads like a
-/// report.
+/// Whether `question` is a code question: it names code, reads like a
+/// report, or asks where code is ([`asks_where_code_is`]).
 pub fn is_code_question(question: &str) -> bool {
-    crate::notes_first::names_code(question) || reads_like_report(question)
+    crate::notes_first::names_code(question)
+        || reads_like_report(question)
+        || asks_where_code_is(question)
+}
+
+/// Whether `text` asks where something is in the code, in plain words: a
+/// file and a function to give ("Give the file and function", "Which file
+/// and functions compute..."), which function, method, class, struct or
+/// interface does something, where something is defined, implemented,
+/// handled, computed, decided, recorded, registered, counted, stored,
+/// parsed, validated or checked, or which files call or implement
+/// something. A bug report that names no code ("Where is that latency
+/// recorded? Give the file and function.") is such a question.
+pub fn asks_where_code_is(text: &str) -> bool {
+    static RULE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"(?i)\bfiles?\s+and\s+(?:the\s+)?(?:functions?|methods?)\b",
+            r"|(?i)\b(?:which|what)\s+(?:non-test\s+)?(?:functions?|methods?|class(?:es)?|structs?|interfaces?)\b",
+            r"|(?i)\bwhere\s+(?:is|are|does|do)\b[^.?!\n]{0,120}?\b(?:defined|implemented|declared|handled|computed|decided|recorded|registered|counted|stored|parsed|validated|checked)\b",
+            r"|(?i)\b(?:calls?|calling|callers?|implements?|implementing)\b[^.?!\n]{0,80}?\bfiles?\b",
+            r"|(?i)\bfiles?\b[^.?!\n]{0,80}?\b(?:calls?|implements?)\b",
+        ))
+        .expect("the code location rule")
+    });
+    RULE.is_match(text)
 }
 
 /// A three-way option: `"auto"` (left out or `null`), `true` or `false`.
@@ -860,23 +884,17 @@ impl Decision {
                 let Some(origin) = row["origin"].as_str() else {
                     continue;
                 };
-                let Some(path) = origin.strip_prefix("file:") else {
-                    continue;
-                };
                 if priors.contains_key(origin) {
                     continue;
                 }
-                let class = path_class(path);
-                let lower = match class {
-                    PathClass::Source => false,
-                    PathClass::Test => self.tests,
-                    PathClass::Doc | PathClass::Vendored => true,
+                let Some(class) = self.lowers(origin) else {
+                    continue;
                 };
-                if lower && defining.contains(origin) {
+                if defining.contains(origin) {
                     // It defines what the question names: its weight stays.
                     priors.insert(origin.to_string(), json!(1.0));
                     kept += 1;
-                } else if lower {
+                } else {
                     priors.insert(origin.to_string(), json!(CODE_FIRST_WEIGHT));
                     *lowered.entry(class.name()).or_default() += 1;
                 }
@@ -888,6 +906,31 @@ impl Decision {
             report["files_kept_as_defining"] = json!(kept);
         }
         (priors, report)
+    }
+
+    /// The weight [`priors`](Self::priors) gives the passages of `origin`:
+    /// [`CODE_FIRST_WEIGHT`] when the decision lowers its class and it is not
+    /// in `defining`, else 1.
+    pub fn prior(&self, origin: &str, defining: &[String]) -> f64 {
+        match self.lowers(origin) {
+            Some(_) if !defining.iter().any(|file| file == origin) => CODE_FIRST_WEIGHT,
+            _ => 1.0,
+        }
+    }
+
+    /// The class of the project file `origin` (a `file:` origin) when the
+    /// decision lowers its weight.
+    fn lowers(&self, origin: &str) -> Option<PathClass> {
+        if !self.applied {
+            return None;
+        }
+        let class = path_class(origin.strip_prefix("file:")?);
+        let lower = match class {
+            PathClass::Source => false,
+            PathClass::Test => self.tests,
+            PathClass::Doc | PathClass::Vendored => true,
+        };
+        lower.then_some(class)
     }
 }
 
@@ -951,6 +994,25 @@ mod tests {
         ));
         assert!(!reads_like_report("How does the parser handle errors?"));
         assert!(!reads_like_report("What did we decide about caching?"));
+        // A question that asks where code is, in plain words.
+        for asks in [
+            "Bug report: the latency histogram is wrong. Where is that latency recorded? Give the file and function.",
+            "Which file and functions compute those per-pod percentages?",
+            "Which non-test files call the scheduler helper? List every calling file.",
+            "Which function decides whether a pod belongs to the set?",
+            "Where are client-go metrics registered?",
+        ] {
+            assert!(asks_where_code_is(asks), "{asks}");
+            assert!(is_code_question(asks), "{asks}");
+        }
+        for plain in [
+            "What did we decide about caching?",
+            "Which files describe the release process?",
+            "Where is the deployment guide?",
+            "Summarise last week's notes",
+        ] {
+            assert!(!asks_where_code_is(plain), "{plain}");
+        }
         assert!(asks_about_documents("Where is `parse_config` documented?"));
         assert!(asks_about_documents("Fix the example in docs/usage.md"));
         assert!(asks_about_documents(

@@ -1,23 +1,83 @@
 use crate::store::{self, Principal, Store, decode, one, repo, rows, s};
 use crate::{Error, Result, digest, id, integer, native, now, string};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub fn documents(db: &Connection, repository: &Value, p: &Principal) -> Result<Vec<Value>> {
+    let mut output = repository_documents(db, repository, true)?;
+    output.extend(connector_documents(db, repository, p)?);
+    for doc in &output {
+        if graphicle_memory::text::sha256(s(doc, "content").as_bytes()) != s(doc, "sha256") {
+            return Err(Error::bad("Source integrity check failed"));
+        }
+    }
+    Ok(output)
+}
+
+/// The project's files as [`documents`] lists them, in path order; with
+/// `content` false each one's `content` is empty, for a caller that reads
+/// the text of a few files only ([`load_contents`]).
+pub fn repository_documents(
+    db: &Connection,
+    repository: &Value,
+    content: bool,
+) -> Result<Vec<Value>> {
     let identifier = s(repository, "id");
     let mut output = Vec::new();
-    for row in rows(
-        db,
-        "SELECT h.path,h.sha256,o.content,b.original_sha,b.parser FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 LEFT JOIN am_binary_heads b ON b.repository_id=h.repository_id AND b.path=h.path AND b.source_sha=h.sha256 WHERE h.repository_id=? ORDER BY h.path",
-        [identifier],
-    )? {
+    let sql = if content {
+        "SELECT h.path,h.sha256,o.content,b.original_sha,b.parser FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 LEFT JOIN am_binary_heads b ON b.repository_id=h.repository_id AND b.path=h.path AND b.source_sha=h.sha256 WHERE h.repository_id=? ORDER BY h.path"
+    } else {
+        "SELECT h.path,h.sha256,'' AS content,b.original_sha,b.parser FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 LEFT JOIN am_binary_heads b ON b.repository_id=h.repository_id AND b.path=h.path AND b.source_sha=h.sha256 WHERE h.repository_id=? ORDER BY h.path"
+    };
+    for row in rows(db, sql, [identifier])? {
         let path = s(&row, "path");
         output.push(json!({"id":format!("file:{path}"),"path":path,"title":path,"source_kind":"repository_file",
             "sha256":row["sha256"],"snapshot":repository["snapshot"],"version":row["sha256"],
             "content":row["content"],"recorded_at":null,"observed_at":repository["updated_at"],
             "authority":"original_repository_source","url":null,"metadata":{"original_sha256":row["original_sha"],"parser":row["parser"]}}));
     }
+    Ok(output)
+}
+
+/// The text of the project files among `documents` whose ids `wanted`
+/// names, read into their `content` (from [`repository_documents`] without
+/// content) and checked against their SHA-256, as [`documents`] checks it.
+pub fn load_contents(
+    db: &Connection,
+    repository: &Value,
+    documents: &mut [Value],
+    wanted: &BTreeSet<String>,
+) -> Result<()> {
+    let mut load =
+        db.prepare_cached("SELECT content FROM repo_objects WHERE repository_id=? AND sha256=?")?;
+    for document in documents.iter_mut() {
+        if document["source_kind"] != "repository_file" || !wanted.contains(s(document, "id")) {
+            continue;
+        }
+        let content: String = load
+            .query_row(params![s(repository, "id"), s(document, "sha256")], |r| {
+                r.get(0)
+            })
+            .optional()?
+            .ok_or_else(|| Error::bad("Source unavailable"))?;
+        if graphicle_memory::text::sha256(content.as_bytes()) != s(document, "sha256") {
+            return Err(Error::bad("Source integrity check failed"));
+        }
+        document["content"] = json!(content);
+    }
+    Ok(())
+}
+
+/// The connector documents of the project that `p` may read, as
+/// [`documents`] lists them after the project's files.
+pub fn connector_documents(
+    db: &Connection,
+    repository: &Value,
+    p: &Principal,
+) -> Result<Vec<Value>> {
+    let identifier = s(repository, "id");
+    let mut output = Vec::new();
     // The Python host's workspace-source links
     // (`repo_evidence_links` over `sources`) are no longer read; nothing in
     // this program writes them. Their tables stay.
@@ -87,11 +147,6 @@ pub fn documents(db: &Connection, repository: &Value, p: &Principal) -> Result<V
             "path":metadata["title"],"title":metadata["title"],"source_kind":"connector_source",
             "sha256":row["sha256"],"version":digest(&json!({"sha256":row["sha256"],"title":metadata["title"],"source_timestamp":metadata["source_timestamp"],"permissions":metadata["provider_permissions"]["principals"]})),"content":row["content"],"recorded_at":metadata["source_timestamp"],"metadata":metadata["provider_metadata"],
             "observed_at":metadata["observed_at"],"authority":"imported_source","url":metadata["url"],"connector_id":row["connector_id"]}));
-    }
-    for doc in &output {
-        if graphicle_memory::text::sha256(s(doc, "content").as_bytes()) != s(doc, "sha256") {
-            return Err(Error::bad("Source integrity check failed"));
-        }
     }
     Ok(output)
 }

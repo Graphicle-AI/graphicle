@@ -1098,6 +1098,20 @@ pub fn admit(store: &Store, token: &str, ask: Ask<'_>) -> Result<Admission> {
                 admission.arguments = Some(narrowed);
             }
             admission.cap = request.max_tokens.filter(|_| read);
+            // A `context` packet is sized to the cap (`response_tokens`,
+            // crate::query::fit_response), as `cap_recall` sizes
+            // `recall_project`'s, instead of refused past it.
+            if let (Some(cap), Access::Operation("context")) = (admission.cap, access) {
+                let mut sized = admission
+                    .arguments
+                    .take()
+                    .or_else(|| arguments.cloned())
+                    .unwrap_or_else(|| serde_json::json!({}));
+                if sized.is_object() {
+                    sized[crate::query::RESPONSE_TOKENS] = serde_json::json!(cap);
+                }
+                admission.arguments = Some(sized);
+            }
             if metered && !matches!(call.channel, Channel::Cli | Channel::Hook) {
                 let served = Served {
                     repository: &call.repository,

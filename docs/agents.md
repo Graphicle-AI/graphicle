@@ -71,16 +71,26 @@ The prompt hook is off unless you ask for it with `graphicle setup
 - **The prompt hook (Claude Code).** One UserPromptSubmit hook in
   `.claude/settings.local.json` runs `graphicle context` on each prompt that
   is a code question (it names code, such as an identifier, a call or a
-  code file, or reads like an issue or bug report) and gives Claude Code
-  the packet's Markdown, at most 8,400 characters (Claude Code shows hook
-  output over 10,000 characters only as a 2 KB preview), as the prompt's
-  additional context. It adds nothing for a prompt with fewer than 16
-  characters besides spaces, for a question in plain words, in a folder of
-  no Graphicle project, when `graphicle context` fails, and when it has not
-  answered within 10 seconds (it is stopped; the hook's own timeout is 15
-  seconds). Setup without `--prompt-context` leaves the hook as an earlier
-  setup left it; `graphicle disconnect claude-code` removes it with the
-  other hooks.
+  code file, reads like an issue or bug report, or asks where code is, such
+  as "Which file and function compute this?") and gives Claude Code the
+  packet's Markdown, at most 8,400 characters (Claude Code shows hook output
+  over 10,000 characters only as a 2 KB preview), as the prompt's additional
+  context. The packet's excerpts say at which line of the file to read on.
+  It adds nothing for a prompt with fewer than 16 characters besides spaces,
+  for a question in plain words, in a folder of no Graphicle project, when
+  `graphicle context` fails, and when it has not answered within its budget:
+  10 seconds unless `graphicle config set prompt_context.seconds N` (1 to 25)
+  or the `GRAPHICLE_PROMPT_CONTEXT_SECONDS` variable sets another (it is
+  stopped; the hook's own timeout is 30 seconds). While the passage index of
+  a project of 2,000 files or more is not ready (see
+  [Configuration](configuration.md#the-passage-index)), the hook gives the
+  files that define the code names a prompt gives, which needs no full read
+  of the project. A smaller project, and a project with reviewed memory
+  (whose memories only the full read gives), are asked in full. When the
+  hook gives up for time, or answers that way, Claude Code shows you one
+  note a session saying so and what to run. Setup without `--prompt-context`
+  leaves the hook as an earlier setup left it; `graphicle disconnect
+  claude-code` removes it with the other hooks.
 
 A plain `graphicle connect <agent>` writes the entry without `--allow-learning`
 and adds no guard hooks; run after setup (0.1.0's too, or `setup --tools

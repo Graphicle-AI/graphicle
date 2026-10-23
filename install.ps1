@@ -259,5 +259,6 @@ After installing: cd your-repo; graphicle setup
         }
         if (-not (& $onPath $env:Path)) { $env:Path = "$($env:Path.TrimEnd(';'));$normalized" }
     }
+    Say 'By default, graphicle checks GitHub for a newer release at most once a day; to turn this off, run: graphicle config set update_notifier false'
     Say 'Next: cd your-repo; graphicle setup'
 }

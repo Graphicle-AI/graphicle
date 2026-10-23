@@ -23,7 +23,7 @@ how retrieval ranks and packs evidence.
 | `agent-changes.json` | What `setup` and `connect` changed outside the data folder, for `graphicle disconnect` (with `agent-changes.lock`, which keeps two commands from changing it at once) |
 | `server.json` | While `graphicle serve` (or `open`) runs: its port and a secret, so that `graphicle open` signs in only to this folder's server. It is readable by you only |
 | `version.json` | The newest Graphicle version that used the folder |
-| `gf-cache/` | Graph caches, which are rebuilt when needed |
+| `gf-cache/` | Graph caches, and each project's saved code graph for questions (`query/`), which are rebuilt when needed |
 | `backups/` | The backups `graphicle backup` writes when you give it no path; `graphicle offboard` removes a project from them |
 
 `graphicle sync` creates the local workspace the first time it runs, so you do
@@ -488,17 +488,19 @@ A connector sync works the same way: a document past a size limit is listed
 under `skipped` in the sync's result, with its reason, and the sync goes on
 with the next document.
 
-**What one question reads.** One question searches and ranks at most 50,000
-documents and 40,000 passages of up to 2,600 characters (about 100 MB of text)
-from a project. A project within these bounds is searched whole. In a larger
-project, the question chooses: the documents that match more of its words are
-searched first. Before it chooses, a question still reads the text of every
-document into memory: a 60,000-file project used about 1.1 GiB per question
-when this was measured.
+**What one question reads.** A question to a project with a passage index
+(see [The passage index](#the-passage-index)) ranks every passage of every
+file. Without one, and for the options that take the full path, one question
+searches and ranks at most 50,000 documents and 40,000 passages of up to 2,600
+characters (about 100 MB of text) from a project. A project within these
+bounds is searched whole. In a larger project, the question chooses: the
+documents that match more of its words are searched first. Before it chooses,
+a question still reads the text of every document into memory: a 60,000-file
+project used about 1.1 GiB per question when this was measured.
 The answer's `coverage` then says `selected_by_question`, and counts the
-documents left out. A sync of such a project says so in its result
-(`question_limits`), and in its readable output or on standard error. To
-choose what a question reads,
+documents left out. A sync of such a project without a passage index says so
+in its result (`question_limits`), and in its readable output or on standard
+error. To choose what a question reads,
 pass `include` with path prefixes. `graph.query` answers with no nodes and
 says `degraded` when the project's property graph would have more than 50,000
 nodes or 200,000 edges, as a project of more than 50,000 documents does.
@@ -538,6 +540,33 @@ of `AGENTS.md` and `CLAUDE.md`, which reads as blank lines. The output of
 `.ignore` file.
 
 The code graph has no such limits.
+
+## The passage index
+
+Each sync keeps a passage index of the project's files in the store: the
+passages `graphicle context` ranks, with the words, conversation turns and
+identifiers in each. A sync reads only the files that changed since the last
+one, and drops what it held of files that changed or went away. After each
+code graph build, Graphicle also saves the graph and its search index in the
+data folder (`gf-cache/<project>/query/`), so a question reads them instead of
+rebuilding them from the store.
+
+`graphicle context`, the memory server's `recall_project` and the prompt hook
+then look a question up in the index. The ranking is the one the full path
+gives over every passage of the project. These read the project the full way
+instead: a call with `include` or `metadata`, `stem: false`, a `speaker` list,
+`query_variants`, `key_expansion`, `note_keys`, `doc_links: true`,
+`symbol_links: true`, `source_age: true`, `notes_first: true`,
+`graph_retrieval: true` or a local model profile, and a project with reviewed
+memory. So does a project whose index is missing (a store from an earlier
+version builds it at its next sync) or lacks more than 2,000 of its current
+files.
+
+`graphicle doctor` says, under Questions, whether the index and the saved
+graph are ready, and `graphicle setup` says so when they are not. The packet
+reports what it read in `passage_index`. `GRAPHICLE_PASSAGE_INDEX=0` makes
+every question take the full path, and `GRAPHICLE_SAVED_GRAPH=0` makes it
+read the code graph from the store.
 
 ## Freshness
 

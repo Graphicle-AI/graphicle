@@ -663,3 +663,51 @@ fn connector_and_uploaded_documents_take_the_document_text_limit() {
         .unwrap();
     assert!(uploaded["source_id"].is_string(), "{uploaded}");
 }
+
+/// On a file system that ignores case (macOS, Windows), Git matches ignore
+/// patterns without case (`core.ignorecase`) while the sync's walk matches
+/// them with case: a tracked `src/Foo.js` that `.gitignore`'s `foo.js`
+/// matches only that way is listed by both. The sync reads it once: its bytes
+/// and the tracked-ignored count are not doubled. Setting
+/// `core.ignorecase` simulates such a file system anywhere.
+#[test]
+fn a_tracked_file_an_ignore_pattern_matches_only_without_case_is_read_once() {
+    let mut f = Fixture::new(Limits::default());
+    let git = |args: &[&str]| {
+        let status = Command::new("git")
+            .arg("-C")
+            .arg(&f.root)
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q"]);
+    git(&["config", "core.ignorecase", "true"]);
+    let ignore = "foo.js\n";
+    let source = "export const foo = 1;\n";
+    f.write(".gitignore", ignore);
+    f.write("src/Foo.js", source);
+    git(&["add", "-f", ".gitignore", "src/Foo.js"]);
+    let synced = f.sync().unwrap();
+    assert_eq!(synced["files"], 2, "{synced}");
+    assert_eq!(synced["bytes"], ignore.len() + source.len(), "{synced}");
+    assert_eq!(synced["tracked_ignored"], 1, "{synced}");
+}
+
+/// Two hard links to one file are two paths of the project: the sync reads
+/// both, as it reads two copies.
+#[cfg(unix)]
+#[test]
+fn two_hard_links_to_one_file_are_both_read() {
+    let mut f = Fixture::new(Limits::default());
+    let source = "export const shared = 1;\n";
+    f.write("src/a.js", source);
+    std::fs::hard_link(f.root.join("src/a.js"), f.root.join("src/b.js")).unwrap();
+    let synced = f.sync().unwrap();
+    assert_eq!(synced["files"], 2, "{synced}");
+    assert_eq!(synced["bytes"], 2 * source.len(), "{synced}");
+}

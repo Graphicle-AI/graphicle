@@ -93,6 +93,22 @@ pub struct Config {
     /// The folder sync's settings ([`SyncSettings`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<SyncSettings>,
+    /// Claude Code's prompt-context hook's settings ([`PromptContextSettings`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_context: Option<PromptContextSettings>,
+}
+
+/// The prompt-context hook's settings (`prompt_context.*` in the
+/// configuration file; [`crate::prompt_hook`]).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PromptContextSettings {
+    /// `prompt_context.seconds`: how long the hook waits for a packet (1 to
+    /// [`crate::prompt_hook::MAX_SECONDS`]; left out:
+    /// [`crate::prompt_hook::SECONDS`]). The environment variable
+    /// `GRAPHICLE_PROMPT_CONTEXT_SECONDS` wins over it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seconds: Option<u64>,
 }
 
 /// The folder sync's settings (`sync.*` in the configuration file).
@@ -124,6 +140,7 @@ impl Default for Config {
             limits: BTreeMap::new(),
             update_notifier: None,
             sync: None,
+            prompt_context: None,
         }
     }
 }
@@ -176,6 +193,14 @@ impl Config {
             return Err(Error::bad("Invalid ingestion bounds"));
         }
         crate::limits::Limits::resolve(&self.limits, |_| None)?;
+        if let Some(seconds) = self.prompt_context.as_ref().and_then(|p| p.seconds)
+            && !(1..=crate::prompt_hook::MAX_SECONDS).contains(&seconds)
+        {
+            return Err(Error::bad(format!(
+                "prompt_context.seconds must be 1 to {}",
+                crate::prompt_hook::MAX_SECONDS
+            )));
+        }
         for (name, p) in &self.models {
             if name.is_empty()
                 || name.len() > 100

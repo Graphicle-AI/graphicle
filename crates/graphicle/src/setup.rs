@@ -443,6 +443,14 @@ pub fn setup_report(
         })?;
         project_report["symbols"] = json!(local::code_symbols(store, &session, &repository));
     }
+    // How fast questions are: the passage index and the saved code graph.
+    if let Ok(questions) =
+        store.authorized_read(&session.workspace, &session.capability, "read", |db, _| {
+            crate::indexed_query::readiness(db, &repository)
+        })
+    {
+        project_report["questions"] = questions;
+    }
     let freshness = crate::phase::phase("setup_freshness", || {
         freshness_report(store, &session, &repository, config)
     });
@@ -1288,6 +1296,16 @@ pub fn render_setup(report: &Value) -> String {
     }
     if let Some(note) = project["sync"]["question_limits"].as_str() {
         line(format!("                {note}"));
+    }
+    // Questions read every file until the passage index is built.
+    let questions = &project["questions"];
+    if !matches!(questions["state"].as_str(), None | Some("ready" | "small")) {
+        let fix = questions["fix"].as_str().filter(|fix| !fix.is_empty());
+        line(format!(
+            "                {}{}",
+            s(questions, "detail"),
+            fix.map(|fix| format!(" (run {fix})")).unwrap_or_default()
+        ));
     }
     let clients = report["clients"].as_array().cloned().unwrap_or_default();
     if clients.is_empty() {

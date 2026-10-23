@@ -16,7 +16,7 @@ use crate::{
 };
 use graphicle::graph::Graph;
 use graphicle_memory::graph::{
-    retrieval::{ExpandOptions, expand, lexical_candidates, resident_index},
+    retrieval::{ExpandOptions, expand, expand_seeds, lexical_candidates, resident_index},
     span,
 };
 use rusqlite::Connection;
@@ -517,69 +517,268 @@ pub fn arm_with(
     question: &str,
     documents: bool,
 ) -> Result<Arm> {
+    let plan = plan(db, repository, question, documents)?;
+    let by_id: HashMap<&str, &Value> = snapshot.documents.iter().map(|d| (s(d, "id"), d)).collect();
+    plan.anchor(db, repository, &by_id)
+}
+
+/// A node the arm cites, as [`plan`] found it: its id, hop (0 for a
+/// lexical candidate, 1 for a neighbour) and score, the attributes the
+/// citation reads, how the walk reached it, and the derivation of the edge it
+/// was reached through.
+#[derive(Clone, Debug)]
+pub struct Planned {
+    pub node_id: String,
+    pub hop: u8,
+    pub score: Option<f64>,
+    /// `None`: the node is not in the episode the arm reads.
+    pub attributes: Option<Map<String, Value>>,
+    /// (seed it was reached from, relation, the derivation under the lag
+    /// fallback).
+    pub via: Option<(String, String, Option<String>)>,
+    /// The derivation of a connecting edge on the current episode
+    /// (`edge_derivation`), for a neighbour reached without one.
+    pub derivation: Option<String>,
+}
+
+/// The graph half of the arm: the nodes it cites, in arm order, before
+/// they are anchored to the current text of their files ([`Plan::anchor`]).
+pub struct Plan {
+    /// Set when the arm is skipped or found nothing: its diagnostics.
+    pub skipped: Option<Value>,
+    pub episode: String,
+    pub lag: Option<Lag>,
+    pub documents: bool,
+    pub terms: Vec<String>,
+    pub matched: usize,
+    pub candidates: usize,
+    pub seeds: Vec<String>,
+    pub expanded: usize,
+    pub nodes: Vec<Planned>,
+    /// Symbol start lines of the files of `nodes` ([`symbol_starts`]).
+    pub starts: HashMap<String, Vec<usize>>,
+}
+
+impl Plan {
+    /// The project-relative paths of the files the planned nodes are in:
+    /// the documents [`Plan::anchor`] reads.
+    pub fn files(&self) -> BTreeSet<String> {
+        self.nodes
+            .iter()
+            .filter_map(|node| node.attributes.as_ref().and_then(relpath))
+            .collect()
+    }
+
+    /// Anchor the planned nodes to `documents` (the caller's authorized view
+    /// of the project, by id, with the text of [`Plan::files`]).
+    pub fn anchor(
+        &self,
+        db: &Connection,
+        repository: &str,
+        documents: &HashMap<&str, &Value>,
+    ) -> Result<Arm> {
+        let lagging = |diagnostics: &mut Value, withheld: usize, stale: usize| {
+            if let Some(lag) = &self.lag {
+                diagnostics["episode_lag"] = json!(lag.changed);
+                diagnostics["current_episode"] = json!(lag.current);
+                diagnostics["projection"] =
+                    json!(crate::jobs::projection_state(db, repository, &lag.current)?);
+                diagnostics["withheld_changed"] = json!(withheld);
+                diagnostics["withheld_stale_edges"] = json!(stale);
+            }
+            Ok::<_, crate::Error>(())
+        };
+        if let Some(skipped) = &self.skipped {
+            let mut diagnostics = skipped.clone();
+            if diagnostics["status"] == "no_match" {
+                lagging(&mut diagnostics, 0, 0)?;
+                if !self.documents {
+                    diagnostics["document_nodes"] = json!("excluded");
+                }
+            }
+            return Ok(Arm {
+                hits: Vec::new(),
+                diagnostics,
+            });
+        }
+        let citable = |path: &str| {
+            self.lag
+                .as_ref()
+                .is_none_or(|lag| lag.unchanged.contains(path))
+        };
+        let mut offsets: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut hits = Vec::new();
+        let mut unanchored = 0usize;
+        let mut skipped_files = 0usize;
+        let mut withheld = 0usize;
+        let mut withheld_stale = 0usize;
+        for node in &self.nodes {
+            let Some(attributes) = &node.attributes else {
+                continue;
+            };
+            let Some(path) = relpath(attributes) else {
+                unanchored += 1;
+                continue;
+            };
+            if !citable(&path) {
+                withheld += 1;
+                continue;
+            }
+            if node.hop != 0 && self.lag.is_some() && node.via.is_none() {
+                // Reached only through edges read from changed or removed files.
+                withheld_stale += 1;
+                continue;
+            }
+            let document_id = format!("file:{path}");
+            let Some(document) = documents.get(document_id.as_str()) else {
+                unanchored += 1;
+                continue;
+            };
+            let content = s(document, "content");
+            if lines(attributes).is_none() && node.hop != 0 {
+                // A whole file reached only by expansion is not a citation.
+                skipped_files += 1;
+                continue;
+            }
+            let offsets = offsets
+                .entry(s(document, "id"))
+                .or_insert_with(|| span::line_starts(content));
+            let (line, end_line, byte_start, byte_end) =
+                node_span(attributes, &path, &self.starts, offsets, content.len());
+            // A start past the end of the current file is an empty range, so the
+            // node goes unanchored instead of citing the last line.
+            if byte_end <= byte_start {
+                unanchored += 1;
+                continue;
+            }
+            let derivation = match &node.via {
+                Some((_, _, Some(derivation))) => derivation.clone(),
+                Some((_, _, None)) => node
+                    .derivation
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                None => "lexical_match".to_string(),
+            };
+            let mut facts = json!({
+                "node_id": node.node_id,
+                "label": attributes.get("label").cloned().unwrap_or(Value::Null),
+                "kind": attributes.get("kind").cloned().unwrap_or(Value::Null),
+                "qualified_name": attributes.get("qualified_name").cloned().unwrap_or(Value::Null),
+                "stable_id": attributes.get("stable_id").cloned().unwrap_or(Value::Null),
+                "revision": attributes.get("revision").cloned().unwrap_or(Value::Null),
+                "relpath": path,
+                "line": line,
+                "end_line": end_line,
+                "byte_start": byte_start,
+                "byte_end": byte_end,
+                "derivation": derivation,
+                "hop": node.hop,
+                "episode": self.episode,
+            });
+            if let Some(score) = node.score {
+                facts["score"] = json!(score);
+            }
+            if let Some((from, relation, _)) = &node.via {
+                facts["via"] = json!({"node_id": from, "relation": relation});
+            }
+            hits.push(Hit {
+                document: document_id,
+                byte_start,
+                byte_end,
+                facts,
+            });
+        }
+        let mut diagnostics = json!({
+            "status": "fused",
+            "episode": self.episode,
+            "episode_lag": 0,
+            "terms": self.terms,
+            "matched": self.matched,
+            "candidates": self.candidates,
+            "seeds": self.seeds,
+            "expanded": self.expanded,
+            "anchored": hits.len(),
+            "unanchored": unanchored,
+            "skipped_files": skipped_files,
+            "depth": DEPTH,
+            "cap": CAP,
+        });
+        lagging(&mut diagnostics, withheld, withheld_stale)?;
+        if !self.documents {
+            diagnostics["document_nodes"] = json!("excluded");
+        }
+        Ok(Arm { diagnostics, hits })
+    }
+}
+
+/// The arm's graph half on the episode it reads: lexical candidates and their
+/// one-hop neighbourhood ([`Plan`]). With `documents` false
+/// (`doc_links: false`) the episode's document nodes take no part.
+pub fn plan(db: &Connection, repository: &str, question: &str, documents: bool) -> Result<Plan> {
     // The head set is read once: its digest names the current episode, and
     // the lag fallback and a skipped arm measure the latest episode against
     // it.
     let heads = crate::store::heads(db, repository)?;
     let current = graph_projection::episode_of(&heads);
+    let mut plan = Plan {
+        skipped: None,
+        episode: String::new(),
+        lag: None,
+        documents,
+        terms: Vec::new(),
+        matched: 0,
+        candidates: 0,
+        seeds: Vec::new(),
+        expanded: 0,
+        nodes: Vec::new(),
+        starts: HashMap::new(),
+    };
     let Some(Reading { episode, lag }) = reading(db, repository, &heads, &current)? else {
-        return Ok(Arm {
-            hits: Vec::new(),
-            diagnostics: skip_reason(db, repository, &heads, &current)?,
-        });
+        plan.skipped = Some(skip_reason(db, repository, &heads, &current)?);
+        return Ok(plan);
     };
-    // Under the lag fallback a node in a changed file may lead the walk, but
-    // it is never cited: its bytes are not the ones the episode recorded.
-    // The walk follows only edges read from unchanged files: such a
-    // file still states the relationship, while an edge read from a changed
-    // or removed file may no longer exist.
-    let citable = |path: &str| lag.as_ref().is_none_or(|lag| lag.unchanged.contains(path));
-    let lagging = |diagnostics: &mut Value, withheld: usize, stale: usize| {
-        if let Some(lag) = &lag {
-            diagnostics["episode_lag"] = json!(lag.changed);
-            diagnostics["current_episode"] = json!(lag.current);
-            diagnostics["projection"] =
-                json!(crate::jobs::projection_state(db, repository, &lag.current)?);
-            diagnostics["withheld_changed"] = json!(withheld);
-            diagnostics["withheld_stale_edges"] = json!(stale);
-        }
-        Ok::<_, crate::Error>(())
-    };
-    let handle = graph_projection::resident(db, repository, &episode)?;
+    plan.episode = episode.clone();
+    let handle = crate::phase::phase("arm_resident", || {
+        graph_projection::resident(db, repository, &episode)
+    })?;
     let reference = graph_projection::graph_ref(repository, &episode);
-    let index = resident_index(&reference, &handle);
+    let index = crate::phase::phase("arm_index", || resident_index(&reference, &handle));
     let graph: &Graph = &handle;
-    let candidates = if documents {
-        lexical_candidates(graph, &index, question, CAP)
-    } else {
-        code_candidates(graph, &index, question)
-    };
-    // Reported only when documents are left out, so default packets are
-    // unchanged.
-    let documented = |diagnostics: &mut Value| {
-        if !documents {
-            diagnostics["document_nodes"] = json!("excluded");
+    let candidates = crate::phase::phase("arm_candidates", || {
+        if documents {
+            lexical_candidates(graph, &index, question, CAP)
+        } else {
+            code_candidates(graph, &index, question)
         }
-    };
+    });
+    plan.terms = candidates.terms.clone();
     if candidates.candidates.is_empty() {
-        let mut arm = Arm::skipped("no_match");
-        arm.diagnostics["episode"] = json!(episode);
-        arm.diagnostics["episode_lag"] = json!(0);
-        arm.diagnostics["terms"] = json!(candidates.terms);
-        lagging(&mut arm.diagnostics, 0, 0)?;
-        documented(&mut arm.diagnostics);
-        return Ok(arm);
+        let mut skipped = json!({"status":"no_match"});
+        skipped["episode"] = json!(episode);
+        skipped["episode_lag"] = json!(0);
+        skipped["terms"] = json!(candidates.terms);
+        plan.skipped = Some(skipped);
+        plan.lag = lag;
+        return Ok(plan);
     }
     let seeds: Vec<Value> = candidates.seeds.iter().map(|id| json!(id)).collect();
-    let expansion = expand(
-        graph,
-        &seeds,
-        &ExpandOptions {
-            depth: DEPTH,
-            question: question.to_string(),
-            ..Default::default()
-        },
-    )?;
+    // Depth 1 from the seeds: their neighbours, without the traversal view
+    // of the whole graph (`expand_seeds`, equal to `expand` there).
+    let expansion = crate::phase::phase("arm_expand", || {
+        if DEPTH == 1 {
+            expand_seeds(graph, &seeds, question)
+        } else {
+            expand(
+                graph,
+                &seeds,
+                &ExpandOptions {
+                    depth: DEPTH,
+                    question: question.to_string(),
+                    ..Default::default()
+                },
+            )
+        }
+    })?;
     // Neighbour → the seed that reached it, the relation, and under the lag
     // fallback the derivation of the current edge it was reached through
     // (first edge wins; on the current episode the derivation is read when
@@ -637,111 +836,44 @@ pub fn arm_with(
         }
     }
     ordered.truncate(CAP);
-
     // Symbol starts per file: a node's range runs to the next symbol start in
     // the same file, the bytes its `revision` hashes.
-    let starts = symbol_starts(graph);
-    let documents: HashMap<&str, &Value> =
-        snapshot.documents.iter().map(|d| (s(d, "id"), d)).collect();
-    let mut offsets: HashMap<&str, Vec<usize>> = HashMap::new();
-    let mut hits = Vec::new();
-    let mut unanchored = 0usize;
-    let mut skipped_files = 0usize;
-    let mut withheld = 0usize;
-    let mut withheld_stale = 0usize;
-    for (node_id, hop, score) in &ordered {
-        let Some(index) = graph.node_index(&json!(node_id)) else {
-            continue;
+    let starts = crate::phase::phase("arm_symbol_starts", || symbol_starts(graph));
+    for (node_id, hop, score) in ordered {
+        let attributes = graph
+            .node_index(&json!(node_id))
+            .map(|index| graph.nodes()[index].attributes.to_map());
+        let via = reached_via
+            .get(node_id.as_str())
+            .map(|(from, relation, derivation)| {
+                (from.to_string(), relation.clone(), derivation.clone())
+            });
+        let derivation = match &via {
+            Some((from, _, None)) if attributes.is_some() => {
+                Some(edge_derivation(graph, &json!(from), &json!(node_id)))
+            }
+            _ => None,
         };
-        let attributes = &graph.nodes()[index].attributes;
-        let Some(path) = relpath(attributes) else {
-            unanchored += 1;
-            continue;
-        };
-        if !citable(&path) {
-            withheld += 1;
-            continue;
+        if let Some(path) = attributes.as_ref().and_then(relpath)
+            && let Some(lines) = starts.get(&path)
+        {
+            plan.starts.entry(path).or_insert_with(|| lines.clone());
         }
-        if *hop != 0 && lag.is_some() && !reached_via.contains_key(node_id.as_str()) {
-            // Reached only through edges read from changed or removed files.
-            withheld_stale += 1;
-            continue;
-        }
-        let document_id = format!("file:{path}");
-        let Some(document) = documents.get(document_id.as_str()) else {
-            unanchored += 1;
-            continue;
-        };
-        let content = s(document, "content");
-        if lines(attributes).is_none() && *hop != 0 {
-            // A whole file reached only by expansion is not a citation.
-            skipped_files += 1;
-            continue;
-        }
-        let offsets = offsets
-            .entry(s(document, "id"))
-            .or_insert_with(|| span::line_starts(content));
-        let (line, end_line, byte_start, byte_end) =
-            node_span(attributes, &path, &starts, offsets, content.len());
-        // A start past the end of the current file is an empty range, so the
-        // node goes unanchored instead of citing the last line.
-        if byte_end <= byte_start {
-            unanchored += 1;
-            continue;
-        }
-        let via = reached_via.get(node_id.as_str());
-        let derivation = match via {
-            Some((_, _, Some(derivation))) => derivation.clone(),
-            Some((from, _, None)) => edge_derivation(graph, &json!(from), &json!(node_id)),
-            None => "lexical_match".to_string(),
-        };
-        let mut facts = json!({
-            "node_id": node_id,
-            "label": attributes.get("label").cloned().unwrap_or(Value::Null),
-            "kind": attributes.get("kind").cloned().unwrap_or(Value::Null),
-            "qualified_name": attributes.get("qualified_name").cloned().unwrap_or(Value::Null),
-            "stable_id": attributes.get("stable_id").cloned().unwrap_or(Value::Null),
-            "revision": attributes.get("revision").cloned().unwrap_or(Value::Null),
-            "relpath": path,
-            "line": line,
-            "end_line": end_line,
-            "byte_start": byte_start,
-            "byte_end": byte_end,
-            "derivation": derivation,
-            "hop": hop,
-            "episode": episode,
-        });
-        if let Some(score) = score {
-            facts["score"] = json!(score);
-        }
-        if let Some((from, relation, _)) = via {
-            facts["via"] = json!({"node_id": from, "relation": relation});
-        }
-        hits.push(Hit {
-            document: document_id,
-            byte_start,
-            byte_end,
-            facts,
+        plan.nodes.push(Planned {
+            node_id,
+            hop,
+            score,
+            attributes,
+            via,
+            derivation,
         });
     }
-    let mut diagnostics = json!({
-        "status": "fused",
-        "episode": episode,
-        "episode_lag": 0,
-        "terms": candidates.terms,
-        "matched": candidates.matched,
-        "candidates": candidates.candidates.len(),
-        "seeds": candidates.seeds,
-        "expanded": expansion.nodes.len(),
-        "anchored": hits.len(),
-        "unanchored": unanchored,
-        "skipped_files": skipped_files,
-        "depth": DEPTH,
-        "cap": CAP,
-    });
-    lagging(&mut diagnostics, withheld, withheld_stale)?;
-    documented(&mut diagnostics);
-    Ok(Arm { diagnostics, hits })
+    plan.lag = lag;
+    plan.matched = candidates.matched;
+    plan.candidates = candidates.candidates.len();
+    plan.seeds = candidates.seeds;
+    plan.expanded = expansion.nodes.len();
+    Ok(plan)
 }
 
 /// Whether a `basic`

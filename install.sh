@@ -225,6 +225,7 @@ main() {
         *":$bin_dir:"*) ;;
         *) say "add $bin_dir to your PATH, for example: export PATH=\"$bin_dir:\$PATH\"" ;;
     esac
+    say "By default, graphicle checks GitHub for a newer release at most once a day; to turn this off, run: graphicle config set update_notifier false"
     say "Next: cd your-repo && graphicle setup"
 }
 

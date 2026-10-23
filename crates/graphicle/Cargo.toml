@@ -1,6 +1,6 @@
 [package]
 name = "graphicle-runtime"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.94.1"
 publish = false
@@ -59,6 +59,10 @@ ring = "0.17"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
+
+# The Windows version resource (build.rs). Built only on Windows.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1.31", default-features = false }
 
 # Build footprint: release programs carry no symbol table or debug
 # information, and development and test builds keep line tables only (file

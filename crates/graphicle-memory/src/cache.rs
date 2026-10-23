@@ -76,6 +76,10 @@ impl Words {
         }
         Self::from_counts(counts)
     }
+    /// Each distinct word with its count, in word order.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, usize)> {
+        (0..self.len()).map(|i| (self.word(i), self.counts[i] as usize))
+    }
     /// Distinct words both texts contain (a merge of the two sorted lists).
     pub fn common(&self, other: &Words) -> usize {
         let (mut i, mut j, mut n) = (0, 0, 0);
@@ -143,14 +147,29 @@ pub fn features(scope: &str, content: &str) -> Result<Arc<Features>> {
     if let Some(value) = lookup(&key)? {
         return Ok(value);
     }
+    store(key, features_of(content))
+}
+/// The features [`features`] computes, without the cache: the word counts of
+/// [`text::words`] and their number. A passage index reads each text once.
+pub fn features_of(content: &str) -> Features {
     let mut counts = BTreeMap::new();
     let mut length = 0;
     for word in text::words(content) {
         *counts.entry(word).or_insert(0) += 1;
         length += 1;
     }
-    let words = Words::from_counts(counts);
-    store(key, Features { words, length })
+    Features {
+        words: Words::from_counts(counts),
+        length,
+    }
+}
+/// The features [`stemmed_features`] computes, without the cache.
+pub fn stemmed_of(content: &str, stemmer: &mut crate::stem::Stemmer) -> Features {
+    let plain = features_of(content);
+    Features {
+        words: plain.words.map(|w| stemmer.stem(w)),
+        length: plain.length,
+    }
 }
 /// [`features`] with every word Porter-stemmed, cached beside the plain
 /// features (`retrieval::rank` with `stem`). Lengths are unchanged.

@@ -42,6 +42,9 @@ class Graphicle < Formula
       After an upgrade, run graphicle doctor --fix: it repairs agent entries
       that still start the previous version.
 
+      By default, graphicle checks GitHub for a newer release at most once a
+      day; to turn this off, run: graphicle config set update_notifier false
+
       Next: cd your-repo && graphicle setup
     EOS
   end

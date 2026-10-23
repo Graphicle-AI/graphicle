@@ -55,6 +55,7 @@ pub(crate) fn delete_project(
     if graph_cache && let Some(cache) = crate::graph_projection::cache_root(db, identifier) {
         crate::graph_materialize::purge(&cache)?;
     }
+    crate::passage_index::clear(db, identifier)?;
     db.execute("DELETE FROM repo_projects WHERE id=?", [identifier])?;
     graphicle_memory::cache::clear(identifier).map_err(Error::bad)?;
     deletion::project_receipt(db, p, identifier, &connectors, removed)
@@ -236,6 +237,9 @@ impl Store {
                             originals_removed.push((s(&original,"source_id").to_string(),s(&original,"sha256").to_string()));
                         }
                     }
+                    // The passage index keeps the terms of files that changed or went
+                    // away until it is merged: merged here, so they go too.
+                    crate::passage_index::merge_on(db,identifier)?;
                     let mut result=json!({"bytes_reclaimed":freed+originals_freed,"original_bytes_reclaimed":originals_freed,"kept_snapshots":keep_snapshots.len(),"memory_revisions_preserved":true});
                     if !(snapshots_removed.is_empty() && objects_removed.is_empty() && originals_removed.is_empty()) {
                         // Re-count what was pruned, then sign: no silent deletion.

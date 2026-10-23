@@ -339,22 +339,67 @@ impl DotIgnore {
     }
 }
 
+/// One file at one path, whatever the case of the path's spelling: its
+/// device and inode where the system has them, and its path in lower case
+/// with `/` between names (`root.join("src/Foo.js")` on Windows and the
+/// walk's `src\Foo.js` are one key). Two hard links to one file are two
+/// paths, both read.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct FileKey(u64, u64, String);
+
+fn spelled(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/").to_lowercase()
+}
+
+#[cfg(unix)]
+pub(crate) fn file_key(path: &Path, meta: &std::fs::Metadata) -> FileKey {
+    use std::os::unix::fs::MetadataExt;
+    FileKey(meta.dev(), meta.ino(), spelled(path))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn file_key(path: &Path, _meta: &std::fs::Metadata) -> FileKey {
+    FileKey(0, 0, spelled(path))
+}
+
 /// [`folder_walk`]'s entries, then one for each of [`tracked_ignored`]'s
-/// files: what a folder sync and the freshness scan read. The folder itself
-/// is the first entry.
+/// files the walk did not give: what a folder sync and the freshness scan
+/// read. The folder itself is the first entry. On a file system that
+/// ignores case (macOS, Windows), Git matches ignore patterns without case
+/// while the walk matches them with case, so a tracked file a pattern
+/// matches only in another case is in both lists; it is read once
+/// ([`file_key`]).
 pub(crate) fn folder_entries(
     root: &Path,
 ) -> impl Iterator<Item = std::result::Result<ignore::DirEntry, ignore::Error>> {
     let tracked = tracked_ignored(root);
+    let walked = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashSet::new()));
+    let seen = walked.clone();
     folder_walk(root)
         .build()
-        .chain(tracked.into_iter().flat_map(|path| {
-            ignore::WalkBuilder::new(path)
-                .standard_filters(false)
-                .follow_links(false)
-                .max_depth(Some(0))
-                .build()
-        }))
+        .inspect(move |entry| {
+            if let Ok(entry) = entry
+                && entry.file_type().is_some_and(|t| t.is_file())
+                && let Ok(meta) = std::fs::symlink_metadata(entry.path())
+            {
+                seen.borrow_mut().insert(file_key(entry.path(), &meta));
+            }
+        })
+        .chain(
+            tracked
+                .into_iter()
+                .filter(move |path| {
+                    std::fs::symlink_metadata(path)
+                        .is_ok_and(|meta| !walked.borrow().contains(&file_key(path, &meta)))
+                })
+                .flat_map(|path| {
+                    ignore::WalkBuilder::new(path)
+                        .standard_filters(false)
+                        .follow_links(false)
+                        .max_depth(Some(0))
+                        .build()
+                }),
+        )
 }
 
 /// Graphicle's own writes are not the project's evidence:
@@ -533,6 +578,28 @@ pub fn sync_folder(
     root: &Path,
     requested: Option<&str>,
 ) -> Result<Value> {
+    sync_folder_with(store, session, root, requested, true)
+}
+
+/// [`sync_folder`] before an answer ([`crate::fresh`]): the passage index
+/// takes the changed files, but a project without one waits for the next
+/// sync to build it, so an answer never waits for a first build.
+pub fn sync_folder_for_answer(
+    store: &Store,
+    session: &Session,
+    root: &Path,
+    requested: Option<&str>,
+) -> Result<Value> {
+    sync_folder_with(store, session, root, requested, false)
+}
+
+fn sync_folder_with(
+    store: &Store,
+    session: &Session,
+    root: &Path,
+    requested: Option<&str>,
+    index_full: bool,
+) -> Result<Value> {
     let limits = store.limits()?;
     let root = root.canonical()?;
     if !root.is_dir() {
@@ -607,6 +674,10 @@ pub fn sync_folder(
             .build()
     });
     let mut tracked_read = 0usize;
+    // Each file once, though a file system that ignores case lists a tracked
+    // file an ignore pattern matches in another case in both the walk and the
+    // tracked list (`folder_entries`).
+    let mut read_files: std::collections::HashSet<FileKey> = std::collections::HashSet::new();
     for entry in folder_walk(&root).build().chain(tracked_entries) {
         let entry = match entry {
             Ok(entry) => entry,
@@ -642,6 +713,9 @@ pub fn sync_folder(
                 continue;
             }
         };
+        if meta.is_file() && !read_files.insert(file_key(path, &meta)) {
+            continue;
+        }
         let is_document = crate::documents::supported(name);
         let limit = if is_document {
             limits.document_bytes
@@ -836,6 +910,11 @@ pub fn sync_folder(
             Ok(())
         },
     )?;
+    // The passage index takes the files that changed; an error is reported,
+    // never a failed sync (`context` then reads the files itself).
+    let passage_index = crate::phase::phase("sync_passage_index", || {
+        crate::passage_index::update(store, &repository, index_full)
+    });
     let (limited, not_analysed) =
         store.authorized_read(&session.workspace, &session.capability, "read", |db, p| {
             let current = crate::store::repo(db, p, &repository)?;
@@ -855,9 +934,18 @@ pub fn sync_folder(
     if !skipped.is_empty() {
         result["skipped"] = json!(skipped);
     }
-    if let Some(note) = crate::limits::question_note(file_count, bytes) {
+    // Past the per-question bounds, a question reads every passage through
+    // the passage index; without one, the files that match it best.
+    let indexed = passage_index
+        .as_ref()
+        .is_ok_and(|updated| !updated.deferred);
+    if !indexed && let Some(note) = crate::limits::question_note(file_count, bytes) {
         result["question_limits"] = json!(note);
     }
+    result["passage_index"] = match passage_index {
+        Ok(updated) => updated.report(),
+        Err(error) => json!({"error": error.message}),
+    };
     Ok(result)
 }
 
@@ -1159,6 +1247,30 @@ pub fn build_graph(
     repository: &str,
     progress: bool,
 ) -> Result<Value> {
+    let mut report = build_graph_only(store, session, repository, progress)?;
+    // The built graph saved for later processes (crate::query_graph); a
+    // failure leaves them reading it from the store.
+    if matches!(report["status"].as_str(), Some("built" | "current")) {
+        let saved = crate::phase::phase("graph_save", || {
+            store.authorized_read(&session.workspace, &session.capability, "read", |db, p| {
+                let project = crate::store::repo(db, p, repository)?;
+                crate::query_graph::ensure(db, s(&project, "id"))
+            })
+        });
+        report["saved_graph"] = match saved {
+            Ok(saved) => saved,
+            Err(error) => json!({"status":"error","error":error.message}),
+        };
+    }
+    Ok(report)
+}
+
+fn build_graph_only(
+    store: &Store,
+    session: &Session,
+    repository: &str,
+    progress: bool,
+) -> Result<Value> {
     let mut report = graph_report(store, session, repository)?;
     if !matches!(report["status"].as_str(), Some("queued" | "running")) {
         return Ok(report);
@@ -1353,6 +1465,38 @@ mod tests {
         assert!(status.success(), "git {args:?}");
     }
 
+    /// On a file system that ignores case, Git matches ignore patterns
+    /// without case (`core.ignorecase`), the walk with case: a tracked
+    /// `src/Foo.js` that `.gitignore`'s `foo.js` matches only that way is in
+    /// both lists, and is read once. `core.ignorecase` set by hand makes any
+    /// file system behave so.
+    #[test]
+    fn a_tracked_file_an_ignore_pattern_matches_only_without_case_is_read_once() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let root = std::fs::canonicalize(dir.path()).unwrap();
+        git(&root, &["init", "-q"]);
+        git(&root, &["config", "core.ignorecase", "true"]);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join(".gitignore"), "foo.js\n").unwrap();
+        std::fs::write(root.join("src/Foo.js"), "export const foo = 1;\n").unwrap();
+        git(&root, &["add", "-f", ".gitignore", "src/Foo.js"]);
+        // Git lists it as tracked and ignored; the walk reads it too.
+        assert_eq!(tracked_ignored(&root), [root.join("src/Foo.js")]);
+        let read: Vec<String> = folder_entries(&root)
+            .flatten()
+            .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+            .map(|entry| {
+                let path = entry.path().strip_prefix(&root).unwrap();
+                path.to_string_lossy().replace('\\', "/")
+            })
+            .collect();
+        assert_eq!(
+            read.iter().filter(|path| *path == "src/Foo.js").count(),
+            1,
+            "{read:?}"
+        );
+    }
+
     /// A file Git tracks although `.gitignore` matches it is read by the
     /// sync's walk; an untracked file the pattern matches is not.
     #[test]
@@ -1379,6 +1523,11 @@ mod tests {
         assert!(read.contains(&"src/jsonata.js".to_string()), "{read:?}");
         assert!(read.contains(&"a.js".to_string()), "{read:?}");
         assert!(!read.contains(&"jsonata.js".to_string()), "{read:?}");
+        assert_eq!(
+            read.iter().filter(|path| *path == "src/jsonata.js").count(),
+            1,
+            "{read:?}"
+        );
         // A tracked file an `.ignore` file leaves out stays out, as in the
         // walk; `!pattern` in a deeper one takes a file back in.
         std::fs::create_dir_all(root.join("gen/keep")).unwrap();
