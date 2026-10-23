@@ -60,6 +60,7 @@ forwarded), and ``repr()`` omits it. Only the Python standard library is used.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import math
 import os
@@ -84,7 +85,21 @@ __all__ = [
 #: Job states that are still in progress.
 PENDING_STATES = frozenset({"queued", "retry", "running"})
 
-_LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
+def _is_loopback(hostname: str) -> bool:
+    """True for localhost and every loopback address, not only three spellings.
+
+    127.0.0.2 and IPv4-mapped ::ffff:127.0.0.1 are loopback. Sending the workspace
+    capability to them in cleartext is the same as sending it to 127.0.0.1, and
+    refusing them makes a local service on any other 127/8 address unusable.
+    """
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
 # Service limits: connector.import takes at most 5,000 documents per call and a request body is
 # capped at 24 MiB; source.forget takes at most 1,000 document ids.
 _IMPORT_DOCUMENTS = 5000
@@ -179,7 +194,7 @@ class Client:
             raise ValueError("url must be an http(s) origin, for example http://127.0.0.1:8854")
         # Accessing port validates non-numeric and out-of-range port strings.
         _ = parts.port
-        if parts.scheme == "http" and parts.hostname not in _LOOPBACK and not insecure_http:
+        if parts.scheme == "http" and not _is_loopback(parts.hostname) and not insecure_http:
             # The capability is a bearer secret; plain HTTP would expose it on the network.
             raise ValueError("Plain http is only for loopback addresses; use https, or pass "
                              "insecure_http=True for a network you trust")
@@ -191,7 +206,7 @@ class Client:
         self._capability = capability
         self._base = f"/api/workspaces/{urllib.parse.quote(workspace, safe='')}"
         handlers: List[urllib.request.BaseHandler] = [_NoRedirect()]
-        if parts.hostname in _LOOPBACK:
+        if _is_loopback(parts.hostname):
             handlers.append(urllib.request.ProxyHandler({}))
         self._opener = urllib.request.build_opener(*handlers)
 

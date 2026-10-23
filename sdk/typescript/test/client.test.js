@@ -64,6 +64,13 @@ test("caller cancellation is preserved", async t => {
   await assert.rejects(client(url).health({signal: abort.signal}), error => error === reason);
 });
 
+test("plain http is limited to loopback, including the rest of 127/8 and IPv4-mapped loopback", () => {
+  for (const url of ["http://127.0.0.1:8854", "http://127.0.0.2:8854", "http://[::1]:8854", "http://[::ffff:127.0.0.1]:8854", "http://localhost:8854"]) {
+    assert.equal(client(url).url, new URL(url).origin);
+  }
+  assert.throws(() => client("http://192.0.2.1:8854"), /HTTPS|loopback|trusted/i);
+});
+
 test("credentials and project authority cannot be redirected by arguments", async () => {
   for (const url of ["https://user:pass@example.com", "https://example.com/path", "https://example.com?x=1", "http://example.com", "https://example.com/#x"]) assert.throws(() => client(url));
   const c = client("https://example.com");

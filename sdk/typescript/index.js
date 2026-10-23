@@ -19,6 +19,21 @@ function plainObject(value) {
   return value;
 }
 
+function isLoopbackHost(hostname) {
+  const host = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  if (host.toLowerCase() === "localhost" || host === "::1") return true;
+  const octets = host.split(".");
+  if (octets.length === 4 && octets.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255)) {
+    return Number(octets[0]) === 127;
+  }
+  // The URL parser rewrites [::ffff:127.0.0.1] to [::ffff:7f00:1].
+  const mapped = /^::ffff:(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/i.exec(host);
+  if (!mapped) return false;
+  if (mapped[1]) return isLoopbackHost(mapped[1]);
+  const hi = Number.parseInt(mapped[2], 16);
+  return hi >= 0x7f00 && hi <= 0x7fff;
+}
+
 export class Graphicle {
   #origin; #capability; #fetch; #timeout;
   constructor({url, workspace, capability, timeoutMs = 60_000, fetch: fetcher = globalThis.fetch, insecureHttp = false}) {
@@ -26,7 +41,7 @@ export class Graphicle {
     const parsed = new URL(url);
     if (!["http:", "https:"].includes(parsed.protocol) || parsed.username || parsed.password ||
         parsed.pathname !== "/" || url.includes("?") || url.includes("#")) throw new TypeError("url must be an origin without credentials, path, query or fragment");
-    if (parsed.protocol === "http:" && !["localhost", "127.0.0.1", "[::1]"].includes(parsed.hostname) && !insecureHttp) {
+    if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname) && !insecureHttp) {
       throw new TypeError("Use HTTPS for remote services; insecureHttp is only for an explicitly trusted network");
     }
     if (typeof capability !== "string" || !capability || capability.length > 512 || /[\r\n]/.test(capability)) throw new TypeError("Supply a workspace capability");

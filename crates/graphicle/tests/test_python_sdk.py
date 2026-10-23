@@ -348,7 +348,14 @@ def test_bad_capability_raises_permission_error(local):
 def test_the_capability_is_never_sent_over_plain_http_to_another_host():
     with pytest.raises(ValueError, match="loopback"):
         Client("http://memory.example.com:8854", "w", "secret")
-    for url in ("https://memory.example.com", "http://127.0.0.1:1", "http://localhost:1", "http://[::1]:1"):
+    for url in (
+        "https://memory.example.com",
+        "http://127.0.0.1:1",
+        "http://127.0.0.2:1",
+        "http://localhost:1",
+        "http://[::1]:1",
+        "http://[::ffff:127.0.0.1]:1",
+    ):
         Client(url, "w", "secret")
     Client("http://10.0.0.5:8854", "w", "secret", insecure_http=True)
 
