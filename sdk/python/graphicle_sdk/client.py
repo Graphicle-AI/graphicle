@@ -48,7 +48,8 @@ including those this module does not wrap (``graph.query``, ``memory.export``, `
 drop arguments whose value is ``None``; ``command`` sends exactly what it is given.
 
 Errors: an HTTP error response raises :class:`GraphicleError` with ``status``, ``message`` (the
-service's ``error`` text) and ``body``. HTTP 403 raises :class:`GraphiclePermissionError`, which is
+service's ``error`` text), ``body`` and, when the response sent ``Retry-After``, ``retry_after``
+in seconds. HTTP 403 raises :class:`GraphiclePermissionError`, which is
 also a built-in :class:`PermissionError`. A failed or cancelled job raises :class:`GraphicleError`
 with ``status=None`` and the job record in ``job``; an unreachable service raises it with
 ``status=None`` too. :meth:`Project.wait` raises :class:`TimeoutError`.
@@ -60,6 +61,7 @@ forwarded), and ``repr()`` omits it. Only the Python standard library is used.
 """
 from __future__ import annotations
 
+import email.utils
 import json
 import math
 import os
@@ -68,7 +70,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Union
 
@@ -98,18 +100,24 @@ class GraphicleError(Exception):
     ``status`` is the HTTP status code, or ``None`` when there was no HTTP error response (the
     service was unreachable, or a job failed or was cancelled). ``message`` is the service's error
     text, ``body`` the parsed response body and ``job`` the job record for workflow failures.
+    ``retry_after`` is seconds from a ``Retry-After`` header (a delay, or an HTTP-date counted
+    from now), or ``None`` when the response did not send one.
     """
 
     def __init__(self, status: Optional[int], message: str, *, body: Any = None,
-                 job: Optional[Dict[str, Any]] = None) -> None:
+                 job: Optional[Dict[str, Any]] = None, retry_after: Optional[int] = None) -> None:
         super().__init__(message)
         self.status = status
         self.message = message
         self.body = body
         self.job = job
+        self.retry_after = retry_after
 
     def __str__(self) -> str:
-        return self.message if self.status is None else f"{self.message} (HTTP {self.status})"
+        text = self.message if self.status is None else f"{self.message} (HTTP {self.status})"
+        if self.retry_after is None:
+            return text
+        return f"{text}; retry after {self.retry_after} s"
 
 
 class GraphiclePermissionError(GraphicleError, PermissionError):
@@ -122,7 +130,23 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def _error(status: int, raw: bytes) -> GraphicleError:
+def _retry_after(headers: Any) -> Optional[int]:
+    raw = headers.get("Retry-After") if headers is not None and hasattr(headers, "get") else None
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if text.isdigit():
+        return int(text)
+    parsed = email.utils.parsedate_to_datetime(text)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    delay = (parsed - datetime.now(timezone.utc)).total_seconds()
+    return 0 if delay <= 0 else math.ceil(delay)
+
+
+def _error(status: int, raw: bytes, headers: Any = None) -> GraphicleError:
     text = raw.decode("utf-8", "replace").strip()
     try:
         body: Any = json.loads(text) if text else None
@@ -133,7 +157,7 @@ def _error(status: int, raw: bytes) -> GraphicleError:
     else:
         message = text[:2000] or f"HTTP {status}"
     kind = GraphiclePermissionError if status == 403 else GraphicleError
-    return kind(status, message, body=body)
+    return kind(status, message, body=body, retry_after=_retry_after(headers))
 
 
 def default_data_dir() -> Path:
@@ -228,7 +252,7 @@ class Client:
                 raw = b""
             finally:
                 error.close()
-            raise _error(error.code, raw) from None
+            raise _error(error.code, raw, error.headers) from None
         except (urllib.error.URLError, OSError) as error:
             reason = getattr(error, "reason", error)
             if isinstance(reason, TimeoutError):
