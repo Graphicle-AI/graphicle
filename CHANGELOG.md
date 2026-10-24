@@ -3,6 +3,42 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.6 - 2026-10-24
+
+Every crate is at 0.1.6, and `graphicle --version` prints
+`graphicle 0.1.6 (core)`.
+
+### SDKs
+
+- The Python and TypeScript SDKs allow plain `http://` to every loopback
+  address: the rest of 127.0.0.0/8, such as `127.0.0.2`, and IPv4-mapped
+  loopback, such as `[::ffff:127.0.0.1]`, as well as `127.0.0.1`, `[::1]`
+  and `localhost`. Before, a local service on another loopback address
+  needed `insecure_http=True` (Python) or `insecureHttp: true`
+  (TypeScript) (#9, by @rudycelekli). The Python SDK reads an IPv4-mapped
+  address by its IPv4 address on every Python version, and its requests
+  to all of these addresses ignore proxy settings, as they did for
+  `127.0.0.1`.
+
+### Security
+
+- tokio 1.53.3 and ctutils 0.4.4, for RUSTSEC-2026-0386 (the safe
+  constructors of tokio's `AsyncFd` break I/O safety; Graphicle does not
+  call them) and RUSTSEC-2026-0385 (ctutils made masks and `u128`
+  comparisons that were not constant-time). Only the lock files and the
+  third-party licence pages change.
+- The Python environment of the engine's comparison suite pins pypdf
+  6.21.2, which fixes security advisories.
+
+### Documentation
+
+- `docs/benchmarks.md` has a section of
+  [independent measurements](https://github.com/Graphicle-AI/graphicle/blob/v0.1.6/docs/benchmarks.md#independent-measurements).
+  Its first entry is the rerun by @selimaytac, who reported #8, of their
+  22 questions about kubernetes on an Apple M3 Pro, with no answer model:
+  `graphicle context` took a median of 153.5 s per question on 0.1.3 and
+  9.5 s on 0.1.5, and the prompt hook returned a packet for 18 of 22.
+
 ## 0.1.5 - 2026-10-22
 
 Every crate is at 0.1.5, and `graphicle --version` prints

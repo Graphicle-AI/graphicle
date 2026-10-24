@@ -14,6 +14,7 @@ endorsement is implied.
 | Code-graph engine: peak memory | A pre-release build with 0.1.1's changes to how the engine holds its data, against Graphify 0.9.91, 15 October 2026; five measurements rechecked on a build of the merged 0.1.1 source | Less peak memory than Graphify 0.9.91 in all 39 measurements (13 repositories; extract, priming update and update with no change), from 0.29 to 0.97 times Graphify's figure; Kubernetes extract 2,091.5 against 2,767 MiB. One Linux node (its 8 H100 GPUs not used), 8 workers; Graphicle's peak RSS against Graphify's peak PSS. [Details](#peak-memory-against-graphify-0991) |
 | Coding agents: Claude Code with Graphicle, Graphify or neither | Four task sets, each test registered before any answer was scored; Claude Code with Opus 5.5, and one set repeated with Haiku 5.5 | Graphicle tied plain Claude Code on finding files and facts in every test, and no token saving is claimed against it. Against Graphify 0.9.91, Graphicle found more facts on Graphify's showcase corpus and used fewer tokens in all four task sets (on SWE-bench Verified, a secondary comparison); in two of them, Graphicle's arm included a prototype that does not ship. [Details](#coding-agents-with-graphicle-graphify-or-neither) |
 | Retrieval: finding the files a fix changes | Graphicle 0.1.3 and the 0.1.2 release, offline, 21 October 2026, on 100 SWE-bench Verified issues never used for tuning and 80 issues used for tuning | On the held-out issues, a file the fix changed was among the first 5 files of 0.1.3's context packet for 75, against 61 for BM25 (SWE-bench style; McNemar exact p = 0.013) and 54 for grep on the issue's names; for the first file and the first 10 files the differences from BM25 are not significant. Ranking only: the agent test of 0.1.3 is pending ([retrieval benchmark](benchmarks/retrieval.md)) |
+| Retrieval: time per question, measured independently | Run and published by @selimaytac, who reported issue #8, on Graphicle 0.1.3 and 0.1.5, 23 October 2026 | kubernetes, 22 questions, an Apple M3 Pro, no answer model: `graphicle context` took a median of 153.5 s per question on 0.1.3 and 9.5 s on 0.1.5, and the prompt hook returned a packet for 18 of 22. [Details](#independent-measurements) |
 | Agent memory: comparison with seven memory systems | Done, on development sets, with a proxy evaluator | Every system's scores and the 21 registered comparisons are [below](#agent-memory-comparison-with-seven-memory-systems). None of them is a headline claim |
 | Agent memory: retrieval defaults | Chosen | Model-free retrieval runs on development data, plus held-out checks; their records are not published yet, so no numbers are given |
 
@@ -1132,6 +1133,45 @@ numbers.
 - **`note_keys: "merge"`**, which keys passages by the notes that quote them,
   raised evidence recall in the held-out check. It is kept, but off until its
   effect on answers is measured.
+
+## Independent measurements
+
+People outside the project who measured Graphicle with their own scripts,
+on their own machines, and published the results. The numbers below are
+theirs.
+
+### `graphicle context` on kubernetes, 0.1.3 and 0.1.5
+
+[@selimaytac](https://github.com/selimaytac), who reported
+[issue #8](https://github.com/Graphicle-AI/graphicle/issues/8), ran their 22
+questions about kubernetes on Graphicle 0.1.3 and again on 0.1.5, and
+published the script, the questions and the rows of both runs:
+[selimaytac/benchmarks, graphicle-context](https://github.com/selimaytac/benchmarks/tree/main/graphicle-context).
+Thank you for the report, the questions and the rerun.
+
+**Label:** kubernetes at `ca8a2a9e4`, a shallow clone with the history since
+1 June 2026; the 22 questions of issue #8; an Apple M3 Pro; no answer model
+configured, so no model calls; published 23 October 2026.
+
+| | 0.1.3 | 0.1.5 |
+|---|---|---|
+| `graphicle context`, median time per question | 153.5 s | 9.5 s |
+| The prompt hook returned a packet (one pass) | not run | 18 of 22 |
+
+- **A fixed cost per call.** On that machine each call of 0.1.5 takes
+  about 9 seconds whatever the question, just under the prompt hook's
+  default budget of 10 seconds. `GRAPHICLE_PROMPT_CONTEXT_SECONDS`, or
+  `graphicle config set prompt_context.seconds N` (1 to 25 seconds), raises
+  the budget.
+- **The hook's 4 misses.** 2 of the 22 questions name no code, and the hook
+  does not read them as code questions; the other 2 ran past the budget in
+  that pass.
+- **Rough ratio.** The 0.1.3 column is one round per question, measured
+  while the machine had other work for part of the run; the 0.1.5 column
+  is three rounds per question.
+- **Our own run.** On 16 cores of a Linux server, the same 22 questions took
+  a median of 3.1 seconds with 0.1.5 (the 0.1.5 entry of the
+  [CHANGELOG](../CHANGELOG.md)).
 
 ## Reproducing
 

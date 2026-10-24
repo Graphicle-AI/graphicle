@@ -24,6 +24,11 @@ a fix changes
 The two baselines below are fixed procedures, defined exactly; they are not
 what an agent does when it searches with grep or a search engine.
 
+It does not measure how long a question takes. For the time of
+`graphicle context` per question on kubernetes, measured independently by
+the reporter of issue #8, see
+[Independent measurements](../benchmarks.md#independent-measurements).
+
 ## Results
 
 ### Held-out set: 100 SWE-bench Verified issues, never used for tuning

@@ -71,6 +71,16 @@ test("plain http is limited to loopback, including the rest of 127/8 and IPv4-ma
   assert.throws(() => client("http://192.0.2.1:8854"), /HTTPS|loopback|trusted/i);
 });
 
+test("plain http judges the host in the URL parser's normal form, which requests use", () => {
+  for (const [url, origin] of [["http://127.1:8854", "http://127.0.0.1:8854"], ["http://0x7f.0.0.1:8854", "http://127.0.0.1:8854"],
+    ["http://0177.0.0.1:8854", "http://127.0.0.1:8854"], ["http://2130706433:8854", "http://127.0.0.1:8854"]]) {
+    assert.equal(client(url).url, origin);
+  }
+  for (const url of ["http://localhost.:8854", "http://127.0.0.1.example.com:8854", "http://[::ffff:10.0.0.1]:8854", "http://[::127.0.0.1]:8854", "http://0.0.0.0:8854"]) {
+    assert.throws(() => client(url), /HTTPS/);
+  }
+});
+
 test("credentials and project authority cannot be redirected by arguments", async () => {
   for (const url of ["https://user:pass@example.com", "https://example.com/path", "https://example.com?x=1", "http://example.com", "https://example.com/#x"]) assert.throws(() => client(url));
   const c = client("https://example.com");

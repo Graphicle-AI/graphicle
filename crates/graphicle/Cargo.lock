@@ -1327,7 +1327,7 @@ dependencies = [
 
 [[package]]
 name = "graphicle"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "base64 0.22.1",
  "calamine",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "graphicle-memory"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "chrono",
  "graphicle",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "graphicle-runtime"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "aes-gcm",
  "axum",
@@ -4647,9 +4647,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",

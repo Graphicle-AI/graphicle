@@ -85,6 +85,7 @@ __all__ = [
 #: Job states that are still in progress.
 PENDING_STATES = frozenset({"queued", "retry", "running"})
 
+
 def _is_loopback(hostname: str) -> bool:
     """True for localhost and every loopback address, not only three spellings.
 
@@ -95,9 +96,15 @@ def _is_loopback(hostname: str) -> bool:
     if hostname.lower() == "localhost":
         return True
     try:
-        return ipaddress.ip_address(hostname).is_loopback
+        address = ipaddress.ip_address(hostname)
     except ValueError:
         return False
+    # An IPv4-mapped address is judged by its IPv4 address: the is_loopback of some
+    # Python releases (3.12.3, for one) is False for ::ffff:127.0.0.1.
+    mapped = getattr(address, "ipv4_mapped", None)
+    if mapped is not None:
+        address = mapped
+    return address.is_loopback
 
 
 # Service limits: connector.import takes at most 5,000 documents per call and a request body is

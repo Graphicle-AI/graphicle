@@ -18,6 +18,7 @@
 #          uv pip install --python .reference-venv/bin/python -r tools/reference-requirements.txt
 #          then write the .pth file naming the comparison venv's site-packages.
 # pillow is 13.0.0 (security advisories) instead of the recorded 12.3.0.
+# pypdf is 6.21.2 (security advisories) instead of the recorded 6.19.0.
 annotated-types==0.8.0
 anthropic==1.8.0
 anyio==4.15.1
@@ -45,7 +46,7 @@ psycopg==3.3.6
 psycopg-binary==3.3.6
 pydantic==2.13.5
 pydantic_core==2.46.5
-pypdf==6.19.0
+pypdf==6.21.2
 python-dateutil==2.9.0.post0
 python-docx==1.2.0
 pytz==2026.3.post1
