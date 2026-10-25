@@ -2427,9 +2427,11 @@ pub fn ollama_url(value: &str) -> Option<String> {
     }
     let (scheme, rest, default_port) = match value.split_once("://") {
         None => ("http", value, 11434),
-        Some(("http", rest)) => ("http", rest, 80),
-        Some(("https", rest)) => ("https", rest, 443),
-        Some(_) => return None,
+        Some((raw, rest)) => match raw.to_ascii_lowercase().as_str() {
+            "http" => ("http", rest, 80),
+            "https" => ("https", rest, 443),
+            _ => return None,
+        },
     };
     let hostport = rest.split('/').next().unwrap_or_default();
     let (host, port) = if let Some(bracketed) = hostport.strip_prefix('[') {
@@ -5957,6 +5959,18 @@ args = ["-y", "thing"]
         }
         for value in ["", "  ", "ftp://host", "host:port", "[::1"] {
             assert_eq!(ollama_url(value), None, "{value}");
+        }
+        // A scheme is case-insensitive. Rejecting HTTP:// makes config set
+        // ignore OLLAMA_HOST and save http://127.0.0.1:11434.
+        for (value, url) in [
+            ("HTTP://gpu.lan:11434", "http://gpu.lan:11434"),
+            (
+                "Https://ollama.example.com",
+                "https://ollama.example.com:443",
+            ),
+            ("HTTP://[::1]:11434", "http://[::1]:11434"),
+        ] {
+            assert_eq!(ollama_url(value).as_deref(), Some(url), "{value}");
         }
         let profile = model_profile_at("ollama", None, None, None, "http://[::1]:11500").unwrap();
         assert_eq!(profile["base_url"], "http://[::1]:11500");
