@@ -1,8 +1,8 @@
 # Graphicle graph engine
 
-The Graphicle graph engine is a native Rust port of Graphify **0.9.91** (see
+The Graphicle graph engine is a native Rust port of Graphify **0.9.95** (see
 [NOTICE](NOTICE)), pinned to the release tag
-`10130e79ed9caf8f60d998073e097531eaa1a395`. The application includes the extraction
+`92741d162b2094ffc2fed58cfbd8ee823e9da62c`. The application includes the extraction
 pipeline, CLI, incremental updates, watcher, MCP server, hooks, assistant
 installer, exports and public library API. Python is used only for development
 comparisons; native operations do not fall back to the Python application.
@@ -32,7 +32,19 @@ Objective-C `NS_ENUM` and `NS_OPTIONS`, link an interface member to every
 implementer, read Jinja templates as documents, install a `post-merge` hook,
 add a Pi guard extension and send Ollama requests to `/api/chat`. File
 extractions cached by an earlier build are made again once (cache schema 9).
-[CHANGELOG.md](../../CHANGELOG.md) lists every change.
+
+The four releases 0.9.92 to 0.9.95 are ported for 0.1.7. They extract YAML
+configuration as code (a node per key, with `contains` edges; data YAML is
+declined by design), make each C# overload a node of its own with calls bound
+by argument count, add type aliases and declarations (Python, Go, Rust, C++,
+Kotlin, C#, Swift, Dart), keep members and declarations that differ only by
+`_`, `$`, `#` or case apart (JavaScript and TypeScript, Python, Go, Rust),
+read T-SQL procedures and `GO` batches, resolve Solidity inherited and `super`
+calls, keep parallel edges in graph.json (`multigraph: true`), let
+`GRAPHICLE_BACKEND` choose or turn off the LLM provider, add a `post-rewrite`
+hook, refuse URLs with credentials or bad ports and block multicast addresses.
+File extractions cached by an earlier build are made again once (cache
+schema 10). [CHANGELOG.md](../../CHANGELOG.md) lists every change.
 
 0.9.77 keeps an edge's stored direction wherever graph.json is read back, and
 adds enum and context-bound structure to several extractors. Changes in that
@@ -191,18 +203,19 @@ with the pinned release. Against Graphify 0.9.88, on 13 October 2026, every
 application module had a passing receipt from them; on 14 October they were
 widened to run more of the upstream `tests/test_*.py` files. Against 0.9.91
 they ran on Linux on 15 October 2026, where the modules whose checks need
-nothing that host lacks have a passing receipt; the full run on macOS is still
-to be made. The repository's `docs/benchmarks.md` gives their results and
+nothing that host lacks have a passing receipt. Against 0.9.95, on 24 October
+2026 on Linux, every check passed and every application module has a passing
+receipt. The repository's `docs/benchmarks.md` gives their results and
 limits, its `docs/evidence/upstream-tests-known-differences.md` lists the
 upstream tests that fail against the engine, with the reason for each, and its
 `docs/evidence/upstream-tests-not-run.md` lists the test files the checks do
 not run, with the reason for each.
 [migration/STATUS.md](migration/STATUS.md), [AUDIT.json](migration/AUDIT.json)
-and the [file ledger](migration/FILES.json) record the 15 October run against
-0.9.91: the ledger lists every file of the pinned Graphify 0.9.91 archive with
-its SHA-256 and marks each application module that has a passing receipt as
-verified. The repository's `docs/evidence/` folder summarizes the 13 October
-qualification against 0.9.88 and the 14 October run of the widened checks.
+and the [file ledger](migration/FILES.json) record the 24 October run against
+0.9.95: the ledger lists every file of the pinned Graphify 0.9.95 archive with
+its SHA-256 and marks each of the 96 application modules verified. The
+repository's `docs/evidence/` folder summarizes the 13 October qualification
+against 0.9.88 and the 14 October run of the widened checks.
 
 ## Build and run
 
@@ -233,7 +246,7 @@ the tree-sitter 0.25.10 runtime, the one Python Graphify parses with, so
 `serve` defaults to MCP stdio; `--transport streamable-http` selects HTTP with
 host, port, API-key, session and path options. `install` and `uninstall`
 configure supported assistant platforms. `--help` lists the commands that
-come from Graphify 0.9.91, including labeling, query and navigation, global
+come from Graphify 0.9.95, including labeling, query and navigation, global
 graphs, merge workflows and exports; the additions below are documented here
 and in the repository's README.
 
@@ -270,7 +283,7 @@ recorded in the `manifest.json` next to it. The manifest check catches a
 corrupted or swapped pack, not a rewritten manifest;
 `GRAPHICLE_GRAMMAR_UNVERIFIED=1` skips it.
 
-## Beyond 0.9.91
+## Beyond 0.9.95
 
 The parity claim rests on the comparison checks: they compare graph content
 with the pinned upstream reference, with the reviewed upstream fixes of
@@ -285,9 +298,10 @@ rejected a list that the page closes at the start of a line; from 0.1.3 the
 engine reads that list as YAML, and the comparison has not been run again
 since. Folder, environment-variable,
 command and installed-file names follow a documented translation table
-(`tools/naming.py`), which the checks apply. The first two items below are on
-by default and change no output; the rest are opt-in, and the parity claim
-does not cover them.
+(`tools/naming.py`), which the checks apply. The first four items below are
+on by default: the first two change no output, and the next two change only
+what upstream reads differently or refuses. The rest are opt-in, and the
+parity claim does not cover them.
 
 - **Saved query snapshots.** `query`, `explain`, `path`, `affected`,
   `god-nodes` and the MCP server save the loaded graph and its search index
@@ -304,6 +318,30 @@ does not cover them.
   to, so an `update` or a warm run replays them instead of parsing unchanged
   files again. TypeScript's come from the extractor's own parse. The graph is
   the same either way.
+- **Older graph files read like newer ones.** A graph.json written before
+  Graphify 0.9.92 can hold parallel links under `multigraph: false`. Upstream
+  repairs that only in its MCP server; here every reader that builds a graph
+  from a saved graph.json does (`affected`, `query`, `explain`, `path`,
+  `merge-graphs`, `merge-driver`, every `export` format, `benchmark`, `prs`,
+  the global graph and the memory library's operations), so the same links
+  read the same whichever release wrote the file.
+- **The engine's own large graphs.** The 512 MiB graph.json read cap guards
+  against a file from elsewhere. A larger graph.json the engine writes itself
+  is recorded in `~/.graphicle-graph/graph-stamps` (its path, size,
+  modification time and file identity), and `update`, `watch`, `serve`,
+  `query`, `explain`, `path`, `merge-graphs`, `cluster-only` and `label` read
+  it whatever its size while it is unchanged, unless
+  `GRAPHICLE_MAX_GRAPH_BYTES` is set. Upstream refuses it, so on a project
+  such as kubernetes (graph.json over 512 MiB) every update after the first
+  would fail. (The rebuild also reads back its own temporary graph without
+  the cap, as upstream does; before, that made even the first update fail.)
+  Over the cap, a graph.json a repository ships or another machine wrote is
+  still refused, and global-graph inputs, `prs`, `benchmark`, the exports and
+  the incremental merge of `extract` keep the plain cap. A graph.json over
+  the cap that an earlier release wrote has no record either: it is refused
+  until it is rebuilt once, with
+  `GRAPHICLE_MAX_GRAPH_BYTES=<N>GB graphicle-graph extract --force <project>`
+  (plus `--code-only` without an LLM backend), and the error says so.
 - **Commands answered by a running server.** `serve --socket PATH` keeps
   graphs loaded. With `GRAPHICLE_SOCKET=PATH` set, `query`, `explain`, `path`,
   `affected`, `god-nodes` and `retrieve` ask it and print exactly what they
@@ -425,7 +463,7 @@ internal algorithm is panic-free.
 ## Verification
 
 The comparison suite binds every receipt to an immutable binary, the complete
-Rust source set and the comparison tools. It needs the pinned Graphify 0.9.91
+Rust source set and the comparison tools. It needs the pinned Graphify 0.9.95
 source that `migration/FILES.json` names (its archive and SHA-256), unpacked
 under `reference/`, and a Python 3.12 environment in `.reference-venv` built
 from `tools/reference-requirements.txt` and `tools/comparison-requirements.txt`.
@@ -450,7 +488,7 @@ selected upstream fixes and remaining limitations, including the pinned Swift
 grammar issue. Explicit oracle adaptations are hashed and recorded in
 `migration/upstream-review/adaptations.json`, among them fixes upstream has not
 merged (for example the Kotlin annotation crash on untyped class properties).
-0.9.91 behaviour is the only behaviour, with no opt-out.
+0.9.95 behaviour is the only behaviour, with no opt-out.
 
 ## Notices
 

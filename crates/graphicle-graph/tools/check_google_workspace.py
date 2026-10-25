@@ -26,7 +26,7 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_bytes(control.get('body','').encode
     os.environ['GRAPHIFY_GWS_FIXTURE_CONTROL']=str(control);os.environ['GRAPHIFY_GWS_FIXTURE_LOG']=str(log)
     control.write_text(json.dumps({'body':'# Planning\n\nExported doc text.\n'}))
     native=Native('google_workspace');comparisons=0;exports=0
-    originals={name:getattr(gw,name) for name in ('read_google_shortcut','google_workspace_enabled')}
+    originals={name:getattr(gw,name) for name in ('read_google_shortcut','google_workspace_enabled','_safe_yaml_str')}
     def call(method,**kwargs): return native.result('google_workspace',method=method,**kwargs)
     def same(method,expected,**kwargs):
         global comparisons
@@ -35,8 +35,14 @@ Path(sys.argv[sys.argv.index('-o')+1]).write_bytes(control.get('body','').encode
     try:
         gw.read_google_shortcut=lambda p:call('read',path=str(p))
         gw.google_workspace_enabled=lambda value=None:call('enabled',value=value if value is not None else os.environ.get('GRAPHIFY_GOOGLE_WORKSPACE',''))
-        tests=upstream_tests(*['tests/test_google_workspace.py::'+name for name in ('test_read_google_shortcut_doc_id','test_read_google_shortcut_extracts_id_from_url','test_google_workspace_enabled_env')])
+        gw._safe_yaml_str=lambda value:call('safe_yaml_str',value=value)
+        tests=upstream_tests(*['tests/test_google_workspace.py::'+name for name in ('test_read_google_shortcut_doc_id','test_read_google_shortcut_extracts_id_from_url','test_google_workspace_enabled_env')],
+                             # 0.9.95 (#4710): full YAML double-quoted-scalar escaping of the sidecar.
+                             'tests/test_frontmatter_and_ssrf_hardening.py::test_safe_yaml_str_escapes_line_breaks_and_controls')
         for name,value in originals.items():setattr(gw,name,value)
+        rng=random.Random(4710);alphabet=list('ab"\\:\n\r\t\0\x7f\x85\u2028\u2029é日')+[chr(i) for i in range(32)]
+        for value in ['','plain','doc"id\\x','abc\u2028injected: pwned\u0085evil: x\ttabbed\nnl\rcr']+[''.join(rng.choices(alphabet,k=rng.randrange(40))) for _ in range(300)]:
+            same('safe_yaml_str',gw._safe_yaml_str(value),value=value)
         values=['','yes','true','YES',' off ','1','0','on','no','\x1cyEs\x1f']
         for value in values:same('enabled',gw.google_workspace_enabled(value),value=value)
         urls=['','https://drive.google.com/open?id=doc-1','https://drive.google.com/open?id=&id=second','https://drive.google.com/open?id=A%2FB+space','https://drive.google.com/open?id=%FF','/document/d/doc-id/edit?resourcekey=key#part','https://drive.google.com/file/d/f-1/view;param?id=query-id','https://docs.google.com/spreadsheets/d/sheet-id/edit','https://docs.google.com/presentation/d/slide-id/edit','https://docs.google.com/invalid']

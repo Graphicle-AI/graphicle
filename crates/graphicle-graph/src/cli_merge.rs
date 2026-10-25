@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 use crate::{
     Result, build,
@@ -57,8 +57,15 @@ pub fn run(command: &str, a: &Args, out: &mut Output) -> Result<()> {
                     return Err("merge graph exceeds 50 MiB cap".into());
                 }
             }
-            let mut g = paths::load_node_link_graph_owned(read_graph(&cur)?)?;
-            let other = paths::load_node_link_graph_owned(read_graph(&other)?)?;
+            // A side written before 0.9.92 reads as a newer one does
+            // (`build::mark_parallel_links`); upstream's driver honours the flag.
+            let read = |path: &Path| {
+                let mut data = read_graph(path)?;
+                crate::build::mark_parallel_links(&mut data);
+                paths::load_node_link_graph_owned(data)
+            };
+            let mut g = read(&cur)?;
+            let other = read(&other)?;
             compose(&mut g, &other)?;
             if g.nodes.len() > 100_000 {
                 return Err("merged graph exceeds 100000-node cap".into());

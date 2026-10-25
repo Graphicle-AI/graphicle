@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Graph traversal, precise symbol lookup, and budgeted text context.
 
@@ -184,6 +184,56 @@ fn attrs_summary(attrs: &Value) -> String {
     }
     format!(" attrs={{{}}}", sanitize(&summary))
 }
+/// One `EDGE` line of [`subgraph_text`] for edge `e` of the
+/// pair `(u, v)`, in its stored direction when `_src`/`_tgt` name the pair.
+fn push_edge_line(g: &Graph, lines: &mut Vec<String>, u: usize, v: usize, e: &crate::graph::Edge) {
+    let attr = |k| e.attributes.get(k).map(string).unwrap_or_default();
+    let a = e
+        .attributes
+        .get("_src")
+        .and_then(|id| g.node_index(id))
+        .unwrap_or(u);
+    let b = e
+        .attributes
+        .get("_tgt")
+        .and_then(|id| g.node_index(id))
+        .unwrap_or(v);
+    let (a, b) = if BTreeSet::from([a, b]) == BTreeSet::from([u, v]) {
+        (a, b)
+    } else {
+        (u, v)
+    };
+    let context = e
+        .attributes
+        .get("context")
+        .filter(|v| crate::build::truthy(v))
+        .map(|v| format!(" context={}", sanitize(&string(v))))
+        .unwrap_or_default();
+    let location = e
+        .attributes
+        .get("source_location")
+        .filter(|v| crate::build::truthy(v))
+        .map(string)
+        .unwrap_or_default();
+    let at = if location.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " at={}:{}",
+            sanitize(&text(
+                e.attributes.get("source_file").unwrap_or(&Value::Null)
+            )),
+            sanitize(&location)
+        )
+    };
+    lines.push(format!(
+        "EDGE {} --{} [{}{context}]--> {}{at}",
+        label_text(g, a),
+        sanitize(&attr("relation")),
+        sanitize(&attr("confidence")),
+        label_text(g, b)
+    ));
+}
 pub fn subgraph_text(
     g: &Graph,
     nodes: &BTreeSet<usize>,
@@ -262,59 +312,12 @@ pub fn subgraph_text(
         if !nodes.contains(u) || !nodes.contains(v) {
             continue;
         }
-        let Some(e) = g
-            .edges_between(&g.nodes[*u].id, &g.nodes[*v].id)
-            .first()
-            .copied()
-        else {
-            continue;
-        };
-        let attr = |k| e.attributes.get(k).map(string).unwrap_or_default();
-        let a = e
-            .attributes
-            .get("_src")
-            .and_then(|id| g.node_index(id))
-            .unwrap_or(*u);
-        let b = e
-            .attributes
-            .get("_tgt")
-            .and_then(|id| g.node_index(id))
-            .unwrap_or(*v);
-        let (a, b) = if BTreeSet::from([a, b]) == BTreeSet::from([*u, *v]) {
-            (a, b)
-        } else {
-            (*u, *v)
-        };
-        let context = e
-            .attributes
-            .get("context")
-            .filter(|v| crate::build::truthy(v))
-            .map(|v| format!(" context={}", sanitize(&string(v))))
-            .unwrap_or_default();
-        let location = e
-            .attributes
-            .get("source_location")
-            .filter(|v| crate::build::truthy(v))
-            .map(string)
-            .unwrap_or_default();
-        let at = if location.is_empty() {
-            String::new()
-        } else {
-            format!(
-                " at={}:{}",
-                sanitize(&text(
-                    e.attributes.get("source_file").unwrap_or(&Value::Null)
-                )),
-                sanitize(&location)
-            )
-        };
-        lines.push(format!(
-            "EDGE {} --{} [{}{context}]--> {}{at}",
-            label_text(g, a),
-            sanitize(&attr("relation")),
-            sanitize(&attr("confidence")),
-            label_text(g, b)
-        ));
+        // One EDGE line per relationship: on a multigraph a pair can carry
+        // several edges (contains and calls), each with its own metadata; the
+        // traversal records one entry per pair (Graphify 0.9.92, #4500).
+        for e in g.edges_between(&g.nodes[*u].id, &g.nodes[*v].id) {
+            push_edge_line(g, &mut lines, *u, *v, e);
+        }
     }
     let output = lines.join("\n");
     if output.chars().count() <= char_budget {
@@ -395,25 +398,49 @@ pub fn query_text(
     // resolves as `affected` resolves its seed (node id, unique label, or a
     // repo-relative or absolute file path), and one that does not resolve to
     // exactly one node is reported and skipped, never guessed (#4293).
+    // A seed that is itself the exact name of several nodes is an ambiguous
+    // reference, refused with its candidates rather than reported as a miss
+    // (Graphify 0.9.93, #4511).
     if let Some(values) = context.seeds.filter(|s| !s.is_empty()) {
         let mut unresolved: Vec<&str> = vec![];
+        let mut refusals: Vec<String> = vec![];
         let mut start = vec![];
         for value in values {
             let found = crate::affected::resolve_seed(g, value, context.seed_root)?
                 .and_then(|id| g.node_index(&json!(id)));
             match found {
-                None if !unresolved.contains(&value.as_str()) => unresolved.push(value.as_str()),
+                None => match crate::serve_find::query_name_refusal(g, index, value) {
+                    Some(refusal) => {
+                        if !refusals.contains(&refusal) {
+                            refusals.push(refusal);
+                        }
+                    }
+                    None => {
+                        if !unresolved.contains(&value.as_str()) {
+                            unresolved.push(value.as_str());
+                        }
+                    }
+                },
                 Some(i) if !start.contains(&i) => start.push(i),
                 _ => {}
             }
         }
         if start.is_empty() {
+            if !refusals.is_empty() {
+                return Ok(refusals.join("\n"));
+            }
             return Ok(format!(
                 "No unique node match for --seed: {}",
                 values.join(", ")
             ));
         }
         return render_query(g, index, q, &start, context, true, &unresolved);
+    }
+    // A question that is itself the exact name of several nodes is refused,
+    // matching `explain` and `path`; a sentence, or a keyword that only prefix-
+    // or substring-matches labels, falls through to scoring (#4511, #4517).
+    if let Some(refusal) = crate::serve_find::query_name_refusal(g, index, q) {
+        return Ok(refusal);
     }
     let terms = crate::query_terms::query_terms(q);
     let mut scored = score_query(g, index, &terms, true);

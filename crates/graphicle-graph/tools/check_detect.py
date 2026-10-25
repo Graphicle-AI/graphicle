@@ -84,7 +84,9 @@ files=['tests/test_detect.py','tests/test_ignore_file_encoding.py','tests/test_o
        # folder's evidence and the persisted scan options.
        'tests/test_long_path_hashing.py','tests/test_non_regular_files.py','tests/test_out_dir_evidence.py','tests/test_skill_persisted_scan_options.py',
        # 0.9.91 (#3427): Jinja templates are documents.
-       'tests/test_detect_jinja.py']
+       'tests/test_detect_jinja.py',
+       # 0.9.95 (#4548): binary media is listed but never counted as text.
+       'tests/test_binary_media_words.py']
 # These cases monkeypatch a Python process/parser/counter that a Rust library
 # cannot invoke. Exercise those contracts with actual native IO below instead.
 excluded={
@@ -105,6 +107,10 @@ excluded={
 # Simulates Windows by patching Python's sys.platform; the engine takes the
 # platform it runs on, so the long-path prefix is not added on Linux or macOS.
 'test_os_path_adds_prefix_on_win32',
+# 0.9.95 (#4548): these patch Python's PDF/Office converters and wrap the
+# reference's cached_word_count to see which files reach it; the native counter
+# has neither seam. tests/compat_0_9_95_cli.rs checks the native totals.
+'test_count_words_preserves_document_extraction','test_detect_keeps_media_without_counting_it',
 }
 class Reports:
     passed=0;skipped=0;deselected=[]

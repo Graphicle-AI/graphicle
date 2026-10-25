@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/objc.py
 //! Objective-C categories, protocols, selectors and receiver-type evidence.
 use super::{
@@ -59,7 +59,8 @@ fn leaves(node: Node<'_>) -> Vec<Node<'_>> {
     }
     out
 }
-/// An `NS_ENUM`/`NS_OPTIONS` enum: `(name, line, [(member, line)])`.
+/// An `NS_ENUM`/`NS_OPTIONS`/`NS_CLOSED_ENUM` (0.9.95, #4705) enum: `(name,
+/// line, [(member, line)])`.
 type MacroEnum = (String, usize, Vec<(String, usize)>);
 /// `_macro_enum_members` (0.9.89, #4400, #4401): `typedef NS_ENUM(Type,
 /// Name) { ... };` and `NS_OPTIONS`. The grammar does not parse these bodies
@@ -85,7 +86,10 @@ fn macro_enum_members(
         let Some(macro_name) = mac.child_by_field_name("name") else {
             continue;
         };
-        if !matches!(read(macro_name, source).as_str(), "NS_ENUM" | "NS_OPTIONS") {
+        if !matches!(
+            read(macro_name, source).as_str(),
+            "NS_ENUM" | "NS_OPTIONS" | "NS_CLOSED_ENUM"
+        ) {
             continue;
         }
         // The closest preceding structural token in an enclosing node must be

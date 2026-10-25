@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/file_slice.py
 //! Contiguous character slices whose provenance remains the original source file.
 use crate::{Result, cache::Stat, detect, fsutil, io_compat};
@@ -9,6 +9,8 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock},
 };
+/// Document suffixes that are sliced at boundaries; `.yaml`/`.yml` left the
+/// list when they became code (Graphify 0.9.95, #2214).
 pub const SPLITTABLE_TEXT_SUFFIXES: &[&str] = &[
     ".md",
     ".mdx",
@@ -18,8 +20,6 @@ pub const SPLITTABLE_TEXT_SUFFIXES: &[&str] = &[
     ".qmd",
     ".skill",
     ".html",
-    ".yaml",
-    ".yml",
     ".j2",
     ".jinja",
     ".jinja2",

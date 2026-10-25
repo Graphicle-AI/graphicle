@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! JSON bindings and explicitly recorded transport fixtures for qualification.
 use crate::{
@@ -195,6 +195,8 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         "_backend_supports_vision" => json!(c.vision(s("backend"))),
         "backend_detection_env_vars" => json!(c.detection_env_vars()),
         "detect_backend" => json!(c.detect_backend(&mut d)?),
+        "detect_backend_with_source" => json!(c.detect_backend_with_source(&mut d)?),
+        "backend_disabled_by_env" => json!(c.backend_disabled_by_env()),
         "_claude_cli_available" => json!(cfg::claude_command(env).is_some()),
         "provider_base_url_ok" => json!(cfg::provider_base_url_ok(
             s("base_url"),

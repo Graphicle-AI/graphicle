@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Beyond the upstream port (opt-in): a resident server for the CLI's read-only graph
 //! commands.
@@ -67,6 +67,7 @@ const FORWARDED_ENV: &[&str] = &[
     "GRAPHICLE_AMBIGUOUS_SCALE",
     "GRAPHICLE_API_TIMEOUT",
     "GRAPHICLE_AZURE_MODEL",
+    "GRAPHICLE_BACKEND",
     "GRAPHICLE_BEDROCK_MODEL",
     "GRAPHICLE_CHANGED",
     "GRAPHICLE_CHANGED_JSON",

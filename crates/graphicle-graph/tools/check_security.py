@@ -79,9 +79,12 @@ try:
     reference.check_graph_file_size_cap=lambda path:result("security.check_graph_size",path=str(path),cap=reference._max_graph_file_bytes())
     reference.validate_graph_path=lambda path,base=None:Path(result("security.graph_path",path=str(path),base=str(base) if base is not None else None,output=reference.GRAPHIFY_OUT,output_name=reference.GRAPHIFY_OUT_NAME))
     reference.validate_url=lambda url:result("security.validate_url",url=url)
+    # 0.9.95 (#4708): multicast and unspecified addresses are blocked.
+    reference._ip_is_blocked=lambda ip:result("security.ip",ips=[str(ip)])[0]
     tree=ast.parse((SOURCE / "tests/test_security.py").read_text())
     names=[node.name for node in tree.body if isinstance(node,ast.FunctionDef) and node.name.startswith("test_") and not node.name.startswith("test_safe_fetch") and node.name!="test_graph_size_cap_unreadable_directory_silently_returns"]
-    tests=upstream_tests(*["tests/test_security.py::"+name for name in names])
+    tests=upstream_tests(*["tests/test_security.py::"+name for name in names],
+                         "tests/test_frontmatter_and_ssrf_hardening.py::test_ip_is_blocked_rejects_multicast_and_unspecified")
 finally:
     native.close()
 

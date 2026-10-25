@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/dart.py
 //! Native translation of Graphify's Dart and Flutter regex extractor.
 
@@ -35,6 +35,14 @@ fn prefix(s: &str, count: usize) -> &str {
         .nth(count)
         .map(|(i, _)| i)
         .unwrap_or(s.len())]
+}
+/// Python's `\w` as the inside of a bracketed class, for patterns that put it
+/// in a class with other characters (`[\w.]`).
+fn word_chars() -> String {
+    WORD_RANGES
+        .iter()
+        .map(|(a, b)| format!(r"\u{{{a:x}}}-\u{{{b:x}}}"))
+        .collect()
 }
 fn compile(pattern: &str) -> Regex {
     let word = format!(
@@ -84,6 +92,9 @@ struct Patterns {
     annotation: Regex,
     function_annotation: Regex,
     typedef: Regex,
+    legacy_typedef: Regex,
+    typedef_line: Regex,
+    typedef_target: Regex,
     extension: Regex,
     variable: Regex,
     variable_modifier: Regex,
@@ -120,7 +131,19 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     function_annotation: compile(
         r"(?m)^\s*(?:factory\s+|static\s+|async\s+|external\s+|abstract\s+)?(?:\([^)]+\)|[a-zA-Z0-9_<>,.?]+)(?:\s+[a-zA-Z0-9_<>,.?]+){0,3}\s+(\w+)\s*\(",
     ),
-    typedef: compile(r"(?m)^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([a-zA-Z0-9_<>,.?\s]+);"),
+    // `typedef Name<T> = <type>;`, whose type may be a function type with
+    // parentheses, and the legacy `typedef int Compare(Object a, Object b);`
+    // (0.9.93, #4582). Return-type tokens cannot hold whitespace, so a long
+    // line that never reaches `(` fails in linear time.
+    typedef: compile(r"(?m)^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([^;]+);"),
+    legacy_typedef: compile(&format!(
+        r"(?m)^[ \t]*typedef[ \t]+(?:[{}<>,.?]+[ \t]+)*?(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
+        word_chars()
+    )),
+    // `_TYPEDEF_LINE.match(...)`: a match the typedef step declared.
+    typedef_line: compile(r"^\s*typedef\b"),
+    // `re.fullmatch(r"([\w.]+)\s*(?:<.*>)?\s*\??", target, re.DOTALL)`.
+    typedef_target: compile(&format!(r"(?s)^([{}.]+)\s*(?:<.*>)?\s*\??\z", word_chars())),
     extension: compile(r"(?m)^\s{0,4}extension\s+(\w+)?(?:<[^>]+>)?\s+on\s+(\w+)"),
     variable: compile(
         r"(?m)^\s{0,2}(?:late\s+)?(?:(?:final|const|var)\s+)?(?:\([^)]+\)\s+|([a-zA-Z0-9_<>,.?]+(?:\s+[a-zA-Z0-9_<>,.?]+){0,3})\s+)?(?:(\w+)|(?:\w+\s*)?\(([^)]+)\))\s*(?:=|$|;)",
@@ -553,23 +576,37 @@ impl Output<'_> {
     }
     fn types_and_variables(&mut self) -> Result<()> {
         let src = self.src;
-        for m in captures(&P.typedef, src)? {
-            let name = m.get(1).unwrap();
-            let line = self.line(name.start());
-            let typ = trim(
-                m.get(2)
-                    .unwrap()
-                    .as_str()
-                    .split('<')
-                    .next()
-                    .unwrap()
-                    .rsplit('.')
-                    .next()
-                    .unwrap(),
-            );
-            if !VARIABLE.contains(&typ) && typ != "Function" {
+        // 2.5 Typedefs: every alias is a node of this file; only an alias of a
+        // plain named type references it (a function type's leading name is
+        // its return type). Most files declare none: one substring test skips
+        // both scans.
+        let patterns: &[&Regex] = if src.contains("typedef") {
+            &[&P.typedef, &P.legacy_typedef]
+        } else {
+            &[]
+        };
+        for (index, pattern) in patterns.iter().enumerate() {
+            for m in captures(pattern, src)? {
+                let name = m.get(1).unwrap();
+                let line = self.line(name.start());
+                if self
+                    .defined
+                    .contains(&make_id([self.stem.as_str(), name.as_str()]))
+                {
+                    continue;
+                }
                 let id = self.declaration(name.as_str(), line);
-                self.reference(&id, typ, "references", Some("typedef"), line);
+                if index != 0 {
+                    continue;
+                }
+                let target = trim(m.get(2).unwrap().as_str());
+                let Some(named) = P.typedef_target.captures(target)? else {
+                    continue;
+                };
+                let typ = named.get(1).unwrap().as_str().rsplit('.').next().unwrap();
+                if !typ.is_empty() && !VARIABLE.contains(&typ) && typ != "Function" {
+                    self.reference(&id, typ, "references", Some("typedef"), line);
+                }
             }
         }
         for m in captures(&P.extension, src)? {
@@ -593,6 +630,10 @@ impl Output<'_> {
             if find(&P.variable_modifier, m.get(0).unwrap().as_str())?.is_none()
                 && typ.is_none_or(|t| t.is_empty())
             {
+                continue;
+            }
+            // Declared as an alias in 2.5 (0.9.93, #4582).
+            if find(&P.typedef_line, m.get(0).unwrap().as_str())?.is_some() {
                 continue;
             }
             if let Some(name) = m.get(2).filter(|s| !s.as_str().is_empty()) {
@@ -634,6 +675,10 @@ impl Output<'_> {
     fn methods(&mut self) -> Result<()> {
         let src = self.src;
         for m in captures(&P.method, src)? {
+            // A legacy alias, declared in 2.5 (0.9.93, #4582).
+            if find(&P.typedef_line, m.get(0).unwrap().as_str())?.is_some() {
+                continue;
+            }
             let raw = m.get(1).unwrap();
             let name = raw.as_str().rsplit('.').next().unwrap();
             if FLOW.contains(&name)

@@ -53,6 +53,27 @@ def purge_reason(out,project_dir):
     return actual
 ref._unsafe_purge_reason=purge_reason
 
+# 0.9.95 (#4513): references/ is staged under a random name, so a symlink
+# pre-created at the old fixed staging name redirects nothing. Its two upstream
+# cases run the native staging (the skill folder keeps the reference's name; the
+# native install writes no name of its own here).
+def install_refs(skill_dst,refs_src):
+    native.use_working_directory(Path.cwd());native.result('install',action='install_refs',path=str(skill_dst),source=str(refs_src))
+    counts['_install_skill_references']=counts.get('_install_skill_references',0)+1
+ref._install_skill_references=install_refs
+
+# #3286/#4513: the version stamp is written to a private temporary file renamed
+# over the stamp itself, so a symlink there is replaced, never followed. Every
+# reference flow, and test_atomic_version_stamp.py, writes it natively (under
+# the reference's stamp name).
+def write_version_stamp(skill_dst,version):
+    native.use_working_directory(Path.cwd());native.result('install',action='write_version',path=str(skill_dst),version=version,name='.graphify_version')
+    counts['_write_version_stamp']=counts.get('_write_version_stamp',0)+1
+ref._write_version_stamp=write_version_stamp
+STAMP_NOT_APPLICABLE={'tests/test_atomic_version_stamp.py::test_write_version_stamp_preserves_existing_on_replace_failure':
+    "Patches the reference's os.replace to fail; the engine's rename is native and cannot be patched from Python. "
+    "The paths.rs unit test replace_file_replaces_a_link_and_keeps_the_old_file_on_failure fails the rename natively instead."}
+
 def roundtrips():
     platforms=native.result('install',action='platforms')
     with tempfile.TemporaryDirectory(prefix='native-install-') as tmp:
@@ -226,10 +247,12 @@ if __name__=='__main__':
     # 0.9.89 `pi guard`: its test drives the reference dispatcher (the wheel's
     # package and pyproject package-data); pi_guard() compares the native command.
     paths+=[p for p in ['tests/test_pi_guard_install.py'] if (SOURCE/p).exists()]
+    paths+=['tests/test_install_references.py::'+name for name in ('test_install_skill_references_ignores_precreated_predictable_tmp_symlink_to_file','test_install_skill_references_ignores_precreated_predictable_tmp_symlink_to_dir') if (SOURCE/'tests/test_install_references.py').exists()]
+    paths+=[p for p in ['tests/test_atomic_version_stamp.py'] if (SOURCE/p).exists()]
     if '--test' in sys.argv:paths=[sys.argv[sys.argv.index('--test')+1]]
     with tempfile.TemporaryDirectory(prefix='install-oracle-home-') as tmp:
         previous=os.environ.get('HOME');os.environ['HOME']=tmp
-        try:code,tests=run(paths)
+        try:code,tests=run(paths,not_applicable_tests={k:v for k,v in STAMP_NOT_APPLICABLE.items() if any(p.split('::')[0]==k.split('::')[0] for p in paths)})
         finally:
             if previous is None:os.environ.pop('HOME',None)
             else:os.environ['HOME']=previous

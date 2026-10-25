@@ -129,6 +129,21 @@ EXTRACT_0991 = [
     'tests/test_indirect_call_file_scope_callback_shadow.py',
 ]
 paths += [p for p in EXTRACT_0991 if p not in paths and (SOURCE / p.split('::')[0]).is_file()]
+# 0.9.92-0.9.95 contracts that drive extract() without naming an extractor
+# (port lane A; same list as check_extract.py): type aliases (C++, Go, Python, Rust and Rust unions), C#
+# delegates and overloads, Kotlin typealias, Swift macros, JS member calls on
+# untyped receivers and CommonJS require bindings, Rust case-only collisions,
+# Solidity inherited calls, SQL cross-file tables and T-SQL procedures,
+# Objective-C category ids, parked call-site files and Python module calls.
+EXTRACT_0995 = [
+    'tests/test_cpp_type_alias.py','tests/test_csharp_delegate_declarations.py','tests/test_csharp_overloads.py',
+    'tests/test_go_type_alias.py','tests/test_js_member_call_bare_name_fallback.py','tests/test_js_require_binding_shadow.py',
+    'tests/test_kotlin_typealias_declarations.py','tests/test_objc_category_portable_ids.py','tests/test_parked_call_site_file.py',
+    'tests/test_python_module_call_exact_name.py','tests/test_python_type_alias.py','tests/test_rust_case_collisions.py',
+    'tests/test_rust_type_alias_union.py','tests/test_solidity_inherited_calls.py','tests/test_sql_cross_file_tables.py',
+    'tests/test_sql_tsql_procedures.py','tests/test_swift_macro_declarations.py',
+]
+paths += [p for p in EXTRACT_0995 if p not in paths and (SOURCE / p).is_file()]
 if '--test' in sys.argv:
     paths = [sys.argv[sys.argv.index('--test') + 1]]
 # An enclosing development checkout ignores research/. Isolate the unchanged

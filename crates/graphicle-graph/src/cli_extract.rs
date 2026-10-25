@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Headless AST/semantic extraction, cache checkpoints, merge and manifest commit.
 use crate::{
@@ -388,6 +388,7 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
                 &target,
                 &strings(&detection["unchanged_files"]["code"]),
                 false,
+                Some(&manifest_path),
             )
             .into_iter()
             .map(PathBuf::from),
@@ -397,7 +398,7 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
             .flat_map(|k| strings(&detection["unchanged_files"][*k]))
             .collect::<Vec<_>>();
         semantic.extend(
-            state::zero_sources(&graph_path, &target, &unchanged, true)
+            state::zero_sources(&graph_path, &target, &unchanged, true, None)
                 .into_iter()
                 .map(PathBuf::from),
         );
@@ -471,12 +472,38 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         cfg.env
             .insert("GRAPHICLE_API_TIMEOUT".into(), timeout.to_string());
     }
-    let needs_llm = !semantic.is_empty() || a.flag("dedup-llm");
-    let backend = a.get("backend").map(str::to_string).or_else(|| {
-        needs_llm
-            .then(|| cfg.detect_backend(&mut d).ok().flatten())
-            .flatten()
-    });
+    let mut needs_llm = !semantic.is_empty() || a.flag("dedup-llm");
+    let backend = match a.get("backend") {
+        Some(name) => Some(name.to_string()),
+        // GRAPHICLE_BACKEND=none (Graphify 0.9.92, #4361): keep the local AST
+        // pass and skip every LLM step, rather than failing or quietly
+        // choosing a cloud provider. Reported like --code-only.
+        None if needs_llm && cfg.backend_disabled_by_env() => {
+            out.line(format!(
+                "[graphicle extract] GRAPHICLE_BACKEND=none: skipping LLM work ({} non-code file(s) and LLM dedup kept out); indexing code only.",
+                semantic.len()
+            ));
+            semantic.clear();
+            needs_llm = false;
+            None
+        }
+        None if needs_llm => {
+            let (backend, source) = cfg
+                .detect_backend_with_source(&mut d)
+                .unwrap_or_else(|_| (None, String::new()));
+            // Name the setting that chose the backend, so sending the corpus
+            // to a cloud provider is never a surprise.
+            if let Some(name) = &backend
+                && source.starts_with("auto-detected")
+            {
+                out.line(format!(
+                    "[graphicle] using backend '{name}' ({source}); pass --backend or set GRAPHICLE_BACKEND to choose explicitly, or GRAPHICLE_BACKEND=none to disable LLM work."
+                ));
+            }
+            backend
+        }
+        None => None,
+    };
     if let Some(name) = &backend {
         cfg.backend(name)?;
     }
@@ -518,6 +545,8 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         }
     }
     let failed = strings(&ast["failed_sources"]);
+    // Declined by design (0.9.94, #2879): stamped with `ast_empty`.
+    let skipped = strings(&ast["skipped_sources"]);
     incomplete |= !failed.is_empty();
     stages.mark("AST extract", &mut d.stderr);
     let mut cache = ExtractionCache::default();
@@ -961,6 +990,7 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
                 ),
                 clear_semantic: Some(clear),
                 clear_ast: Some(failed),
+                ast_empty: (!skipped.is_empty()).then_some(skipped),
                 ..Default::default()
             },
         )?;

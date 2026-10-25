@@ -9,7 +9,7 @@ endorsement is implied.
 
 | Area | Status | Result |
 |---|---|---|
-| Code-graph engine: parity | Graphify 0.9.91: run on Linux, 15 October 2026, and again on the 0.1.2 source, 18 October 2026; the full run on macOS is pending. Graphify 0.9.88: done, 13 October 2026; widened 14 October 2026 | Against Graphify 0.9.91, the comparison checks pass on Linux, apart from those that stop on that host, as they did against 0.9.88 (IPv4 loopback, a speech recording and ffmpeg, and one layout tolerance). Against Graphify 0.9.88, every check passes, with reviewed upstream fixes applied to nine of the reference's modules; widened on 14 October, they run most of its test files against the engine, and every file they run passes apart from the recorded known differences. The limits are [below](#parity-with-graphify) |
+| Code-graph engine: parity | Graphify 0.9.95: done on Linux, 24 October 2026. Graphify 0.9.91: run on Linux, 15 October 2026, and again on the 0.1.2 source, 18 October 2026. Graphify 0.9.88: done, 13 October 2026; widened 14 October 2026 | Against Graphify 0.9.95, every comparison check passes on Linux (97 of 97) and every application module has a passing receipt. Against Graphify 0.9.91, the comparison checks pass on Linux, apart from those that stop on that host, as they did against 0.9.88 (IPv4 loopback, a speech recording and ffmpeg, and one layout tolerance). Against Graphify 0.9.88, every check passes, with reviewed upstream fixes applied to nine of the reference's modules; widened on 14 October, they run most of its test files against the engine, and every file they run passes apart from the recorded known differences. The limits are [below](#parity-with-graphify) |
 | Code-graph engine: speed | Done, on a pre-release build that followed Graphify 0.9.77. The 0.1.0 engine: an exploratory survey, 14 October 2026; its registered quiet-host repeat is pending. Updates after commits: Graphicle 0.1.0 against Graphify 0.9.91, registered before the first update, 15 October 2026. 13 codebases against Graphify 0.9.91: Graphicle's 0.1.1 memory engine (a pre-release build), one session per program, 15 October 2026 | Django (pre-release build): code-only extract 7.5 s against 72.8 s for Graphify 0.9.77. Kubernetes v1.37.1 (the 0.1.0 engine, which follows Graphify 0.9.88; exploratory, one run each on one Linux host, the same 16 CPUs, 8 workers, with four recorded deviations): code-only extract 198.4 s against 1,597.9 s for Graphify 0.9.88, the same graph. [Details](#speed-on-kubernetes). Updates after each of 30 commits on prometheus, tokio and poetry (one Linux node, 4 CPUs per run): 6 to 8 times less time than Graphify 0.9.91, with the same differences from a fresh build in both. [Details](#updates-after-commits). 13 codebases, 3 operations each (Graphicle's 0.1.1 memory engine, a pre-release build, against Graphify 0.9.91; the same machine, 3 CPUs and 8 workers each): 3.0 to 22.7 times less time in all 39 measurements; the graphs differ slightly, with node counts within 4.7% and edge counts within 2.0%. [Details](#speed-on-13-codebases-against-graphify-0991) |
 | Code-graph engine: peak memory | A pre-release build with 0.1.1's changes to how the engine holds its data, against Graphify 0.9.91, 15 October 2026; five measurements rechecked on a build of the merged 0.1.1 source | Less peak memory than Graphify 0.9.91 in all 39 measurements (13 repositories; extract, priming update and update with no change), from 0.29 to 0.97 times Graphify's figure; Kubernetes extract 2,091.5 against 2,767 MiB. One Linux node (its 8 H100 GPUs not used), 8 workers; Graphicle's peak RSS against Graphify's peak PSS. [Details](#peak-memory-against-graphify-0991) |
 | Coding agents: Claude Code with Graphicle, Graphify or neither | Four task sets, each test registered before any answer was scored; Claude Code with Opus 5.5, and one set repeated with Haiku 5.5 | Graphicle tied plain Claude Code on finding files and facts in every test, and no token saving is claimed against it. Against Graphify 0.9.91, Graphicle found more facts on Graphify's showcase corpus and used fewer tokens in all four task sets (on SWE-bench Verified, a secondary comparison); in two of them, Graphicle's arm included a prototype that does not ship. [Details](#coding-agents-with-graphicle-graphify-or-neither) |
@@ -28,15 +28,33 @@ conditions, and the sections below have the full tables.
 ### Parity with Graphify
 
 The engine is a Rust port of Graphify. It follows Graphify
-0.9.91 (tag commit `10130e79`): the port was made from 0.9.77 (`5c7b8479`),
-the eleven releases 0.9.78 to 0.9.88 were ported for 0.1.0, and the three
-releases 0.9.89 to 0.9.91 for 0.1.1. Against Graphify 0.9.88 it passed every
-comparison check, and every application module had a passing receipt.
-Against Graphify 0.9.91 the checks have run on Linux, where the only checks
-that do not pass stop for reasons of that host (below); the full run on
-macOS, which records every module's receipt, is still to be made for 0.9.91.
+0.9.95 (tag commit `92741d16`): the port was made from 0.9.77 (`5c7b8479`),
+the eleven releases 0.9.78 to 0.9.88 were ported for 0.1.0, the three
+releases 0.9.89 to 0.9.91 for 0.1.1, and the four releases 0.9.92 to 0.9.95
+for 0.1.7. Against Graphify 0.9.95 it passes every comparison check on
+Linux, and every application module has a passing receipt. Against Graphify
+0.9.88 it passed every comparison check, and every application module had a
+passing receipt. Against Graphify 0.9.91 the checks ran on Linux, where the
+only checks that did not pass stopped for reasons of that host (below).
 That is the parity claim, with these limits:
 
+- **Graphify 0.9.95 (24 October 2026).** A qualified build of the source that
+  follows 0.9.95 (binary SHA-256 `92c162c3…`) ran `tools/qualify_all.py`
+  against the pinned archive of Graphify 0.9.95 (`92741d16`, archive SHA-256
+  `b4bc34d3…`, with `graphifyy` 0.9.95 from PyPI) on Linux (x86_64). Every one
+  of the 97 checks passes, and the file ledger (`migration/FILES.json`) marks
+  all 96 application modules verified. On that host the loopback checks ran
+  with their test servers on the host's own address, `check_transcribe` had
+  ffmpeg and the speech recording (`jfk.wav`), and the force-directed layout
+  is compared with NetworkX at an absolute tolerance of 1e-8 instead of 2e-9:
+  one coordinate of 22 differs there by 2.2e-9, with the same values against
+  0.9.91 as against 0.9.95. Of the test files that 0.9.92 to 0.9.95 add or
+  change, the checks run all but these: the files that test Graphify's skill
+  text, the scan-root test, which reads a Python module variable,
+  `test_cache_long_paths.py`, which runs only on Windows,
+  `test_serve_http.py`, which needs packages the reference environment does
+  not install, and single tests that patch the reference's private Python
+  functions or read its source; each is recorded in its check's receipt.
 - **Graphify 0.9.91 (15 October 2026).** A qualified build of the 0.1.1
   source (binary SHA-256 `f212d846…`) ran `tools/qualify_all.py` against the
   pinned archive of Graphify 0.9.91 (`10130e79`, archive SHA-256
@@ -155,8 +173,12 @@ That is the parity claim, with these limits:
   upstream fixes that were reviewed and the known limitations.
 
 The opt-in additions (`--precise`, `extract --docs`, `extract --routes`,
-`retrieve`, `serve --watch`) go beyond Graphify 0.9.91, so the parity claim
-does not cover them. Each one is off unless you ask for it.
+`retrieve`, `serve --watch`) go beyond Graphify 0.9.95, so the parity claim
+does not cover them. Each one is off unless you ask for it. Two defaults also
+go beyond it: every reader of a saved graph.json repairs parallel links
+stored under `multigraph: false` (upstream repairs them only in its MCP
+server), and the engine reads a graph.json over the 512 MiB cap that it
+wrote itself (upstream refuses it).
 
 ### Speed against Graphify 0.9.77
 

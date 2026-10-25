@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Type, annotation and receiver helpers from the pinned generic engine.
 use super::base::{make_id, read_text};
@@ -1433,14 +1433,102 @@ pub fn swift_declaration_keyword(node: Node<'_>) -> Option<&str> {
         })
         .map(|n| n.kind_name())
 }
+/// `_python_alias_name` (Graphify 0.9.95, #4578): the type name a module-level
+/// statement declares as an explicit alias: `type Vector = ...` (PEP 695),
+/// `Matrix: TypeAlias = ...` or `UserId = NewType("UserId", int)`. A bare
+/// `X = Union[...]` is an alias by convention only. A same-name re-export
+/// (`Field: TypeAlias = core.Field`) denotes the original type and declares
+/// none; `NewType` always mints a new type, even under its own name.
+pub fn python_alias_name(stmt: Node<'_>, source: &[u8]) -> Option<String> {
+    let strip = |s: &str| -> String {
+        s.trim_matches(|c: char| c.is_whitespace() || ('\x1c'..='\x1f').contains(&c))
+            .to_owned()
+    };
+    let before_bracket =
+        |node: Node<'_>| strip(read_text(node, source).split('[').next().unwrap_or(""));
+    let (name, right) = match stmt.kind_name() {
+        "type_alias_statement" => (
+            stmt.child_by_field_name("left")
+                .map(before_bracket)
+                .unwrap_or_default(),
+            stmt.child_by_field_name("right"),
+        ),
+        "expression_statement" if named(stmt).len() == 1 => {
+            let assign = named(stmt)[0];
+            let left = (assign.kind_name() == "assignment")
+                .then(|| assign.child_by_field_name("left"))
+                .flatten()
+                .filter(|left| left.kind_name() == "identifier")?;
+            let name = read_text(left, source);
+            let right = assign.child_by_field_name("right");
+            match assign.child_by_field_name("type") {
+                None => {
+                    let callee = right
+                        .filter(|r| r.kind_name() == "call")
+                        .and_then(|r| r.child_by_field_name("function"));
+                    return callee
+                        .is_some_and(|c| {
+                            ["NewType", "typing.NewType", "typing_extensions.NewType"]
+                                .contains(&read_text(c, source).as_str())
+                        })
+                        .then_some(name);
+                }
+                Some(annotation) => {
+                    if ![
+                        "TypeAlias",
+                        "typing.TypeAlias",
+                        "typing_extensions.TypeAlias",
+                    ]
+                    .contains(&strip(&read_text(annotation, source)).as_str())
+                    {
+                        return None;
+                    }
+                }
+            }
+            (name, right)
+        }
+        _ => return None,
+    };
+    // `str.isidentifier()`.
+    let mut chars = name.chars();
+    if !chars.next().is_some_and(|c| c == '_' || c.is_alphabetic())
+        || !chars.all(|c| c == '_' || c.is_alphanumeric())
+    {
+        return None;
+    }
+    let target = right.map(before_bracket).unwrap_or_default();
+    if target.rsplit('.').next().unwrap_or("") == name {
+        return None;
+    }
+    Some(name)
+}
+/// `_python_pre_scan_underscore_collisions`: names that collapse to one node id
+/// in a Python module. Module-level functions, classes and explicit type
+/// aliases share the module scope (`class Session` / `def session()`, `Foo` /
+/// `FOO`, 0.9.92, #2810); a class's direct methods are keyed under the class's
+/// own (possibly salted) id. Decorated definitions count as the definition
+/// they wrap.
 pub fn python_pre_scan_underscore_collisions(
     root: Node<'_>,
     source: &[u8],
     stem: &str,
 ) -> BTreeMap<String, BTreeSet<String>> {
+    fn undecorated(node: Node<'_>) -> Node<'_> {
+        if node.kind_name() == "decorated_definition" {
+            node.child_by_field_name("definition").unwrap_or(node)
+        } else {
+            node
+        }
+    }
     let mut groups: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-    for c in children(root) {
-        if c.kind_name() == "function_definition" {
+    let mut classes = vec![];
+    for c in children(root).into_iter().map(undecorated) {
+        if let Some(alias) = python_alias_name(c, source) {
+            groups
+                .entry(make_id([stem, &alias]))
+                .or_default()
+                .insert(alias);
+        } else if c.kind_name() == "function_definition" {
             if let Some(n) = c.child_by_field_name("name") {
                 let name = read_text(n, source);
                 if !name.is_empty() {
@@ -1458,19 +1546,29 @@ pub fn python_pre_scan_underscore_collisions(
             if class.is_empty() {
                 continue;
             }
-            let id = make_id([stem, &class]);
-            for member in children(body)
-                .into_iter()
-                .filter(|m| m.kind_name() == "function_definition")
-            {
-                if let Some(n) = member.child_by_field_name("name") {
-                    let name = read_text(n, source);
-                    if !name.is_empty() {
-                        groups
-                            .entry(make_id([id.as_str(), &name]))
-                            .or_default()
-                            .insert(name);
-                    }
+            groups
+                .entry(make_id([stem, &class]))
+                .or_default()
+                .insert(class.clone());
+            classes.push((class, body));
+        }
+    }
+    let mut module_groups = groups.clone();
+    module_groups.retain(|_, names| names.len() >= 2);
+    for (class, body) in classes {
+        let id = python_underscore_salted_nid(&make_id([stem, &class]), &class, &module_groups);
+        for member in children(body)
+            .into_iter()
+            .map(undecorated)
+            .filter(|m| m.kind_name() == "function_definition")
+        {
+            if let Some(n) = member.child_by_field_name("name") {
+                let name = read_text(n, source);
+                if !name.is_empty() {
+                    groups
+                        .entry(make_id([id.as_str(), &name]))
+                        .or_default()
+                        .insert(name);
                 }
             }
         }
@@ -1483,16 +1581,124 @@ pub fn python_underscore_salted_nid(
     name: &str,
     groups: &BTreeMap<String, BTreeSet<String>>,
 ) -> String {
+    underscore_salted_nid(plain, name, groups, &['_'])
+}
+/// `_underscore_salted_nid`: a name with no colliding sibling keeps its plain
+/// id; in a collision the one public name keeps it and every other name is
+/// salted with a hash of itself. `private` lists the prefixes that make a
+/// name non-public (`_`; JS/TS also `$` and `#`, #4475).
+pub fn underscore_salted_nid(
+    plain: &str,
+    name: &str,
+    groups: &BTreeMap<String, BTreeSet<String>>,
+    private: &[char],
+) -> String {
     use sha1::Digest;
     let Some(names) = groups.get(plain).filter(|names| names.len() >= 2) else {
         return plain.into();
     };
-    let public: Vec<_> = names.iter().filter(|n| !n.starts_with('_')).collect();
+    let public: Vec<_> = names.iter().filter(|n| !n.starts_with(private)).collect();
     if public.len() == 1 && name == public[0] {
         return plain.into();
     }
     let hash = format!("{:x}", sha1::Sha1::digest(name.as_bytes()));
     make_id([plain, &hash[..6]])
+}
+/// `_csharp_method_signature` (Graphify 0.9.95, #4584): a C# method's
+/// parameter signature (`` `1:this Foo,ref int,params int[] ``), which tells
+/// overloads apart, and the argument counts it accepts: `arity`, `min_arity`
+/// for optional, `params` and extension parameters, `variadic` for `params`.
+pub fn csharp_method_signature(node: Node<'_>, source: &[u8]) -> (String, Value) {
+    let squeeze = |n: Node<'_>| read_text(n, source).split_whitespace().collect::<String>();
+    let mut parts = vec![];
+    let (mut arity, mut required) = (0i64, 0i64);
+    let (mut variadic, mut extension) = (false, false);
+    let params = node
+        .child_by_field_name("parameters")
+        .map(children)
+        .unwrap_or_default();
+    for (i, c) in params.iter().enumerate() {
+        if c.kind_name() == "parameter" {
+            let mut words = children(*c)
+                .into_iter()
+                .filter(|m| m.kind_name() == "modifier")
+                .map(|m| read_text(m, source))
+                .collect::<Vec<_>>();
+            let this = words.iter().any(|m| m == "this");
+            words.push(
+                c.child_by_field_name("type")
+                    .map(squeeze)
+                    .unwrap_or_default(),
+            );
+            parts.push(words.join(" "));
+            arity += 1;
+            if this && arity == 1 {
+                extension = true;
+            }
+            if !children(*c).into_iter().any(|x| x.kind_name() == "=") {
+                required += 1;
+            }
+        } else if c.kind_name() == "params" {
+            parts.push(format!(
+                "params {}",
+                params.get(i + 1).map(|n| squeeze(*n)).unwrap_or_default()
+            ));
+            arity += 1;
+            variadic = true;
+        }
+    }
+    let type_params = children(node)
+        .into_iter()
+        .filter(|c| c.kind_name() == "type_parameter_list")
+        .flat_map(children)
+        .filter(|p| matches!(p.kind_name(), "type_parameter" | "identifier"))
+        .count();
+    let mut signature = parts.join(",");
+    if type_params > 0 {
+        signature = format!("`{type_params}:{signature}");
+    }
+    let mut meta = json!({"arity": arity});
+    // An extension method is also called as `x.M(rest)`, one argument short.
+    let min_arity = if extension { required - 1 } else { required };
+    if min_arity < arity {
+        meta["min_arity"] = json!(min_arity);
+    }
+    if variadic {
+        meta["variadic"] = json!(true);
+    }
+    (signature, meta)
+}
+/// `_csharp_argc`: the argument count of a C# invocation, `None` for anything
+/// else (an object creation).
+pub fn csharp_argc(call: Node<'_>) -> Option<i64> {
+    if call.kind_name() != "invocation_expression" {
+        return None;
+    }
+    Some(call.child_by_field_name("arguments").map_or(0, |args| {
+        children(args)
+            .into_iter()
+            .filter(|c| c.kind_name() == "argument")
+            .count() as i64
+    }))
+}
+/// `_csharp_pick_overload`: the one overload a call with `argc` arguments can
+/// mean, from `(id, metadata)` of the overloads of one name on one type.
+/// Only the count is known at a call site, so two overloads that both accept
+/// it (`M(int)` / `M(string)`) stay undecided.
+pub fn csharp_pick_overload<'a>(
+    overloads: impl IntoIterator<Item = (&'a str, &'a Value)>,
+    argc: Option<i64>,
+) -> Option<&'a str> {
+    let argc = argc?;
+    let mut fits = vec![];
+    for (id, meta) in overloads {
+        let arity = meta["arity"].as_i64()?;
+        let low = meta["min_arity"].as_i64().unwrap_or(arity);
+        if low <= argc && (argc <= arity || meta["variadic"] == true) {
+            fits.push(id);
+        }
+    }
+    (fits.len() == 1).then(|| fits[0])
 }
 pub fn swift_pre_scan(root: Node<'_>, source: &[u8]) -> (BTreeSet<String>, BTreeSet<String>) {
     let mut protocols = BTreeSet::new();
@@ -1754,18 +1960,56 @@ pub fn cpp_type_parameters_in_scope(node: Node<'_>, source: &[u8]) -> BTreeSet<S
         &["type_identifier"],
     )
 }
+/// `_CPP_DIALECT_TYPE_QUALIFIERS` (Graphify 0.9.93, #4550): GPU C++ dialects
+/// route through the C++ extractor, but their address-space, execution-space
+/// and function qualifiers are not C++, and tree-sitter-cpp reads a leading
+/// `kernel` / `__global__` as the declaration's type. They are legal
+/// identifiers in plain C++, so the filter is keyed by file extension.
+pub fn cpp_dialect_qualifiers(path: &str) -> &'static [&'static str] {
+    let suffix =
+        crate::path_syntax::suffix(path.rsplit(['/', '\\']).next().unwrap_or("")).to_lowercase();
+    match suffix.as_str() {
+        ".metal" => &[
+            "kernel",
+            "vertex",
+            "fragment",
+            "device",
+            "constant",
+            "threadgroup",
+            "threadgroup_imageblock",
+            "thread",
+            "ray_data",
+            "object_data",
+        ],
+        ".cu" | ".cuh" => &[
+            "__global__",
+            "__device__",
+            "__host__",
+            "__shared__",
+            "__constant__",
+            "__managed__",
+            "__restrict__",
+            "__forceinline__",
+            "__noinline__",
+            "__grid_constant__",
+            "__launch_bounds__",
+        ],
+        _ => &[],
+    }
+}
 pub fn cpp_collect_type_refs(
     node: Option<Node<'_>>,
     source: &[u8],
     generic: bool,
     out: &mut TypeRefs,
+    dialect: &[&str],
 ) {
     let Some(n) = node else { return };
     if set("_C_PRIMITIVE_TYPE_NODES").contains(n.kind_name()) {
         return;
     }
     let skip = cpp_type_parameters_in_scope(n, source);
-    cpp_collect_type_refs_in(n, source, generic, out, &skip)
+    cpp_collect_type_refs_in(n, source, generic, out, &skip, dialect)
 }
 fn cpp_collect_type_refs_in(
     n: Node<'_>,
@@ -1773,12 +2017,13 @@ fn cpp_collect_type_refs_in(
     generic: bool,
     out: &mut TypeRefs,
     skip: &BTreeSet<String>,
+    dialect: &[&str],
 ) {
     if set("_C_PRIMITIVE_TYPE_NODES").contains(n.kind_name()) {
         return;
     }
     let push_type = |out: &mut TypeRefs, text: String| {
-        if !skip.contains(&text) {
+        if !skip.contains(&text) && !dialect.contains(&text.as_str()) {
             push(out, text, generic)
         }
     };
@@ -1786,7 +2031,7 @@ fn cpp_collect_type_refs_in(
         "type_identifier" => push_type(out, read_text(n, source)),
         "qualified_identifier" => {
             if let Some(name) = n.child_by_field_name("name") {
-                cpp_collect_type_refs_in(name, source, generic, out, skip)
+                cpp_collect_type_refs_in(name, source, generic, out, skip, dialect)
             }
         }
         "template_type" => {
@@ -1795,7 +2040,7 @@ fn cpp_collect_type_refs_in(
             }
             if let Some(args) = n.child_by_field_name("arguments") {
                 for c in named(args) {
-                    cpp_collect_type_refs_in(c, source, true, out, skip)
+                    cpp_collect_type_refs_in(c, source, true, out, skip, dialect)
                 }
             }
         }
@@ -1808,11 +2053,86 @@ fn cpp_collect_type_refs_in(
         | "abstract_reference_declarator"
         | "abstract_array_declarator" => {
             for c in named(n) {
-                cpp_collect_type_refs_in(c, source, generic, out, skip)
+                cpp_collect_type_refs_in(c, source, generic, out, skip, dialect)
             }
         }
         _ => {}
     }
+}
+/// `_cpp_declarator_type_name`: the name a typedef declarator introduces
+/// (`Handle`, `*HandlePtr`, `(*Fn)(int)`, `Arr[4]`).
+fn cpp_declarator_type_name(declarator: Node<'_>, source: &[u8]) -> Option<String> {
+    let mut node = Some(declarator);
+    while let Some(n) = node.filter(|n| n.kind_name() != "type_identifier") {
+        let mut inner = n.child_by_field_name("declarator");
+        if inner.is_none() && n.kind_name() == "parenthesized_declarator" {
+            inner = named(n).into_iter().next();
+        }
+        node = inner;
+    }
+    node.map(|n| read_text(n, source))
+}
+/// `_cpp_type_last_name`: `Bar` for `ns::Bar` or `ns::Bar<T>`.
+fn cpp_type_last_name(type_node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
+    let mut node = type_node;
+    if let Some(n) = node.filter(|n| n.kind_name() == "type_descriptor") {
+        node = n.child_by_field_name("type");
+    }
+    node.filter(|n| n.kind_name() == "qualified_identifier")?;
+    while let Some(n) = node.filter(|n| n.kind_name() == "qualified_identifier") {
+        node = n.child_by_field_name("name");
+    }
+    if let Some(n) = node.filter(|n| n.kind_name() == "template_type") {
+        node = n.child_by_field_name("name");
+    }
+    node.map(|n| read_text(n, source))
+}
+/// `_cpp_alias_names` (Graphify 0.9.95, #4580): the type names a namespace- or
+/// file-scope `using X = ...;` or `typedef ... X;` declares. A member alias in
+/// a class is not one (C++ member ids are not class-qualified, so they would
+/// fold into one hub), nor the struct a C-style `typedef struct Foo {...} Foo;`
+/// names, nor a same-name re-export (`using Bar = ns::Bar;`). An include guard
+/// or `#if` block is a wrapper, not a scope.
+pub fn cpp_alias_names(node: Node<'_>, source: &[u8]) -> Vec<String> {
+    let mut scope = node.parent();
+    while let Some(s) = scope.filter(|s| {
+        s.kind_name() == "template_declaration" || s.kind_name().starts_with("preproc_")
+    }) {
+        scope = s.parent();
+    }
+    if !scope.is_some_and(|s| matches!(s.kind_name(), "translation_unit" | "declaration_list")) {
+        return vec![];
+    }
+    let target = node.child_by_field_name("type");
+    let candidates: Vec<Option<String>> = if node.kind_name() == "alias_declaration" {
+        node.child_by_field_name("name")
+            .map(|n| read_text(n, source))
+            .into_iter()
+            .map(Some)
+            .collect()
+    } else {
+        let mut cursor = node.walk();
+        node.children_by_field_name("declarator", &mut cursor)
+            .map(|d| cpp_declarator_type_name(d, source))
+            .collect()
+    };
+    let mut seen: BTreeSet<String> = cpp_type_last_name(target, source).into_iter().collect();
+    if let Some(t) = target.filter(|t| {
+        matches!(
+            t.kind_name(),
+            "struct_specifier" | "class_specifier" | "union_specifier" | "enum_specifier"
+        )
+    }) && let Some(name) = t.child_by_field_name("name")
+    {
+        seen.insert(read_text(name, source));
+    }
+    let mut names = vec![];
+    for name in candidates.into_iter().flatten() {
+        if !name.is_empty() && seen.insert(name.clone()) {
+            names.push(name);
+        }
+    }
+    names
 }
 /// `_scala_type_parameters_in_scope` (0.9.89): `class Box[T]`, `def map[R]`,
 /// variance-annotated `[+A]`/`[-B]` (the name one level deeper); a bound

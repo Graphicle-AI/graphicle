@@ -899,10 +899,24 @@ pub fn integration_default(db: &Connection, repository: &str) -> Result<Value> {
     let integrated = graph
         .nodes()
         .iter()
-        .any(|node| code_symbol(&node.attributes));
+        .any(|node| code_symbol(&node.attributes) && !yaml_node(&node.attributes));
     Ok(json!({"integrated": integrated,
         "reason": if integrated { "code_symbols" } else { "no_code_symbols" },
         "episode": episode}))
+}
+
+/// A node of a YAML file. The engine reads YAML configuration as keys since
+/// Graphify 0.9.95 (#2214); the code graph leaves them out for now
+/// (`graph_projection`'s `YAML_IN_CODE_GRAPH`), and where it has them a
+/// project whose only symbols are YAML keys is not a code project for
+/// [`integration_default`].
+fn yaml_node(attributes: &impl graphicle::record::Properties) -> bool {
+    relpath(attributes).is_some_and(|path| {
+        std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml"))
+    })
 }
 
 /// A code symbol of an episode: a node anchored to a file (`relpath`) that
@@ -1036,6 +1050,23 @@ mod tests {
         assert_eq!(lines(&attributes), Some((3, Some(9))));
         attributes.insert("source_location".into(), Value::Null);
         assert_eq!(lines(&attributes), None);
+    }
+
+    /// YAML keys are code symbols of the graph, but a project with only YAML
+    /// is not a code project for `basic`'s default.
+    #[test]
+    fn yaml_keys_alone_do_not_make_a_code_project() {
+        let node = |fields: Value| fields.as_object().cloned().unwrap();
+        let key = node(json!({"kind":"code","relpath":"deploy/app.yaml","label":"replicas"}));
+        assert!(code_symbol(&key));
+        assert!(yaml_node(&key));
+        assert!(yaml_node(&node(
+            json!({"file_type":"code","source_file":".github/workflows/ci.YML","label":"jobs"})
+        )));
+        assert!(!yaml_node(&node(
+            json!({"kind":"code","relpath":"a.py","label":"alpha()"})
+        )));
+        assert!(!yaml_node(&node(json!({"kind":"concept","label":"yaml"}))));
     }
 
     /// What makes an episode a code

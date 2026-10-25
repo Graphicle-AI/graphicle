@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/resolver_registry.py
 //! Port of graphify/resolver_registry.py: ordered, suffix-gated mutable passes.
 //!
@@ -804,6 +804,7 @@ mod tests {
             "vbnet_partial_calls",
             "r_sourced_calls",
             "solidity_type_references",
+            "solidity_inherited_calls",
             "erlang_remote_calls",
             "pascal_inherited_calls",
             "csharp_interface_dispatch",

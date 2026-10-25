@@ -52,11 +52,11 @@ fn completed_engine_reports_coverage_and_rejects_unknown_operations() {
     let info = dispatch(json!({"operation":"graph.info"})).unwrap();
     let based_on = &info["based_on"];
     assert_eq!(based_on["complete_port"], true);
-    assert_eq!(based_on["application_modules"], 95);
-    assert_eq!(based_on["upstream_version"], "0.9.91");
+    assert_eq!(based_on["application_modules"], 96);
+    assert_eq!(based_on["upstream_version"], "0.9.95");
     assert_eq!(
         based_on["upstream_commit"],
-        "10130e79ed9caf8f60d998073e097531eaa1a395"
+        "92741d162b2094ffc2fed58cfbd8ee823e9da62c"
     );
     assert_eq!(
         dispatch(json!({"operation":"graph.not_implemented"}))
@@ -443,4 +443,86 @@ fn retrieval_entry_points_serve_resident_graphs_through_the_runtime_and_the_type
         "query": "parse payload",
     }));
     assert!(closed.is_err());
+}
+
+/// identity.annotate over the engine's own extraction of one package.json
+/// (`extract.json`): each node's `(qualified_name, stable_id)` by label.
+fn package_identities(
+    manifest: &serde_json::Value,
+) -> std::collections::BTreeMap<String, (String, String)> {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("package.json");
+    std::fs::write(&path, serde_json::to_string_pretty(manifest).unwrap()).unwrap();
+    let extracted = dispatch(json!({"operation":"graph.extract.json","path":path})).unwrap();
+    let graph = json!({"directed":true,"multigraph":false,"graph":{},
+        "nodes":extracted["nodes"],"links":extracted["edges"]});
+    let annotated = dispatch(json!({"operation":"graph.identity.annotate","graph":graph,
+        "repo":"core","strip_prefix":scratch.0}))
+    .unwrap();
+    annotated["graph"]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|node| {
+            (
+                node["label"].as_str().unwrap().to_owned(),
+                (
+                    node["qualified_name"].as_str().unwrap().to_owned(),
+                    node["stable_id"].as_str().unwrap().to_owned(),
+                ),
+            )
+        })
+        .collect()
+}
+
+/// An npm alias entry, which the engine labels
+/// `string-width-cjs@npm:string-width@^4.2.0`, is identified by its name,
+/// and keeps that identity when its range moves.
+#[test]
+fn an_npm_alias_entry_is_identified_by_its_name() {
+    let manifest = |range: &str| json!({"name":"app","dependencies":{"string-width-cjs":range}});
+    let before = package_identities(&manifest("npm:string-width@^4.2.0"));
+    let (name, id) = &before["string-width-cjs@npm:string-width@^4.2.0"];
+    assert_eq!(name, "dependencies.string-width-cjs");
+    let after = package_identities(&manifest("npm:string-width@^4.3.0"));
+    assert_eq!(&after["string-width-cjs@npm:string-width@^4.3.0"].1, id);
+}
+
+/// A dependency on a git URL whose user part holds `@` is identified by its
+/// name, and keeps that identity when the reference moves.
+#[test]
+fn a_git_url_entry_is_identified_by_its_name() {
+    let manifest = |range: &str| json!({"name":"app","dependencies":{"lib":range}});
+    let before = package_identities(&manifest("git+ssh://git@github.com/org/lib.git#v1"));
+    let (name, id) = &before["lib@git+ssh://git@github.com/org/lib.git#v1"];
+    assert_eq!(name, "dependencies.lib");
+    let after = package_identities(&manifest("git+ssh://git@github.com/org/lib.git#v2"));
+    assert_eq!(&after["lib@git+ssh://git@github.com/org/lib.git#v2"].1, id);
+}
+
+/// pnpm overrides are not dependency entries: two overrides of one package
+/// keep their whole keys and their own identities, so deleting one leaves
+/// the other's identity, and the memories linked to it, alone.
+#[test]
+fn pnpm_overrides_keep_their_whole_keys() {
+    let both = package_identities(&json!({"name":"app","dependencies":{"semver":"^7.6.0"},
+        "pnpm":{"overrides":{"semver@<7.5.2":">=7.5.2","semver@>=6 <6.3.1":">=6.3.1"}}}));
+    assert_eq!(both["semver@<7.5.2"].0, "pnpm.overrides.semver@<7.5.2");
+    assert_eq!(
+        both["semver@>=6 <6.3.1"].0,
+        "pnpm.overrides.semver@>=6 <6.3.1"
+    );
+    let second = package_identities(&json!({"name":"app","dependencies":{"semver":"^7.6.0"},
+        "pnpm":{"overrides":{"semver@>=6 <6.3.1":">=6.3.1"}}}));
+    assert_eq!(second["semver@>=6 <6.3.1"].1, both["semver@>=6 <6.3.1"].1);
+}
+
+/// A jest `moduleNameMapper` key such as `^@lib/(.*)$` is not a dependency
+/// entry and keeps its whole label.
+#[test]
+fn a_module_name_mapper_key_keeps_its_whole_label() {
+    let ids = package_identities(&json!({"name":"app","dependencies":{"commander":"^14.0.2"},
+        "jest":{"moduleNameMapper":{"^@lib/(.*)$":"<rootDir>/lib/$1"}}}));
+    assert_eq!(ids["^@lib/(.*)$"].0, "jest.moduleNameMapper.^@lib/(.*)$");
+    assert_eq!(ids["commander@^14.0.2"].0, "dependencies.commander");
 }

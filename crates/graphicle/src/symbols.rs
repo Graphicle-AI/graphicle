@@ -485,12 +485,13 @@ fn occurrence_rule(covered: bool, symbols: usize) -> &'static str {
 
 /// Extensions the engine classifies as code that hold data, a project or
 /// solution description, or a form or map: data JSON (config JSON is a
-/// package manifest), MSBuild projects and solutions, Terraform variable
+/// package manifest), YAML (configuration the engine reads as keys since
+/// Graphify 0.9.95), MSBuild projects and solutions, Terraform variable
 /// values, PowerShell data, addon tables of contents, Delphi and Lazarus
 /// forms and packages, BYOND maps, icons and interfaces, XAML markup.
 const DATA_EXTENSIONS: &[&str] = &[
-    "json", "csproj", "fsproj", "vbproj", "sln", "slnx", "tfvars", "psd1", "toc", "dfm", "lfm",
-    "lpk", "dmm", "dmi", "dmf", "xaml",
+    "json", "yaml", "yml", "csproj", "fsproj", "vbproj", "sln", "slnx", "tfvars", "psd1", "toc",
+    "dfm", "lfm", "lpk", "dmm", "dmi", "dmf", "xaml",
 ];
 
 /// Whether a file could hold code symbols the projection has not read yet:
@@ -1995,6 +1996,11 @@ mod tests {
             "go.mod",
             "pom.xml",
             "apm.yml",
+            // YAML is code to the engine since Graphify 0.9.95 (#2214) and
+            // data here, as JSON is.
+            "deploy/service.yaml",
+            ".github/workflows/ci.yml",
+            "Chart.YAML",
             "App.csproj",
             "infra/prod.tfvars",
         ] {

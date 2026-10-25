@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Incremental extraction bookkeeping and conservative stale-source pruning.
 use crate::{Result, build, paths};
@@ -115,7 +115,7 @@ pub fn stamped(
     Value::Object(out)
 }
 pub fn read_graph(path: &Path) -> Result<Value> {
-    crate::security::check_graph_file_size_cap(path)?;
+    crate::security::check_own_graph_size_cap(path)?;
     serde_json::from_slice(&std::fs::read(path).map_err(crate::Error::from)?)
         .map_err(|e| format!("Cannot read {}: {e}", path.display()))
         .map_err(crate::Error::from)
@@ -224,12 +224,29 @@ pub fn stale_sources_in(
     }
     (stale, kept)
 }
+/// `_zero_node_stamped_code_sources` / `_zero_node_stamped_semantic_sources`
+/// (#2543, #2927): unchanged, stamped files with no node in graph.json, which
+/// an incremental run re-queues. A code file the extractor declined by design
+/// has a manifest row marked `ast_empty`; its zero nodes are intended, so it
+/// is left alone (Graphify 0.9.94, #2879). A manifest written before the
+/// marker re-queues such a file once more, and the rerun stamps the marker.
 pub fn zero_sources(
     graph: &Path,
     root: &Path,
     unchanged: &[String],
     semantic: bool,
+    manifest: Option<&Path>,
 ) -> Vec<String> {
+    let mut ast_empty = BTreeSet::new();
+    if let Some(manifest) = manifest.filter(|_| !semantic)
+        && let Value::Object(rows) = crate::detect::load_manifest(manifest, Some(root))
+    {
+        for (key, row) in rows {
+            if row.get("ast_empty").is_some_and(build::truthy) {
+                ast_empty.insert(paths::nfc(&key));
+            }
+        }
+    }
     let Ok(data) = read_graph(graph) else {
         return vec![];
     };
@@ -276,7 +293,9 @@ pub fn zero_sources(
             if let Ok(rel) = absolute.strip_prefix(&root) {
                 spellings.push(npath(rel));
             }
-            !spellings.iter().any(|s| present.contains(s))
+            !spellings
+                .iter()
+                .any(|s| present.contains(s) || ast_empty.contains(s))
         })
         .cloned()
         .collect()
@@ -404,5 +423,60 @@ impl StageTimer {
                 crate::profile::cpu_now() - self.cpu_start,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Graphify 0.9.94 (#4672): the zero-node heal leaves a file declined by
+    // design alone once its manifest row carries `ast_empty`.
+    #[test]
+    fn the_zero_node_heal_leaves_declined_files_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for (name, text) in [
+            ("a.py", "x = 1\n"),
+            ("b.py", "y = 2\n"),
+            ("strings.yml", "greeting: hello\n"),
+        ] {
+            std::fs::write(root.join(name), text).unwrap();
+        }
+        let out = root.join("graphicle-out");
+        std::fs::create_dir_all(&out).unwrap();
+        let graph = out.join("graph.json");
+        std::fs::write(
+            &graph,
+            r#"{"nodes":[{"id":"a","source_file":"a.py"}],"links":[]}"#,
+        )
+        .unwrap();
+        let unchanged = ["a.py", "b.py", "strings.yml"]
+            .iter()
+            .map(|name| root.join(name).to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let manifest = out.join("manifest.json");
+        let mut groups = Map::new();
+        groups.insert("code".into(), json!(unchanged));
+        crate::detect::save_manifest(
+            &groups,
+            &manifest,
+            "ast",
+            &crate::detect::ManifestOptions {
+                root: Some(root.clone()),
+                ast_empty: Some(vec![unchanged[2].clone()]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Without the manifest both zero-node files are re-queued.
+        assert_eq!(
+            zero_sources(&graph, &root, &unchanged, false, None),
+            unchanged[1..].to_vec()
+        );
+        assert_eq!(
+            zero_sources(&graph, &root, &unchanged, false, Some(&manifest)),
+            vec![unchanged[1].clone()]
+        );
     }
 }

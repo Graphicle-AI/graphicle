@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py, graphify/ruby_resolution.py
 //! File-label predicate from graphify/build.py; the build module remains pending.
 use crate::python_compat::string;

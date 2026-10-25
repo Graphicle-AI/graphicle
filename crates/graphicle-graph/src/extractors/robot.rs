@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/robot.py
 //! Native translation of graphify/extractors/robot.py. The source-model lexer
 //! follows Robot Framework 7.5 (Apache-2.0); no Python parser runs in production.

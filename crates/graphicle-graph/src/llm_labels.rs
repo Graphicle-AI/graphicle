@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! Batched community names with bounded recovery and usage accounting.
 use crate::{
@@ -117,9 +117,12 @@ pub fn parse_labels(text: &str, cids: &[i64]) -> Result<Labels> {
         static PAIRS: LazyLock<regex::Regex> = LazyLock::new(|| {
             regex::Regex::new(r#""?(-?\d+)"?\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)""#).unwrap()
         });
+        // A salvaged value is still a JSON string body, escapes and all; it is
+        // decoded the way a complete reply would have been (Graphify 0.9.93,
+        // #4537): `Caf\u00e9 \"Core\"` reads `Café "Core"`.
         let pairs: Map<String, Value> = PAIRS
             .captures_iter(&cleaned)
-            .map(|c| (c[1].into(), json!(&c[2])))
+            .map(|c| (c[1].into(), json!(decode_json_string_body(&c[2]))))
             .collect();
         if pairs.is_empty() {
             return Err(Error::value(format!(
@@ -141,6 +144,12 @@ pub fn parse_labels(text: &str, cids: &[i64]) -> Result<Labels> {
         }
     }
     Ok(out)
+}
+/// `_decode_json_string_body` (Graphify 0.9.93, #4537): the inside of a JSON
+/// string literal decoded, or `raw` unchanged when it is not a valid one (an
+/// invalid escape, a raw control character).
+fn decode_json_string_body(raw: &str) -> String {
+    serde_json::from_str::<String>(&format!("\"{raw}\"")).unwrap_or_else(|_| raw.to_owned())
 }
 #[derive(Clone, Copy)]
 pub struct BatchOptions<'a> {
@@ -337,12 +346,24 @@ impl Runtime {
         d: &mut Diagnostics,
     ) -> (Labels, String) {
         let mut o = o.clone();
+        // GRAPHICLE_BACKEND=none disables the whole step, the `claude -p`
+        // fallback below included (Graphify 0.9.92, #4361).
+        if o.backend.is_none() && self.config.backend_disabled_by_env() {
+            if !o.quiet {
+                d.stderr.push("[graphicle label] LLM backends disabled by GRAPHICLE_BACKEND=none; keeping Community N placeholders.".into());
+            }
+            return (placeholders(cs), "placeholder".into());
+        }
         if o.backend.is_none() {
             o.backend = self.config.detect_backend(d).ok().flatten()
         }
         if o.backend.as_ref().is_none_or(|s| s.is_empty())
             && cfg::claude_command(&self.config.env).is_some()
         {
+            // The fallback is announced, and GRAPHICLE_BACKEND=none opts out.
+            if !o.quiet {
+                d.stderr.push("[graphicle label] no API key found; naming communities via the `claude` CLI (claude -p). Set an API key or pass --backend to choose explicitly, or GRAPHICLE_BACKEND=none to disable.".into());
+            }
             o.backend = Some("claude-cli".into())
         }
         if o.backend.as_ref().is_none_or(|s| s.is_empty()) {

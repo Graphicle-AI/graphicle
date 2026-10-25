@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Streamable HTTP MCP transport with API keys and expiring sessions.
 use crate::{Result, serve::Server};
@@ -57,17 +57,22 @@ pub fn authorized(headers: &BTreeMap<String, String>, key: &str) -> bool {
         diff == 0
     })
 }
+/// The DNS-rebinding guard: a bind address other than a wildcard accepts only
+/// its own Host header, `localhost` or `127.0.0.1`, each bare or with the
+/// port. An IPv6 literal appears bracketed in the Host header (`[::1]:8080`),
+/// so an IPv6 bind accepts that form (Graphify 0.9.94, #4656).
 pub fn host_allowed(header: &str, options: &HttpOptions) -> bool {
     if ["0.0.0.0", "::", ""].contains(&options.host.as_str()) {
         return true;
     }
-    [options.host.as_str(), "localhost", "127.0.0.1"]
+    let bind = if options.host.contains(':') {
+        format!("[{}]", options.host.trim_matches(['[', ']']))
+    } else {
+        options.host.clone()
+    };
+    [bind.as_str(), "localhost", "127.0.0.1"]
         .iter()
-        .any(|host| {
-            header == *host
-                || header == format!("{host}:{}", options.port)
-                || header == format!("[{host}]:{}", options.port)
-        })
+        .any(|host| header == *host || header == format!("{host}:{}", options.port))
 }
 struct Request {
     method: String,
@@ -535,5 +540,27 @@ mod windows_accept_tests {
         stream.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"late");
         writer.join().unwrap();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Graphify 0.9.94 (#4656): an IPv6 bind accepts its own bracketed Host
+    /// header, with or without the port, and still refuses a foreign one.
+    #[test]
+    fn an_ipv6_bind_accepts_its_bracketed_host_header() {
+        let options = super::HttpOptions {
+            host: "::1".into(),
+            ..Default::default()
+        };
+        for header in ["[::1]:8080", "[::1]", "localhost:8080", "127.0.0.1"] {
+            assert!(super::host_allowed(header, &options), "{header}");
+        }
+        for header in ["evil.example:8080", "::1", "::1:8080", "[localhost]:8080"] {
+            assert!(!super::host_allowed(header, &options), "{header}");
+        }
+        let v4 = super::HttpOptions::default();
+        assert!(super::host_allowed("127.0.0.1:8080", &v4));
+        assert!(!super::host_allowed("[127.0.0.1]:8080", &v4));
     }
 }

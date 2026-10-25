@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/prs.py
 //! Graph-aware pull-request status, impact and command orchestration.
 pub use crate::prs_io::{
@@ -125,26 +125,44 @@ pub fn classify(pr: &PRInfo, base: &str, now: i64) -> &'static str {
         "READY"
     }
 }
+/// `_parse_ci`. `statusCheckRollup` mixes two entry types: a CheckRun (GitHub
+/// Actions and other check apps) carries status/conclusion, and a legacy
+/// StatusContext commit status (Jenkins, CircleCI) carries only `state`, one
+/// of SUCCESS, FAILURE, ERROR, PENDING or EXPECTED. Both are read, a failing
+/// status first (Graphify 0.9.93, #4533).
 pub fn parse_ci(rollup: &[Value]) -> &'static str {
-    let failures = [
+    let conclusions = rollup
+        .iter()
+        .map(|r| {
+            let conclusion = &r["conclusion"];
+            if crate::build_normalize::truthy(conclusion) {
+                conclusion
+            } else {
+                &r["state"]
+            }
+        })
+        .collect::<Vec<_>>();
+    let any = |names: &[&str]| {
+        conclusions
+            .iter()
+            .any(|c| c.as_str().is_some_and(|s| names.contains(&s)))
+    };
+    if any(&[
         "FAILURE",
         "CANCELLED",
         "TIMED_OUT",
         "ACTION_REQUIRED",
         "STARTUP_FAILURE",
-    ];
-    if rollup.iter().any(|r| {
-        r["conclusion"]
-            .as_str()
-            .is_some_and(|s| failures.contains(&s))
-    }) {
+        "ERROR",
+    ]) {
         "FAILURE"
     } else if rollup
         .iter()
         .any(|r| matches!(r["status"].as_str(), Some("IN_PROGRESS" | "QUEUED")))
+        || any(&["PENDING", "EXPECTED"])
     {
         "PENDING"
-    } else if rollup.iter().any(|r| r["conclusion"] == "SUCCESS") {
+    } else if any(&["SUCCESS"]) {
         "SUCCESS"
     } else {
         "NONE"

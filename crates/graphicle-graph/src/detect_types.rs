@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/detect.py
 //! Classification, credential filtering, interpreter resolution and noise rules.
 use crate::{Result, detect_documents, manifest_ingest, path_syntax};
@@ -363,7 +363,27 @@ pub fn shebang_interpreter(path: &Path) -> Option<String> {
             .to_string_lossy()
             .into_owned();
     }
-    Some(interpreter)
+    Some(strip_interpreter_version(interpreter))
+}
+/// `_strip_interpreter_version` (Graphify 0.9.93, #4535): a shebang names a
+/// specific version as often as the generic one (`python3.12`, `bash5`,
+/// `ruby3.2`). A known code interpreter is kept; otherwise the name with its
+/// major version (`python3`), then the bare name (`lua`), whichever is known;
+/// else the original.
+pub fn strip_interpreter_version(interpreter: String) -> String {
+    static VERSIONED: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^([A-Za-z]+)(\d+)(?:\.\d+)*$").unwrap());
+    if contains("_SHEBANG_CODE_INTERPRETERS", &interpreter) {
+        return interpreter;
+    }
+    if let Some(m) = VERSIONED.captures(&interpreter) {
+        for candidate in [format!("{}{}", &m[1], &m[2]), m[1].to_owned()] {
+            if contains("_SHEBANG_CODE_INTERPRETERS", &candidate) {
+                return candidate;
+            }
+        }
+    }
+    interpreter
 }
 pub fn shebang_file_type(path: &Path) -> Option<FileType> {
     shebang_interpreter(path)

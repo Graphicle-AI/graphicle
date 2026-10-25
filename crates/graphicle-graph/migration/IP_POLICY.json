@@ -1,10 +1,10 @@
 {
   "reference_python": "3.12.13",
   "ipaddress_source_sha256": "ba8d3389ff084fcb232b48204ec04f2b3ea4bd0eadf7b18c814947d185de2c64",
-  "graphify_security_sha256": "92c4c6447c855195aa3ca0f50fde8810843d62028240aa4ec0f45be2eb0336a3",
+  "graphify_security_sha256": "a2bcf138d39667b70a0423c856b48a3d8942e18aa41c557ab87f87b9e792a00f",
   "nat64": "64:ff9b::/96 is unwrapped to its IPv4 payload before interval lookup.",
   "interval_counts": {
     "4": 14,
-    "6": 10
+    "6": 11
   }
 }

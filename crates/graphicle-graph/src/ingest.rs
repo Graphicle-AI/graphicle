@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/ingest.py
 //! Port of graphify/ingest.py: attributed URL capture and query-result persistence.
 use crate::{
@@ -647,15 +647,23 @@ impl Runtime {
                 "arxiv" => self.fetch_arxiv(url, options, now)?,
                 _ => self.fetch_webpage(url, options, now)?,
             };
+            // `_free_capture_path` (Graphify 0.9.94, #4657): the name, else the
+            // first free `<stem>_<n><suffix>`. Creating with O_EXCL never writes
+            // through an existing entry, a dangling symlink included, and takes
+            // the free name atomically.
             let stem = Path::new(&filename)
                 .file_stem()
                 .unwrap_or_default()
                 .to_string_lossy();
-            for counter in 0..1000 {
+            let suffix = Path::new(&filename)
+                .extension()
+                .map(|s| format!(".{}", s.to_string_lossy()))
+                .unwrap_or_default();
+            for counter in 0usize.. {
                 let path = target.join(if counter == 0 {
                     filename.clone()
                 } else {
-                    format!("{stem}_{counter}.md")
+                    format!("{stem}_{counter}{suffix}")
                 });
                 match std::fs::OpenOptions::new()
                     .write(true)
@@ -675,7 +683,7 @@ impl Runtime {
                     Err(e) => return Err(format!("OSError: {e}").into()),
                 }
             }
-            Err("OSError: all 1000 capture filenames already exist; existing captures were retained".into())
+            unreachable!("the capture name counter is unbounded")
         })();
         Ok(result.map_err(|e| {
             let e = e.to_string();

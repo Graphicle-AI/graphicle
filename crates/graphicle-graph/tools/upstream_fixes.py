@@ -187,6 +187,9 @@ def _astro_mask_non_script(src: str) -> str:
         ),
     ],
     # PR #3020 (head 8ec7b81e): default-schema-qualified references bind to bare definitions.
+    # The #2712/#2716 bracket hunks this entry carried are gone: 0.9.94
+    # (#4635) unbrackets T-SQL names upstream (`_clean_ident`/`_norm_ident`),
+    # and the engine follows that release.
     'graphify/extractors/sql.py': [
         (
             'from graphify.extractors.base import _file_stem, _make_id, _read_source_bytes\n'
@@ -201,11 +204,13 @@ def _astro_mask_non_script(src: str) -> str:
         # definition (pg_introspect: a `"space name"."order"` table captured a
         # `SELECT * FROM "public"."order"` view). Run it first so only explicit
         # unqualified definitions are bridged; other schemas keep their stub.
+        # Since 0.9.95 the pass follows the recovered-table pre-registration
+        # (#4613), whose tables are explicit definitions too.
         (
-            '    _collect_defined_names(root)\n'
+            '                _norm_ident(m.group(1)), _make_id(stem, m.group(1)))\n'
             '\n'
             '    # Secondary bare-name aliases: a reference written without a schema\n',
-            '    _collect_defined_names(root)\n'
+            '                _norm_ident(m.group(1)), _make_id(stem, m.group(1)))\n'
             '\n'
             '    for key in list(table_nids):\n'
             '        if "." in key:\n'
@@ -215,55 +220,6 @@ def _astro_mask_non_script(src: str) -> str:
             '            table_nids[qualified] = table_nids[key]\n'
             '\n'
             '    # Secondary bare-name aliases: a reference written without a schema\n',
-        ),
-        # Issue #2712 / PR #2716 (head 6c5bfc11): bracket-delimited T-SQL names read verbatim.
-        (
-            '\n\ndef extract_sql(path: Path, content: str | bytes | None = None) -> dict:\n',
-            '\n\n# Issue #2712 / PR #2716: tree-sitter-sql has no T-SQL bracket delimiters, so\n# `[dbo].[Alpha]` parses as ERROR tokens around an object_reference spanning\n# `dbo].[Alpha`. A bracket-touched name is re-read verbatim from the source.\n_BRACKET_IDENT_RE = re.compile(\n    r\'(?:"(?:[^"\\n]|"")+"|\\[(?:[^\\]\\n]|\\]\\])+\\]|`[^`\\n]+`|[\\w$]+)\'\n    r\'(?:\\s*\\.\\s*(?:"(?:[^"\\n]|"")+"|\\[(?:[^\\]\\n]|\\]\\])+\\]|`[^`\\n]+`|[\\w$]+))*\'\n)\n\n\ndef extract_sql(path: Path, content: str | bytes | None = None) -> dict:\n',
-        ),
-        (
-            '    def _read(n) -> str:\n        return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")\n\n',
-            '    def _read(n) -> str:\n        return source[n.start_byte:n.end_byte].decode("utf-8", errors="replace")\n\n    def _ident(n) -> str:\n        text = _read(n)\n        start = n.start_byte\n        if source[start - 1:start] == b"[":\n            start -= 1\n        elif "[" not in text and "]" not in text:\n            return text\n        m = _BRACKET_IDENT_RE.match(source[start:].decode("utf-8", errors="replace"))\n        return m.group(0) if m else text\n\n',
-        ),
-        (
-            '                return _read(c)\n',
-            '                return _ident(c)\n',
-        ),
-        (
-            '                                    elif found_ref and cc.type == "object_reference":\n'
-            '                                        ref_name = _read(cc)\n',
-            '                                    elif found_ref and cc.type == "object_reference":\n'
-            '                                        ref_name = _ident(cc)\n',
-        ),
-        (
-            '                                        elif found_ref and cc.type == "object_reference":\n'
-            '                                            ref_name = _read(cc)\n',
-            '                                        elif found_ref and cc.type == "object_reference":\n'
-            '                                            ref_name = _ident(cc)\n',
-        ),
-        (
-            '                                    ref_name = _read(ccc)\n',
-            '                                    ref_name = _ident(ccc)\n',
-        ),
-        (
-            '                    trig_name = _read(c)\n',
-            '                    trig_name = _ident(c)\n',
-        ),
-        (
-            '                    tbl_name = _read(c)\n',
-            '                    tbl_name = _ident(c)\n',
-        ),
-        (
-            '                    index_table = _read(c)\n',
-            '                    index_table = _ident(c)\n',
-        ),
-        (
-            '                    own.add(_norm_ident(_read(cc)))\n',
-            '                    own.add(_norm_ident(_ident(cc)))\n',
-        ),
-        (
-            '                            tbl = _read(cc)\n',
-            '                            tbl = _ident(cc)\n',
         ),
     ],
     # PRs #3278/#3276 (head 07f910d0): qualified/generic heritage and return types.

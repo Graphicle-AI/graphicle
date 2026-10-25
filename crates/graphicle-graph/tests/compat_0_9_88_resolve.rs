@@ -1035,7 +1035,7 @@ fn csharp_bare_calls_never_bind_enum_members_or_fields() {
         let rc = json!({"caller_nid": "other_run", "callee": callee, "lang": lang,
             "source_file": "Other.cs", "source_location": "L2"});
         let mut out = edges.clone();
-        graphicle::extract::bind_raw_calls(&[&rc], &nodes, &mut out, Path::new("/"));
+        graphicle::extract::bind_raw_calls(&[&rc], &nodes, &mut out, &[], Path::new("/"));
         let bound = out.len() > edges.len();
         assert_eq!(bound, lang != "csharp", "{callee} from {lang}");
     }
@@ -1061,7 +1061,7 @@ fn csharp_bare_call_prefers_the_single_own_type_candidate() {
     let rc = json!({"caller_nid": "svc_run", "callee": "Save", "lang": "csharp",
         "source_file": "a.cs", "source_location": "L2"});
     let mut out = edges.clone();
-    graphicle::extract::bind_raw_calls(&[&rc], &nodes, &mut out, Path::new("/"));
+    graphicle::extract::bind_raw_calls(&[&rc], &nodes, &mut out, &[], Path::new("/"));
     assert_eq!(
         found(&out[edges.len()..]),
         BTreeSet::from([quad("svc_run", "svc_save", "calls", "EXTRACTED")])
@@ -1578,9 +1578,11 @@ fn php_static_calls_bind_to_the_scope_class() {
         .iter()
         .find(|n| n["id"] == "app_child_go")
         .unwrap();
+    // A parked call records its call-site file (Graphify 0.9.94, #4668).
     assert_eq!(
         go["metadata"]["unresolved_calls"],
-        json!([{"callee": "y", "receiver_type": "Missing", "lang": "php", "line": "L9"}])
+        json!([{"callee": "y", "receiver_type": "Missing", "lang": "php", "line": "L9",
+                "file": "app.php"}])
     );
 }
 

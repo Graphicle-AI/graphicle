@@ -12,6 +12,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "sdk" / "python"))
 from graphicle_sdk import Client, GraphicleError
 
 
+# Retry-After values that are neither a delay nor an HTTP-date.
+_UNREADABLE = {"/word": "soon", "/fraction": "3600.5", "/superscript": "\u00b2"}
+
+
 class _Budget(BaseHTTPRequestHandler):
     def do_GET(self):
         body = b'{"error":"monthly request budget is spent"}'
@@ -23,6 +27,8 @@ class _Budget(BaseHTTPRequestHandler):
         elif self.path == "/date":
             when = datetime.now(timezone.utc) + timedelta(hours=2)
             self.send_header("Retry-After", format_datetime(when, usegmt=True))
+        elif self.path in _UNREADABLE:
+            self.send_header("Retry-After", _UNREADABLE[self.path])
         self.end_headers()
         self.wfile.write(body)
 
@@ -73,5 +79,19 @@ def test_a_refusal_without_retry_after_stays_plain():
     finally:
         server.shutdown()
     error = caught.value
+    assert error.retry_after is None
+    assert "retry after" not in str(error)
+
+
+@pytest.mark.parametrize("path", sorted(_UNREADABLE))
+def test_a_retry_after_it_cannot_read_leaves_the_refusal_plain(path):
+    server, client = _client()
+    try:
+        with pytest.raises(GraphicleError) as caught:
+            client.request("GET", path)
+    finally:
+        server.shutdown()
+    error = caught.value
+    assert error.status == 429
     assert error.retry_after is None
     assert "retry after" not in str(error)

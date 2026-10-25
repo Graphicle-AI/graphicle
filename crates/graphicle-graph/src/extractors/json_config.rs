@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/json_config.py
 //! Port of graphify/extractors/json_config.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 use super::base::{file_stem, make_id, read_text};
@@ -54,6 +54,12 @@ pub const CONFIG_JSON_KEYS: &[&str] = &[
 /// config that merely points at its tool's schema (Graphify 0.9.76, #2255).
 pub const SCHEMA_DEFINITION_KEYS: &[&str] = &["$defs", "definitions", "$id"];
 pub const JSON_MAX_BYTES: usize = 1_048_576;
+
+/// Python's `str.isspace`: Unicode whitespace plus the information separators
+/// U+001C..U+001F, which `char::is_whitespace` leaves out.
+fn python_space(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '\x1c'..='\x1f')
+}
 
 fn children(node: Node<'_>) -> impl Iterator<Item = Node<'_>> {
     (0..node.child_count()).filter_map(move |index| node.child(index))
@@ -211,7 +217,9 @@ impl Extractor<'_> {
                     if !reference_id.is_empty() {
                         self.edge(parent, &reference_id, "references", line, None);
                     }
-                } else if parent_key.is_some_and(|key| DEP_KEYS.contains(&key)) {
+                } else if parent_key.is_some_and(|key| DEP_KEYS.contains(&key))
+                    && !text.trim_matches(python_space).is_empty()
+                {
                     let dependency_id = make_id(["ref", key.as_str()]);
                     if !dependency_id.is_empty() {
                         self.node(&dependency_id, &key, line, "concept");
@@ -222,6 +230,28 @@ impl Extractor<'_> {
                             line,
                             Some("import"),
                         );
+                        // 0.9.95 (#4569): the manifest entry declares the ref node
+                        // importing code resolves to, and is relabelled
+                        // `name@range` (one line, at most 40 characters) so the
+                        // two nodes no longer share a label. `node` kept the
+                        // first node under this id; only the entry on this line
+                        // is relabelled.
+                        self.edge(&nid, &dependency_id, "declares", line, None);
+                        let mut range = text
+                            .split(python_space)
+                            .filter(|part| !part.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        if range.chars().count() > 40 {
+                            range = range.chars().take(37).collect::<String>() + "...";
+                        }
+                        let location = format!("L{line}");
+                        if let Some(entry) = self.nodes.iter_mut().find(|node| {
+                            node["id"] == nid.as_str()
+                                && node["source_location"] == location.as_str()
+                        }) {
+                            entry["label"] = json!(format!("{key}@{range}"));
+                        }
                     }
                 }
             }

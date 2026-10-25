@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Call traversal, scoped receivers, indirect dispatch and final graph assembly.
 use super::{
@@ -236,13 +236,22 @@ impl<'a, 't> Engine<'a, 't> {
         {
             raw["_python_self_attr_type"] = json!(class);
         }
-        if let Some(receiver) = call.receiver.as_deref().filter(|r| !r.is_empty())
-            && let Some(Some(class)) = self
+        if let Some(receiver) = call.receiver.as_deref().filter(|r| !r.is_empty()) {
+            if let Some(Some(class)) = self
                 .python_var_types
                 .get(caller)
                 .and_then(|table| table.get(receiver))
-        {
-            raw["receiver_type"] = json!(class);
+            {
+                raw["receiver_type"] = json!(class);
+            } else if self
+                .python_fixture_params
+                .get(caller)
+                .is_some_and(|params| params.contains(receiver))
+            {
+                // A fixture parameter: typed by the resolver from the fixture
+                // pytest would pick for it (0.9.92, #4332).
+                raw["_python_fixture_param"] = json!(true);
+            }
         }
         if call.receiver.as_deref() == Some("super")
             && object
@@ -448,6 +457,13 @@ impl<'a, 't> Engine<'a, 't> {
     fn call_name(&self, n: Node<'t>, receivers: &Receivers) -> Call {
         let mut c = Call::default();
         let text = |n: Node<'_>| self.text(n);
+        if self.is("swift") && n.kind_name() == "macro_invocation" {
+            // A freestanding macro call `#stringify(...)` (0.9.93, #4551) names a
+            // free top-level macro, never a method on `self`: it resolves by bare
+            // name, and an unknown `#name` stays unresolved.
+            c.name = first_child(n, &["simple_identifier"]).map(text);
+            return c;
+        }
         if self.is("swift") || self.is("kotlin") || self.is("scala") {
             if let Some(first) = n.child(0) {
                 if ["identifier", "simple_identifier"].contains(&first.kind_name()) {
@@ -1069,6 +1085,29 @@ impl<'a, 't> Engine<'a, 't> {
                             && receiver.is_some_and(|r| {
                                 upper(r) || call.this_field || self.is("c_sharp")
                             }));
+                    // JS/TS (0.9.94, #4598): a member call on a receiver other
+                    // than `this` defers to receiver-typed resolution instead
+                    // of binding by bare name (a wrapper `appendFrame(e) {
+                    // return history.appendFrame(e); }` bound to itself). The
+                    // exception is the factory object the caller's own method
+                    // hangs off (`store.get()` inside `store.set = ...`): the
+                    // receiver rebuilds the caller's owner id exactly.
+                    let js_factory_sibling = self.js()
+                        && call.member
+                        && call.receiver.as_deref().is_some_and(|r| {
+                            !r.is_empty()
+                                && self.method_owner.get(caller).is_some_and(|owner| {
+                                    make_id([
+                                        self.js_factory_scope.get(owner).map_or("", String::as_str),
+                                        r,
+                                    ]) == *owner
+                                })
+                        });
+                    let defer = defer
+                        || (self.js()
+                            && call.member
+                            && call.self_receiver.is_none()
+                            && !js_factory_sibling);
                     let mut target = None;
                     if !defer {
                         if self.is("python") && !call.member {
@@ -1126,6 +1165,13 @@ impl<'a, 't> Engine<'a, 't> {
                             {
                                 target = None;
                             }
+                        } else if js_factory_sibling {
+                            // Off the caller's own owner, never the file-wide map.
+                            target = self.method_owner.get(caller).and_then(|owner| {
+                                self.methods_by_owner
+                                    .get(&(owner.clone(), name.to_string()))
+                                    .cloned()
+                            });
                         } else {
                             target = self.labels.get(name).cloned();
                         }
@@ -1151,6 +1197,21 @@ impl<'a, 't> Engine<'a, 't> {
                         {
                             target = None;
                         }
+                    }
+                    // C#: the name found one overload; the argument count picks
+                    // the one this call means, else the first declared
+                    // (0.9.95, #4584).
+                    if self.is("c_sharp")
+                        && let Some(found) = target.clone()
+                        && let Some(peers) = self.csharp_overloads.values().find(|group| {
+                            group.len() > 1 && group.iter().any(|(_, id, _)| *id == found)
+                        })
+                    {
+                        let picked = csharp_pick_overload(
+                            peers.iter().map(|(_, id, meta)| (id.as_str(), meta)),
+                            csharp_argc(n),
+                        );
+                        target = Some(picked.unwrap_or(peers[0].1.as_str()).to_string());
                     }
                     let external = target.as_ref().is_some_and(|id| {
                         !self.nodes.iter().any(|n| {
@@ -1212,6 +1273,10 @@ impl<'a, 't> Engine<'a, 't> {
                         }
                         if self.is("c_sharp") {
                             raw["lang"] = json!("csharp");
+                            // The argument count picks an overload (0.9.95, #4584).
+                            if let Some(argc) = csharp_argc(n) {
+                                raw["arity"] = json!(argc);
+                            }
                             if n.kind_name() == "object_creation_expression" {
                                 raw["csharp_new"] = json!(true);
                             }
@@ -1582,6 +1647,11 @@ impl<'a, 't> Engine<'a, 't> {
                     }
                     continue;
                 }
+                if e["relation"] == "contains" && self.js() {
+                    self.js_factory_scope
+                        .entry(tgt.to_string())
+                        .or_insert_with(|| src.to_string());
+                }
                 if e["relation"] != "method" {
                     continue;
                 }
@@ -1641,20 +1711,44 @@ impl<'a, 't> Engine<'a, 't> {
             // Typed parameters and locals per function (#4198); `@property`
             // readers are marked for the attribute-read pass (#4337).
             let mut properties = BTreeSet::new();
+            // pytest fixtures (0.9.92, #4332): what each fixture returns, and
+            // the parameters of tests and fixtures pytest fills, in test
+            // modules and `conftest.py` only.
+            let test_module = python_is_test_module(&self.path);
+            let mut fixtures: BTreeMap<String, String> = BTreeMap::new();
             for (caller, body) in &self.bodies {
-                self.python_var_types.insert(
-                    caller.clone(),
-                    python_local_class_bindings(*body, self.source),
-                );
-                if body.parent().is_some_and(|f| {
-                    f.kind_name() == "function_definition" && python_is_property(f, self.source)
-                }) {
+                let bindings = python_local_class_bindings(*body, self.source);
+                let func = body
+                    .parent()
+                    .filter(|f| f.kind_name() == "function_definition");
+                if func.is_some_and(|f| python_is_property(f, self.source)) {
                     properties.insert(caller.clone());
                 }
+                if let Some(func) = func.filter(|_| test_module) {
+                    let fixture = python_is_pytest_fixture(func, self.source);
+                    if fixture {
+                        fixtures.insert(
+                            caller.clone(),
+                            python_fixture_type(func, self.source, &bindings),
+                        );
+                    }
+                    if fixture
+                        || func
+                            .child_by_field_name("name")
+                            .is_some_and(|n| self.text(n).starts_with("test"))
+                    {
+                        self.python_fixture_params
+                            .insert(caller.clone(), python_untouched_params(func, self.source));
+                    }
+                }
+                self.python_var_types.insert(caller.clone(), bindings);
             }
             for n in &mut self.nodes {
                 if n["id"].as_str().is_some_and(|id| properties.contains(id)) {
                     n["_py_property"] = json!(true);
+                }
+                if let Some(kind) = n["id"].as_str().and_then(|id| fixtures.get(id)) {
+                    n["_py_fixture"] = json!(kind);
                 }
             }
         }

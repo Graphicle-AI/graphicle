@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 use crate::{Result, install::*, install_fs as f};
 use serde_json::{Value, json};
@@ -522,5 +522,46 @@ mod tests {
             ])
         );
         assert_eq!(super::strip_engine_hooks(&groups[2..]), None);
+    }
+
+    /// Graphify 0.9.94 (#4662): every hook command quotes an executable path
+    /// with a space, the Codex PreToolUse hook included, so a shell does not
+    /// split the command at the space; the quoted entry is still the engine's.
+    #[test]
+    fn hook_commands_quote_a_spaced_executable() {
+        let project = tempfile::tempdir().unwrap();
+        for (windows, quoted) in [
+            (false, "'/opt/Program Files/graphicle-graph'"),
+            (true, "\"/opt/Program Files/graphicle-graph\""),
+        ] {
+            let o = crate::install::Options {
+                project_dir: project.path().to_path_buf(),
+                windows,
+                executable: Some("/opt/Program Files/graphicle-graph".into()),
+                ..Default::default()
+            };
+            super::hook("codex", &o, false).unwrap();
+            let written =
+                std::fs::read_to_string(project.path().join(".codex/hooks.json")).unwrap();
+            let doc: serde_json::Value = serde_json::from_str(&written).unwrap();
+            let entry = &doc["hooks"]["PreToolUse"][0]["hooks"][0];
+            assert_eq!(
+                entry["command"],
+                format!("{quoted} hook-check"),
+                "{written}"
+            );
+            assert!(super::is_engine_hook_entry(entry));
+            for group in crate::install::claude_hooks(&o).as_array().unwrap() {
+                let command = group["hooks"][0]["command"].as_str().unwrap();
+                assert!(command.starts_with(quoted), "{command}");
+            }
+            let gemini = crate::install::gemini_hook(&o);
+            assert!(
+                gemini["hooks"][0]["command"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(quoted)
+            );
+        }
     }
 }

@@ -1,5 +1,5 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
-// Upstream: graphify/extractors/markdown.py
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Upstream: graphify/extractors/markdown.py, graphify/extractors/yaml_config.py
 //! YAML frontmatter with the reference's YAML-1.1 scalar and merge semantics.
 //! Uses a Rust parser, preserving scalar style before resolving types.
 //! Scalar grammar follows PyYAML (MIT; see licenses/PyYAML-LICENSE).
@@ -29,6 +29,9 @@ static DATE: LazyLock<Regex> = LazyLock::new(|| {
 #[derive(Clone)]
 enum Node {
     Scalar(Value),
+    /// A float JSON cannot hold (`.inf`, `-.inf`, `.nan`, `1e999`), kept only
+    /// when the builder allows it ([`parse_all`]); [`expand`] refuses it.
+    NonFinite(f64),
     Merge,
     Sequence(Vec<usize>, String),
     Mapping(Vec<usize>, String),
@@ -41,6 +44,8 @@ struct Builder {
     anchors: HashMap<usize, usize>,
     roots: Vec<usize>,
     error: Option<String>,
+    /// Keep non-finite floats as [`Node::NonFinite`] instead of failing.
+    nonfinite: bool,
 }
 impl Builder {
     fn add(&mut self, node: Node, anchor: usize) -> usize {
@@ -81,8 +86,16 @@ impl EventReceiver for Builder {
                     if kind == "merge" || (implicit && text == "<<") {
                         self.add(Node::Merge, anchor);
                     } else {
-                        let value = scalar(&text, &kind, implicit)?;
-                        self.add(Node::Scalar(value), anchor);
+                        match scalar(&text, &kind, implicit) {
+                            Ok(value) => {
+                                self.add(Node::Scalar(value), anchor);
+                            }
+                            Err(error) if self.nonfinite && error.to_string() == NON_JSON_FLOAT => {
+                                let value = python_float(&text).ok_or(error)?;
+                                self.add(Node::NonFinite(value), anchor);
+                            }
+                            Err(error) => return Err(error),
+                        }
                     }
                 }
                 Event::SequenceStart(anchor, tag) => {
@@ -231,6 +244,32 @@ fn bytes_repr(bytes: &[u8]) -> String {
     out.push(quote as char);
     out
 }
+const NON_JSON_FLOAT: &str = "Non-JSON YAML float";
+/// `construct_yaml_float` for the floats JSON cannot hold: `.inf` with its
+/// sign, `.nan`, or a literal past the f64 range (`1.0e+999`).
+fn python_float(text: &str) -> Option<f64> {
+    let value = text.replace('_', "").to_lowercase();
+    let (sign, rest) = match value.strip_prefix('-') {
+        Some(rest) => (-1.0, rest),
+        None => (1.0, value.strip_prefix('+').unwrap_or(&value)),
+    };
+    let magnitude = match rest {
+        ".inf" => f64::INFINITY,
+        ".nan" => f64::NAN,
+        _ => rest.parse::<f64>().ok()?,
+    };
+    Some(sign * magnitude).filter(|v| !v.is_finite())
+}
+/// Python's `str()` of a non-finite float.
+fn python_float_text(value: f64) -> &'static str {
+    if value.is_nan() {
+        "nan"
+    } else if value > 0.0 {
+        "inf"
+    } else {
+        "-inf"
+    }
+}
 fn scalar(text: &str, explicit: &str, implicit: bool) -> Result<Value> {
     let mut kind = explicit;
     if implicit {
@@ -276,11 +315,11 @@ fn scalar(text: &str, explicit: &str, implicit: bool) -> Result<Value> {
                     .ok_or("Invalid YAML float")?;
                 if negative { -value } else { value }
             } else {
-                digits.parse::<f64>().map_err(|_| "Non-JSON YAML float")?
+                digits.parse::<f64>().map_err(|_| NON_JSON_FLOAT)?
             };
             serde_json::Number::from_f64(value)
                 .map(Value::Number)
-                .ok_or_else(|| "Non-JSON YAML float".into())
+                .ok_or_else(|| NON_JSON_FLOAT.into())
         }
         "timestamp" => timestamp(text),
         "binary" => {
@@ -307,6 +346,7 @@ fn expand(nodes: &[Node], id: usize, depth: usize) -> Result<Value> {
     }
     match &nodes[id] {
         Node::Scalar(value) => Ok(value.clone()),
+        Node::NonFinite(_) => Err(NON_JSON_FLOAT.into()),
         Node::Merge => Ok(json!("<<")),
         Node::Alias(id) => expand(nodes, *id, depth + 1),
         Node::Sequence(children, kind) => {
@@ -408,6 +448,8 @@ fn scan_repairing_flow_indentation(text: &str) -> Result<Option<String>> {
     let mut scanner = Scanner::new(text.chars());
     for Token(mark, token) in &mut scanner {
         match token {
+            // PyYAML's composer forgets anchors at each document start.
+            TokenType::DocumentStart => anchors.clear(),
             TokenType::Anchor(name) if anchors.contains(&name) => {
                 return Err("Duplicate YAML anchor".into());
             }
@@ -488,6 +530,146 @@ pub fn parse(text: &str) -> Result<Value> {
         Some(&root) => expand(&builder.nodes, root, 0),
         None => Ok(Value::Null),
     }
+}
+/// A value as `yaml.safe_load_all` constructs it, for a structural walk
+/// (`extractors::yaml_config`, Graphify 0.9.95): a mapping keeps its keys as
+/// the Python objects PyYAML makes, in insertion order, with Python `dict`
+/// semantics (keys equal under `==`, such as `1`, `1.0` and `true`, are one
+/// entry that keeps its first spelling and its last value), so `1` and `"1"`
+/// stay two keys. Merge keys (`<<`) are flattened as PyYAML's
+/// `flatten_mapping` does.
+#[derive(Clone, Debug)]
+pub enum Loaded {
+    /// A scalar, a `!!set` or anything else a walk does not enter.
+    Other(Value),
+    /// A list. The tuples of `!!omap`/`!!pairs` are items a walk never enters.
+    Seq(Vec<Loaded>),
+    /// A dict: `(key, value)` in insertion order.
+    Map(Vec<(Value, Loaded)>),
+}
+fn expand_loaded(nodes: &[Node], id: usize, depth: usize) -> Result<Loaded> {
+    if depth > 128 {
+        return Err("Recursive or excessively nested YAML".into());
+    }
+    match &nodes[id] {
+        Node::Alias(target) => expand_loaded(nodes, *target, depth + 1),
+        Node::Sequence(children, kind) if kind == "seq" => Ok(Loaded::Seq(
+            children
+                .iter()
+                .map(|&child| expand_loaded(nodes, child, depth + 1))
+                .collect::<Result<_>>()?,
+        )),
+        Node::Sequence(children, _) => {
+            // `!!omap`/`!!pairs`: validated as the single-pair mappings they
+            // must be; each becomes a tuple.
+            expand(nodes, id, depth)?;
+            Ok(Loaded::Seq(vec![
+                Loaded::Other(Value::Null);
+                children.len()
+            ]))
+        }
+        Node::Mapping(_, kind) if kind == "set" => Ok(Loaded::Other(expand(nodes, id, depth)?)),
+        Node::Mapping(children, _) => {
+            let mut merged: Vec<(Value, Loaded)> = Vec::new();
+            let mut own: Vec<(Value, Loaded)> = Vec::new();
+            for pair in children.chunks_exact(2) {
+                if matches!(nodes[pair[0]], Node::Merge) {
+                    match expand_loaded(nodes, pair[1], depth + 1)? {
+                        Loaded::Map(entries) => merged.extend(entries),
+                        Loaded::Seq(values) => {
+                            // PyYAML merges a sequence's mappings last to first.
+                            for value in values.into_iter().rev() {
+                                let Loaded::Map(entries) = value else {
+                                    return Err("Invalid YAML merge sequence".into());
+                                };
+                                merged.extend(entries);
+                            }
+                        }
+                        Loaded::Other(_) => return Err("Invalid YAML merge".into()),
+                    }
+                } else {
+                    let key = loaded_key(nodes, pair[0], depth + 1)?;
+                    own.push((key, expand_loaded(nodes, pair[1], depth + 1)?));
+                }
+            }
+            let mut entries: Vec<(Value, Loaded)> = Vec::new();
+            let mut index: std::collections::BTreeMap<python_compat::ScalarKey, usize> =
+                std::collections::BTreeMap::new();
+            for (key, value) in merged.into_iter().chain(own) {
+                // A NaN key equals nothing, itself included: always a new entry.
+                let Some(scalar) = loaded_key_identity(&key)? else {
+                    entries.push((key, value));
+                    continue;
+                };
+                match index.get(&scalar) {
+                    Some(&at) => entries[at].1 = value,
+                    None => {
+                        index.insert(scalar, entries.len());
+                        entries.push((key, value));
+                    }
+                }
+            }
+            Ok(Loaded::Map(entries))
+        }
+        // Only its type matters to a walk: neither a string nor a collection.
+        Node::NonFinite(_) => Ok(Loaded::Other(Value::Null)),
+        Node::Scalar(_) | Node::Merge => Ok(Loaded::Other(expand(nodes, id, depth)?)),
+    }
+}
+/// A mapping key of [`expand_loaded`]. A non-finite float key becomes the
+/// text Python's `str()` gives it, tagged so that it stays apart from the
+/// string of the same spelling ([`loaded_key_identity`]).
+fn loaded_key(nodes: &[Node], id: usize, depth: usize) -> Result<Value> {
+    match &nodes[id] {
+        Node::Alias(target) if depth <= 128 => loaded_key(nodes, *target, depth + 1),
+        Node::NonFinite(value) => {
+            let mut key = Map::new();
+            key.insert(NONFINITE_KEY.into(), json!(python_float_text(*value)));
+            Ok(Value::Object(key))
+        }
+        _ => expand(nodes, id, depth),
+    }
+}
+const NONFINITE_KEY: &str = "\u{0}float";
+/// The dict identity of a [`loaded_key`]: `None` for a NaN key.
+fn loaded_key_identity(key: &Value) -> Result<Option<python_compat::ScalarKey>> {
+    if let Some(text) = nonfinite_key(key) {
+        return Ok(match text {
+            "inf" => Some(python_compat::ScalarKey::Float(f64::INFINITY.to_bits())),
+            "-inf" => Some(python_compat::ScalarKey::Float(f64::NEG_INFINITY.to_bits())),
+            _ => None,
+        });
+    }
+    python_compat::scalar_key(key)
+        .map(Some)
+        .ok_or_else(|| "Unhashable YAML key".into())
+}
+/// `str(key)` of a non-finite float key made by [`loaded_key`].
+pub fn nonfinite_key(key: &Value) -> Option<&str> {
+    key.as_object()
+        .filter(|map| map.len() == 1)
+        .and_then(|map| map.get(NONFINITE_KEY))
+        .and_then(Value::as_str)
+}
+/// `yaml.safe_load_all(text)`: every document of the stream, in order.
+pub fn parse_all(text: &str) -> Result<Vec<Loaded>> {
+    let text = repair_flow_indentation(text, FLOW_REPAIR_READ_LIMIT)?;
+    let text = text.as_ref();
+    let mut builder = Builder {
+        nonfinite: true,
+        ..Default::default()
+    };
+    Parser::new_from_str(text)
+        .load(&mut builder, true)
+        .map_err(crate::Error::from)?;
+    if let Some(error) = builder.error {
+        return Err((error).into());
+    }
+    builder
+        .roots
+        .iter()
+        .map(|&root| expand_loaded(&builder.nodes, root, 0))
+        .collect()
 }
 
 #[cfg(test)]

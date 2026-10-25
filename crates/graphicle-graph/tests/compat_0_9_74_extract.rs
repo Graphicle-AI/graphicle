@@ -441,14 +441,22 @@ fn rust_forward_type_references_resolve_to_local_declarations() {
         edges_with_context(&r, "references", "return_type").contains(&pair("before()", "Mode"))
     );
     assert!(edge_labels(&r, "implements").contains(&pair("Sink", "Handler")));
-    // Items walk() never makes nodes of keep their sourceless stubs.
-    let (_d, _p, r) = rust_file(
+    // Items walk() never makes nodes of keep their sourceless stubs; `type`
+    // aliases and unions are type nodes since Graphify 0.9.95 (#4581).
+    let (_d, path, r) = rust_file(
         "shapes.rs",
         "fn user(a: &Alias, u: &Bits, l: &Local, e: &Elsewhere) {}\n\ntype Alias = u32;\n\n\
          union Bits { a: u32, b: f32 }\n\nfn host() {\n    struct Local;\n}\n",
     );
     let targets = reference_targets(&r);
-    for name in ["Alias", "Bits", "Local", "Elsewhere"] {
+    let file = spelled(&path);
+    for name in ["Alias", "Bits"] {
+        assert!(
+            targets.contains(&(name.into(), file.clone())),
+            "{name}: {targets:?}"
+        );
+    }
+    for name in ["Local", "Elsewhere"] {
         assert!(
             targets.contains(&(name.into(), String::new())),
             "{name}: {targets:?}"
@@ -462,64 +470,71 @@ fn rust_forward_type_references_resolve_to_local_declarations() {
     assert!(reference_targets(&r).contains(&("Sink".into(), file)));
 }
 
+// Graphify 0.9.95 tests/test_multilang.py: items whose ids only fold to the
+// type's (`const HANDLE`, `struct HANDLE`, an `impl` for an alias) have ids of
+// their own since 0.9.92 (#4468), so the struct owns its id and a reference
+// above the declarations resolves to it.
 #[test]
-fn rust_forward_reference_to_a_colliding_id_keeps_its_stub() {
+fn rust_forward_reference_to_a_casefold_colliding_type_resolves_to_it() {
     let extern_fn = "extern \"C\" {\n    fn handle();\n}";
     let impl_for_alias = "type HANDLE = usize;\n\ntrait Tr {}\n\nimpl Tr for HANDLE {}";
-    for (name, user, other, label) in [
-        (
-            "fn_collision.rs",
-            "fn user(h: &Handle) {}",
-            "fn handle() {}",
-            "Handle",
-        ),
-        (
-            "extern_fn_collision.rs",
-            "fn user(h: &Handle) {}",
-            extern_fn,
-            "Handle",
-        ),
-        (
-            "const_collision.rs",
-            "fn user(h: &Handle) {}",
-            "const HANDLE: u32 = 0;",
-            "Handle",
-        ),
-        (
-            "static_collision.rs",
-            "fn user(h: &Handle) {}",
-            "static HANDLE: u32 = 0;",
-            "Handle",
-        ),
-        (
-            "type_collision.rs",
-            "fn user(h: &Handle) {}",
-            "struct HANDLE;",
-            "Handle",
-        ),
-        (
-            "impl_collision.rs",
-            "fn user(h: &Handle) {}",
-            impl_for_alias,
-            "Handle",
-        ),
+    for (name, other) in [
+        ("fn_collision.rs", "fn handle() {}"),
+        ("extern_fn_collision.rs", extern_fn),
+        ("const_collision.rs", "const HANDLE: u32 = 0;"),
+        ("static_collision.rs", "static HANDLE: u32 = 0;"),
+        ("type_collision.rs", "struct HANDLE;"),
+        ("impl_collision.rs", impl_for_alias),
+    ] {
+        let (_d, path, r) = rust_file(
+            name,
+            &format!("fn user(h: &Handle) {{}}\n\n{other}\n\nstruct Handle {{\n    n: u32,\n}}\n"),
+        );
+        assert_eq!(
+            reference_targets(&r),
+            [("Handle".to_string(), spelled(&path))],
+            "{name}"
+        );
+    }
+}
+
+// `fn Handle()` beside `struct Handle {}` has the type's exact name, so the two
+// still share one node and a reference above the declarations keeps its
+// sourceless stub; a `type HANDLE` alias is a type node of its own since
+// Graphify 0.9.95 (#4581), so a reference to it lands on it.
+#[test]
+fn rust_forward_reference_keeps_its_stub_when_a_non_type_shares_the_name() {
+    for (name, user, other, label, sourced) in [
         (
             "alias_collision.rs",
             "fn user(h: HANDLE) {}",
             "type HANDLE = usize;",
             "HANDLE",
+            true,
+        ),
+        (
+            "same_name_fn.rs",
+            "fn user(h: &Handle) {}",
+            "fn Handle() {}",
+            "Handle",
+            false,
         ),
     ] {
-        let (_d, _p, r) = rust_file(
+        let (_d, path, r) = rust_file(
             name,
             &format!("{user}\n\n{other}\n\nstruct Handle {{\n    n: u32,\n}}\n"),
         );
-        assert_eq!(
-            reference_targets(&r),
-            [(label.to_string(), String::new())],
-            "{name}"
-        );
+        let file = if sourced {
+            spelled(&path)
+        } else {
+            String::new()
+        };
+        assert_eq!(reference_targets(&r), [(label.to_string(), file)], "{name}");
     }
+}
+
+#[test]
+fn rust_forward_reference_to_its_own_type_resolves() {
     let impl_for_type = "struct Handle<'a> {\n    s: &'a str,\n}\n\ntrait Tr {}\n\n\
                          impl Tr for Handle<'_> {}\n\nimpl Tr for &Handle<'_> {}\n";
     for (name, source) in [

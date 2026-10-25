@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 use crate::{
     Result, build,
@@ -68,6 +68,9 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
     }
     let mut raw: Value = serde_json::from_slice(&fs::read(&path).map_err(crate::Error::from)?)
         .map_err(crate::Error::from)?;
+    // A graph.json written before 0.9.92 exports as a newer one does
+    // (`build::mark_parallel_links`); upstream's export honours the flag.
+    crate::build::mark_parallel_links(&mut raw);
     let edges_key = if raw.get("links").is_some() {
         "links"
     } else {

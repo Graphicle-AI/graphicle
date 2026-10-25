@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 use crate::{
     Result, build,
@@ -109,7 +109,13 @@ fn query_loaded(
             );
             crate::cli_guard::touch_query(&gp);
             out.line(&result);
-            if result == crate::serve_text::QUERY_NO_MATCH {
+            // An exact name of several nodes is refused as ambiguous (Graphify
+            // 0.9.93, #4511); an unresolved --seed is a miss.
+            if crate::serve_find::is_ambiguity_refusal(Some(&result)) {
+                out.exit_code = crate::cli::EXIT_AMBIGUOUS;
+            } else if result == crate::serve_text::QUERY_NO_MATCH
+                || result.starts_with("No unique node match for --seed:")
+            {
                 out.exit_code = crate::cli::EXIT_NOT_FOUND;
             }
         }

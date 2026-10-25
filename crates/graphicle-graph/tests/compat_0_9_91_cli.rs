@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: tests/test_ollama_native_chat.py, tests/test_hooks.py,
 // tests/test_pi_guard_install.py, tests/test_git_head_stdin.py
 //! Model transport, hook and installer changes ported from Graphify
@@ -156,9 +156,12 @@ fn hook_install_adds_a_post_merge_hook() {
     assert!(script.contains("# graphicle-merge-hook-start"), "{script}");
     assert!(script.contains("# graphicle-merge-hook-end"), "{script}");
     assert!(script.contains("hook launch post-merge"), "{script}");
-    // A merge rebuilds only a graph that was built before, never mid-merge.
+    // A merge rebuilds only a graph that was built before. Since Graphify
+    // 0.9.92 (#4463) it does not test MERGE_HEAD, which git keeps on disk
+    // while post-merge runs; it still skips mid rebase or cherry-pick.
     assert!(script.contains("[ -d \"${GRAPHICLE_OUT:-.graphicle}\" ] || exit 0"));
-    assert!(script.contains("MERGE_HEAD"));
+    assert!(!script.contains("MERGE_HEAD"), "{script}");
+    assert!(script.contains("CHERRY_PICK_HEAD"), "{script}");
     assert!(!script.contains("${3:-0}"));
     let status = graphicle::hooks::status(repo).unwrap();
     assert!(status.contains("post-merge: installed\n"), "{status}");

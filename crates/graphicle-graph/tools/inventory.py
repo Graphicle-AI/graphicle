@@ -16,10 +16,10 @@ PROJECT = ROOT.parents[1]
 # research folder).
 DOWNLOAD = Path(os.environ.get("GRAPHICLE_UPSTREAM_DOWNLOAD")
                 or PROJECT / "research/memory-runtime-integration-2026-09-22/upstream")
-SOURCE = DOWNLOAD / "Graphify-Labs__graphify-0.9.91"
-ARCHIVE = DOWNLOAD / "Graphify-Labs__graphify-10130e79ed9c.tar.gz"
-COMMIT = "10130e79ed9caf8f60d998073e097531eaa1a395"
-VERSION = "0.9.91"
+SOURCE = DOWNLOAD / "Graphify-Labs__graphify-0.9.95"
+ARCHIVE = DOWNLOAD / "Graphify-Labs__graphify-92741d162b20.tar.gz"
+COMMIT = "92741d162b2094ffc2fed58cfbd8ee823e9da62c"
+VERSION = "0.9.95"
 
 
 def category(path):
@@ -47,7 +47,7 @@ def target(path, kind):
         if parts == ["__init__.py"]:
             return "src/lib.rs"
         if parts == ["__main__.py"]:
-            return "src/entrypoint.rs"
+            return "src/main.rs"
         parts[-1] = "mod.rs" if parts[-1] == "__init__.py" else path.stem + ".rs"
         return str(Path("src", *parts))
     if kind == "upstream_test_python":

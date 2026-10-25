@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/fortran.py
 //! Fortran definitions, signatures, imports, calls and optional C preprocessing.
 use super::base::{file_stem, make_id, read_text};

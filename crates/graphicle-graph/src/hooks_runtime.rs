@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/hooks.py
 //! Detached native hook workers. No interpreter discovery or runtime fallback.
 use crate::{Result, hooks::*, paths, watch};
@@ -14,6 +14,12 @@ use std::{
 /// `core.quotePath` says, so non-ASCII names reach the rebuild as the files
 /// on disk (#4278). Names are taken as raw bytes where the platform allows.
 pub fn changed_files(root: &Path) -> Result<Vec<PathBuf>> {
+    changed_files_since(root, None)
+}
+/// [`changed_files`], or with `base` the files changed between it and HEAD,
+/// with no fallback (Graphify 0.9.92, #4490: the last step of a pick range
+/// covers every commit picked since the sequence began).
+fn changed_files_since(root: &Path, base: Option<&str>) -> Result<Vec<PathBuf>> {
     let diff = |args: &[&str]| {
         crate::process::capture(
             Command::new("git").arg("-C").arg(root).args(args),
@@ -21,10 +27,17 @@ pub fn changed_files(root: &Path) -> Result<Vec<PathBuf>> {
         )
         .map_err(crate::Error::from)
     };
-    let mut output = diff(&["diff", "--name-only", "-z", "HEAD~1", "HEAD"])?;
-    if !output.success {
-        output = diff(&["diff", "--name-only", "-z", "HEAD"])?;
-    }
+    let output = match base {
+        Some(base) => diff(&["diff", "--name-only", "-z", base, "HEAD"])?,
+        None => {
+            let output = diff(&["diff", "--name-only", "-z", "HEAD~1", "HEAD"])?;
+            if output.success {
+                output
+            } else {
+                diff(&["diff", "--name-only", "-z", "HEAD"])?
+            }
+        }
+    };
     if !output.success {
         return Ok(vec![]);
     }
@@ -34,6 +47,75 @@ pub fn changed_files(root: &Path) -> Result<Vec<PathBuf>> {
         .filter(|name| !name.is_empty())
         .map(path_from_bytes)
         .collect())
+}
+/// Where a post-commit sits in a cherry-pick or revert sequence (Graphify
+/// 0.9.92, #4490).
+#[derive(Debug, PartialEq, Eq)]
+enum Sequence {
+    /// No live sequence: rebuild what the commit changed.
+    Outside,
+    /// More steps are pending: skip, so a tracked graph.json is not rewritten
+    /// between steps.
+    Pending,
+    /// The last step: rebuild once, from `sequencer/head` when git recorded it.
+    Last(Option<String>),
+}
+/// git keeps CHERRY_PICK_HEAD and `sequencer/` on disk while post-commit
+/// runs, so neither alone is a skip signal. `sequencer/` is trusted only when
+/// the first step of its todo list is the commit just made (a pick of the
+/// same subject, or its `Revert "..."`): a stale one left by `git reset
+/// --hard` must not silence every later commit.
+fn sequence(root: &Path) -> Sequence {
+    let Ok(out) = git(root, &["rev-parse", "--git-dir"]) else {
+        return Sequence::Outside;
+    };
+    let raw = out.stdout.trim_end_matches(['\r', '\n']);
+    if out.code != 0 || raw.is_empty() {
+        return Sequence::Outside;
+    }
+    let sequencer = root.join(raw).join("sequencer");
+    let todo = sequencer.join("todo");
+    if !todo.is_file() {
+        return Sequence::Outside;
+    }
+    let text = fs::read(&todo).unwrap_or_default();
+    let first = first_line(&text);
+    let (verb, rest) = first
+        .split_once(' ')
+        .unwrap_or((first.as_str(), first.as_str()));
+    let subject = rest.split_once(' ').map_or("", |(_, subject)| subject);
+    let head = git(root, &["log", "-1", "--format=%s"])
+        .ok()
+        .filter(|out| out.code == 0)
+        .map(|out| out.stdout.trim_end_matches('\n').to_owned())
+        .unwrap_or_default();
+    let live = match verb {
+        "pick" => head == subject,
+        "revert" => head == format!("Revert \"{subject}\""),
+        _ => false,
+    };
+    if !live {
+        return Sequence::Outside;
+    }
+    let pending = text
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .count();
+    if pending > 1 {
+        return Sequence::Pending;
+    }
+    let head_file = sequencer.join("head");
+    Sequence::Last(
+        head_file
+            .is_file()
+            .then(|| first_line(&fs::read(&head_file).unwrap_or_default()))
+            .filter(|base| !base.is_empty()),
+    )
+}
+/// The first line of `text`, as the shell's `IFS= read -r` reads it.
+fn first_line(text: &[u8]) -> String {
+    let line = text.split(|b| *b == b'\n').next().unwrap_or_default();
+    String::from_utf8_lossy(line).into_owned()
 }
 /// A file name from bytes git printed: verbatim on Unix (`os.fsdecode`'s
 /// surrogate escapes), UTF-8 elsewhere.
@@ -121,16 +203,23 @@ pub fn saved_root(cwd: &Path, out: &Path) -> (PathBuf, Option<String>) {
         ),
     }
 }
-/// The hook events `hook launch`/`hook run` accept. post-checkout and
-/// post-merge (#2418) rebuild unscoped; post-commit rebuilds what it changed.
-const HOOK_EVENTS: [&str; 3] = ["post-commit", "post-checkout", "post-merge"];
+/// The hook events `hook launch`/`hook run` accept. post-checkout,
+/// post-merge (#2418) and post-rewrite (Graphify 0.9.92, #4490) rebuild
+/// unscoped; post-commit rebuilds what it changed.
+const HOOK_EVENTS: [&str; 4] = ["post-commit", "post-checkout", "post-merge", "post-rewrite"];
 pub fn launch(path: &Path, event: &str) -> Result<String> {
     if !HOOK_EVENTS.contains(&event) {
         return Err(format!("Unknown hook event: {event}").into());
     }
     let root = git_root(path).ok_or("Not in a git repository.")?;
     let changed = if event == "post-commit" {
-        changed_files(&root)?
+        // A range pick or revert rebuilds once, at its last step, for every
+        // commit picked since the sequence began.
+        match sequence(&root) {
+            Sequence::Pending => return Ok(String::new()),
+            Sequence::Last(Some(base)) => changed_files_since(&root, Some(&base))?,
+            Sequence::Last(None) | Sequence::Outside => changed_files(&root)?,
+        }
     } else {
         vec![]
     };
@@ -395,7 +484,13 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             s("marker"),
             s("end")
         )?),
-        "script" => json!(if r["merge"].as_bool().unwrap_or(false) {
+        "script" => json!(if r["rewrite"].as_bool().unwrap_or(false) {
+            crate::hooks::hook_script(
+                crate::hooks::HookKind::Rewrite,
+                s("executable"),
+                r["viz_node_limit"].as_i64(),
+            )
+        } else if r["merge"].as_bool().unwrap_or(false) {
             crate::hooks::hook_script(
                 crate::hooks::HookKind::Merge,
                 s("executable"),
@@ -426,6 +521,109 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         .map_err(crate::Error::from)?,
         x => return Err(format!("Unknown hooks action: {x}").into()),
     })
+}
+
+#[cfg(test)]
+mod sequence_tests {
+    use super::{Sequence, sequence};
+    use std::{fs, path::Path, process::Command};
+
+    fn git(repo: &Path, args: &[&str]) {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t.co"])
+            .args(args)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn repo_with_commits(names: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        git(repo, &["init", "-q"]);
+        for name in names {
+            fs::write(repo.join(name), format!("def {name}(): pass\n")).unwrap();
+            git(repo, &["add", name]);
+            git(repo, &["commit", "-q", "-m", name]);
+        }
+        dir
+    }
+
+    fn sequencer(repo: &Path, todo: &str, head: Option<&str>) {
+        let dir = repo.join(".git/sequencer");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("todo"), todo).unwrap();
+        if let Some(head) = head {
+            fs::write(dir.join("head"), format!("{head}\n")).unwrap();
+        }
+    }
+
+    /// Graphify 0.9.92 (#4490): a post-commit inside a pick or revert range
+    /// is skipped while more steps are pending, and the last step rebuilds
+    /// from `sequencer/head`; a todo whose first step is not the commit just
+    /// made (a stale one, an unknown verb, an empty file) is not a sequence.
+    #[test]
+    fn post_commit_follows_a_live_pick_or_revert_sequence() {
+        let dir = repo_with_commits(&["a.py", "b.py"]);
+        let repo = dir.path();
+        assert_eq!(sequence(repo), Sequence::Outside);
+        sequencer(
+            repo,
+            "pick aaaaaaa b.py\npick bbbbbbb c.py\n",
+            Some("0123abc"),
+        );
+        assert_eq!(sequence(repo), Sequence::Pending);
+        sequencer(repo, "pick aaaaaaa b.py\n", Some("0123abc"));
+        assert_eq!(sequence(repo), Sequence::Last(Some("0123abc".into())));
+        fs::remove_file(repo.join(".git/sequencer/head")).unwrap();
+        assert_eq!(sequence(repo), Sequence::Last(None));
+        for todo in [
+            "pick aaaaaaa some other commit\npick bbbbbbb c.py\n",
+            "revert aaaaaaa b.py\nrevert bbbbbbb c.py\n",
+            "squash aaaaaaa b.py\npick bbbbbbb c.py\n",
+            "",
+        ] {
+            sequencer(repo, todo, Some("0123abc"));
+            assert_eq!(sequence(repo), Sequence::Outside, "{todo:?}");
+        }
+        fs::remove_dir_all(repo.join(".git/sequencer")).unwrap();
+        fs::write(repo.join("x.py"), "def x(): pass\n").unwrap();
+        git(repo, &["add", "x.py"]);
+        git(repo, &["commit", "-q", "-m", "Revert \"x\""]);
+        sequencer(repo, "revert aaaaaaa x\nrevert bbbbbbb y\n", None);
+        assert_eq!(sequence(repo), Sequence::Pending);
+        sequencer(repo, "revert aaaaaaa x", None);
+        assert_eq!(sequence(repo), Sequence::Last(None));
+    }
+
+    /// The last step of a range covers every commit since the sequence began.
+    #[test]
+    fn the_last_step_lists_every_file_since_the_sequence_base() {
+        let dir = repo_with_commits(&["a.py", "b.py", "c.py"]);
+        let repo = dir.path();
+        let base = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args(["rev-parse", "HEAD~2"])
+            .output()
+            .unwrap();
+        let base = String::from_utf8(base.stdout).unwrap();
+        let mut changed = super::changed_files_since(repo, Some(base.trim())).unwrap();
+        changed.sort();
+        assert_eq!(changed, vec![Path::new("b.py"), Path::new("c.py")]);
+        assert_eq!(super::changed_files(repo).unwrap(), vec![Path::new("c.py")]);
+        assert!(
+            super::changed_files_since(repo, Some("not-a-commit"))
+                .unwrap()
+                .is_empty()
+        );
+    }
 }
 
 #[cfg(all(test, windows))]

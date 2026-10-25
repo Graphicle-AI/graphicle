@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 # The PyPI name "graphicle" belongs to an unrelated project; the import package is graphicle_sdk.
 name = "graphicle-sdk"
-version = "0.1.0"
+version = "0.1.7"
 description = "Python SDK for Graphicle, a local-first memory service that keeps original sources"
 readme = "README.md"
 license = "Apache-2.0"

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! Native model adapters, semantic extraction and community naming.
 //!
@@ -132,6 +132,13 @@ impl Runtime {
                 .backend(name)
                 .map(|_| name.into())
                 .map_err(Error::value);
+        }
+        // GRAPHICLE_BACKEND=none refuses cleanly instead of reporting a
+        // missing key (Graphify 0.9.92, #4361).
+        if self.config.backend_disabled_by_env() {
+            return Err(Error::value(
+                "LLM backend disabled by GRAPHICLE_BACKEND=none. Unset it (or pass backend= explicitly) to run semantic extraction.",
+            ));
         }
         self.config.detect_backend(d).map_err(Error::value)?.ok_or_else(||Error::value("No LLM backend configured. Set one of: GEMINI_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, DEEPSEEK_API_KEY, MOONSHOT_API_KEY, AZURE_OPENAI_API_KEY+AZURE_OPENAI_ENDPOINT, OLLAMA_BASE_URL, or AWS credentials. Pass backend= explicitly to select a provider."))
     }

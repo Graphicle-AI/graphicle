@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/markdown.py
 //! Port of graphify/extractors/markdown.py at the pinned Graphify commit.
 use super::{base::file_stem, markdown_data};
@@ -188,11 +188,37 @@ pub fn vault_lookup(target: &str, root: &Path) -> crate::Result<Option<PathBuf>>
         return Ok(None);
     };
     let nested = format!("/{target}");
-    Ok(candidates
+    let mut matches = candidates
         .iter()
         .filter(|(_, rel, _)| rel == &target || rel.ends_with(&nested))
-        .min()
-        .map(|(_, _, path)| path.clone()))
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        // Obsidian writes vault-relative paths, so scanning a folder below the
+        // vault root meets links that start with that folder's own path
+        // (`[[Corp/wiki/Fox]]` from inside `Corp/`, Graphify 0.9.93, #4559).
+        // Drop the longest such leading run and match the rest from the root.
+        let parts = target.split('/').collect::<Vec<_>>();
+        let root_parts = root
+            .components()
+            .map(|part| nfc(&part.as_os_str().to_string_lossy()))
+            .collect::<Vec<_>>();
+        for k in (1..parts.len()).rev() {
+            if k <= root_parts.len()
+                && parts[..k]
+                    .iter()
+                    .zip(&root_parts[root_parts.len() - k..])
+                    .all(|(part, root_part)| *part == root_part.as_str())
+            {
+                let rest = parts[k..].join("/");
+                matches = candidates
+                    .iter()
+                    .filter(|(_, rel, _)| *rel == rest)
+                    .collect();
+                break;
+            }
+        }
+    }
+    Ok(matches.into_iter().min().map(|(_, _, path)| path.clone()))
 }
 
 fn normpath(path: &Path) -> PathBuf {

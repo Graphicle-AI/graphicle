@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/export.py
 //! GraphML and SVG formats from graphify/export.py. SVG uses native XML,
 //! NetworkX's force/energy objectives and Rust numeric routines.
@@ -171,7 +171,19 @@ pub fn to_graphml(graph: &Graph, communities: &Communities, output: &Path) -> Re
         text.push_str("    </edge>\n")
     }
     text.push_str("  </graph>\n</graphml>\n");
-    paths::write_text_atomic(output, &text).map_err(crate::Error::from)
+    // Renamed over the output itself, as upstream writes a temporary file
+    // and `os_replace_with_fallback`s it into place (#1831): a symlink at the
+    // output is replaced, never written through.
+    let name = output
+        .file_name()
+        .map_or_else(|| "graph.graphml".into(), |n| n.to_string_lossy());
+    paths::replace_file(
+        output,
+        &format!(".{name}."),
+        text.as_bytes(),
+        paths::NewMode::Default,
+    )
+    .map_err(crate::Error::from)
 }
 fn random_position(rng: &mut Mt19937) -> f64 {
     let a = rng.next_u32() >> 5;

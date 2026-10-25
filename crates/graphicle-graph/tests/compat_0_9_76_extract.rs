@@ -106,7 +106,12 @@ fn cpp_union_specifier_is_extracted() {
     let defines = edge_labels(&result, "defines");
     assert!(defines.contains(&pair("Value", "i")));
     assert!(defines.contains(&pair("Value", "f")));
-    assert!(!labels.contains("Anon"));
+    // Graphify 0.9.95 (#4580): the typedef name `Anon` is a type alias node of
+    // its own, owning none of the anonymous union's members.
+    assert!(!labels.contains(""));
+    assert!(edge_labels(&result, "contains").contains(&pair("value.hpp", "Anon")));
+    assert!(!defines.iter().any(|(source, _)| source == "Anon"));
+    assert!(!labels.contains("a") && !labels.contains("b"));
 }
 
 // 67a96aa: a VB.NET enum member is a `case_of` case, a field stays `contains`.

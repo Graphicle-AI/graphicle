@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Corpus normalization, collision-safe merges, and import alias repair.
 use crate::{
@@ -255,6 +255,51 @@ fn rewire_unique_stub_edges_with(
             let target = s(candidates[0], "id");
             if !target.is_empty() && target != id {
                 map.insert(id.to_string(), target.to_string());
+            }
+        }
+    }
+    // SQL (Graphify 0.9.94, #4653): a table no file defines is one table however
+    // many files read it, so the per-file stubs of one name fold into a single
+    // node, the smallest id (not the first seen, which would follow the file
+    // order). A same-named definition in another language is not this table.
+    let real_by_id = view()
+        .filter(|n| !s(n, "source_file").is_empty())
+        .map(|n| (s(n, "id"), n))
+        .collect::<FxHashMap<_, _>>();
+    let mut sql_stubs: FxHashMap<String, Vec<String>> = FxHashMap::default();
+    for n in view() {
+        let id = s(n, "id");
+        if id.is_empty()
+            || !s(n, "source_file").is_empty()
+            || node_label_key(s(n, "label"), false).is_empty()
+            || !s(n, "origin_file").to_lowercase().ends_with(".sql")
+        {
+            continue;
+        }
+        if map
+            .get(id)
+            .and_then(|target| real_by_id.get(target.as_str()))
+            .and_then(|target| family(s(target, "source_file")))
+            .is_some_and(|f| f != "sql")
+        {
+            map.remove(id);
+        }
+        if !map.contains_key(id) {
+            let label = n
+                .get("label")
+                .map(crate::python_compat::string)
+                .unwrap_or_default();
+            sql_stubs
+                .entry(crate::extractors::sql::norm_ident(&label))
+                .or_default()
+                .push(id.to_string());
+        }
+    }
+    for ids in sql_stubs.values() {
+        let survivor = ids.iter().min().cloned().unwrap_or_default();
+        for id in ids {
+            if *id != survivor {
+                map.insert(id.clone(), survivor.clone());
             }
         }
     }

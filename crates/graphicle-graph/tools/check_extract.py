@@ -102,7 +102,8 @@ for language in languages:
 for language in ['lazarus_package','slnx','csproj','xaml']:
     name='extract_'+language
     def impl(path,_language=language,_name=name):
-        return compare(_name,'extract.project',expected_call(_name,path),{'path':path,'language':_language,'root':ref._XAML_ACTIVE_EXTRACT_ROOT})
+        # The in-flight scan root lives on extractors/base.py since 0.9.92 (#3666).
+        return compare(_name,'extract.project',expected_call(_name,path),{'path':path,'language':_language,'root':ref.active_scan_root()})
     install(name,impl)
 
 def extraction(paths,cache_root=None,**kw):
@@ -214,6 +215,21 @@ EXTRACT_UNCHANGED=[
     'tests/test_typescript_enum_members.py','tests/test_zero_node_no_cache.py',
 ]
 paths+=[p for p in EXTRACT_UNCHANGED if p not in paths and (SOURCE/p).is_file()]
+# 0.9.92-0.9.95 contracts that drive extract() without naming an extractor
+# (port lane A): type aliases (C++, Go, Python, Rust and Rust unions), C#
+# delegates and overloads, Kotlin typealias, Swift macros, JS member calls on
+# untyped receivers and CommonJS require bindings, Rust case-only collisions,
+# Solidity inherited calls, SQL cross-file tables and T-SQL procedures,
+# Objective-C category ids, parked call-site files and Python module calls.
+EXTRACT_0995=[
+    'tests/test_cpp_type_alias.py','tests/test_csharp_delegate_declarations.py','tests/test_csharp_overloads.py',
+    'tests/test_go_type_alias.py','tests/test_js_member_call_bare_name_fallback.py','tests/test_js_require_binding_shadow.py',
+    'tests/test_kotlin_typealias_declarations.py','tests/test_objc_category_portable_ids.py','tests/test_parked_call_site_file.py',
+    'tests/test_python_module_call_exact_name.py','tests/test_python_type_alias.py','tests/test_rust_case_collisions.py',
+    'tests/test_rust_type_alias_union.py','tests/test_solidity_inherited_calls.py','tests/test_sql_cross_file_tables.py',
+    'tests/test_sql_tsql_procedures.py','tests/test_swift_macro_declarations.py',
+]
+paths+=[p for p in EXTRACT_0995 if p not in paths and (SOURCE/p).is_file()]
 # Upstream tests the engine fails, with the reason: known differences, recorded
 # and not fixed. Each is deselected by its exact file and test name and listed
 # in the receipt (isolated_upstream.run).
@@ -227,13 +243,20 @@ NOT_APPLICABLE_TESTS={
     'tests/test_zero_node_no_cache.py::test_zero_node_result_not_cached_then_self_heals':
         'Forces a zero-node result by patching the reference\'s private `_safe_extract_with_xaml_root`; '
         'the engine has no Python seam to patch, so its extraction is unchanged.',
+    'tests/test_extract_cli.py::test_declined_by_design_file_is_not_requeued_every_run':
+        'Declines schema.sql by patching the reference\'s private `_DISPATCH` table (0.9.94, #2879); '
+        'the engine has no Python seam to patch, so it extracts the table and the comparison differs. '
+        'The engine\'s `skipped_sources` and the manifest\'s `ast_empty` marker are checked by its own tests '
+        '(extract::tests, detect_manifest::tests).',
     'tests/test_skill_part_a_explicit_root.py::test_split_hosts_are_discovered':
         'Reads the skill files that Graphify\'s skill generator (`tools/skillgen`) renders; the engine ships its own skill files.',
     'tests/test_skill_part_a_explicit_root.py::test_part_a_passes_an_explicit_root':
         'Reads the skill files that Graphify\'s skill generator (`tools/skillgen`) renders; the engine ships its own skill files.',
 }
 # Files of the ported releases this check does not run, with the reason (receipt).
-NOT_RUN={'tests/test_js_walk_order.py':'Tests the reference\'s private _walk_js_tree TreeCursor walk (0.9.80, a speed rewrite not ported): '
+NOT_RUN={'tests/test_extractor_scan_root_context.py':'Tests Python import structure (0.9.92, #3666): the scan root moved to extractors/base.py and markdown.py stops importing graphify.extract. '
+         'The engine already scopes the scan root per extraction (extractors::markdown::enter_scan_root, extractors::engine::enter_scan_root); no extraction behaviour changes.',
+         'tests/test_js_walk_order.py':'Tests the reference\'s private _walk_js_tree TreeCursor walk (0.9.80, a speed rewrite not ported): '
          'no extraction runs, so nothing native is reached. The JS/TS fact order that walk feeds is compared by check_resolution (js_facts) and by every extract() comparison here.'}
 if '--test' in sys.argv:paths=[sys.argv[sys.argv.index('--test')+1]]
 if '--layers' in sys.argv:setattr(ref,'extract',original['extract'])

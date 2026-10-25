@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/manifest_ingest.py
 //! Deterministic package-manifest ingestion from graphify/manifest_ingest.py.
 use crate::{
@@ -284,6 +284,20 @@ fn xml_findpath(node: roxmltree::Node<'_, '_>, path: &[&str]) -> Option<String> 
             .find_map(|c| xml_findpath(c, rest)),
     }
 }
+/// ElementTree `findall` over a `/`-separated child path, in document order.
+fn xml_findall<'a, 'i>(
+    node: roxmltree::Node<'a, 'i>,
+    path: &[&str],
+) -> Vec<roxmltree::Node<'a, 'i>> {
+    let mut level = vec![node];
+    for name in path {
+        level = level
+            .into_iter()
+            .flat_map(|n| n.children().filter(|c| xml_tag(*c, name)))
+            .collect();
+    }
+    level
+}
 fn py_strip(value: &str) -> String {
     value
         .trim_matches(crate::dedup_strings::whitespace)
@@ -380,20 +394,19 @@ pub fn parse_pom(text: &str) -> Result<Value> {
         None => aid,
     };
     let mut deps = vec![];
-    for parent in root
-        .descendants()
-        .skip(1)
-        .filter(|c| xml_tag(*c, "dependencies"))
-    {
-        for dep in parent.children().filter(|c| xml_tag(*c, "dependency")) {
-            if let Some(da) = resolve(xml_findtext(dep, "artifactId")).filter(|s| !s.is_empty()) {
-                deps.push(
-                    match resolve(xml_findtext(dep, "groupId")).filter(|s| !s.is_empty()) {
-                        Some(dg) => format!("{dg}:{da}"),
-                        None => da,
-                    },
-                );
-            }
+    // Only the project's own <dependencies> and those of its profiles
+    // (Graphify 0.9.94, #4596): <dependencyManagement> only pins versions, and
+    // a plugin's <dependencies> belong to the build tool.
+    let own = xml_findall(root, &["dependencies", "dependency"]);
+    let profiles = xml_findall(root, &["profiles", "profile", "dependencies", "dependency"]);
+    for dep in own.into_iter().chain(profiles) {
+        if let Some(da) = resolve(xml_findtext(dep, "artifactId")).filter(|s| !s.is_empty()) {
+            deps.push(
+                match resolve(xml_findtext(dep, "groupId")).filter(|s| !s.is_empty()) {
+                    Some(dg) => format!("{dg}:{da}"),
+                    None => da,
+                },
+            );
         }
     }
     Ok(json!({"name":name,"version":version,"deps":deps}))

@@ -1,5 +1,5 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
-// Upstream: graphify/affected.py, graphify/ids.py
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Upstream: graphify/affected.py
 //! Native translation of graphify/affected.py: reverse dependency traversal.
 use crate::{Result, graph::Graph, path_syntax, python_compat::string, unicode15::CASEFOLD};
 use serde::{Deserialize, Serialize};
@@ -106,10 +106,16 @@ pub fn as_repo_relative(query: &str, root: Option<&Path>) -> Result<String> {
     }
     Ok(path_syntax::posix_join(&path))
 }
+/// `_prefer_file_node`: the file-level node when a source_file query matches
+/// many nodes. The passes, in order: an L1 node named by the query's basename;
+/// an L1 node whose label is a path form of its own source_file (a basename the
+/// #2032 pass disambiguated to `alpha/hooks.py`, Graphify 0.9.95, #4698),
+/// checked before any L1 node because a module docstring can sit on L1 too;
+/// any L1 node; any node named by the basename.
 pub fn prefer_file_node(graph: &Graph, ids: &[String], query: &str) -> Option<String> {
     let parts = path_syntax::posix_parts(query);
     let basename = normalize_label(path_syntax::posix_name(&parts));
-    for pass in 0..3 {
+    for pass in 0..4 {
         let candidates: Vec<_> = ids
             .iter()
             .filter(|id| {
@@ -118,10 +124,17 @@ pub fn prefer_file_node(graph: &Graph, ids: &[String], query: &str) -> Option<St
                 };
                 let data = &graph.nodes[index].attributes;
                 let l1 = text(data, "source_location") == "L1";
-                let named = normalize_label(&text(data, "label")) == basename;
+                let label = text(data, "label");
+                let named = normalize_label(&label) == basename;
                 match pass {
                     0 => l1 && named,
-                    1 => l1,
+                    1 => {
+                        l1 && crate::build_labels::is_file_node_label_str(
+                            &label,
+                            &text(data, "source_file"),
+                        )
+                    }
+                    2 => l1,
                     _ => named,
                 }
             })
@@ -438,6 +451,11 @@ pub fn load_graph(path: &Path) -> Result<Graph> {
     {
         object.insert("links".into(), edges);
     }
+    // Graphicle reads a graph.json written before 0.9.92 (parallel links under
+    // `multigraph: false`) as the MCP loader does, so the memory library and
+    // every session that opens a file see the same edges whichever release
+    // wrote it. Upstream repairs only in its MCP loader.
+    crate::build::mark_parallel_links(&mut data);
     Graph::from_node_link_owned(data, "links")
 }
 pub fn dispatch(request: &Value) -> Result<Value> {

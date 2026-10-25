@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/markdown_resolution.py
 //! Port of graphify/markdown_resolution.py; emits only uniquely supported references.
 //!
@@ -195,6 +195,28 @@ pub fn resolve_markdown_mentions(
 ) {
     resolve_markdown_mentions_any(per_file, all_nodes, all_edges);
 }
+/// `_add`: the `references` edge of a resolved mention, unless the graph has
+/// it already; either way the document's citation of `target` is recorded.
+fn add_mention<R: Rec, E: Rec>(
+    call: &R,
+    target: Option<String>,
+    (confidence, score): (&str, f64),
+    existing: &mut HashSet<(String, String)>,
+    added: &mut Vec<E>,
+    cited: &mut HashMap<String, HashSet<String>>,
+) {
+    let caller = rtext(call, "caller_nid");
+    let Some(target) = target.filter(|target| *target != caller) else {
+        return;
+    };
+    let document = posix(&rtext(call, "source_file"));
+    if existing.insert((caller.clone(), target.clone())) {
+        added.push(edge_record(json!({"source":caller,"target":target,"relation":"references",
+            "context":call.rec_get("context").unwrap_or(&json!("")),"confidence":confidence,"confidence_score":score,
+            "source_file":call.rec_get("source_file").unwrap_or(&json!("")),"source_location":call.rec_get("source_location"),"weight":1.0})));
+    }
+    cited.entry(document).or_default().insert(target);
+}
 /// [`resolve_markdown_mentions`] over the per-file results and the edges in
 /// either form.
 pub fn resolve_markdown_mentions_any<P: PerFile, E: Rec>(
@@ -254,8 +276,68 @@ pub fn resolve_markdown_mentions_any<P: PerFile, E: Rec>(
             )
         })
         .collect();
+    // `_method_owner`: the class that owns a node when it is a method, not a
+    // function. Parents are a set upstream; the smallest id decides a tie.
+    let method_owner = |id: &str| -> Option<String> {
+        parents
+            .get(id)
+            .into_iter()
+            .flatten()
+            .filter(|parent| {
+                nodes_by_id
+                    .get(*parent)
+                    .is_some_and(|n| truthy(&n["_callable_class"]))
+            })
+            .min()
+            .cloned()
+    };
+    // `_target`: the node a mention resolves to, and the confidence of the match.
+    let resolve = |call: &P::R, names: &[String]| -> (Option<String>, &'static str, f64) {
+        if truthy(at(call, "path")) {
+            let Some(file) = match_cited_file(
+                &rtext(call, "path"),
+                &posix(&rtext(call, "source_file")),
+                &source_files,
+            ) else {
+                return (None, "EXTRACTED", 1.0);
+            };
+            return (
+                resolve_chain(&by_file[&file], names, &parents),
+                "EXTRACTED",
+                1.0,
+            );
+        }
+        let callee = &names[names.len() - 1];
+        if LANGUAGE_BUILTIN_GLOBALS.contains(&callee.as_str()) {
+            return (None, "INFERRED", 0.95);
+        }
+        let candidates: Vec<&String> = by_label
+            .get(callee)
+            .into_iter()
+            .flatten()
+            .filter(|id| {
+                let found = evidence(id, &nodes_by_id, &parents);
+                names[..names.len() - 1]
+                    .iter()
+                    .all(|qualifier| found.contains(qualifier))
+            })
+            .collect();
+        (
+            (candidates.len() == 1).then(|| candidates[0].clone()),
+            "INFERRED",
+            0.95,
+        )
+    };
+    // Targets each document already cites: owner evidence for a bare method
+    // mention in the same document (Graphify 0.9.94, #4609).
+    let mut cited: HashMap<String, HashSet<String>> = HashMap::new();
     // New edges are appended after the pass; the loop reads none of them.
     let mut added: Vec<E> = vec![];
+    // Pass 1: explicit evidence resolves on its own (a cited path, a dotted
+    // qualifier chain, or a trailing `()`). Pass 2 takes the bare,
+    // parenthesis-less, single-name mentions, where the word alone (`redis`,
+    // `data`) is as often prose as a reference.
+    let mut bare = vec![];
     for call in mentions {
         let caller = rtext(call, "caller_nid");
         let callee = rtext(call, "callee")
@@ -270,50 +352,60 @@ pub fn resolve_markdown_mentions_any<P: PerFile, E: Rec>(
             .flatten()
             .map(python_compat::string)
             .collect();
-        names.push(callee.clone());
-        let (target, confidence, score) = if truthy(at(call, "path")) {
-            let Some(file) = match_cited_file(
-                &rtext(call, "path"),
-                &posix(&rtext(call, "source_file")),
-                &source_files,
-            ) else {
-                continue;
-            };
-            (
-                resolve_chain(&by_file[&file], &names, &parents),
-                "EXTRACTED",
-                1.0,
-            )
+        names.push(callee);
+        let span = call
+            .rec_get("context")
+            .filter(|context| truthy(context))
+            .map(python_compat::string)
+            .unwrap_or_default();
+        if truthy(at(call, "path")) || names.len() > 1 || span.contains('(') {
+            let (target, confidence, score) = resolve(call, &names);
+            add_mention(
+                call,
+                target,
+                (confidence, score),
+                &mut existing,
+                &mut added,
+                &mut cited,
+            );
         } else {
-            if LANGUAGE_BUILTIN_GLOBALS.contains(&callee.as_str()) {
-                continue;
-            }
-            let candidates: Vec<&String> = by_label
-                .get(&callee)
-                .into_iter()
-                .flatten()
-                .filter(|id| {
-                    let found = evidence(id, &nodes_by_id, &parents);
-                    names[..names.len() - 1]
-                        .iter()
-                        .all(|qualifier| found.contains(qualifier))
-                })
-                .collect();
-            (
-                (candidates.len() == 1).then(|| candidates[0].clone()),
-                "INFERRED",
-                0.95,
-            )
-        };
-        let Some(target) = target else {
-            continue;
-        };
-        if target == caller || !existing.insert((caller.clone(), target.clone())) {
-            continue;
+            bare.push((call, names));
         }
-        added.push(edge_record(json!({"source":caller,"target":target,"relation":"references",
-            "context":call.rec_get("context").unwrap_or(&json!("")),"confidence":confidence,"confidence_score":score,
-            "source_file":call.rec_get("source_file").unwrap_or(&json!("")),"source_location":call.rec_get("source_location"),"weight":1.0})));
+    }
+    // Pass 2a: bare mentions that name no method (a class or free function is
+    // specific enough), so the classes a method mention needs are on record.
+    let mut methods = vec![];
+    for (call, names) in bare {
+        let (target, confidence, score) = resolve(call, &names);
+        match target.as_deref().and_then(method_owner) {
+            Some(owner) => methods.push((call, target, owner, confidence, score)),
+            None => add_mention(
+                call,
+                target,
+                (confidence, score),
+                &mut existing,
+                &mut added,
+                &mut cited,
+            ),
+        }
+    }
+    // Pass 2b: a bare method name is evidence only when the same document
+    // already cites the class that owns it.
+    for (call, target, owner, confidence, score) in methods {
+        let document = posix(&rtext(call, "source_file"));
+        if cited
+            .get(&document)
+            .is_some_and(|targets| targets.contains(&owner))
+        {
+            add_mention(
+                call,
+                target,
+                (confidence, score),
+                &mut existing,
+                &mut added,
+                &mut cited,
+            );
+        }
     }
     append_edges(all_edges, added);
 }

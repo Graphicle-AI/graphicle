@@ -24,11 +24,12 @@ use std::{
 const SCHEMA: &str = "resolution-files-v11";
 const OWNER: &str = "__graphicle_private_resolution_owner";
 const SHARED: &str = "__graphicle_private_shared_resolution_node";
-const ARRAYS: [&str; 5] = [
+const ARRAYS: [&str; 6] = [
     "nodes",
     "edges",
     "unresolved_calls",
     "failed_sources",
+    "skipped_sources",
     "extracted_sources",
 ];
 
@@ -360,7 +361,7 @@ fn keys(
         .collect())
 }
 fn empty(receiver: bool) -> Value {
-    let mut output = json!({"nodes":[],"edges":[],"input_tokens":0,"output_tokens":0,"failed_sources":[],"extracted_sources":[]});
+    let mut output = json!({"nodes":[],"edges":[],"input_tokens":0,"output_tokens":0,"failed_sources":[],"skipped_sources":[],"extracted_sources":[]});
     if receiver {
         output["unresolved_calls"] = json!([]);
     }
@@ -461,7 +462,10 @@ fn partition(
         {
             return Some(Assignment::Shared(refs));
         }
-        let owner = if matches!(key, "failed_sources" | "extracted_sources") {
+        let owner = if matches!(
+            key,
+            "failed_sources" | "skipped_sources" | "extracted_sources"
+        ) {
             source_owner(item.as_str()?, root, &owners)
         } else {
             explicit
@@ -523,7 +527,7 @@ fn partition(
 // Relocate only explicit source-list paths. Legacy dangling IDs and user
 // documentation can also contain root-like strings; those must stay intact.
 fn relocate(output: &mut Value, from: &Path, to: &Path) {
-    for key in ["failed_sources", "extracted_sources"] {
+    for key in ["failed_sources", "skipped_sources", "extracted_sources"] {
         for value in output
             .get_mut(key)
             .and_then(Value::as_array_mut)
@@ -591,7 +595,12 @@ fn save(
         match &output {
             Value::Object(m) => m
                 .iter()
-                .filter(|(k, _)| !matches!(k.as_str(), "extracted_sources" | "failed_sources"))
+                .filter(|(k, _)| {
+                    !matches!(
+                        k.as_str(),
+                        "extracted_sources" | "failed_sources" | "skipped_sources"
+                    )
+                })
                 .any(|(_, v)| sensitive(v, &root_text, &id_prefix)),
             v => sensitive(v, &root_text, &id_prefix),
         }
@@ -966,15 +975,13 @@ pub fn extract(
         }
     }
     output["extracted_sources"] = json!(input_paths);
-    for value in output["failed_sources"]
-        .as_array_mut()
-        .into_iter()
-        .flatten()
-    {
-        if let Some(source) = value.as_str()
-            && let Some(i) = paths.iter().position(|p| p == Path::new(source))
-        {
-            *value = json!(input_paths[i]);
+    for key in ["failed_sources", "skipped_sources"] {
+        for value in output[key].as_array_mut().into_iter().flatten() {
+            if let Some(source) = value.as_str()
+                && let Some(i) = paths.iter().position(|p| p == Path::new(source))
+            {
+                *value = json!(input_paths[i]);
+            }
         }
     }
     order(&mut output);

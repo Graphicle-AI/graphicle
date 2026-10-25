@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cache.py, graphify/extract.py
 //! Port of graphify/cache.py: owned per-run cache state with explicit flush.
 //! The native release has its own AST version; semantic entries retain their
@@ -15,7 +15,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 /// Bump when AST cache-key semantics change independently of the package
-/// version; 9 carries the per-file record fields of Graphify 0.9.89-0.9.91
+/// version; 10 carries the extraction changes of Graphify 0.9.92-0.9.95
+/// (upstream schemas 17-25: pytest fixture markers, Python module-level class
+/// salting, TS `this.field` from any method, Solidity arity and inherited-call
+/// records, Go and Rust case-distinct ids, Kotlin `typealias`, C# `delegate`,
+/// Swift `macro`, Rust `use` of sibling `mod`s, Dart `typedef`, Metal/CUDA
+/// qualifiers, `extern "C"` headers, Obsidian vault-relative wikilinks,
+/// CommonJS `require` bindings, SQL brackets, routine bodies, `GO` and
+/// recovered tables, structural YAML, Objective-C `NS_CLOSED_ENUM`, Python,
+/// Go, C++ and Rust type aliases, C# overloads and package.json `declares`);
+/// 9 carries the per-file record fields of Graphify 0.9.89-0.9.91
 /// (upstream schemas 13-16: Go and PHP receiver type tables and member
 /// receivers, `_callable`/`_callable_class` markers on Go and Objective-C
 /// declarations, Objective-C NS_ENUM/NS_OPTIONS, generic type parameters that
@@ -29,7 +38,7 @@ use std::{
 /// resolved to; 7 invalidated records whose source paths leaked a walked
 /// directory alias when the extraction root was canonicalized (6 added
 /// receiver shadows).
-pub const AST_CACHE_SCHEMA: i64 = 9;
+pub const AST_CACHE_SCHEMA: i64 = 10;
 /// Where an AST entry lists the `target_file` stamps that named an existing
 /// file when it was written; a hit whose target is gone is a miss (#4185).
 pub const CACHED_TARGETS_KEY: &str = "_cached_target_files";

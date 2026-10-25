@@ -2,7 +2,7 @@
   "schema": "graphicle.native-service.provenance.v1",
   "version": "0.7.0",
   "source_downloads": "Each entry of `projects` names its pinned commit and the SHA-256 of the source archive that was read; the download receipts are kept with the maintainers' records.",
-  "linked_core_receipt_sha256": "4830bf156e1f9566e375f75eafc95ddda547d64029b4c2629a5e07488d8aa95a",
+  "linked_core_receipt_sha256": "2c813e5742ebcf4cbd94b009a15f6ae4c33b285fc877b64da78a7c1b609b859d",
   "projects": [
     {
       "repository": "Graphify-Labs/graphify",
@@ -286,6 +286,56 @@
             "../graphicle-graph/src/extractors/rust.rs"
           ],
           "adaptation": "Ported in graphicle, not in the native structure layer. The service builds and queries its code graph with graphicle (graphicle::incremental::extract, src/graph_projection.rs), whose default output matches Graphify 0.9.91 (the three releases 0.9.89 to 0.9.91 ported and qualified against the release), so these changes apply to the service's code graph. The per-file structure analyses of graphicle-memory (structure.rs) only feed legacy_graph, the fallback for repositories without a recorded episode (src/query.rs), and keep their 20a20d30 scope.",
+          "full_application_port": false
+        },
+        {
+          "commit": "92741d162b2094ffc2fed58cfbd8ee823e9da62c",
+          "committed_at": "2026-10-23T17:20:06Z",
+          "review": "Reviewed 2026-10-24 at the v0.9.95 release tag (GitHub archive of the tag commit and the PyPI wheel of 0.9.95); the graph engine qualifies against this release.",
+          "url": "https://github.com/Graphify-Labs/graphify/tree/92741d162b2094ffc2fed58cfbd8ee823e9da62c",
+          "selected_files": [
+            {
+              "path": "graphify/cache.py",
+              "sha256": "b9c762ecca6a52f69dd360b6762041055eb50cae29f45a8608ef511ef6e549c8",
+              "inspection": "0.9.92 to 0.9.95: the AST cache schema moves on with each release (#4705 among them), and Windows cache paths take their extended-length form (#4542). graphicle ports them in src/cache.rs (schema 10); Rust's file calls already use the extended-length form."
+            },
+            {
+              "path": "graphify/extract.py",
+              "sha256": "2c9901d72a04bbd907bf66b9d44487848ea5ebaafa0ff59cff10b107b7a80b40",
+              "inspection": "0.9.92 to 0.9.95: YAML configuration dispatched to a structural extractor (#2214, #4706); files declined by design listed as skipped and kept out of later rebuilds (#2543, #4672); a `.h` with `extern \"C\"` routed to the C++ extractor (#4526); C# overloads kept apart in raw-call binding (#4584, #4591); a bare call resolved only through a module import kept `INFERRED` (#2945, #4707); Solidity inherited calls through C3 linearization (#4379, #4384); parked member calls that keep their call site (#4668). graphicle ports them in src/extract*.rs, src/extractors/yaml_config.rs, src/extractors/solidity.rs and src/cross_repo_calls.rs."
+            },
+            {
+              "path": "graphify/extractors/engine.py",
+              "sha256": "c4eb3d6db872edaa4b2427813b0eca5134e4e070f7f1b2c4ea8a3eb2cf7b8b77",
+              "inspection": "Changes from v0.9.91 to v0.9.95 (0.9.92 to 0.9.95): JavaScript and TypeScript members that differ only by `_`, `$` or `#` are separate nodes (#4475), TypeScript `this.field` is typed from an assignment in any method (#4473), a member call on an untyped JavaScript receiver waits for receiver-typed resolution (#4598) and a CommonJS `require` binding no longer shadows the required export (#4621); Python pytest fixture receivers (#4332), module-level class ids salted apart (#2810) and explicit type aliases (#4578); each C# overload a node of its own with calls bound by argument count (#4584, #4591) and C# delegates (#4552); Kotlin `typealias` (#4553), Swift macros (#4551), C++ namespace-scope aliases (#4580) and Metal and CUDA qualifiers (#4550). graphicle ports them in src/extractors/engine.rs and its engine_* modules."
+            },
+            {
+              "path": "graphify/extractors/resolution.py",
+              "sha256": "889f028762ce28f9077a81adc1fe04e92d1ee6ee25b4d5f6827a4f9f6be3e778",
+              "inspection": "0.9.92 to 0.9.95: workspace `exports` into `dist/` fall back to `src/` (#4485), a dangling barrel-named import edge is dropped once the import resolves through the barrel (#4486), and schema-qualified SQL names bind as types (#4653). graphicle ports them in src/extractors/resolution_js.rs and src/extractors/resolution.rs. models.py and resolver_registry.py are unchanged since v0.9.91; base.py only shares the scan root through a module variable (#3666)."
+            }
+          ],
+          "rust_files": [
+            "src/graph_projection.rs",
+            "src/query.rs",
+            "../graphicle-graph/src/cache.rs",
+            "../graphicle-graph/src/cross_repo_calls.rs",
+            "../graphicle-graph/src/extract.rs",
+            "../graphicle-graph/src/extract_members.rs",
+            "../graphicle-graph/src/extract_normalize.rs",
+            "../graphicle-graph/src/extractors/engine.rs",
+            "../graphicle-graph/src/extractors/engine_calls.rs",
+            "../graphicle-graph/src/extractors/engine_declarations.rs",
+            "../graphicle-graph/src/extractors/engine_extra.rs",
+            "../graphicle-graph/src/extractors/engine_scope.rs",
+            "../graphicle-graph/src/extractors/engine_types.rs",
+            "../graphicle-graph/src/extractors/resolution.rs",
+            "../graphicle-graph/src/extractors/resolution_js.rs",
+            "../graphicle-graph/src/extractors/solidity.rs",
+            "../graphicle-graph/src/extractors/sql.rs",
+            "../graphicle-graph/src/extractors/yaml_config.rs"
+          ],
+          "adaptation": "Ported in graphicle, not in the native structure layer. The service builds and queries its code graph with graphicle (graphicle::incremental::extract, src/graph_projection.rs), whose default output matches Graphify 0.9.95 (the four releases 0.9.92 to 0.9.95 ported and qualified against the release), so these changes apply to the service's code graph, except YAML: the engine extracts YAML keys (#2214), but the service's projection leaves out the YAML files the engine reads as keys for now (graph_projection::YAML_IN_CODE_GRAPH; the apm.yml and apm.yaml package manifests stay), so its answers do not use them yet. An episode id names the engine's graph format and the projection's choice of files (graph_projection::graph_format, graphify-0.9.95/ast-10/no-yaml) with the head set, so the first sync after upgrading projects a project again. The per-file structure analyses of graphicle-memory (structure.rs) only feed legacy_graph, the fallback for repositories without a recorded episode (src/query.rs), and keep their 20a20d30 scope.",
           "full_application_port": false
         }
       ]

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/tree_html.py
 //! Port of graphify/tree_html.py. Its browser code is retained verbatim in
 //! assets/tree.html.template; hierarchy construction and rendering are native.
@@ -56,6 +56,7 @@ fn ensure_dir(
     parts: &[String],
     index: &mut HashMap<String, usize>,
     nodes: &mut Vec<TreeNode>,
+    top: usize,
 ) -> usize {
     let key = path_syntax::posix_join(parts);
     if let Some(i) = index.get(&key) {
@@ -63,9 +64,9 @@ fn ensure_dir(
     }
     let up = parent(parts);
     if up == parts {
-        return 0;
+        return top;
     }
-    let parent = ensure_dir(&up, index, nodes);
+    let parent = ensure_dir(&up, index, nodes, top);
     let i = push(nodes, path_syntax::posix_name(parts).into(), 0, vec![]);
     index.insert(key, i);
     nodes[parent].children.push(i);
@@ -100,41 +101,21 @@ fn finish(i: usize, nodes: &mut [TreeNode]) -> i64 {
 fn value(i: usize, nodes: &[TreeNode]) -> Value {
     json!({"name":nodes[i].name,"total_count":nodes[i].total,"children":nodes[i].children.iter().map(|c|value(*c,nodes)).collect::<Vec<_>>()})
 }
-pub fn build_tree(
-    graph: &Value,
-    root: Option<&str>,
+/// `_attach_files` (Graphify 0.9.95, #4524): one directory tree for `files`
+/// (source file to its nodes) under a new arena node named `label`, else the
+/// root's own name. Returns that node and how many files sit under `root`;
+/// the others attach flat to it. Each call keeps its own directory index, so
+/// two calls never share directory nodes even for identical relative paths.
+fn attach_files(
+    arena: &mut Vec<TreeNode>,
+    files: &BTreeMap<String, Vec<&Value>>,
+    root: &str,
     max_children: i64,
-    project_label: Option<&str>,
-) -> Result<Value> {
-    let empty = vec![];
-    let nodes = graph
-        .get("nodes")
-        .map(|v| v.as_array().ok_or("TypeError: graph nodes"))
-        .transpose()?
-        .unwrap_or(&empty);
-    let mut files: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
-    let mut paths = Vec::new();
-    for n in nodes {
-        if let Some(src) = n
-            .get("source_file")
-            .filter(|v| !v.is_null() && **v != json!("") && **v != json!(false))
-        {
-            let src = src
-                .as_str()
-                .ok_or("TypeError: source_file must be a path")?;
-            files.entry(src.into()).or_default().push(n);
-            paths.push(src.to_string());
-        }
-    }
-    if files.is_empty() {
-        return Ok(json!({"name":"(empty graph)","total_count":0,"children":[]}));
-    }
-    let inferred = common_root(&paths);
-    let explicit = root.is_some();
-    let root = root.unwrap_or(&inferred);
+    label: Option<&str>,
+) -> Result<(usize, usize)> {
     let root_parts = path_syntax::posix_parts(root);
     let root_name = path_syntax::posix_name(&root_parts);
-    let label = project_label
+    let label = label
         .filter(|s| !s.is_empty())
         .unwrap_or(if !root_name.is_empty() {
             root_name
@@ -143,14 +124,10 @@ pub fn build_tree(
         } else {
             "/"
         });
-    let mut arena = vec![TreeNode {
-        name: label.into(),
-        total: 0,
-        children: vec![],
-    }];
-    let mut index = HashMap::from([(path_syntax::posix_join(&root_parts), 0)]);
+    let top = push(arena, label.into(), 0, vec![]);
+    let mut index = HashMap::from([(path_syntax::posix_join(&root_parts), top)]);
     let mut matched = 0;
-    for (src, syms) in &files {
+    for (src, syms) in files {
         let parts = path_syntax::posix_parts(src);
         let absolute = |p: &[String]| p.first().is_some_and(|s| s == "/" || s == "//");
         let parent = if absolute(&parts) == absolute(&root_parts) && parts.starts_with(&root_parts)
@@ -160,7 +137,7 @@ pub fn build_tree(
         } else {
             root_parts.clone()
         };
-        let p = ensure_dir(&parent, &mut index, &mut arena);
+        let p = ensure_dir(&parent, &mut index, arena, top);
         let mut children = Vec::new();
         for n in syms {
             let fallback = json!("?");
@@ -171,7 +148,7 @@ pub fn build_tree(
             let label = label
                 .as_str()
                 .ok_or("TypeError: symbol label must be a string")?;
-            children.push(push(&mut arena, label.into(), 1, vec![]));
+            children.push(push(arena, label.into(), 1, vec![]));
         }
         children.sort_by(|a, b| {
             arena[*a]
@@ -195,21 +172,120 @@ pub fn build_tree(
                 max_children as usize
             };
             children.truncate(n);
-            children.push(push(&mut arena, format!("(+{extra} more)"), extra, vec![]));
+            children.push(push(arena, format!("(+{extra} more)"), extra, vec![]));
         }
         let i = push(
-            &mut arena,
+            arena,
             path_syntax::posix_name(&parts).into(),
             children.len().max(1) as i64,
             children,
         );
         arena[p].children.push(i);
     }
+    Ok((top, matched))
+}
+/// The top-level node of a merged graph's untagged files (`_NO_REPO_LABEL`).
+const NO_REPO_LABEL: &str = "(no repo)";
+pub fn build_tree(
+    graph: &Value,
+    root: Option<&str>,
+    max_children: i64,
+    project_label: Option<&str>,
+) -> Result<Value> {
+    let empty = vec![];
+    let nodes = graph
+        .get("nodes")
+        .map(|v| v.as_array().ok_or("TypeError: graph nodes"))
+        .transpose()?
+        .unwrap_or(&empty);
+    // Every file, and the same split by the `repo` tag that merge-graphs and
+    // `global add` set (`_repo_groups`): untagged files never count as a repo.
+    type Files<'a> = BTreeMap<String, Vec<&'a Value>>;
+    let mut files: Files = BTreeMap::new();
+    let mut groups: BTreeMap<String, (Files, Vec<String>)> = BTreeMap::new();
+    let mut untagged: (Files, Vec<String>) = Default::default();
+    let mut paths = Vec::new();
+    for n in nodes {
+        if let Some(src) = n
+            .get("source_file")
+            .filter(|v| !v.is_null() && **v != json!("") && **v != json!(false))
+        {
+            let src = src
+                .as_str()
+                .ok_or("TypeError: source_file must be a path")?;
+            files.entry(src.into()).or_default().push(n);
+            paths.push(src.to_string());
+            let group = match n
+                .get("repo")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                Some(tag) => groups.entry(tag.into()).or_default(),
+                None => &mut untagged,
+            };
+            group.0.entry(src.into()).or_default().push(n);
+            group.1.push(src.to_string());
+        }
+    }
+    if files.is_empty() {
+        return Ok(json!({"name":"(empty graph)","total_count":0,"children":[]}));
+    }
+    let explicit = root.is_some();
+    let mut arena = Vec::new();
+    let (shown_root, matched, total_files, sample);
+    if groups.len() < 2 {
+        // Zero or one real repo tag: not a merged graph, so every node, tagged
+        // or not, goes through the single-root tree.
+        let inferred = common_root(&paths);
+        let root = root.unwrap_or(&inferred);
+        (_, matched) = attach_files(&mut arena, &files, root, max_children, project_label)?;
+        (shown_root, total_files) = (root.to_owned(), files.len());
+        sample = files.keys().next().cloned().unwrap_or_default();
+    } else {
+        // A merged graph (Graphify 0.9.95, #4524): one top-level root per repo
+        // tag, each with its own directory tree, so the same repo-relative path
+        // in two repos stays two files. Untagged files are kept under
+        // "(no repo)" once two real tags made the graph a merged one.
+        let label = project_label
+            .filter(|s| !s.is_empty())
+            .unwrap_or("(merged graph)");
+        push(&mut arena, label.into(), 0, vec![]);
+        let mut ordered = groups
+            .iter()
+            .map(|(tag, group)| (tag.as_str(), group))
+            .collect::<Vec<_>>();
+        if !untagged.0.is_empty() {
+            ordered.push((NO_REPO_LABEL, &untagged));
+        }
+        let mut count = (0, 0);
+        let mut first = None;
+        for (tag, (group, group_paths)) in ordered {
+            let group_root = match root {
+                Some(root) => root.to_owned(),
+                // Repo-relative paths keep their full directory hierarchy.
+                None if group_paths.iter().all(|p| {
+                    !path_syntax::posix_parts(p)
+                        .first()
+                        .is_some_and(|s| s == "/" || s == "//")
+                }) =>
+                {
+                    String::new()
+                }
+                None => common_root(group_paths),
+            };
+            let (top, group_matched) =
+                attach_files(&mut arena, group, &group_root, max_children, Some(tag))?;
+            arena[0].children.push(top);
+            count = (count.0 + group_matched, count.1 + group.len());
+            first = first.or_else(|| group.keys().next().cloned());
+        }
+        (shown_root, matched, total_files) = (root.unwrap_or("").to_owned(), count.0, count.1);
+        sample = first.unwrap_or_default();
+    }
     if explicit && matched == 0 {
         return Err(format!(
-            "--root {root} matched 0 of {} source files (source_file paths are stored repo-relative, e.g. {})",
-            files.len(),
-            python_compat::repr(&json!(files.keys().next().unwrap()))
+            "--root {shown_root} matched 0 of {total_files} source files (source_file paths are stored repo-relative, e.g. {})",
+            python_compat::repr(&json!(sample))
         ).into());
     }
     finish(0, &mut arena);

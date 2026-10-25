@@ -59,7 +59,7 @@ it off, set `GRAPHICLE_NO_UPDATE_NOTIFIER=1` or run
 
 The code-graph engine is a Rust port of Graphify, which is
 licensed under Apache-2.0. Its source files say so in their headers, and
-`NOTICE` carries the upstream attribution. It follows Graphify 0.9.91, and
+`NOTICE` carries the upstream attribution. It follows Graphify 0.9.95, and
 later Graphify releases are ported in later versions. Comparison checks run
 Graphify's own tests against the engine and compare its results with
 Graphify's, with the same reviewed upstream fixes on both sides ([the parity

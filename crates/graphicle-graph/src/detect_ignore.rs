@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/detect.py
 //! Anchored ignore rules, tracked-file exemptions and reusable path predicates.
 use crate::{
@@ -86,11 +86,41 @@ pub fn parse_gitignore_line(raw: &str) -> String {
     let line = INLINE.replace_all(line, "").replace("\\#", "#");
     paths::nfc(&TRAILING.replace_all(&line, ""))
 }
+/// `_is_valid_git_marker` (Graphify 0.9.92, #4444): whether `dot_git` is a
+/// `.git` git itself would accept. A directory needs `HEAD`, `objects/` and
+/// `refs/`; a file (linked worktree, submodule) must start with `gitdir:`. An
+/// empty or partial `.git`, such as one left in a home directory, is not a
+/// repository and must not become the ignore-walk ceiling. No git subprocess.
+pub fn is_valid_git_marker(dot_git: &Path) -> bool {
+    if dot_git.is_dir() {
+        return dot_git.join("HEAD").is_file()
+            && dot_git.join("objects").is_dir()
+            && dot_git.join("refs").is_dir();
+    }
+    if dot_git.is_file() {
+        let mut head = Vec::with_capacity(7);
+        return fs::File::open(dot_git)
+            .and_then(|file| {
+                std::io::Read::read_to_end(&mut std::io::Read::take(file, 7), &mut head)
+            })
+            .is_ok_and(|_| head == b"gitdir:");
+    }
+    false
+}
+/// `_find_vcs_root`: the first directory upward from `start` holding a VCS
+/// marker; `.git` counts only when it is a valid repository marker (#4444).
 pub fn find_vcs_root(start: &Path) -> Option<PathBuf> {
     let mut current = fsutil::resolve_missing(start).ok()?;
     let home = std::env::var_os("HOME").map(PathBuf::from);
     loop {
-        if detect_types::strings("_VCS_MARKERS").any(|m| current.join(m).exists()) {
+        if detect_types::strings("_VCS_MARKERS").any(|m| {
+            let marker = current.join(m);
+            if m == ".git" {
+                is_valid_git_marker(&marker)
+            } else {
+                marker.exists()
+            }
+        }) {
             return Some(current);
         }
         if home.as_ref() == Some(&current) || current.parent().is_none() {

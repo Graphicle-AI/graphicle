@@ -23,8 +23,14 @@ class InsertionOrderedSet(dict):
 
     Membership, length, iteration and `add` are what the module uses; equal
     elements (1, 1.0, True) collapse as they do in a set, and an unhashable
-    element raises the same TypeError.
+    element raises the same TypeError. Like `set(iterable)` it can be built
+    from an iterable (0.9.95's `_overload_pairs` builds `set(pairs.values())`).
     """
+
+    def __init__(self, iterable=()):
+        super().__init__()
+        for value in iterable:
+            self[value] = None
 
     def add(self, value):
         self[value] = None

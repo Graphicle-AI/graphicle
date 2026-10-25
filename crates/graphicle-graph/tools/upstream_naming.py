@@ -51,8 +51,9 @@ TABLES = {
     # field are the engine's.
     'check_detect': {
         'tests/test_detect.py': [
-            ('.graphifyignore', '.graphicleignore', 53),
-            ('graphifyignore_patterns', 'ignore_patterns', 10),
+            # 0.9.92 (#4444) adds two of each (the valid-.git cases).
+            ('.graphifyignore', '.graphicleignore', 55),
+            ('graphifyignore_patterns', 'ignore_patterns', 12),
         ],
         'tests/test_ignore_file_encoding.py': [
             ('.graphifyignore', '.graphicleignore', 11),
@@ -73,6 +74,20 @@ TABLES = {
             ('# graphify-hook-start', '# graphicle-hook-start', 2),
             ('# graphify-hook-end', '# graphicle-hook-end', 1),
             ('GRAPHIFY_VIZ_NODE_LIMIT', 'GRAPHICLE_VIZ_NODE_LIMIT', 23),
+            # 0.9.92 (#4490): the post-rewrite hook, and the line a native hook
+            # prints when it starts the background rebuild (test_hooks_rewrite.py
+            # imports it from here).
+            ('assert _REWRITE_HOOK_MARKER in', 'assert "# graphicle-rewrite-hook-start" in', 2),
+            ('assert _REWRITE_HOOK_MARKER not in', 'assert "# graphicle-rewrite-hook-start" not in', 1),
+            ('_LAUNCH_LINE = "launching background rebuild"', '_LAUNCH_LINE = "rebuild started"', 1),
+        ],
+        # 0.9.92 (#4490): real git operations against the native hooks; the first
+        # build is the native `update` and the rebuild log is the engine's.
+        'tests/test_hooks_rewrite.py': [
+            ('graphify-out', '.graphicle', 11),
+            ('GRAPHIFY_SKIP_HOOK', 'GRAPHICLE_SKIP_HOOK', 1),
+            ('[sys.executable, "-m", "graphify", "update", "."]', '[os.environ["GRAPHICLE_GRAPH_BINARY"], "update", "."]', 1),
+            ('".cache" / "graphify-rebuild.log"', '".cache" / "graphicle" / "rebuild.log"', 1),
         ],
     },
     # Command-line children run natively (check_cli.py CLI_FILES): the ignore
@@ -123,6 +138,9 @@ def _translate(root, check):
             if found != count:
                 raise AssertionError(f'{check}: {relative}: {before!r} occurs {found} times, recorded {count}')
             text = text.replace(before, after)
+        # The copy keeps the oracle's modes; a read-only oracle tree must still
+        # yield a writable copy.
+        path.chmod(path.stat().st_mode | 0o200)
         path.write_text(text, encoding='utf-8')
     if table(check):
         _applied[check] = table(check)
@@ -144,5 +162,14 @@ def isolated(paths, check=None):
             dst = root / row['path']
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
+        # An oracle tree newer than the recorded ledger (a release being ported
+        # before the ledger is re-pinned) has files the ledger does not list:
+        # new tests, and package data or tool fragments they read. They are
+        # copied too, so the copy mirrors the oracle tree.
+        for src in sorted(SOURCE.rglob('*')):
+            dst = root / src.relative_to(SOURCE)
+            if src.is_file() and not dst.exists():
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dst)
         _translate(root, check)
         yield root, [str(root / p) for p in paths]

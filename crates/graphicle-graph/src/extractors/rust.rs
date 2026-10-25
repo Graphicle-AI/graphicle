@@ -1,9 +1,10 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/rust.py
 //! Rust source extraction with trait members and conservative impl ownership.
 use super::base::{file_stem, is_language_builtin, make_id, read_text};
 use crate::{fsutil, io_compat, path_syntax, regex_compat};
 use serde_json::{Value, json};
+use sha1::{Digest, Sha1};
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
     path::Path,
@@ -212,13 +213,34 @@ pub fn use_module(argument: &str) -> String {
 /// `super`): `serde::Serialize` or `std::fs::File` is never the corpus's own
 /// `Serialize` or `File`.
 pub fn use_name(written: &str, path: &str) -> Option<String> {
-    let head = path
-        .trim_start_matches([':', ' '])
-        .split("::")
-        .next()
-        .unwrap_or("");
-    matches!(trim(head), "crate" | "self" | "super")
+    use_name_in(written, path, &HashSet::new())
+}
+/// [`use_name`] for a `use` beside the `mod` items `scope_mods` (0.9.93,
+/// #4564): a path whose first segment is one of them is this crate's too
+/// (`mod item; pub use item::Invoice;`), unless it starts with `::`, which
+/// always names a crate. An inline `mod` block is a scope of its own.
+pub fn use_name_in(written: &str, path: &str, scope_mods: &HashSet<String>) -> Option<String> {
+    let head = trim(
+        path.trim_start_matches([':', ' '])
+            .split("::")
+            .next()
+            .unwrap_or(""),
+    );
+    // `item as items` -> `item` (re.match(r"[A-Za-z_][A-Za-z0-9_]*", first)).
+    let ident_len = head
+        .char_indices()
+        .take_while(|&(i, c)| c == '_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+        .count();
+    let ident = &head[..ident_len];
+    let local_mod = !ident.is_empty()
+        && scope_mods.contains(ident)
+        && !path.trim_start_matches(python_space).starts_with("::");
+    (matches!(head, "crate" | "self" | "super") || local_mod)
         .then(|| trim(written.split(" as ").next().unwrap_or("")).to_string())
+}
+/// Python's `str.isspace`.
+fn python_space(c: char) -> bool {
+    c.is_whitespace() || matches!(c, '\x1c'..='\x1f')
 }
 /// `_rust_use_bindings`: each binding of a `use` tree as the argument of the
 /// plain `use` that binds the same name, with its line: `a::{b, c as d,
@@ -432,6 +454,13 @@ struct Extractor<'source, 'tree> {
     /// `macro_rules!` macros defined in this file by bare name, kept apart
     /// from `labels` so `vec!` never cross-binds with a `vec` fn (0.9.75).
     macros: HashMap<String, String>,
+    /// File-level items behind each casefolded id, `(is a type, name)`, and the
+    /// declared type names behind each id: the collision census of
+    /// [`Extractor::file_item`] (0.9.92, #4468).
+    file_items: HashMap<String, HashSet<(bool, String)>>,
+    declared_types: HashMap<String, HashSet<String>>,
+    /// The bare type name each `impl` block names, by its start byte.
+    impl_bare: HashMap<usize, String>,
 }
 impl<'tree> Extractor<'_, 'tree> {
     fn node(&mut self, id: &str, label: &str, line: usize) {
@@ -453,8 +482,35 @@ impl<'tree> Extractor<'_, 'tree> {
         }
         self.edges.push(e);
     }
+    /// `file_item_nid` (0.9.92, #4468): distinct names that fold to one id
+    /// (`fn ignore` / `struct Ignore`, `fn e` / `fn E`) get distinct ids. The
+    /// one declared type of such a group keeps the plain id (type positions and
+    /// `impl` blocks name it); every other member is salted with a hash of its
+    /// own name. Repeats of one name (`#[cfg]` twins, an `impl` of a local
+    /// type) are one member and share a node.
+    fn file_item(&self, plain: String, name: &str) -> String {
+        let Some(items) = self.file_items.get(&plain) else {
+            return plain;
+        };
+        let names = items
+            .iter()
+            .map(|(_, item)| item.as_str())
+            .collect::<HashSet<_>>();
+        if names.len() < 2 || !names.contains(name) {
+            return plain;
+        }
+        if self
+            .declared_types
+            .get(&plain)
+            .is_some_and(|declared| declared.len() == 1 && declared.contains(name))
+        {
+            return plain;
+        }
+        let digest = format!("{:x}", Sha1::digest(name.as_bytes()));
+        make_id([plain.as_str(), &digest[..6]])
+    }
     fn named(&mut self, name: &str) -> String {
-        let local = make_id([self.stem.as_str(), name]);
+        let local = self.file_item(make_id([self.stem.as_str(), name]), name);
         if self.seen.contains(&local) || self.forward_types.contains(name) {
             return local;
         }
@@ -526,7 +582,8 @@ impl<'tree> Extractor<'_, 'tree> {
                         }
                         id
                     } else {
-                        let id = make_id([self.stem.as_str(), name.as_str()]);
+                        let id =
+                            self.file_item(make_id([self.stem.as_str(), name.as_str()]), &name);
                         self.node(&id, &format!("{name}()"), line);
                         self.edge(&self.file.clone(), &id, "contains", line, None);
                         id
@@ -559,10 +616,21 @@ impl<'tree> Extractor<'_, 'tree> {
                 }
                 return;
             }
-            "struct_item" | "enum_item" | "trait_item" => {
+            // An associated type in an `impl` body (`type Output = Meters;`) is
+            // not a file-level item: one colliding `Output` node per `impl Add`.
+            "type_item"
+                if node
+                    .parent()
+                    .and_then(|body| body.parent())
+                    .is_some_and(|owner| owner.kind() == "impl_item") =>
+            {
+                return;
+            }
+            // `type` aliases and `union` items are type nodes too (0.9.95, #4581).
+            "struct_item" | "enum_item" | "trait_item" | "union_item" | "type_item" => {
                 if let Some(name) = node.child_by_field_name("name") {
                     let name = read_text(name, self.source);
-                    let id = make_id([self.stem.as_str(), name.as_str()]);
+                    let id = self.file_item(make_id([self.stem.as_str(), name.as_str()]), &name);
                     self.node(&id, &name, line);
                     if let Some(declaration) = self.nodes.iter_mut().find(|n| n["id"] == id) {
                         declaration["_rust_declaration_count"] =
@@ -593,7 +661,7 @@ impl<'tree> Extractor<'_, 'tree> {
                             }
                         }
                     }
-                    if node.kind() == "struct_item" {
+                    if matches!(node.kind(), "struct_item" | "union_item") {
                         for field in children(node)
                             .filter(|n| n.kind() == "field_declaration_list")
                             .flat_map(children)
@@ -691,7 +759,8 @@ impl<'tree> Extractor<'_, 'tree> {
                         self.edge(parent, &id, "contains", line, None);
                         id
                     } else {
-                        let id = make_id([self.stem.as_str(), name.as_str()]);
+                        let id =
+                            self.file_item(make_id([self.stem.as_str(), name.as_str()]), &name);
                         self.node(&id, &name, line);
                         self.edge(&self.file.clone(), &id, "contains", line, None);
                         id
@@ -706,7 +775,12 @@ impl<'tree> Extractor<'_, 'tree> {
                 let mut key = None;
                 if let Some(n) = node.child_by_field_name("type") {
                     let name = trim(&read_text(n, self.source)).to_string();
-                    let nid = make_id([self.stem.as_str(), name.as_str()]);
+                    let bare = self
+                        .impl_bare
+                        .get(&node.start_byte())
+                        .cloned()
+                        .unwrap_or_else(|| name.clone());
+                    let nid = self.file_item(make_id([self.stem.as_str(), name.as_str()]), &bare);
                     self.node(&nid, &name, line);
                     id = Some(nid);
                     key = simple_generic_impl_key(node, self.source);
@@ -759,6 +833,17 @@ impl<'tree> Extractor<'_, 'tree> {
             }
             "use_declaration" => {
                 if let Some(argument) = node.child_by_field_name("argument") {
+                    // The `mod` items declared beside this `use` (0.9.93, #4564).
+                    let scope_mods = node
+                        .parent()
+                        .map(|scope| {
+                            children(scope)
+                                .filter(|n| n.kind() == "mod_item")
+                                .filter_map(|n| n.child_by_field_name("name"))
+                                .map(|n| read_text(n, self.source))
+                                .collect::<HashSet<_>>()
+                        })
+                        .unwrap_or_default();
                     let written = read_text(argument, self.source);
                     let name = use_module(&written);
                     let grouped = matches!(argument.kind(), "use_list" | "scoped_use_list");
@@ -770,7 +855,7 @@ impl<'tree> Extractor<'_, 'tree> {
                             line,
                             Some("import"),
                         );
-                        if let Some(used) = use_name(&name, &written) {
+                        if let Some(used) = use_name_in(&name, &written, &scope_mods) {
                             self.edges.last_mut().unwrap()["_rust_use_name"] = json!(used);
                         }
                         if grouped {
@@ -791,7 +876,7 @@ impl<'tree> Extractor<'_, 'tree> {
                                     line,
                                     Some("import"),
                                 );
-                                if let Some(used) = use_name(&name, &binding) {
+                                if let Some(used) = use_name_in(&name, &binding, &scope_mods) {
                                     self.edges.last_mut().unwrap()["_rust_use_name"] = json!(used);
                                 }
                                 self.edges.last_mut().unwrap()["_rust_use_binding"] = json!(true);
@@ -962,7 +1047,8 @@ fn scan_type_items(
     source: &[u8],
     stem: &str,
     items: &mut HashMap<String, HashSet<(bool, String)>>,
-    declared: &mut HashSet<String>,
+    declared: &mut HashMap<String, HashSet<String>>,
+    impl_bare: &mut HashMap<usize, String>,
 ) {
     let kind = node.kind();
     if matches!(
@@ -970,6 +1056,8 @@ fn scan_type_items(
         "struct_item"
             | "enum_item"
             | "trait_item"
+            | "union_item"
+            | "type_item"
             | "function_item"
             | "function_signature_item"
             | "static_item"
@@ -981,11 +1069,14 @@ fn scan_type_items(
                 return;
             }
             let id = make_id([stem, name.as_str()]);
-            let is_type = matches!(kind, "struct_item" | "enum_item" | "trait_item");
-            items.entry(id.clone()).or_default().insert((is_type, name));
+            let is_type = matches!(
+                kind,
+                "struct_item" | "enum_item" | "trait_item" | "union_item" | "type_item"
+            );
             if is_type {
-                declared.insert(id);
+                declared.entry(id.clone()).or_default().insert(name.clone());
             }
+            items.entry(id).or_default().insert((is_type, name));
         }
         return;
     }
@@ -999,6 +1090,7 @@ fn scan_type_items(
                 .find(|(_, role)| role == "type")
                 .map(|(name, _)| name)
                 .unwrap_or_else(|| type_name.clone());
+            impl_bare.insert(node.start_byte(), bare.clone());
             items
                 .entry(make_id([stem, type_name.as_str()]))
                 .or_default()
@@ -1010,7 +1102,7 @@ fn scan_type_items(
         return;
     }
     for child in children(node) {
-        scan_type_items(child, source, stem, items, declared);
+        scan_type_items(child, source, stem, items, declared, impl_bare);
     }
 }
 pub fn extract_rust(path: &Path) -> Value {
@@ -1048,23 +1140,40 @@ pub fn extract_rust(path: &Path) -> Value {
         forward_types: HashSet::new(),
         type_ids: HashSet::new(),
         macros: HashMap::new(),
+        file_items: HashMap::new(),
+        declared_types: HashMap::new(),
+        impl_bare: HashMap::new(),
     };
     scan_local_types(tree.root_node(), &source, &mut ex.local_types);
     ex.node(&file, &name, 1);
     let mut items: HashMap<String, HashSet<(bool, String)>> = HashMap::new();
-    let mut declared = HashSet::new();
+    let mut declared: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut impl_bare = HashMap::new();
     scan_type_items(
         tree.root_node(),
         &source,
         &ex.stem,
         &mut items,
         &mut declared,
+        &mut impl_bare,
     );
-    ex.forward_types = items
-        .into_iter()
-        .filter(|(id, items)| declared.contains(id) && items.len() == 1)
-        .filter_map(|(_, items)| items.into_iter().next().map(|(_, name)| name))
+    // A declared type is matched by its exact name, unless a non-type item has
+    // that exact name (`struct Foo {}` beside `fn Foo()`, which share a node):
+    // then a forward reference keeps its sourceless stub (0.9.92, #4468).
+    ex.forward_types = declared
+        .iter()
+        .flat_map(|(id, names)| names.iter().map(move |name| (id, name)))
+        .filter(|(id, name)| {
+            items[*id]
+                .iter()
+                .filter(|(_, item)| item == *name)
+                .all(|(is_type, _)| *is_type)
+        })
+        .map(|(_, name)| name.clone())
         .collect();
+    ex.file_items = items;
+    ex.declared_types = declared;
+    ex.impl_bare = impl_bare;
     ex.walk(tree.root_node(), None, None, None);
     // A bare `f()` reaches a free function or a type (a constructor), `x.f()`
     // only a method: one shared index bound `drop(x)` to `impl Drop`'s `drop`

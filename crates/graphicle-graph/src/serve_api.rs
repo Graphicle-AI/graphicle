@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Structured native entry points for embedded callers and parity qualification.
 use crate::{Result, graph::Graph, serve, serve_find, serve_search::*, serve_text::*};
@@ -207,6 +207,15 @@ pub fn dispatch(r: &Value) -> Result<Value> {
                     .map(|(a, b)| json!([g.nodes[*a].id, g.nodes[*b].id]))
                     .collect::<Vec<_>>()
             )
+        }
+        "neighbor_lines" => {
+            let nid = r["nid"].clone();
+            let i = g.node_index(&nid).ok_or("KeyError: node")?;
+            json!(crate::serve::neighbor_lines(
+                g,
+                i,
+                r["rel_filter"].as_str().unwrap_or("")
+            ))
         }
         "subgraph_text" => json!(subgraph_text(
             g,

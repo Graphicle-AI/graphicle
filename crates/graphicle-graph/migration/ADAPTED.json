@@ -1,10 +1,9 @@
 {
-  "upstream_version": "0.9.91",
-  "upstream_commit": "10130e79ed9caf8f60d998073e097531eaa1a395",
+  "upstream_version": "0.9.95",
+  "upstream_commit": "92741d162b2094ffc2fed58cfbd8ee823e9da62c",
   "files": {
     "src/affected.rs": [
-      "graphify/affected.py",
-      "graphify/ids.py"
+      "graphify/affected.py"
     ],
     "src/analyze.rs": [
       "graphify/analyze.py"
@@ -351,8 +350,12 @@
     "src/extractors/verilog.rs": [
       "graphify/extractors/verilog.py"
     ],
+    "src/extractors/yaml_config.rs": [
+      "graphify/extractors/yaml_config.py"
+    ],
     "src/extractors/yaml_frontmatter.rs": [
-      "graphify/extractors/markdown.py"
+      "graphify/extractors/markdown.py",
+      "graphify/extractors/yaml_config.py"
     ],
     "src/extractors/zig.rs": [
       "graphify/extractors/zig.py"
@@ -372,9 +375,7 @@
     "src/graph.rs": [
       "graphify/affected.py",
       "graphify/global_graph.py",
-      "graphify/ids.py",
-      "graphify/multigraph_compat.py",
-      "graphify/serve.py"
+      "graphify/multigraph_compat.py"
     ],
     "src/graph_algorithms.rs": [
       "graphify/analyze.py"
@@ -487,7 +488,6 @@
       "graphify/extractors/base.py"
     ],
     "src/paths.rs": [
-      "graphify/affected.py",
       "graphify/paths.py"
     ],
     "src/pg_introspect.rs": [
@@ -514,7 +514,6 @@
     ],
     "src/python_compat.rs": [
       "graphify/analyze.py",
-      "graphify/ids.py",
       "graphify/validate.py"
     ],
     "src/python_datetime.rs": [
@@ -527,8 +526,7 @@
       "graphify/validate.py"
     ],
     "src/query_terms.rs": [
-      "graphify/benchmark.py",
-      "graphify/serve.py"
+      "graphify/benchmark.py"
     ],
     "src/querylog.rs": [
       "graphify/querylog.py"
@@ -598,9 +596,7 @@
       "graphify/serve.py"
     ],
     "src/session.rs": [
-      "graphify/affected.py",
-      "graphify/ids.py",
-      "graphify/serve.py"
+      "graphify/affected.py"
     ],
     "src/swift_dispatch.rs": [
       "graphify/swift_dispatch.py"

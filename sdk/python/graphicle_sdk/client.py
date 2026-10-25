@@ -157,10 +157,15 @@ def _retry_after(headers: Any) -> Optional[int]:
     if not isinstance(raw, str):
         return None
     text = raw.strip()
-    if text.isdigit():
+    # ASCII digits only: str.isdigit is also true for digits such as a superscript two,
+    # which int() refuses.
+    if text.isascii() and text.isdigit():
         return int(text)
-    parsed = email.utils.parsedate_to_datetime(text)
-    if parsed is None:
+    # A value that is neither a delay nor an HTTP-date leaves the error without a delay:
+    # parsedate_to_datetime raises ValueError for one (Python 3.10 and later).
+    try:
+        parsed = email.utils.parsedate_to_datetime(text)
+    except (TypeError, ValueError, OverflowError):
         return None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Native graph query service and MCP stdio boundary.
 use crate::{Result, graph::Graph, paths, security, serve_find, serve_search::*, serve_text::*};
@@ -27,7 +27,7 @@ fn checked_graph_path(path: &Path) -> Result<PathBuf> {
     if !path.exists() {
         return Err(format!("Graph file not found: {}", path.display()).into());
     }
-    security::check_graph_file_size_cap(&path)?;
+    security::check_own_graph_size_cap(&path)?;
     Ok(path)
 }
 /// `load_graph` without the learning overlay: everything read from graph.json.
@@ -50,6 +50,11 @@ fn read_graph_file(path: &Path) -> Result<Graph> {
     }
     let directed = data["directed"].as_bool().unwrap_or(false);
     data["directed"] = json!(true);
+    // Repair a file whose links hold parallel edges while its flag says
+    // otherwise (older writers restored original links verbatim), forced like
+    // `directed` above so the load keeps every relationship (Graphify 0.9.92,
+    // #4500).
+    crate::build::mark_parallel_links(&mut data);
     // The node-link loader keeps only `graph` of the top-level keys, so the
     // build commit the graph.json writer stores is kept by hand (#3354).
     let commit = data
@@ -64,6 +69,52 @@ fn read_graph_file(path: &Path) -> Result<Graph> {
         graph.attributes["_built_at_commit"] = json!(commit);
     }
     Ok(graph)
+}
+/// `_neighbor_lines` (Graphify 0.9.92, #4500): one line per relationship
+/// incident to node `i`, outgoing first. Parallel edges between the same pair
+/// each render as their own line with their own metadata. `relation_filter`
+/// keeps the edges whose lowercased relation contains it.
+pub fn neighbor_lines(g: &Graph, i: usize, relation_filter: &str) -> Vec<String> {
+    let mut lines = vec![];
+    for incoming in [false, true] {
+        for nb in neighbors(g, i, incoming) {
+            let (a, b) = if incoming { (nb, i) } else { (i, nb) };
+            for e in g.edges_between(&g.nodes[a].id, &g.nodes[b].id) {
+                let get = |k| e.attributes.get(k).map(string).unwrap_or_default();
+                let relation = get("relation");
+                if !relation_filter.is_empty() && !relation.to_lowercase().contains(relation_filter)
+                {
+                    continue;
+                }
+                // The relation site (the call or import line), not a def line.
+                let loc = e
+                    .attributes
+                    .get("source_location")
+                    .filter(|v| crate::build::truthy(v))
+                    .map(string)
+                    .unwrap_or_default();
+                let at = if loc.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " at={}:{}",
+                        sanitize(&text(
+                            e.attributes.get("source_file").unwrap_or(&Value::Null)
+                        )),
+                        sanitize(&loc)
+                    )
+                };
+                lines.push(format!(
+                    "  {} {} [{}] [{}]{at}",
+                    if incoming { "<--" } else { "-->" },
+                    label_text(g, nb),
+                    sanitize(&relation),
+                    sanitize(&get("confidence"))
+                ));
+            }
+        }
+    }
+    lines
 }
 /// `GraphContext::new(load_graph(path)?)`, with the graph and its index read
 /// from the query snapshot when it is current (`crate::snapshot`). The
@@ -439,47 +490,7 @@ pub fn call_graph_tool(
                 .unwrap_or("")
                 .to_lowercase();
             let mut lines = vec![format!("Neighbors of {}:", label_text(g, i))];
-            for incoming in [false, true] {
-                for nb in neighbors(g, i, incoming) {
-                    let (a, b) = if incoming { (nb, i) } else { (i, nb) };
-                    let Some(e) = g
-                        .edges_between(&g.nodes[a].id, &g.nodes[b].id)
-                        .first()
-                        .copied()
-                    else {
-                        continue;
-                    };
-                    let get = |k| e.attributes.get(k).map(string).unwrap_or_default();
-                    let relation = get("relation");
-                    if !filter.is_empty() && !relation.to_lowercase().contains(&filter) {
-                        continue;
-                    }
-                    let loc = e
-                        .attributes
-                        .get("source_location")
-                        .filter(|v| crate::build::truthy(v))
-                        .map(string)
-                        .unwrap_or_default();
-                    let at = if loc.is_empty() {
-                        String::new()
-                    } else {
-                        format!(
-                            " at={}:{}",
-                            sanitize(&text(
-                                e.attributes.get("source_file").unwrap_or(&Value::Null)
-                            )),
-                            sanitize(&loc)
-                        )
-                    };
-                    lines.push(format!(
-                        "  {} {} [{}] [{}]{at}",
-                        if incoming { "<--" } else { "-->" },
-                        label_text(g, nb),
-                        sanitize(&relation),
-                        sanitize(&get("confidence"))
-                    ));
-                }
-            }
+            lines.extend(neighbor_lines(g, i, &filter));
             Ok(cut_lines(
                 &lines,
                 budget,

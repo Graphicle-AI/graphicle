@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/csharp.py
 //! Native translation of graphify/extractors/csharp.py.
 //! This file resolves C# graph facts; the source parser remains in the extractor core.

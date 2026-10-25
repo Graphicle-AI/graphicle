@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/scip_ingest.py
 //! Native port of Graphify's simplified SCIP JSON ingestion, not SCIP protobuf.
 use crate::security;

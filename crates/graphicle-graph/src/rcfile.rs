@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/rcfile.py
 //! Project-level configuration: `<root>/.graphiclerc` (upstream `.graphifyrc`).
 //!
@@ -233,8 +233,12 @@ pub fn load_rc_file(root: &Path) -> Result<RcConfig> {
     let shown_path = fsutil::path_string(&rc_path);
     let bytes = std::fs::read(&rc_path)
         .map_err(|error| crate::Error::External(io_compat::read_error(&error, &rc_path)))?;
-    let content = std::str::from_utf8(&bytes)
-        .map_err(|error| crate::Error::invalid(utf8_error(&bytes, error)))?;
+    // utf-8-sig (Graphify 0.9.93, #4538): Windows PowerShell 5.1 and older
+    // Notepad save UTF-8 with a BOM, which read as plain UTF-8 became part of
+    // the first key and silently dropped it. Decode errors count from after it.
+    let body = bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes);
+    let content = std::str::from_utf8(body)
+        .map_err(|error| crate::Error::invalid(utf8_error(body, error)))?;
     let mut config = RcConfig::default();
     for (index, raw) in fsutil::split_lines(content).enumerate() {
         let line_num = index + 1;
@@ -343,7 +347,10 @@ pub fn get_language_overrides() -> LanguageOverrides {
     (*active()).clone()
 }
 
-fn warn(message: String) {
+/// Print a warning, or hand it to the caller collecting them with
+/// [`capture_warnings`] (JSON callers report them in their result). Also used
+/// for the PDF read warning (Graphify 0.9.93, #4527).
+pub(crate) fn warn(message: String) {
     let unclaimed = CAPTURED.with(|captured| match captured.borrow_mut().as_mut() {
         Some(buffer) => {
             buffer.push(message);
@@ -601,6 +608,25 @@ mod tests {
         );
         fs::write(&rc, "viz_node_limit=1_000\n").unwrap();
         assert_eq!(load_rc_file(dir.path()).unwrap().viz_node_limit, Some(1000));
+    }
+
+    /// Graphify 0.9.93 (#4538): a file saved with a UTF-8 BOM keeps its first
+    /// key, and a decode error counts its position from after the BOM.
+    #[test]
+    fn a_utf8_bom_does_not_swallow_the_first_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let rc = dir.path().join(RC_FILENAME);
+        fs::write(&rc, "\u{feff}language.inc=php\nviz_node_limit=500\n").unwrap();
+        assert_eq!(
+            load_rc_file(dir.path()).unwrap().to_json(),
+            json!({"viz_node_limit": 500, "languages": {".inc": ".php"}})
+        );
+        fs::write(&rc, b"\xef\xbb\xbf\xff=1\n").unwrap();
+        let error = load_rc_file(dir.path()).unwrap_err().to_string();
+        assert!(
+            error.contains("in position 0: invalid start byte"),
+            "{error}"
+        );
     }
 
     #[test]

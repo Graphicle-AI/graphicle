@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/watch.py
 //! Path identities for incremental updates, including relocated graph roots.
 use crate::{build, detect_ignore::absolute_lexical, extractors::resolution::resolved};

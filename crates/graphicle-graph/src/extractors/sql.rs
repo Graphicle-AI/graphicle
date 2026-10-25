@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/sql.py
 //! Native translation of graphify/extractors/sql.py, including recovery semantics.
 use super::base::{file_stem, make_id};
@@ -17,17 +17,50 @@ fn trim(s: &str) -> &str {
 }
 /// Unqualified definitions live in the first `search_path` schema (PR #3020).
 const DEFAULT_SCHEMA: &str = "public";
+/// `_clean_part`: one name part without T-SQL brackets. The parser hands over
+/// `dbo].[Orders` for `[dbo].[Orders]`, so a part may keep only one of its two
+/// brackets; `]]` inside a bracketed name is an escaped `]` (0.9.94, #4635).
+fn clean_part(part: &str) -> String {
+    let part = part.strip_prefix('[').unwrap_or(part);
+    part.strip_suffix(']').unwrap_or(part).replace("]]", "]")
+}
+/// `_clean_ident`: the display form of an object name, T-SQL brackets removed
+/// and the schema kept (`[dbo].[Orders]` and `dbo].[Orders` both give
+/// `dbo.Orders`). Double-quoted parts keep their quotes. Labels only: node ids
+/// come from the text as written.
+pub fn clean_ident(name: &str) -> String {
+    if !name.contains(['[', ']']) {
+        return name.to_owned();
+    }
+    name.split('.')
+        .map(trim)
+        .map(|part| {
+            if part.starts_with('"') {
+                part.to_owned()
+            } else {
+                clean_part(part)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+/// `_norm_ident`: the key of a name for reference resolution. One pair of
+/// double quotes or backticks is stripped from each part, T-SQL brackets are
+/// cleaned, and the result is lowercased: `"public"."users"`, `public.users`
+/// and `PUBLIC.USERS` all give `public.users`, and `[dbo].[Orders]`, the
+/// parser's `dbo].[Orders` and `dbo.Orders` give `dbo.orders`.
 pub fn norm_ident(name: &str) -> String {
     name.split('.')
         .map(|part| {
-            let mut p = trim(part);
-            if p.len() >= 2
+            let p = trim(part);
+            let p = if p.len() >= 2
                 && ((p.starts_with('"') && p.ends_with('"'))
-                    || (p.starts_with('`') && p.ends_with('`'))
-                    || (p.starts_with('[') && p.ends_with(']')))
+                    || (p.starts_with('`') && p.ends_with('`')))
             {
-                p = &p[1..p.len() - 1];
-            }
+                p[1..p.len() - 1].to_owned()
+            } else {
+                clean_part(p)
+            };
             p.to_lowercase()
         })
         .collect::<Vec<_>>()
@@ -170,15 +203,28 @@ pub fn scan_sql(text: &str) -> (String, Vec<(usize, usize)>) {
     (out, spans)
 }
 fn compile(pattern: &str) -> Regex {
-    let mut folded = String::new();
+    compile_flags("", pattern)
+}
+/// [`compile`] with inline `flags` (`(?m)`) put ahead of the case-folded
+/// pattern. Letters inside a character class are left alone: a class spells
+/// out the cases it matches (`[A-Za-zİıſK_]`).
+fn compile_flags(flags: &str, pattern: &str) -> Regex {
+    let mut folded = String::from(flags);
     let mut chars = pattern.chars();
+    let mut in_class = false;
     while let Some(c) = chars.next() {
         if c == '\\' {
             folded.push(c);
             if let Some(n) = chars.next() {
                 folded.push(n);
             }
-        } else if c.is_ascii_alphabetic() {
+        } else if c == '[' && !in_class {
+            in_class = true;
+            folded.push(c);
+        } else if c == ']' && in_class {
+            in_class = false;
+            folded.push(c);
+        } else if c.is_ascii_alphabetic() && !in_class {
             folded.push('[');
             folded.push(c.to_ascii_lowercase());
             folded.push(c.to_ascii_uppercase());
@@ -201,14 +247,84 @@ fn compile(pattern: &str) -> Regex {
             .collect::<String>()
     );
     let boundary = r"(?:(?<!\w)(?=\w)|(?<=\w)(?!\w))";
+    let space = fsutil::PY_WHITESPACE
+        .trim_start_matches('[')
+        .trim_end_matches(']');
     Regex::new(
         &folded
             .replace(r"\b", boundary)
             .replace(r"\w", &word)
+            .replace(r"\S", &format!("[^{space}]"))
             .replace(r"\s", fsutil::PY_WHITESPACE),
     )
     .expect("verified static SQL expression")
 }
+/// `_TRIGGER_IDENT`: one name, delimited or bare, schema-qualified or not.
+const IDENT: &str = concat!(
+    r#"(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"#,
+    r#"(?:\s*\.\s*(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*"#
+);
+/// `_BODY_TAIL`: the identifier atom never backtracks to a prefix of a longer
+/// name (`tempdb..#x`, `dbo.fn(`).
+const BODY_TAIL: &str = r"(?![\w$]|\s*\.)";
+/// `_BODY_NON_TABLES`: words after FROM/JOIN/INTO/UPDATE/... that name no
+/// table, and words that are no alias.
+const BODY_NON_TABLES: &[&str] = &[
+    "select",
+    "where",
+    "set",
+    "dual",
+    "null",
+    "true",
+    "false",
+    "first",
+    "skip",
+    "rows",
+    "next",
+    "only",
+    "lateral",
+    "values",
+    "when",
+    "then",
+    "output",
+    "default",
+    "cascade",
+    "with",
+    "top",
+    "statistics",
+    "into",
+    "as",
+    "on",
+    "using",
+    "not",
+    "exists",
+    "inserted",
+    "deleted",
+    "openquery",
+    "openrowset",
+    "opendatasource",
+    "inner",
+    "left",
+    "right",
+    "full",
+    "cross",
+    "outer",
+    "join",
+    "group",
+    "order",
+    "having",
+    "union",
+    "except",
+    "intersect",
+    "option",
+    "for",
+    "from",
+    "pivot",
+    "unpivot",
+    "tablesample",
+    "natural",
+    "apply",
+];
 struct Patterns {
     routines: Regex,
     triggers: Regex,
@@ -220,7 +336,14 @@ struct Patterns {
     update: Regex,
     table: Regex,
     end: Regex,
-    bracket_ident: Regex,
+    table_recovery: Regex,
+    body_end: Regex,
+    body_read: Regex,
+    body_write: Regex,
+    body_alias: Regex,
+    body_event: Regex,
+    body_from_not_table: Regex,
+    go_line: Regex,
 }
 static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     routines: compile(concat!(
@@ -249,11 +372,169 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     update: compile(r"\bUPDATE\s+([\w$]+)"),
     table: compile(r"CREATE\s+TABLE\s+([\w$]+)\s*\("),
     end: compile(r"(?:^|\n)(?:CREATE|SET\s+TERM|ALTER)\s"),
-    bracket_ident: compile(concat!(
-        r#"^(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|`[^`\n]+`|[\w$]+)"#,
-        r#"(?:\s*\.\s*(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|`[^`\n]+`|[\w$]+))*"#
+    // `_TABLE_RECOVERY_RX` (0.9.95, #4613): a CREATE TABLE the grammar put in
+    // an ERROR node (MySQL `DEFAULT current_timestamp()`).
+    table_recovery: compile(&format!(
+        r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?({IDENT})"
     )),
+    // `_BODY_END_RX` (0.9.94, #4635): a routine body runs to the next
+    // CREATE/ALTER at a line start (not `CREATE TABLE #tmp`/`@tbl`), a `GO [n]`
+    // line, or the end.
+    body_end: compile_flags(
+        "(?m)",
+        r"^[ \t]*(?:GO(?:[ \t]+\d+)?[ \t\r]*;?[ \t\r]*$|(?:CREATE|ALTER)\b(?!\s+TABLE\s+[#@]))",
+    ),
+    body_read: compile(&format!(r"\b(?:FROM|JOIN)\s+({IDENT}){BODY_TAIL}")),
+    body_write: compile(&format!(
+        r"\b(INSERT(?:\s+INTO)?|UPDATE(?:\s+TOP\s*\([^)]*\))?|DELETE(?:\s+TOP\s*\([^)]*\))?(?:\s+FROM)?|MERGE(?:\s+INTO)?|INTO)\s+({IDENT}){BODY_TAIL}"
+    )),
+    // `_BODY_ALIAS_RX.match(masked, end)`, anchored at the text it is given.
+    body_alias: compile("^\\s+(?:AS\\s+)?([A-Za-z\u{130}\u{131}\u{17f}\u{212a}_][\\w$]*)"),
+    body_event: compile(r"(?:\b(?:ON|FOR|AFTER|BEFORE|OF)|,)\s*$"),
+    body_from_not_table: compile(concat!(
+        r"(?:\b(?:EXTRACT|TRIM|SUBSTRING|OVERLAY|POSITION)\s*\([^()]*|\bDISTINCT\s+",
+        r"|\bFETCH\s+(?:NEXT|PRIOR|FIRST|LAST|(?:ABSOLUTE|RELATIVE)\s+\S+)\s+)$"
+    )),
+    // `_GO_LINE_RX` (0.9.94, #4651): a `GO [n]` batch separator alone on its line.
+    go_line: compile_flags("(?m)", r"^[ \t]*(GO(?:[ \t]+\d+)?)[ \t\r]*;?[ \t\r]*$"),
 });
+/// Python's `str.isspace`.
+fn python_space(c: char) -> bool {
+    c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
+}
+/// `text[max(0, end - count):end]` in characters, `end` a byte offset.
+fn chars_before(text: &str, end: usize, count: usize) -> &str {
+    let start = text[..end]
+        .char_indices()
+        .rev()
+        .nth(count.saturating_sub(1))
+        .map_or(0, |(i, _)| i);
+    if count == 0 {
+        &text[end..end]
+    } else {
+        &text[start..end]
+    }
+}
+/// `_routine_body_refs`: `(relation, table name as written, byte offset)` for
+/// each table a masked routine body reads (`FROM`/`JOIN`) or writes
+/// (`INSERT`/`UPDATE`/`DELETE`/`MERGE`/`SELECT ... INTO`), in source order.
+/// Temp tables and variables never match the identifier atom; CTE names and
+/// keywords are dropped; the target of `UPDATE o ... FROM dbo.Orders o` is
+/// resolved through the alias (0.9.94, #4635).
+fn routine_body_refs(masked: &str) -> Result<Vec<(&'static str, String, usize)>> {
+    let mut non_tables: HashSet<String> = BODY_NON_TABLES.iter().map(|s| s.to_string()).collect();
+    for c in captures(&P.cte, masked)? {
+        non_tables.insert(norm_ident(&c[1]));
+    }
+    let usable = |name: &str| !non_tables.contains(&norm_ident(name));
+    let mut writes: Vec<(usize, usize, String)> = vec![];
+    for m in captures(&P.body_write, masked)? {
+        let whole = m.get(0).unwrap();
+        if m[1].to_uppercase() != "INTO"
+            && P.body_event
+                .is_match(chars_before(masked, whole.start(), 30))
+                .map_err(crate::Error::from)?
+        {
+            continue;
+        }
+        if usable(&m[2]) {
+            writes.push((whole.start(), whole.end(), m[2].to_owned()));
+        }
+    }
+    let mut reads: Vec<(usize, String)> = vec![];
+    let mut aliases: HashMap<String, String> = HashMap::new();
+    for m in captures(&P.body_read, masked)? {
+        let whole = m.get(0).unwrap();
+        if writes
+            .iter()
+            .any(|(s, e, _)| *s <= whole.start() && whole.start() < *e)
+        {
+            continue;
+        }
+        if P.body_from_not_table
+            .is_match(chars_before(masked, whole.start(), 200))
+            .map_err(crate::Error::from)?
+        {
+            continue;
+        }
+        // `FROM dbo.fn_split(@x)` calls a table-valued function: not a table.
+        if !usable(&m[1])
+            || masked[whole.end()..]
+                .trim_start_matches(python_space)
+                .starts_with('(')
+        {
+            continue;
+        }
+        reads.push((whole.start(), m[1].to_owned()));
+        if let Some(alias) = P
+            .body_alias
+            .captures(&masked[whole.end()..])
+            .map_err(crate::Error::from)?
+        {
+            let alias = alias[1].to_lowercase();
+            if !non_tables.contains(&alias) {
+                aliases.entry(alias).or_insert_with(|| m[1].to_owned());
+            }
+        }
+    }
+    let mut refs: Vec<(usize, &'static str, String)> = reads
+        .into_iter()
+        .map(|(pos, name)| (pos, "reads_from", name))
+        .collect();
+    for (pos, _, name) in writes {
+        let name = if name.contains('.') {
+            name
+        } else {
+            aliases.get(&name.to_lowercase()).cloned().unwrap_or(name)
+        };
+        refs.push((pos, "writes_to", name));
+    }
+    refs.sort();
+    Ok(refs
+        .into_iter()
+        .map(|(pos, relation, name)| (relation, name, pos))
+        .collect())
+}
+/// `_go_separators`: byte spans of the `GO [n]` batch-separator lines of a
+/// T-SQL script (0.9.94, #4651). A bare `go` is a column or alias, not a
+/// separator, only when the last non-blank character before it is a comma or
+/// the first one after it is a comma or `)`. Not UTF-8: no spans.
+fn go_separators(source: &[u8]) -> Result<Vec<(usize, usize)>> {
+    let Ok(text) = std::str::from_utf8(source) else {
+        return Ok(vec![]);
+    };
+    let (masked, _) = scan_sql(text);
+    // The mask keeps character offsets, not byte offsets: map through them.
+    let masked_chars: Vec<char> = masked.chars().collect();
+    let char_at = |byte: usize| masked[..byte].chars().count();
+    let text_bytes: Vec<usize> = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain(std::iter::once(text.len()))
+        .collect();
+    let mut spans = vec![];
+    for m in captures(&P.go_line, &masked)? {
+        let (whole, go) = (m.get(0).unwrap(), m.get(1).unwrap());
+        let mut before = char_at(whole.start()) as isize - 1;
+        let mut after = char_at(whole.end());
+        while before >= 0 && python_space(masked_chars[before as usize]) {
+            before -= 1;
+        }
+        while after < masked_chars.len() && python_space(masked_chars[after]) {
+            after += 1;
+        }
+        if (before >= 0 && masked_chars[before as usize] == ',')
+            || (after < masked_chars.len() && matches!(masked_chars[after], ',' | ')'))
+        {
+            continue;
+        }
+        spans.push((
+            text_bytes[char_at(go.start())],
+            text_bytes[char_at(go.end())],
+        ));
+    }
+    Ok(spans)
+}
 fn captures<'a>(rx: &Regex, text: &'a str) -> Result<Vec<fancy_regex::Captures<'a>>> {
     rx.captures_iter(text)
         .map(|r| r.map_err(crate::Error::from))
@@ -265,22 +546,12 @@ fn children(node: Node<'_>) -> impl Iterator<Item = Node<'_>> {
 fn read(node: Node<'_>, source: &[u8]) -> String {
     String::from_utf8_lossy(&source[node.byte_range()]).into_owned()
 }
-/// Reads an identifier verbatim. tree-sitter-sql has no T-SQL bracket delimiters, so
-/// `[dbo].[Alpha]` parses as ERROR tokens around an `object_reference` spanning
-/// `dbo].[Alpha`; a bracket-touched name is re-read from the source (issue #2712).
+/// An identifier as the parser spans it. tree-sitter-sql has no T-SQL bracket
+/// delimiters, so `[dbo].[Alpha]` reads as `dbo].[Alpha`: labels go through
+/// [`clean_ident`] and keys through [`norm_ident`] (0.9.94, #4635); ids keep
+/// the text as written.
 fn ident(node: Node<'_>, source: &[u8]) -> String {
-    let text = read(node, source);
-    let mut start = node.start_byte();
-    if start > 0 && source[start - 1] == b'[' {
-        start -= 1;
-    } else if !text.contains(['[', ']']) {
-        return text;
-    }
-    let tail = String::from_utf8_lossy(&source[start..]);
-    match P.bracket_ident.find(&tail) {
-        Ok(Some(m)) => m.as_str().to_owned(),
-        _ => text,
-    }
+    read(node, source)
 }
 fn object(node: Node<'_>, source: &[u8]) -> Option<String> {
     children(node)
@@ -323,7 +594,7 @@ impl Extractor<'_> {
     fn stub(&mut self, name: &str) -> String {
         let id = make_id([name]);
         if self.seen.insert(id.clone()) {
-            self.nodes.push(json!({"id":id,"label":name,"file_type":"code","source_file":"","source_location":"","origin_file":self.path}));
+            self.nodes.push(json!({"id":id,"label":clean_ident(name),"file_type":"code","source_file":"","source_location":"","origin_file":self.path}));
         }
         id
     }
@@ -376,7 +647,7 @@ impl Extractor<'_> {
             "create_table" => {
                 if let Some(name) = object(node, self.source).filter(|n| !n.is_empty()) {
                     let id = make_id([self.stem.as_str(), name.as_str()]);
-                    self.add_node(&id, &name, line);
+                    self.add_node(&id, &clean_ident(&name), line);
                     self.tables.insert(norm_ident(&name), id.clone());
                     for col in children(node).filter(|n| n.kind() == "column_definitions") {
                         let has_error = children(col).any(|n| n.kind() == "ERROR");
@@ -418,9 +689,9 @@ impl Extractor<'_> {
                 if let Some(name) = object(node, self.source).filter(|n| !n.is_empty()) {
                     let id = make_id([self.stem.as_str(), name.as_str()]);
                     let label = if node.kind() == "create_view" {
-                        name.clone()
+                        clean_ident(&name)
                     } else {
-                        format!("{name}()")
+                        format!("{}()", clean_ident(&name))
                     };
                     self.add_node(&id, &label, line);
                     if node.kind() == "create_view" {
@@ -582,7 +853,22 @@ pub fn extract_sql(path: &Path, content: Option<&[u8]>) -> Result<Value> {
     if let Err(e) = parser.set_language(&graphicle_tree_sitter_sql::LANGUAGE.into()) {
         return Ok(json!({"nodes":[],"edges":[],"error":e.to_string()}));
     }
-    let Some(tree) = parser.parse(source, None) else {
+    // `GO` is not SQL; as `;` (same length, so offsets and lines hold) it ends
+    // the statement (0.9.94, #4651). Names are still read from the original.
+    let separators = go_separators(source)?;
+    let patched;
+    let parsed = if separators.is_empty() {
+        source
+    } else {
+        let mut bytes = source.to_vec();
+        for (start, end) in separators {
+            bytes[start] = b';';
+            bytes[start + 1..end].fill(b' ');
+        }
+        patched = bytes;
+        &patched[..]
+    };
+    let Some(tree) = parser.parse(parsed, None) else {
         return Ok(json!({"nodes":[],"edges":[],"error":"SQL parse cancelled"}));
     };
     let root = tree.root_node();
@@ -602,6 +888,25 @@ pub fn extract_sql(path: &Path, content: Option<&[u8]>) -> Result<Value> {
         routines: HashMap::new(),
     };
     extractor.collect_defined(root);
+    let text = String::from_utf8_lossy(source);
+    // A CREATE TABLE the grammar failed on (0.9.95, #4613) sits in an ERROR
+    // node and never reaches the pre-pass: register the recovered names from
+    // the masked source so references resolve to the real id. The node itself
+    // is emitted with the recovered routines and triggers below.
+    if root.has_error() {
+        let (masked, spans) = scan_sql(&text);
+        for c in captures(&P.table_recovery, &masked)? {
+            let pos = c.get(0).unwrap().start();
+            let character = masked[..pos].chars().count();
+            if spans.iter().any(|(s, e)| *s <= character && character < *e) {
+                continue;
+            }
+            extractor
+                .tables
+                .entry(norm_ident(&c[1]))
+                .or_insert_with(|| make_id([extractor.stem.as_str(), &c[1]]));
+        }
+    }
     // Mirror case (PR #3020, adapted): `REFERENCES "public"."users"` binds to an
     // explicit unqualified `CREATE TABLE "users"`. This runs before the secondary
     // bare-name aliases so a `"other"."users"` definition never captures it, and
@@ -660,7 +965,6 @@ pub fn extract_sql(path: &Path, content: Option<&[u8]>) -> Result<Value> {
             )
         })
         .collect();
-    let text = String::from_utf8_lossy(source);
     for c in captures(&P.table, &text)? {
         let Some(table_id) = extractor.tables.get(&norm_ident(&c[1])).cloned() else {
             continue;
@@ -692,7 +996,37 @@ pub fn extract_sql(path: &Path, content: Option<&[u8]>) -> Result<Value> {
             let name = &c[1];
             let line = masked[..pos].bytes().filter(|b| *b == b'\n').count() + 1;
             let id = make_id([extractor.stem.as_str(), name]);
-            extractor.add_node(&id, &format!("{name}()"), line);
+            // A routine the tree already produced keeps its tree-based
+            // reads_from; scanning it too would double them.
+            let from_tree = extractor.seen.contains(&id);
+            extractor.add_node(&id, &format!("{}()", clean_ident(name)), line);
+            if from_tree {
+                continue;
+            }
+            // The body, read as text (0.9.94, #4635): tree-sitter-sql has no
+            // procedure production.
+            let start = c.get(0).unwrap().end();
+            let end = P
+                .body_end
+                .find_from_pos(&masked, start)
+                .map_err(crate::Error::from)?
+                .map_or(masked.len(), |m| m.start());
+            let mut seen_refs = HashSet::new();
+            for (relation, table, offset) in routine_body_refs(&masked[start..end])? {
+                let target = match extractor.tables.get(&norm_ident(&table)).cloned() {
+                    Some(target) => target,
+                    None => extractor.stub(&clean_ident(&table)),
+                };
+                if !seen_refs.insert((relation, target.clone())) {
+                    continue;
+                }
+                let line = masked[..start + offset]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count()
+                    + 1;
+                extractor.edge(&id, &target, relation, line);
+            }
         }
         // `_TRIGGER_RECOVERY_RX` (0.9.71): a trigger whose procedural body
         // broke the parse is recovered with the table it fires ON, unless a
@@ -712,6 +1046,19 @@ pub fn extract_sql(path: &Path, content: Option<&[u8]>) -> Result<Value> {
             extractor.add_node(&id, &name, line);
             let target = extractor.resolve(&c[2]);
             extractor.edge(&id, &target, "triggers", line);
+        }
+        // Tables the grammar dropped into an ERROR node (0.9.95, #4613),
+        // registered above; a cleanly parsed table keeps its walked node. The
+        // label is cleaned, the id keyed off the raw name.
+        for c in captures(&P.table_recovery, &masked)? {
+            let pos = c.get(0).unwrap().start();
+            let character = masked[..pos].chars().count();
+            if spans.iter().any(|(s, e)| *s <= character && character < *e) {
+                continue;
+            }
+            let line = masked[..pos].bytes().filter(|b| *b == b'\n').count() + 1;
+            let id = make_id([extractor.stem.as_str(), &c[1]]);
+            extractor.add_node(&id, &clean_ident(&c[1]), line);
         }
     }
     Ok(json!({"nodes":extractor.nodes,"edges":extractor.edges}))
@@ -786,7 +1133,10 @@ mod tests {
 
     // Issue #2712 / PR #2716: `[dbo].[Alpha]` used to be labelled `dbo].[Alpha`.
     #[test]
-    fn bracket_delimited_tsql_names_keep_their_brackets_verbatim() {
+    /// Graphify 0.9.94 (#4635): T-SQL bracketed names are unbracketed in labels
+    /// (`[dbo].[Alpha]` is `dbo.Alpha`), keyed alike for resolution, and ids
+    /// keep coming from the text as written.
+    fn bracket_delimited_tsql_names_are_unbracketed_in_labels() {
         let result = extract(
             "CREATE TABLE [dbo].[Alpha](id INT);\nCREATE TABLE [dbo].[Beta](a_id INT REFERENCES [dbo].[Alpha](id), g INT REFERENCES [Gamma](id), d INT REFERENCES dbo.[Delta](id));\nCREATE VIEW [dbo].[V] AS SELECT * FROM [dbo].[Alpha];\n",
         );
@@ -801,11 +1151,11 @@ mod tests {
             labels,
             [
                 "schema.sql",
-                "[dbo].[Alpha]",
-                "[dbo].[Beta]",
-                "[Gamma]",
-                "dbo.[Delta]",
-                "[dbo].[V]"
+                "dbo.Alpha",
+                "dbo.Beta",
+                "Gamma",
+                "dbo.Delta",
+                "dbo.V"
             ],
             "{nodes:?}"
         );

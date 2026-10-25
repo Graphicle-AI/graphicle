@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/pascal.py, graphify/extractors/resolution.py
 //! Pascal-specific path resolution from resolution.py. This does not claim
 //! completion of the remaining JavaScript/Python/C resolvers in that file.

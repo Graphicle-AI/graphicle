@@ -1254,34 +1254,30 @@ fn rust_use_groups_mark_the_group_edge_and_each_binding() {
     }));
 }
 
-/// Type references drop prelude names unless the file declares a struct, enum
-/// or trait of that name (upstream `extract_rust` rebinds `local_type_names`
-/// to the declared types before walking). A `type Result<T> = ...` alias or a
-/// `union` mints no sourceless `Result` node and no `references` edges.
+/// Type references drop prelude names unless the file declares a type of that
+/// name (upstream `extract_rust` rebinds `local_type_names` to the declared
+/// types before walking). Since Graphify 0.9.95 (#4581) a `type Result<T> =
+/// ...` alias and a `union` are declared types: nodes in their file that the
+/// references bind to, shadowing the prelude names; `Vec` stays unminted.
 #[test]
-fn rust_prelude_alias_is_not_a_type_reference() {
-    let result = single(
-        "lib.rs",
-        "pub type Result<T> = std::result::Result<T, Error>;\npub union Option { a: u8 }\n\
+fn rust_local_alias_and_union_shadow_prelude_names() {
+    let source = "pub type Result<T> = std::result::Result<T, Error>;\npub union Option { a: u8 }\n\
          pub struct Error;\nfn f() -> Result<i32> { todo!() }\n\
-         fn g(x: Result<String>, y: Option) -> Vec<Error> { todo!() }\n",
-    );
-    let labels = label_set(&result);
+         fn g(x: Result<String>, y: Option) -> Vec<Error> { todo!() }\n";
+    let labels = label_set(&single("lib.rs", source));
     assert!(
-        !labels.contains("Result") && !labels.contains("Option"),
+        labels.contains("Result") && labels.contains("Option") && !labels.contains("Vec"),
         "{labels:?}"
     );
-    let refs = rust_edges(
-        "pub type Result<T> = std::result::Result<T, Error>;\npub union Option { a: u8 }\n\
-         pub struct Error;\nfn f() -> Result<i32> { todo!() }\n\
-         fn g(x: Result<String>, y: Option) -> Vec<Error> { todo!() }\n",
-        "references",
-    );
-    assert!(
-        refs.iter().all(|r| r.1 != "Result" && r.1 != "Option"),
-        "{refs:?}"
-    );
-    assert!(refs.contains(&triple("g()", "Error", "L3")), "{refs:?}");
+    let refs = rust_edges(source, "references");
+    for expected in [
+        triple("f()", "Result", "L1"),
+        triple("g()", "Result", "L1"),
+        triple("g()", "Option", "L2"),
+        triple("g()", "Error", "L3"),
+    ] {
+        assert!(refs.contains(&expected), "{expected:?}: {refs:?}");
+    }
     // A declared struct of a prelude name still shadows it.
     let refs = rust_edges(
         "struct Result<T>(T);\nfn f() -> Result<i32> { todo!() }\n",

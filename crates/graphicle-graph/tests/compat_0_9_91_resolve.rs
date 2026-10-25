@@ -156,9 +156,11 @@ fn go_receiver_typed_to_an_absent_type_is_parked() {
         "svc/app.go",
         "package svc\n\nfunc Run(c *Client) { c.Send() }\n",
     )]);
+    // A parked call records its call-site file (Graphify 0.9.94, #4668).
     assert_eq!(
         parked(&r, "Run()"),
-        json!([{"callee": "Send", "receiver_type": "Client", "lang": "go", "line": "L3"}])
+        json!([{"callee": "Send", "receiver_type": "Client", "lang": "go", "line": "L3",
+                "file": "svc/app.go"}])
     );
 }
 
@@ -310,9 +312,11 @@ fn php_receiver_typed_to_an_absent_class_is_parked() {
         "App.php",
         "<?php\nclass App {\n    public function run(Client $c) { $c->send(); }\n}\n",
     )]);
+    // A parked call records its call-site file (Graphify 0.9.94, #4668).
     assert_eq!(
         parked(&r, ".run()"),
-        json!([{"callee": "send", "receiver_type": "Client", "lang": "php", "line": "L3"}])
+        json!([{"callee": "send", "receiver_type": "Client", "lang": "php", "line": "L3",
+                "file": "App.php"}])
     );
 }
 
@@ -447,8 +451,12 @@ fn csharp_case_property_enum_and_preprocessor_pairs_stay_apart() {
         "{defines:?}"
     );
     assert!(defines.contains(&(host, one(&r, "_Size"))), "{defines:?}");
-    // Overloads are one name.
-    one(&r, ".Save()");
+    // Overloads are no underscore collision: since Graphify 0.9.95 (#4584)
+    // they get a node each through the overload rule, the first keeping the
+    // plain id.
+    let saves = ids_of(&r, ".Save()");
+    assert_eq!(saves.len(), 2, "{saves:?}");
+    assert!(saves.iter().any(|id| id == "s_host_save"), "{saves:?}");
     let mode = one(&r, "Mode");
     let cases = pairs(&r, "case_of")
         .into_iter()
@@ -854,9 +862,11 @@ fn ts_inherited_field_types_the_receiver() {
 fn ts_receiver_typed_to_an_absent_class_is_parked() {
     let r = Fixture::new()
         .extract_files(&[("svc.ts", "export function run(c: Client) { c.send(); }\n")]);
+    // A parked call records its call-site file (Graphify 0.9.94, #4668).
     assert_eq!(
         parked(&r, "run()"),
-        json!([{"callee": "send", "receiver_type": "Client", "lang": "typescript", "line": "L1"}])
+        json!([{"callee": "send", "receiver_type": "Client", "lang": "typescript", "line": "L1",
+                "file": "svc.ts"}])
     );
 }
 

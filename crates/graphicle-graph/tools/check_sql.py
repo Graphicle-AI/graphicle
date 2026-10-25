@@ -57,6 +57,10 @@ try:
     paths = ['tests/test_multilang.py::'+n for n in names]
     paths += ['tests/test_extract.py::test_extract_failed_sources_empty_when_sql_installed',
               'tests/test_extract.py::test_extract_no_missing_dep_warning_when_sql_installed']
+    # 0.9.94-0.9.95 (#4635, #4651, #4653, #4613): T-SQL procedures and brackets, GO
+    # batches, cross-file table stubs and recovered CREATE TABLE statements.
+    paths += [p for p in ['tests/test_sql_tsql_procedures.py', 'tests/test_sql_go_batches.py',
+                          'tests/test_sql_cross_file_tables.py'] if (SOURCE / p).is_file()]
     with patch.object(reference, 'extract_sql', extract), patch.object(facade, 'extract_sql', extract), \
          patch.dict(facade._DISPATCH, {k:extract for k,v in facade._DISPATCH.items() if v is original}), \
          patch.object(reference, '_scan_sql', scan), patch.object(reference, '_mask_sql_comments', mask):

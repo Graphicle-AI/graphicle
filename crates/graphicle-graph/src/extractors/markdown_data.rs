@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/markdown.py
 // Constant data from pinned graphify/detect.py; this does not port its scanner.
 pub const CODE_EXTENSIONS: &[&str] = &[
@@ -113,11 +113,14 @@ pub const CODE_EXTENSIONS: &[&str] = &[
     ".vh",
     ".vue",
     ".xaml",
+    ".yaml",
+    ".yml",
     ".zig",
 ];
+/// Graphify 0.9.95 (#2214) moved `.yaml`/`.yml` to the code extensions; a
+/// code-span mention tests the union, which is unchanged.
 pub const DOC_EXTENSIONS: &[&str] = &[
-    ".html", ".j2", ".jinja", ".jinja2", ".md", ".mdx", ".qmd", ".rst", ".skill", ".txt", ".yaml",
-    ".yml",
+    ".html", ".j2", ".jinja", ".jinja2", ".md", ".mdx", ".qmd", ".rst", ".skill", ".txt",
 ];
 pub const SKIP_DIRS: &[&str] = &[
     "*.egg-info",

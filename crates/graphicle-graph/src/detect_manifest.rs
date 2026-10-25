@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/detect.py
 //! Portable manifests with separate AST/semantic stamps and conservative mtimes.
 use crate::{Result, cache, fsutil, paths, python_compat};
@@ -324,6 +324,11 @@ pub struct ManifestOptions {
     pub scan_corpus: Option<Vec<String>>,
     pub clear_semantic: Option<Vec<String>>,
     pub clear_ast: Option<Vec<String>>,
+    /// Code files the AST extractor declined by design this run (data JSON):
+    /// stamped, yet zero nodes. Their rows carry `ast_empty: true`, kept across
+    /// unchanged incrementals and dropped once the file yields nodes or fails
+    /// (Graphify 0.9.94, #2879).
+    pub ast_empty: Option<Vec<String>>,
     pub now: Option<f64>,
 }
 /// `_checkout_prefix` (0.9.80): the longest directory prefix of `abs_key`
@@ -389,6 +394,7 @@ pub fn save_manifest(
     let scan = index(options.scan_corpus.as_deref());
     let clear = index(options.clear_semantic.as_deref());
     let clear_ast = index(options.clear_ast.as_deref());
+    let ast_empty = index(options.ast_empty.as_deref());
     let root = options
         .root
         .as_ref()
@@ -437,6 +443,10 @@ pub fn save_manifest(
             continue;
         }
         if in_set(p, clear_ast.as_ref()) {
+            // A genuine failure is no intentional empty: the marker goes too.
+            if let Some(row) = entry.as_object_mut() {
+                row.shift_remove("ast_empty");
+            }
             entry["ast_hash"] = json!("");
             entry["semantic_hash"] = json!("");
         } else if in_set(p, clear.as_ref()) {
@@ -509,6 +519,13 @@ pub fn save_manifest(
         if let Some(language) = current_lang {
             // Without an override a row keeps the legacy shape.
             entry["language"] = json!(language);
+        }
+        if in_set(&p, ast_empty.as_ref())
+            || (!lang_changed
+                && prev.get("ast_empty").is_some_and(crate::build::truthy)
+                && prev.get("ast_hash").unwrap_or(&json!("")) == &entry["ast_hash"])
+        {
+            entry["ast_empty"] = json!(true);
         }
         manifest.insert(key, entry);
     }

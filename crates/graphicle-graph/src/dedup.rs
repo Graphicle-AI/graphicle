@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/dedup.py
 //! Source-aware entity deduplication, preserving incremental and provenance rules.
 
@@ -133,7 +133,7 @@ pub fn rank_path(source_file: &str, root: Option<&Path>) -> String {
     }
     normalized
 }
-pub type CollisionRank = (bool, u8, usize, String, Vec<String>);
+pub type CollisionRank = (bool, bool, u8, usize, String, Vec<String>);
 /// `(id, root-relative file)` pairs read as a mention of a document ([`mentions`]).
 pub type Mentions = HashSet<(String, String)>;
 pub fn collision_rank(node: &Value, root: Option<&Path>) -> CollisionRank {
@@ -142,6 +142,9 @@ pub fn collision_rank(node: &Value, root: Option<&Path>) -> CollisionRank {
 /// `_collision_rank(node, root, mentions)` (0.9.88, #4281): a node read as a
 /// mention of a document ranks as a reference even though its id is a path
 /// slice, so a real document outranks it whatever the label lengths are.
+/// Right after that key a node with a `source_file` beats one without
+/// (Graphify 0.9.92, #4492): when neither defines the id, a sourceless node
+/// used to win on its empty path sorting first.
 pub fn collision_rank_with(
     node: &Value,
     root: Option<&Path>,
@@ -152,6 +155,9 @@ pub fn collision_rank_with(
     let mentioned = !mentions.is_empty() && mentions.contains(&(id(node).to_owned(), path.clone()));
     (
         !defines_id(node) || mentioned,
+        !node
+            .get("source_file")
+            .is_some_and(crate::build_normalize::truthy),
         lifecycle_penalty(&path),
         label.chars().count(),
         label.into(),
@@ -1656,5 +1662,27 @@ mod tests {
         let chunked =
             json!({"id": "x_c2", "label": "Setup", "source_file": "x.md", "attributes": {"k": 1}});
         assert_eq!(pick_winner(&[chunked, stub]).unwrap()["id"], "setup");
+    }
+
+    /// Graphify 0.9.92 (#4492): an id collision between two nodes that do not
+    /// define the id keeps the one with a `source_file`, in either order.
+    #[test]
+    fn sourced_node_survives_a_sourceless_namesake() {
+        let sourced = json!({"id": "x", "label": "X", "source_file": "a.md"});
+        let blank = json!({"id": "x", "label": "X"});
+        for order in [
+            vec![sourced.clone(), blank.clone()],
+            vec![blank.clone(), sourced.clone()],
+        ] {
+            let result = super::deduplicate_entities(
+                &order,
+                &[],
+                &super::DedupOptions::default(),
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(result.nodes, vec![sourced.clone()]);
+        }
     }
 }

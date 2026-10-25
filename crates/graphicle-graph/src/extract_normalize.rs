@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Portable identities and cross-file re-export forwarding for corpus assembly.
 use crate::{
@@ -421,6 +421,31 @@ pub fn normalize_ids<P: PerFile>(
         if abs_pref != new && abs_pref != old_pref {
             prefs.push((abs_pref.clone(), new.clone()));
         }
+        // An Objective-C category (`Foo+Cat.h`) keys its class node and methods
+        // off the base stem `Foo`, so they fold into `Foo.h`'s class (#1556):
+        // register that prefix too, after the file's own, or the ids keep the
+        // absolute checkout path (0.9.94, #4666).
+        if rel
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().contains('+'))
+        {
+            let rel_stem = crate::extractors::base::file_stem(rel);
+            let base_rel = crate::extractors::objc::category_base_stem(&rel_stem);
+            if base_rel != rel_stem {
+                let new_base = make_id([base_rel.as_str()]);
+                for form in [&path, &full] {
+                    let old_base = make_id([crate::extractors::objc::category_base_stem(
+                        &crate::extractors::base::file_stem(form),
+                    )
+                    .as_str()]);
+                    if old_base != new_base
+                        && !prefs.contains(&(old_base.clone(), new_base.clone()))
+                    {
+                        prefs.push((old_base, new_base.clone()));
+                    }
+                }
+            }
+        }
         for (o, p) in [(&old, &old_pref), (&abs, &abs_pref)] {
             if let Some(tail) = o.strip_prefix(p) {
                 let a = format!("{o}__entry");
@@ -683,6 +708,37 @@ fn relativize<R: Rec>(
         if item.rec_get("definition_file").is_some() {
             item.rec_set_str("definition_file", source);
         }
+    }
+    // A parked member call records its call-site file (the `.m`), which is not
+    // the node's own `source_file` (often the `.h`): left absolute it would
+    // leak the checkout path into graph.json (0.9.94, #4668).
+    let absolute = |call: &Value| {
+        call["file"]
+            .as_str()
+            .is_some_and(|file| !file.is_empty() && Path::new(file).is_absolute())
+    };
+    if let Some(metadata) = item.rec_get("metadata")
+        && metadata["unresolved_calls"]
+            .as_array()
+            .is_some_and(|calls| calls.iter().any(absolute))
+    {
+        let mut metadata = metadata.clone();
+        for call in metadata["unresolved_calls"]
+            .as_array_mut()
+            .into_iter()
+            .flatten()
+        {
+            if absolute(call) {
+                let file = call["file"].as_str().unwrap_or_default().to_string();
+                let source = source_files
+                    .entry(file)
+                    .or_insert_with_key(|file| sf_entry(file))
+                    .0
+                    .clone();
+                call["file"] = json!(source);
+            }
+        }
+        item.rec_set("metadata", metadata);
     }
 }
 pub fn finish<E: Rec>(nodes: &mut [Value], edges: &mut [E], root: &Path) {

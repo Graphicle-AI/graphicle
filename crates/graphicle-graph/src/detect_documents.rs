@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/detect.py
 //! Native Office/PDF readers used by the translated discovery pipeline.
 use crate::{Result, fsutil, google_workspace, paths};
@@ -640,21 +640,51 @@ pub fn xlsx_extract_structure(path: &Path, limits: DocumentLimits) -> Value {
     }
     json!({"nodes":nodes,"edges":edges})
 }
+/// Plain text of a PDF. A file that cannot be read (malformed, encrypted)
+/// gives `""`, the same as a PDF with no text, but first warns once per path,
+/// naming the file and the error, so a failed read is not mistaken for an
+/// empty document (Graphify 0.9.93, #4527).
 pub fn extract_pdf_text(path: &Path, limits: DocumentLimits) -> String {
     if !file_within_size_cap(path, limits.raw_bytes) {
         return String::new();
     }
-    std::panic::catch_unwind(|| pdf_extract::extract_text_by_pages(path))
-        .ok()
-        .and_then(std::result::Result::ok)
-        .map(|pages| {
-            pages
+    let error = match std::panic::catch_unwind(|| pdf_extract::extract_text_by_pages(path)) {
+        Ok(Ok(pages)) => {
+            return pages
                 .into_iter()
                 .filter(|p| !p.is_empty())
                 .collect::<Vec<_>>()
-                .join("\n")
-        })
-        .unwrap_or_default()
+                .join("\n");
+        }
+        Ok(Err(error)) => error.to_string(),
+        Err(panic) => panic
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_owned())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "the PDF parser stopped".into()),
+    };
+    static WARNED: std::sync::LazyLock<std::sync::Mutex<HashSet<String>>> =
+        std::sync::LazyLock::new(Default::default);
+    let key = fsutil::path_string(path);
+    if WARNED
+        .lock()
+        .is_ok_and(|mut warned| warned.insert(key.clone()))
+    {
+        crate::rcfile::warn(format!(
+            "[graphicle] WARNING: could not extract text from {key} ({error}); it contributes no content to the graph."
+        ));
+    }
+    String::new()
+}
+/// `_BINARY_MEDIA_EXTENSIONS` (Graphify 0.9.95, #4548): images other than
+/// SVG, and audio and video. Their bytes are not text, so they never count
+/// toward the corpus word total; an SVG is XML text and still counts.
+pub fn is_binary_media(path: &Path) -> bool {
+    let suffix = crate::detect_types::suffix(path);
+    suffix != ".svg"
+        && crate::detect_types::strings("IMAGE_EXTENSIONS")
+            .chain(crate::detect_types::strings("VIDEO_EXTENSIONS"))
+            .any(|ext| ext == suffix)
 }
 pub fn convert_office_file(
     path: &Path,
@@ -699,6 +729,9 @@ pub fn convert_office_file(
     Ok(Some(output))
 }
 pub fn count_words(path: &Path, limits: DocumentLimits) -> usize {
+    if is_binary_media(path) {
+        return 0;
+    }
     let text = match path
         .extension()
         .unwrap_or_default()

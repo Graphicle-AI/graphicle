@@ -192,6 +192,21 @@ fn relpath(source_file: &str, strip_prefix: Option<&str>) -> String {
     }
 }
 
+/// The name of a dependency entry without its version range. Since Graphify
+/// 0.9.95 (#4569) the engine labels a manifest's dependency entry
+/// `name@range` and joins it to the node it declares with a `declares` edge;
+/// the range moves with every bump, so the identity keeps the name alone, as
+/// it was before, and a link to the entry survives the bump. Only a node with
+/// a `declares` edge is renamed (see [`annotate`]): other keys that hold `@`,
+/// such as pnpm overrides (`semver@<7.5.2`), keep their whole label. The name
+/// ends at the first `@` after its first character, because an npm name holds
+/// `@` only as its scope prefix (`@scope/pkg`) while a range may hold more
+/// (`npm:other@^4.2.0`, `git+ssh://git@host/repo.git`).
+fn dependency_name(label: &str) -> Option<&str> {
+    let (at, _) = label.char_indices().skip(1).find(|&(_, c)| c == '@')?;
+    (at + 1 < label.len()).then(|| &label[..at])
+}
+
 /// A label as it appears in a qualified name: methods lose the leading dot
 /// and the call parentheses, everything else is kept verbatim.
 fn name_part(label: &str) -> String {
@@ -326,6 +341,15 @@ pub fn annotate(graph: &mut Graph, options: &IdentityOptions) -> Result<Identity
         }
         parent[index] = best;
     }
+    // A dependency entry: a node with a `declares` edge, which the engine
+    // labels `name@range` (Graphify 0.9.95, #4569; [`dependency_name`]).
+    let declares = |index: usize| {
+        graph
+            .out_edges(index)
+            .into_iter()
+            .chain(graph.in_edges(index))
+            .any(|(_, _, edge)| text(&edge.attributes, "relation").as_deref() == Some("declares"))
+    };
     // Pass 2: qualified names along the parent chain (cycle-safe).
     let mut qualified: Vec<String> = vec![String::new(); count];
     for index in 0..count {
@@ -352,6 +376,9 @@ pub fn annotate(graph: &mut Graph, options: &IdentityOptions) -> Result<Identity
                 && !suffix.is_empty()
             {
                 return format!("@external:{suffix}");
+            }
+            if let Some(name) = dependency_name(&label).filter(|_| declares(i)) {
+                return name.to_string();
             }
             label
         };
@@ -836,6 +863,104 @@ mod tests {
         assert_eq!(summary.nodes, 7);
         assert_eq!(summary.with_revision, 7);
         assert!(summary.missing_sources.is_empty());
+    }
+
+    /// A dependency entry, labelled `name@range` since Graphify 0.9.95 and
+    /// joined to the node it declares, keeps the identity of its name: the
+    /// stable id it had before the relabel, and the same id after a version
+    /// bump, whatever the range holds.
+    #[test]
+    fn dependency_entries_are_identified_by_name_not_range() {
+        let identity = |label: &str, declared: bool| {
+            let mut graph = Graph::new(true, false);
+            for (id, label, line) in [
+                ("package", "package.json", "L1"),
+                ("package_dependencies", "dependencies", "L4"),
+                ("package_dependencies_commander", label, "L5"),
+                ("package_dependencies_scoped", "@scope/pkg@^1.0.0", "L6"),
+                ("ref_commander", "commander", "L5"),
+                ("ref_scope_pkg", "@scope/pkg", "L6"),
+            ] {
+                graph
+                    .add_node(
+                        json!(id),
+                        attributes([
+                            ("label", json!(label)),
+                            ("file_type", json!("code")),
+                            ("source_file", json!("package.json")),
+                            ("source_location", json!(line)),
+                        ]),
+                    )
+                    .unwrap();
+            }
+            let mut edges = vec![
+                ("package", "package_dependencies", "contains"),
+                (
+                    "package_dependencies",
+                    "package_dependencies_commander",
+                    "contains",
+                ),
+                (
+                    "package_dependencies",
+                    "package_dependencies_scoped",
+                    "contains",
+                ),
+                ("package_dependencies_scoped", "ref_scope_pkg", "declares"),
+            ];
+            if declared {
+                edges.push((
+                    "package_dependencies_commander",
+                    "ref_commander",
+                    "declares",
+                ));
+            }
+            for (source, target, relation) in edges {
+                graph
+                    .add_edge(
+                        json!(source),
+                        json!(target),
+                        None,
+                        attributes([("relation", json!(relation))]),
+                    )
+                    .unwrap();
+            }
+            annotate(&mut graph, &IdentityOptions::default()).unwrap();
+            (
+                attr(&graph, "package_dependencies_commander", "qualified_name"),
+                attr(&graph, "package_dependencies_commander", "stable_id"),
+                attr(&graph, "package_dependencies_scoped", "qualified_name"),
+                attr(&graph, "ref_scope_pkg", "qualified_name"),
+            )
+        };
+        let (name, before, scoped, declared) = identity("commander", false);
+        assert_eq!(name, json!("dependencies.commander"));
+        assert_eq!(scoped, json!("dependencies.@scope/pkg"));
+        assert_eq!(declared, json!("@scope/pkg"));
+        let (name, after, _, _) = identity("commander@^14.0.2", true);
+        assert_eq!(name, json!("dependencies.commander"));
+        assert_eq!(after, before);
+        assert_eq!(identity("commander@^14.1.0", true).1, before);
+        // The same label without a `declares` edge is not an entry the engine
+        // relabelled, and keeps its whole label.
+        assert_eq!(
+            identity("commander@^14.0.2", false).0,
+            json!("dependencies.commander@^14.0.2")
+        );
+        for (label, name) in [
+            ("commander@^14.0.2", Some("commander")),
+            ("@scope/pkg@^1.0.0", Some("@scope/pkg")),
+            (
+                "string-width-cjs@npm:string-width@^4.2.0",
+                Some("string-width-cjs"),
+            ),
+            ("lib@git+ssh://git@github.com/org/lib.git#v1", Some("lib")),
+            ("@scope/pkg", None),
+            ("commander", None),
+            ("a@", None),
+            ("ä@1", Some("ä")),
+        ] {
+            assert_eq!(dependency_name(label), name, "{label}");
+        }
     }
 
     #[test]

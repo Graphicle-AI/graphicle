@@ -1,5 +1,5 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
-// Upstream: graphify/affected.py, graphify/ids.py, graphify/serve.py
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Upstream: graphify/affected.py
 //! Resident graphs shared across requests.
 //!
 //! Every graph operation on the JSON boundary used to carry its whole

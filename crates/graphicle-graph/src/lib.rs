@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__init__.py, graphify/__main__.py
 //! Graphicle graph engine: code and document knowledge graphs. It ports a
 //! pinned Graphify release (see NOTICE.md); migration coverage is explicit.
@@ -186,8 +186,8 @@ pub use wiki::to_wiki;
 /// This package's version: `--version`, the MCP server version and the
 /// stamp beside installed skills.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const UPSTREAM_COMMIT: &str = "10130e79ed9caf8f60d998073e097531eaa1a395";
-pub const UPSTREAM_VERSION: &str = "0.9.91";
+pub const UPSTREAM_COMMIT: &str = "92741d162b2094ffc2fed58cfbd8ee823e9da62c";
+pub const UPSTREAM_VERSION: &str = "0.9.95";
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn dispatch(request: &Value) -> Result<Value> {
@@ -773,7 +773,7 @@ fn dispatch_inner(request: &Value) -> Result<Value> {
                 "upstream_commit": UPSTREAM_COMMIT,
                 "upstream_version": UPSTREAM_VERSION,
                 "complete_port": true,
-                "application_modules": 95
+                "application_modules": 96
             }
         })),
         Some("ids") => {
@@ -934,6 +934,9 @@ fn dispatch_inner(request: &Value) -> Result<Value> {
         Some("extract.json") => Ok(extractors::json_config::extract_json(std::path::Path::new(
             request["path"].as_str().ok_or("Expected path")?,
         ))),
+        Some("extract.yaml") => Ok(extractors::yaml_config::extract_yaml(std::path::Path::new(
+            request["path"].as_str().ok_or("Expected path")?,
+        ))),
         Some("security.ip") => {
             let ips = request["ips"].as_array().ok_or("Expected IP array")?;
             Ok(Value::Array(
@@ -949,6 +952,10 @@ fn dispatch_inner(request: &Value) -> Result<Value> {
             ))
         }
         Some("security.label") => Ok(json!(security::sanitize_label(&request["value"]))),
+        // `redact_secrets(None)` is "" upstream.
+        Some("security.redact_secrets") => Ok(json!(security::redact_secrets(
+            request["value"].as_str().unwrap_or_default()
+        ))),
         Some("security.out_name") => Ok(json!(security::out_dir_name(
             request["value"].as_str().ok_or("Expected output path")?
         ))),

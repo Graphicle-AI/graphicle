@@ -424,6 +424,7 @@
     "ts_language_fn": "language",
     "class_types": [
       "class_declaration",
+      "delegate_declaration",
       "enum_declaration",
       "interface_declaration",
       "record_declaration",
@@ -471,7 +472,8 @@
     "ts_language_fn": "language",
     "class_types": [
       "class_declaration",
-      "object_declaration"
+      "object_declaration",
+      "type_alias"
     ],
     "function_types": [
       "function_declaration"
@@ -691,6 +693,7 @@
       "deinit_declaration",
       "function_declaration",
       "init_declaration",
+      "macro_declaration",
       "protocol_function_declaration",
       "subscript_declaration"
     ],
@@ -698,7 +701,8 @@
       "import_declaration"
     ],
     "call_types": [
-      "call_expression"
+      "call_expression",
+      "macro_invocation"
     ],
     "static_prop_types": [],
     "helper_fn_names": [],

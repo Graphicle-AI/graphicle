@@ -1,15 +1,17 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/solidity.py
 //! Port of graphify/extractors/solidity.py (Graphify 0.9.69, #3716):
 //! contracts, interfaces and libraries with their state, events, errors,
 //! structs, enums, functions, modifiers and imports. Inheritance and `using`
 //! references bind across imported files through
-//! [`resolve_solidity_type_references`].
+//! [`resolve_solidity_type_references`]; calls, `super` calls and modifiers a
+//! contract inherits bind through [`resolve_solidity_inherited_calls`]
+//! (Graphify 0.9.92, #4379).
 use super::base::{file_stem, make_id, read_text};
 use crate::{
     extract::per_file::PerFile,
     fsutil, io_compat, path_syntax, python_compat,
-    resolver_registry::{Rec, at},
+    resolver_registry::{Rec, append_edges, at, edge_record},
 };
 use serde_json::{Map, Value, json};
 use std::{
@@ -54,6 +56,7 @@ impl Extractor<'_> {
     fn text(&self, node: Node<'_>) -> String {
         read_text(node, self.source)
     }
+    #[allow(clippy::too_many_arguments)]
     fn add_node(
         &mut self,
         id: &str,
@@ -62,6 +65,7 @@ impl Extractor<'_> {
         kind: &str,
         source_backed: bool,
         callable: bool,
+        arity: Option<usize>,
     ) -> String {
         if self.seen.insert(id.into()) {
             let mut item = Map::new();
@@ -72,10 +76,13 @@ impl Extractor<'_> {
                 "source_location".into(),
                 json!(format!("L{}", node.start_position().row + 1)),
             );
-            item.insert(
-                "metadata".into(),
-                json!({"language":"solidity","kind":kind}),
-            );
+            let mut metadata = json!({"language":"solidity","kind":kind});
+            if let Some(arity) = arity {
+                // The parameter count, so the cross-contract pass picks the
+                // overload the in-contract lookup would (name, arity).
+                metadata["arity"] = json!(arity);
+            }
+            item.insert("metadata".into(), metadata);
             if source_backed {
                 item.insert("source_file".into(), json!(self.path));
             }
@@ -113,10 +120,23 @@ impl Extractor<'_> {
         }
         self.edges.push(item);
     }
+    /// `_inherited_call`: a call or modifier the contract itself does not
+    /// declare, for [`resolve_solidity_inherited_calls`]. `kind` is `inherited`
+    /// (bare `f()` / `this.f()`), `super` (`super.f()`) or `modifier`.
+    fn inherited_call(
+        &mut self,
+        caller: &str,
+        callee: &str,
+        arity: Option<usize>,
+        kind: &str,
+        node: Node<'_>,
+    ) {
+        self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"arity":arity,"solidity_call":kind,"language":"solidity","source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
+    }
     fn type_stub(&mut self, name: &str, node: Node<'_>) -> String {
         let name = name.rsplit('.').next().unwrap_or("").to_string();
         let id = make_id(["solidity", "type", name.as_str()]);
-        self.add_node(&id, &name, node, "external_type", false, false)
+        self.add_node(&id, &name, node, "external_type", false, false, None)
     }
     /// Callables carry an `arity:types` signature to tell overloads apart;
     /// other members are unique per kind by name within a contract.
@@ -131,6 +151,7 @@ impl Extractor<'_> {
         relation: &str,
         signature: &str,
         callable: bool,
+        arity: Option<usize>,
     ) -> String {
         let discriminator = if signature.is_empty() {
             name
@@ -138,7 +159,7 @@ impl Extractor<'_> {
             signature
         };
         let id = make_id([type_id, kind, name, discriminator]);
-        self.add_node(&id, label, member, kind, true, callable);
+        self.add_node(&id, label, member, kind, true, callable, arity);
         self.add_edge(type_id, &id, relation, member, None, None);
         id
     }
@@ -157,6 +178,7 @@ impl Extractor<'_> {
             kind,
             true,
             kind == "contract",
+            None,
         );
         self.add_edge(file_id, &type_id, "contains", declaration, None, None);
         for child in named(declaration) {
@@ -213,6 +235,7 @@ impl Extractor<'_> {
                     "contains",
                     "",
                     false,
+                    None,
                 );
                 for item in member_body.map(named).unwrap_or_default() {
                     if is_struct {
@@ -224,7 +247,7 @@ impl Extractor<'_> {
                         };
                         let field = self.text(field);
                         let id = make_id([owner.as_str(), "field", field.as_str()]);
-                        self.add_node(&id, &field, item, "field", true, false);
+                        self.add_node(&id, &field, item, "field", true, false, None);
                         self.add_edge(&owner, &id, "contains", item, None, None);
                     } else {
                         if item.kind() != "enum_value" {
@@ -232,7 +255,7 @@ impl Extractor<'_> {
                         }
                         let value = self.text(item);
                         let id = make_id([owner.as_str(), value.as_str()]);
-                        self.add_node(&id, &value, item, "enum_value", true, false);
+                        self.add_node(&id, &value, item, "enum_value", true, false, None);
                         // A value is a discriminant case, not a declared member;
                         // constructor binding skips case_of targets (0.9.77).
                         self.add_edge(&owner, &id, "case_of", item, None, None);
@@ -252,7 +275,7 @@ impl Extractor<'_> {
                 };
                 let name = self.text(name_node);
                 let id = self.add_member(
-                    &type_id, member, &name, &name, simple, "contains", "", false,
+                    &type_id, member, &name, &name, simple, "contains", "", false, None,
                 );
                 let arity = named(member)
                     .into_iter()
@@ -311,6 +334,7 @@ impl Extractor<'_> {
                 "method",
                 &format!("{arity}:{signature}"),
                 true,
+                Some(arity),
             );
             if callable_kind == "modifier" {
                 modifiers.insert(name.clone(), id.clone());
@@ -323,7 +347,9 @@ impl Extractor<'_> {
             if let Some(member_body) = member.child_by_field_name("body") {
                 bodies.push((member_body, id.clone()));
             }
-            if callable_kind == "function" {
+            // A constructor's `ERC20("n", "s")` base call is a modifier
+            // invocation too (0.9.92).
+            if callable_kind != "modifier" {
                 for child in named(member)
                     .into_iter()
                     .filter(|c| c.kind() == "modifier_invocation")
@@ -342,6 +368,10 @@ impl Extractor<'_> {
         for (caller, modifier, node) in pending_modifiers {
             if let Some(target) = modifiers.get(&modifier).cloned() {
                 self.add_edge(&caller, &target, "uses", node, None, None);
+            } else {
+                // Declared in a base contract (`onlyOwner` from Ownable), or a
+                // base-constructor call the inheritance pass finds no modifier for.
+                self.inherited_call(&caller, &modifier, None, "modifier", node);
             }
         }
         for (body, caller) in bodies {
@@ -350,7 +380,7 @@ impl Extractor<'_> {
                 if node.kind() == "call_expression"
                     && let Some(callee_node) = node.child_by_field_name("function")
                 {
-                    let written = self.text(callee_node);
+                    let written = callee_text(callee_node, self.source);
                     let callee = written.rsplit('.').next().unwrap_or("").to_string();
                     let arity = named(node)
                         .into_iter()
@@ -373,6 +403,16 @@ impl Extractor<'_> {
                         .cloned()
                     {
                         self.add_edge(&caller, &referenced, "references", node, None, None);
+                    } else if candidates.is_empty()
+                        && !callee.is_empty()
+                        && (!dotted || written.starts_with("this."))
+                    {
+                        // Not declared in this contract: an inherited function
+                        // (`_msgSender()` from Context), bound through the
+                        // contract's linearized bases.
+                        self.inherited_call(&caller, &callee, Some(arity), "inherited", node);
+                    } else if written.starts_with("super.") && written.matches('.').count() == 1 {
+                        self.inherited_call(&caller, &callee, Some(arity), "super", node);
                     } else if !callee.is_empty() && dotted {
                         self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":true,"language":"solidity","source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
                     }
@@ -420,6 +460,7 @@ impl Extractor<'_> {
                 "function",
                 true,
                 true,
+                None,
             );
             self.add_edge(file_id, &id, "contains", declaration, None, None);
             functions.entry((name, arity)).or_default().push(id.clone());
@@ -433,7 +474,7 @@ impl Extractor<'_> {
                 if node.kind() == "call_expression"
                     && let Some(callee_node) = node.child_by_field_name("function")
                 {
-                    let written = self.text(callee_node);
+                    let written = callee_text(callee_node, self.source);
                     let callee = written.rsplit('.').next().unwrap_or("").to_string();
                     let arity = named(node)
                         .into_iter()
@@ -454,6 +495,263 @@ impl Extractor<'_> {
             }
         }
     }
+}
+/// `_callee_text`: the callee as written (`super.supportsInterface`,
+/// `_check`). The grammar parses `a || super.f(x)` as a call of the member
+/// `(a || super).f`; the right-most operand is read as the receiver instead.
+fn callee_text(callee: Node<'_>, source: &[u8]) -> String {
+    fn unwrap<'t>(node: Node<'t>) -> Node<'t> {
+        if node.kind() == "expression" {
+            named(node).into_iter().next().unwrap_or(node)
+        } else {
+            node
+        }
+    }
+    let inner = unwrap(callee);
+    if inner.kind() == "member_expression"
+        && let (Some(object), Some(property)) = (
+            inner.child_by_field_name("object"),
+            inner.child_by_field_name("property"),
+        )
+    {
+        let mut base = object;
+        loop {
+            let unwrapped = unwrap(base);
+            let right = if unwrapped.kind() == "binary_expression" {
+                unwrapped.child_by_field_name("right")
+            } else {
+                None
+            };
+            let Some(right) = right else { break };
+            base = right;
+        }
+        if base != object {
+            return format!(
+                "{}.{}",
+                read_text(base, source),
+                read_text(property, source)
+            );
+        }
+    }
+    read_text(callee, source)
+}
+/// `_c3_linearization`: Solidity's C3 linearization of `type_id`, most derived
+/// first. Each type's direct bases are in declaration order and the last is
+/// the most derived, so they merge right to left. A cycle or an inconsistent
+/// hierarchy falls back to a right-to-left depth-first order.
+fn c3_linearization(type_id: &str, bases: &HashMap<String, Vec<String>>) -> Vec<String> {
+    fn linearize(
+        tid: &str,
+        active: &mut Vec<String>,
+        bases: &HashMap<String, Vec<String>>,
+        memo: &mut HashMap<String, Vec<String>>,
+    ) -> Option<Vec<String>> {
+        if let Some(done) = memo.get(tid) {
+            return Some(done.clone());
+        }
+        if active.iter().any(|a| a == tid) {
+            return None;
+        }
+        let parents = bases
+            .get(tid)
+            .map(|b| b.iter().rev().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let mut sequences: Vec<Vec<String>> = vec![];
+        active.push(tid.to_owned());
+        for parent in &parents {
+            let lin = linearize(parent, active, bases, memo);
+            let Some(lin) = lin else {
+                active.pop();
+                return None;
+            };
+            sequences.push(lin);
+        }
+        active.pop();
+        sequences.push(parents);
+        let mut result = vec![tid.to_owned()];
+        while sequences.iter().any(|s| !s.is_empty()) {
+            let head = sequences
+                .iter()
+                .filter_map(|seq| seq.first())
+                .find(|candidate| {
+                    !sequences
+                        .iter()
+                        .any(|other| other.iter().skip(1).any(|o| o == *candidate))
+                })
+                .cloned()?;
+            for seq in &mut sequences {
+                if seq.first() == Some(&head) {
+                    seq.remove(0);
+                }
+            }
+            result.push(head);
+        }
+        memo.insert(tid.to_owned(), result.clone());
+        Some(result)
+    }
+    let mut memo = HashMap::new();
+    if let Some(linear) = linearize(type_id, &mut vec![], bases, &mut memo) {
+        return linear;
+    }
+    let mut order: Vec<String> = vec![];
+    let mut stack = vec![type_id.to_owned()];
+    while let Some(tid) = stack.pop() {
+        if order.contains(&tid) {
+            continue;
+        }
+        stack.extend(bases.get(&tid).into_iter().flatten().cloned());
+        order.push(tid);
+    }
+    order
+}
+/// `resolve_solidity_inherited_calls` (Graphify 0.9.92, #4379): bind calls,
+/// `super` calls and modifiers a contract inherits. Runs after the type pass
+/// has bound each `inherits` edge to the base's real node, and walks the
+/// caller contract's C3 linearization as the compiler does: the first contract
+/// that declares a matching member wins (`super.f()` starts after the caller's
+/// own contract, as the plain lookup does once the extractor found nothing
+/// there); several same-arity overloads in that contract are ambiguous.
+pub fn resolve_solidity_inherited_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
+    resolve_solidity_inherited_calls_any(per, nodes, edges);
+}
+/// [`resolve_solidity_inherited_calls`] over the per-file results and the
+/// edges in either form; new edges are appended after the loop.
+pub fn resolve_solidity_inherited_calls_any<P: PerFile, E: Rec>(
+    per: &[P],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+) {
+    let calls = per
+        .iter()
+        .flat_map(|r| r.raw_calls().into_iter().flatten())
+        .filter(|rc| {
+            rc.rec_get("solidity_call")
+                .is_some_and(crate::build::truthy)
+        })
+        .collect::<Vec<_>>();
+    if calls.is_empty() {
+        return;
+    }
+    let mut node_by_id: HashMap<String, &Value> = HashMap::new();
+    for node in nodes {
+        node_by_id.insert(node["id"].to_string(), node);
+    }
+    let empty = Value::Null;
+    let meta = |id: &Value| -> &Value {
+        node_by_id
+            .get(&id.to_string())
+            .map(|n| &n["metadata"])
+            .filter(|m| m.is_object())
+            .unwrap_or(&empty)
+    };
+    let is_type = |metadata: &Value| {
+        metadata["kind"]
+            .as_str()
+            .is_some_and(|kind| TYPE_KINDS.contains(&kind))
+    };
+    let mut owner: HashMap<String, String> = HashMap::new();
+    let mut functions: HashMap<String, HashMap<String, Vec<(String, Value)>>> = HashMap::new();
+    let mut modifiers: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
+    let mut bases: HashMap<String, Vec<String>> = HashMap::new();
+    let mut existing: HashSet<(String, String, String)> = HashSet::new();
+    for edge in edges.iter() {
+        let (source, target, relation) =
+            (at(edge, "source"), at(edge, "target"), at(edge, "relation"));
+        existing.insert((source.to_string(), target.to_string(), relation.to_string()));
+        let (Some(source_id), Some(target_id)) = (source.as_str(), target.as_str()) else {
+            continue;
+        };
+        let source_meta = meta(source);
+        if source_meta["language"] != "solidity" || !is_type(source_meta) {
+            continue;
+        }
+        if relation == "method" {
+            let member = meta(target);
+            let label = node_by_id
+                .get(&target.to_string())
+                .and_then(|n| n.get("label"))
+                .map(python_compat::string)
+                .unwrap_or_default();
+            let name = label.strip_suffix("()").unwrap_or(&label).to_owned();
+            owner.insert(target_id.to_owned(), source_id.to_owned());
+            if member["kind"] == "function" {
+                functions
+                    .entry(source_id.to_owned())
+                    .or_default()
+                    .entry(name)
+                    .or_default()
+                    .push((target_id.to_owned(), member["arity"].clone()));
+            } else if member["kind"] == "modifier" {
+                modifiers
+                    .entry(source_id.to_owned())
+                    .or_default()
+                    .entry(name)
+                    .or_default()
+                    .push(target_id.to_owned());
+            }
+        } else if relation == "inherits" && is_type(meta(target)) {
+            bases
+                .entry(source_id.to_owned())
+                .or_default()
+                .push(target_id.to_owned());
+        }
+    }
+    let find = |linear: &[String], name: &str, arity: &Value, kind: &str| -> Option<String> {
+        for type_id in linear {
+            let found: Vec<String> = if kind == "modifier" {
+                modifiers
+                    .get(type_id)
+                    .and_then(|m| m.get(name))
+                    .cloned()
+                    .unwrap_or_default()
+            } else {
+                functions
+                    .get(type_id)
+                    .and_then(|m| m.get(name))
+                    .into_iter()
+                    .flatten()
+                    .filter(|(_, declared)| {
+                        arity.is_null() || declared.is_null() || declared == arity
+                    })
+                    .map(|(id, _)| id.clone())
+                    .collect()
+            };
+            if !found.is_empty() {
+                return (found.len() == 1).then(|| found[0].clone());
+            }
+        }
+        None
+    };
+    let mut linear_cache: HashMap<String, Vec<String>> = HashMap::new();
+    let mut added: Vec<E> = vec![];
+    for rc in calls {
+        let caller = at(rc, "caller_nid");
+        let Some(contract) = caller.as_str().and_then(|c| owner.get(c)).cloned() else {
+            continue;
+        };
+        let name = at(rc, "callee");
+        if !crate::build::truthy(name) {
+            continue;
+        }
+        let name = python_compat::string(name);
+        let linear = linear_cache
+            .entry(contract.clone())
+            .or_insert_with(|| c3_linearization(&contract, &bases));
+        let kind = python_compat::string(at(rc, "solidity_call"));
+        let Some(target) = find(&linear[1..], &name, at(rc, "arity"), &kind) else {
+            continue;
+        };
+        let relation = if kind == "modifier" { "uses" } else { "calls" };
+        if !existing.insert((
+            caller.to_string(),
+            json!(target).to_string(),
+            json!(relation).to_string(),
+        )) {
+            continue;
+        }
+        added.push(edge_record(json!({"source":caller,"target":target,"relation":relation,"confidence":"EXTRACTED","source_file":at(rc, "source_file"),"source_location":at(rc, "source_location"),"weight":1.0})));
+    }
+    append_edges(edges, added);
 }
 pub fn extract_solidity(path: &Path) -> Value {
     let source = match super::base::read_source_bytes(path, true) {
@@ -484,7 +782,7 @@ pub fn extract_solidity(path: &Path) -> Value {
         seen: HashSet::new(),
         seen_edges: HashSet::new(),
     };
-    x.add_node(&file_id, &file_name, root, "file", true, false);
+    x.add_node(&file_id, &file_name, root, "file", true, false, None);
     for declaration in named(root) {
         if declaration.kind() != "import_directive" {
             continue;

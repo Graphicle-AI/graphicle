@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! Backend configuration and environment precedence from graphify/llm.py.
 use crate::{Result, build::Diagnostics, dedup_strings::whitespace, python_compat::repr_string};
@@ -9,6 +9,8 @@ use std::{
     path::{Path, PathBuf},
 };
 pub type Environment = BTreeMap<String, String>;
+/// Values of `GRAPHICLE_BACKEND` that turn every LLM backend off (#4361).
+pub const DISABLE_SENTINELS: [&str; 4] = ["none", "off", "disable", "disabled"];
 pub fn get<'a>(env: &'a Environment, key: &str) -> &'a str {
     env.get(key).map(String::as_str).unwrap_or("")
 }
@@ -501,6 +503,8 @@ impl Configuration {
             "AWS_DEFAULT_REGION",
             "OLLAMA_BASE_URL",
             "OLLAMA_HOST",
+            // The explicit selector and disable switch (Graphify 0.9.92, #4361).
+            "GRAPHICLE_BACKEND",
         ] {
             if !out.iter().any(|v| v == key) {
                 out.push(key.into())
@@ -508,26 +512,81 @@ impl Configuration {
         }
         out
     }
+    /// `_graphify_backend_setting` (Graphify 0.9.92, #4361): the stripped
+    /// `GRAPHICLE_BACKEND`, or `None` when it is unset or blank. Unlike the
+    /// ambient API keys it is a deliberate choice, so it wins over detection.
+    pub fn backend_setting(&self) -> Option<String> {
+        let value = trim(get(&self.env, "GRAPHICLE_BACKEND"));
+        (!value.is_empty()).then(|| value.to_owned())
+    }
+    /// `backend_disabled_by_env` (#4361): `GRAPHICLE_BACKEND` is `none`,
+    /// `off`, `disable` or `disabled` in any case, which turns every LLM
+    /// backend off, so a caller can tell "the user said no provider" apart from
+    /// "no provider was found".
+    pub fn backend_disabled_by_env(&self) -> bool {
+        self.backend_setting()
+            .is_some_and(|value| DISABLE_SENTINELS.contains(&value.to_lowercase().as_str()))
+    }
     pub fn detect_backend(&self, d: &mut Diagnostics) -> Result<Option<String>> {
+        Ok(self.detect_backend_with_source(d)?.0)
+    }
+    /// `detect_backend_with_source` (Graphify 0.9.92, #4361): the backend to
+    /// use and the setting that chose it, for a log line, so an auto-detected
+    /// cloud run is never a surprise. An explicit `GRAPHICLE_BACKEND` wins (a
+    /// disable sentinel gives no backend); otherwise the environment is probed
+    /// in priority order: gemini, kimi, claude, openai, deepseek, azure,
+    /// bedrock, then ollama (last, so an incidental OLLAMA_BASE_URL never
+    /// shadows a paid key), then any custom backend.
+    pub fn detect_backend_with_source(
+        &self,
+        d: &mut Diagnostics,
+    ) -> Result<(Option<String>, String)> {
+        if let Some(setting) = self.backend_setting() {
+            let source = format!("GRAPHICLE_BACKEND={setting}");
+            if DISABLE_SENTINELS.contains(&setting.to_lowercase().as_str()) {
+                return Ok((None, source));
+            }
+            return Ok((Some(setting), source));
+        }
+        let detected = |backend: &str| -> Result<(Option<String>, String)> {
+            let env = self
+                .env_keys(backend)?
+                .into_iter()
+                .find(|k| !get(&self.env, k).is_empty())
+                .unwrap_or_else(|| backend.to_owned());
+            Ok((
+                Some(backend.to_owned()),
+                format!("auto-detected from {env}"),
+            ))
+        };
         for backend in ["gemini", "kimi", "claude", "openai", "deepseek"] {
             if !self.api_key(backend)?.is_empty() {
-                return Ok(Some(backend.into()));
+                return detected(backend);
             }
         }
         if !self.api_key("azure")?.is_empty() && !get(&self.env, "AZURE_OPENAI_ENDPOINT").is_empty()
         {
-            return Ok(Some("azure".into()));
+            return Ok((
+                Some("azure".into()),
+                "auto-detected from AZURE_OPENAI_ENDPOINT".into(),
+            ));
         }
         if ["AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION"]
             .iter()
             .any(|k| !get(&self.env, k).is_empty())
         {
-            return Ok(Some("bedrock".into()));
+            return Ok((
+                Some("bedrock".into()),
+                "auto-detected from AWS credentials".into(),
+            ));
         }
         let url = resolve_ollama_base_url(&self.env, "");
         if !url.is_empty() {
             validate_ollama_url_with(&url, true, metadata_host, d)?;
-            return Ok(Some("ollama".into()));
+            return Ok((
+                Some("ollama".into()),
+                "auto-detected from Ollama configuration".into(),
+            ));
         }
         for backend in self.backends.keys() {
             if ![
@@ -544,10 +603,10 @@ impl Configuration {
             .contains(&backend.as_str())
                 && !self.api_key(backend)?.is_empty()
             {
-                return Ok(Some(backend.clone()));
+                return detected(backend);
             }
         }
-        Ok(None)
+        Ok((None, "no backend configured".into()))
     }
     pub fn estimate_cost(&self, backend: &str, input: f64, output: f64) -> f64 {
         self.backends

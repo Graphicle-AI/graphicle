@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/hooks.py
 //! Native Git hook installation, detached rebuilds, and merge-driver setup.
 pub use crate::hooks_runtime::{changed_files, dispatch, launch, run_worker, unquote_git_path};
@@ -16,7 +16,9 @@ pub const CHECKOUT_MARKER: &str = "# graphicle-checkout-hook-start";
 pub const CHECKOUT_END: &str = "# graphicle-checkout-hook-end";
 pub const MERGE_HOOK_MARKER: &str = "# graphicle-merge-hook-start";
 pub const MERGE_HOOK_END: &str = "# graphicle-merge-hook-end";
-/// The three hooks `hook install` writes.
+pub const REWRITE_HOOK_MARKER: &str = "# graphicle-rewrite-hook-start";
+pub const REWRITE_HOOK_END: &str = "# graphicle-rewrite-hook-end";
+/// The four hooks `hook install` writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HookKind {
     /// post-commit: rebuild the files the commit changed.
@@ -26,6 +28,11 @@ pub enum HookKind {
     /// post-merge (0.9.89, #2418): an unscoped rebuild after a merge, so a
     /// symbol the graph.json merge driver's union resurrected is dropped.
     Merge,
+    /// post-rewrite (Graphify 0.9.92, #4490): an unscoped rebuild when a
+    /// rebase finishes, `git pull --rebase` included. post-commit skips every
+    /// replayed commit (rebase-merge/ is on disk), and git runs post-rewrite
+    /// once, after the last one, with the tree in its final state.
+    Rewrite,
 }
 impl HookKind {
     pub fn name(self) -> &'static str {
@@ -33,6 +40,7 @@ impl HookKind {
             HookKind::Commit => "post-commit",
             HookKind::Checkout => "post-checkout",
             HookKind::Merge => "post-merge",
+            HookKind::Rewrite => "post-rewrite",
         }
     }
     fn markers(self) -> (&'static str, &'static str) {
@@ -40,10 +48,16 @@ impl HookKind {
             HookKind::Commit => (HOOK_MARKER, HOOK_END),
             HookKind::Checkout => (CHECKOUT_MARKER, CHECKOUT_END),
             HookKind::Merge => (MERGE_HOOK_MARKER, MERGE_HOOK_END),
+            HookKind::Rewrite => (REWRITE_HOOK_MARKER, REWRITE_HOOK_END),
         }
     }
 }
-const HOOK_KINDS: [HookKind; 3] = [HookKind::Commit, HookKind::Checkout, HookKind::Merge];
+const HOOK_KINDS: [HookKind; 4] = [
+    HookKind::Commit,
+    HookKind::Checkout,
+    HookKind::Merge,
+    HookKind::Rewrite,
+];
 /// `_load_graphifyrc`: `<root>/.graphiclerc`, parsed by [`crate::rcfile`]
 /// (Graphify 0.9.87, #2961). Kept as the hooks-side name; returns
 /// `viz_node_limit` (used here) beside any other option the file sets, and a
@@ -173,6 +187,20 @@ fn read_hook(path: &Path) -> Result<String> {
 }
 fn write(path: &Path, s: &str) -> Result<()> {
     fs::write(path, s).map_err(crate::Error::from)
+}
+/// Write `s` to `path` as a regular file only: a symbolic link there is
+/// refused (O_NOFOLLOW on Unix), never followed.
+fn write_regular(path: &Path, s: &str) -> Result<()> {
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nix::libc::O_NOFOLLOW);
+    }
+    let mut file = options.open(path).map_err(crate::Error::from)?;
+    file.write_all(s.as_bytes()).map_err(crate::Error::from)
 }
 pub fn install_hook(
     dir: &Path,
@@ -310,6 +338,16 @@ pub fn register_merge_driver(root: &Path, executable: Option<&str>) -> Result<St
     }
     let line = merge_attr_line(paths::OUT_DIR.as_str());
     let path = root.join(".gitattributes");
+    // A linked .gitattributes is neither read nor written: git does not read
+    // an in-tree .gitattributes that is a symbolic link (since 2.32), and an
+    // append through it would land in whatever file it names (a repository
+    // can commit such a link). A deliberate difference: upstream appends
+    // through the link.
+    if path.is_symlink() {
+        return Ok(format!(
+            "partially registered: .gitattributes is a symbolic link, left alone; add `{line}` to a regular .gitattributes by hand"
+        ));
+    }
     let mut content = if path.exists() {
         read_hook(&path)?
     } else {
@@ -323,7 +361,7 @@ pub fn register_merge_driver(root: &Path, executable: Option<&str>) -> Result<St
     }
     content.push_str(&line);
     content.push('\n');
-    write(&path, &content)?;
+    write_regular(&path, &content)?;
     Ok(format!("registered ({line})"))
 }
 pub fn unregister_merge_driver(root: &Path) -> Result<String> {
@@ -331,6 +369,10 @@ pub fn unregister_merge_driver(root: &Path) -> Result<String> {
         let _ = git(root, &["config", "--unset", key]);
     }
     let path = root.join(".gitattributes");
+    // Install never writes into a linked .gitattributes; uninstall leaves one alone too.
+    if path.is_symlink() {
+        return Ok(".gitattributes is a symbolic link, left alone.".into());
+    }
     if !path.exists() {
         return Ok("not registered - nothing to remove.".into());
     }
@@ -346,14 +388,16 @@ pub fn unregister_merge_driver(root: &Path) -> Result<String> {
         fs::remove_file(path).map_err(crate::Error::from)?;
         Ok("removed (.gitattributes deleted - no other entries)".into())
     } else {
-        write(&path, &format!("{}\n", kept.join("\n")))?;
+        write_regular(&path, &format!("{}\n", kept.join("\n")))?;
         Ok("removed from .gitattributes (other entries preserved)".into())
     }
 }
 pub fn merge_driver_status(root: &Path) -> String {
     let config = git(root, &["config", "--get", "merge.graphicle.driver"])
         .is_ok_and(|r| r.code == 0 && !r.stdout.trim().is_empty());
-    let attr = read_hook(&root.join(".gitattributes")).is_ok_and(|s| has_merge_attr(&s));
+    // A linked .gitattributes is not read: git ignores it.
+    let attributes = root.join(".gitattributes");
+    let attr = !attributes.is_symlink() && read_hook(&attributes).is_ok_and(|s| has_merge_attr(&s));
     match (config, attr) {
         (true, true) => "registered",
         (true, false) => "partially registered (git config set, .gitattributes line missing)",
@@ -382,29 +426,68 @@ fn script_for(kind: HookKind, pinned: &str, viz: Option<i64>, program: &str) -> 
             format!("export GRAPHICLE_VIZ_NODE_LIMIT=\"${{GRAPHICLE_VIZ_NODE_LIMIT:-{n}}}\"\n")
         })
         .unwrap_or_default();
-    // A branch checkout and a completed merge rebuild only a graph that was
-    // built before; post-checkout also skips file checkouts.
+    // A branch checkout, a completed merge and a finished rebase rebuild only
+    // a graph that was built before; post-checkout also skips file checkouts
+    // and a checkout that keeps HEAD (`git checkout -b`, Graphify #2421).
+    // post-rewrite drains the old/new pairs git writes to its stdin, so git
+    // never blocks on a full pipe, and skips an amend: post-commit rebuilt it.
     let event = match kind {
         HookKind::Commit => "",
         HookKind::Checkout => {
-            "[ \"${3:-0}\" = \"1\" ] || exit 0\n[ -d \"${GRAPHICLE_OUT:-.graphicle}\" ] || exit 0\n"
+            "[ \"${3:-0}\" = \"1\" ] || exit 0\n[ \"${1:-}\" = \"${2:-}\" ] && exit 0\n[ -d \"${GRAPHICLE_OUT:-.graphicle}\" ] || exit 0\n"
         }
         HookKind::Merge => "[ -d \"${GRAPHICLE_OUT:-.graphicle}\" ] || exit 0\n",
+        HookKind::Rewrite => {
+            "[ -t 0 ] || cat >/dev/null\n[ \"${1:-}\" = \"rebase\" ] || exit 0\n[ -d \"${GRAPHICLE_OUT:-.graphicle}\" ] || exit 0\n"
+        }
     };
+    // Skip during a rebase, merge or cherry-pick to avoid blocking
+    // `--continue` with unstaged changes. git keeps each signal on disk while
+    // the hook that completes the operation runs, so that hook must not test
+    // it (Graphify 0.9.92): post-merge runs beside MERGE_HEAD (#4463),
+    // post-commit beside a pick's CHERRY_PICK_HEAD (#4490; the sequence rule
+    // is in `hook launch`), and post-rewrite beside rebase-merge/.
+    let skips: &[&str] = match kind {
+        HookKind::Commit => &["-d rebase-merge", "-d rebase-apply", "-f MERGE_HEAD"],
+        HookKind::Checkout => &[
+            "-d rebase-merge",
+            "-d rebase-apply",
+            "-f MERGE_HEAD",
+            "-f CHERRY_PICK_HEAD",
+        ],
+        HookKind::Merge => &["-d rebase-merge", "-d rebase-apply", "-f CHERRY_PICK_HEAD"],
+        HookKind::Rewrite => &[],
+    };
+    let skips = skips
+        .iter()
+        .map(|test| {
+            let (flag, name) = test.split_once(' ').unwrap();
+            format!("[ {flag} \"$_GCL_GITDIR/{name}\" ] && exit 0\n")
+        })
+        .collect::<String>();
     let mode = kind.name();
+    // The rebuild runs from the checkout's top level (Graphify 0.9.95, #3258):
+    // with GIT_DIR exported and no GIT_WORK_TREE, git starts a hook in the
+    // caller's directory, and `--show-toplevel` answers with that directory.
+    // In the standard layout the top is the parent of the common .git dir;
+    // GIT_WORK_TREE and --separate-git-dir layouts keep git's own answer.
+    // GIT_DIR is rewritten to its absolute form so git still finds it.
     format!(
         r#"{marker}
 # Rebuild the knowledge graph using the {program} executable.
 (
 {export}{event}[ "${{GRAPHICLE_SKIP_HOOK:-0}}" = "1" ] && exit 0
 _GCL_GITDIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
-[ -d "$_GCL_GITDIR/rebase-merge" ] && exit 0
-[ -d "$_GCL_GITDIR/rebase-apply" ] && exit 0
-[ -f "$_GCL_GITDIR/MERGE_HEAD" ] && exit 0
-[ -f "$_GCL_GITDIR/CHERRY_PICK_HEAD" ] && exit 0
-_GCL_GITDIR=$(cd "$_GCL_GITDIR" 2>/dev/null && pwd)
+{skips}_GCL_GITDIR=$(cd "$_GCL_GITDIR" 2>/dev/null && pwd)
 _GCL_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
 [ -n "$_GCL_COMMONDIR" ] && [ "$_GCL_GITDIR" != "$_GCL_COMMONDIR" ] && exit 0
+if [ -z "${{GIT_WORK_TREE:-}}" ] && [ "${{_GCL_COMMONDIR##*/}}" = ".git" ]; then
+    _GCL_TOP=${{_GCL_COMMONDIR%/*}}
+else
+    _GCL_TOP=$(git rev-parse --show-toplevel 2>/dev/null)
+fi
+[ -n "$_GCL_TOP" ] && cd "$_GCL_TOP" || exit 0
+[ -n "$_GCL_GITDIR" ] && GIT_DIR=$_GCL_GITDIR
 _GCL_BIN={pinned}
 if [ ! -x "$_GCL_BIN" ]; then
     _GCL_BIN=$(command -v {program} 2>/dev/null)

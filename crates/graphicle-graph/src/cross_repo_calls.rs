@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cross_repo_calls.py
 //! Native translation of graphify/cross_repo_calls.py.
 use crate::{
@@ -158,6 +158,33 @@ fn equivalent(left: &Value, right: &Value) -> bool {
         _ => left == right,
     }
 }
+/// `_objc_union_definition`: the sole definition of an Objective-C selector
+/// among same-named candidate classes in other repositories. A member defines
+/// the selector when it lives in a `.m`/`.mm` or names its implementation in
+/// `definition_file`; a bare header declaration does not. Two definitions are
+/// two unrelated classes: no edge.
+fn objc_union_definition(
+    graph: &Graph,
+    members: &BTreeMap<(usize, String), Vec<usize>>,
+    candidates: &[usize],
+    callee: &str,
+) -> Option<usize> {
+    let mut definitions: Vec<usize> = vec![];
+    for &candidate in candidates {
+        for member_key in member_keys("objc", callee) {
+            for &member in members.get(&(candidate, member_key)).into_iter().flatten() {
+                let data = &graph.nodes[member].attributes;
+                if (truthy(value(data, "definition_file"))
+                    || matches!(suffix(value(data, "source_file")).as_str(), ".m" | ".mm"))
+                    && !definitions.contains(&member)
+                {
+                    definitions.push(member);
+                }
+            }
+        }
+    }
+    (definitions.len() == 1).then(|| definitions[0])
+}
 pub fn link_cross_repo_member_calls(graph: &mut Graph) -> Result<usize> {
     drop_previous_output(graph);
     let parked: Vec<_> = graph
@@ -213,44 +240,67 @@ pub fn link_cross_repo_member_calls(graph: &mut Graph) -> Result<usize> {
                 })
                 .copied()
                 .collect();
-            if candidates.len() != 1 {
+            if candidates.is_empty() {
                 continue;
             }
-            if lang == "csharp" {
-                let mut node = data.clone();
-                node.insert("id".into(), graph.nodes[caller].id.clone());
-                let (resolved, _) = resolver.as_ref().unwrap().resolve_type_name(
-                    &receiver,
-                    &Value::Object(node.into()),
-                    &text(value(&data, "source_file")),
-                );
-                if resolved.as_ref().map(|s| json!(s)).as_ref()
-                    != Some(&graph.nodes[candidates[0]].id)
-                {
+            // An Objective-C class split `@interface` (.h) / `@implementation`
+            // (.m) across repositories leaves several same-named candidates:
+            // the selector binds to its sole definition (0.9.95, #4690).
+            let target = if lang == "objc" && candidates.len() > 1 {
+                match objc_union_definition(graph, &members["method"], &candidates, &callee) {
+                    Some(target) => target,
+                    None => continue,
+                }
+            } else {
+                // The single-repo guard: two repos declaring the name are an
+                // ambiguity, not a hit.
+                if candidates.len() != 1 {
                     continue;
                 }
-            }
-            let mut targets: Vec<usize> = Vec::new();
-            for relation in member_relations(&lang) {
-                for member_key in member_keys(&lang, &callee) {
-                    if let Some(found) = members[*relation].get(&(candidates[0], member_key)) {
-                        targets.extend(found.iter().copied());
+                if lang == "csharp" {
+                    let mut node = data.clone();
+                    node.insert("id".into(), graph.nodes[caller].id.clone());
+                    let (resolved, _) = resolver.as_ref().unwrap().resolve_type_name(
+                        &receiver,
+                        &Value::Object(node.into()),
+                        &text(value(&data, "source_file")),
+                    );
+                    if resolved.as_ref().map(|s| json!(s)).as_ref()
+                        != Some(&graph.nodes[candidates[0]].id)
+                    {
+                        continue;
                     }
                 }
-                if !targets.is_empty() {
-                    break;
+                let mut targets: Vec<usize> = Vec::new();
+                for relation in member_relations(&lang) {
+                    for member_key in member_keys(&lang, &callee) {
+                        if let Some(found) = members[*relation].get(&(candidates[0], member_key)) {
+                            targets.extend(found.iter().copied());
+                        }
+                    }
+                    if !targets.is_empty() {
+                        break;
+                    }
                 }
-            }
-            if targets.len() != 1 {
-                continue;
-            }
-            let target = targets[0];
+                if targets.len() != 1 {
+                    continue;
+                }
+                targets[0]
+            };
             if target == caller
                 || graph.number_of_edges(&graph.nodes[caller].id, &graph.nodes[target].id) > 0
             {
                 continue;
             }
-            let attrs = json!({"relation":"calls","context":"cross_repo","confidence":"INFERRED","confidence_score":0.85,"source_file":text(value(&data,"source_file")),"source_location":entry["line"],"weight":1.0,
+            // The parked call-site file (the `.m`), not the caller node's own
+            // file (often the `.h`): the location is a call-site line
+            // (0.9.94, #4668). Older graphs have no `file`.
+            let source_file = if truthy(&entry["file"]) {
+                text(&entry["file"])
+            } else {
+                text(value(&data, "source_file"))
+            };
+            let attrs = json!({"relation":"calls","context":"cross_repo","confidence":"INFERRED","confidence_score":0.85,"source_file":source_file,"source_location":entry["line"],"weight":1.0,
                 "_src":graph.nodes[caller].id,"_tgt":graph.nodes[target].id,CROSS_REPO_CALL_MARKER:true});
             graph.add_edge(
                 graph.nodes[caller].id.clone(),

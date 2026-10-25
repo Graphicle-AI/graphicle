@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Generic, statically linked AST extraction engine.
 use super::{
@@ -108,6 +108,19 @@ pub(crate) struct Engine<'a, 't> {
     /// per class, `self.X -> class` (0.9.80).
     pub python_var_types: BTreeMap<String, PythonBindings>,
     pub python_attr_types: BTreeMap<String, PythonBindings>,
+    /// C#: plain method id -> `(signature, id, metadata)` of the overloads of
+    /// one name on one type, in declaration order (0.9.95, #4584).
+    pub csharp_overloads: BTreeMap<String, Vec<(String, String, Value)>>,
+    /// JS/TS: the enclosing scope of each `contains` target (a factory
+    /// object `const store = {}` inside `makeStore()`), so `store.get()`
+    /// inside `store.set = ...` is a sibling call (0.9.94, #4598).
+    pub js_factory_scope: Table,
+    /// Python: caller -> the parameters pytest may fill with a fixture (tests
+    /// and fixtures in test modules and `conftest.py`, 0.9.92, #4332).
+    pub python_fixture_params: BTreeMap<String, BTreeSet<String>>,
+    /// JS/TS: class body -> member names grouped by the id they would get,
+    /// filled on first use (0.9.92, #4475).
+    pub js_member_groups: BTreeMap<(String, usize, usize), BTreeMap<String, BTreeSet<String>>>,
 }
 // Scoped thread-local state replaces `_safe_extract(..., scan_root=root)`:
 // `extract_file` enters the corpus root for each file so the Python import
@@ -265,6 +278,9 @@ impl<'a, 't> Engine<'a, 't> {
         let mut local = make_id([self.stem.as_str(), self.namespace.join(".").as_str(), name]);
         if self.is("c_sharp") {
             local = python_underscore_salted_nid(&local, name, &self.csharp_type_groups);
+        } else if self.is("python") {
+            // A salted module-level class (0.9.92, #2810).
+            local = python_underscore_salted_nid(&local, name, &self.underscore);
         }
         if self.seen.contains(&local) {
             return local;
@@ -373,7 +389,9 @@ impl<'a, 't> Engine<'a, 't> {
             "tree_sitter_kotlin" => kotlin_collect_type_refs(n, s, generic, &mut refs),
             "tree_sitter_swift" => swift_collect_type_refs(n, s, generic, &mut refs),
             "tree_sitter_c" => c_collect_type_refs(n, s, generic, &mut refs),
-            "tree_sitter_cpp" => cpp_collect_type_refs(n, s, generic, &mut refs),
+            "tree_sitter_cpp" => {
+                cpp_collect_type_refs(n, s, generic, &mut refs, cpp_dialect_qualifiers(&self.path))
+            }
             "tree_sitter_scala" => scala_collect_type_refs(n, s, generic, &mut refs),
             _ => {}
         }
@@ -442,6 +460,24 @@ impl<'a, 't> Engine<'a, 't> {
         }
         if self.extra(n, parent) {
             return;
+        }
+        // An explicit module-level type alias declares a type name (0.9.95,
+        // #4578): a node, so annotations using it reference it instead of
+        // minting a sourceless stub. The statement is then walked as usual.
+        if self.is("python")
+            && parent.is_none()
+            && matches!(t, "type_alias_statement" | "expression_statement")
+            && n.parent().is_some_and(|p| p.kind_name() == "module")
+            && let Some(alias) = python_alias_name(n, self.source)
+        {
+            let id = python_underscore_salted_nid(
+                &make_id([self.stem.as_str(), alias.as_str()]),
+                &alias,
+                &self.underscore,
+            );
+            self.add_node(&id, &alias, line, None, Value::Null);
+            let file = self.file.clone();
+            self.edge(&file, &id, "contains", line, None, Value::Null);
         }
         if t == "decorated_definition" {
             if self.is("python")
@@ -559,13 +595,41 @@ impl<'a, 't> Engine<'a, 't> {
         }
         let line = n.start_position().row + 1;
         let mut id = make_id([parent.unwrap_or(&self.stem), &sanitized]);
+        // C# overloads (0.9.95, #4584): `(plain id, signature, metadata)`.
+        let mut overload = None;
         if self.is("python") {
             id = python_underscore_salted_nid(&id, &sanitized, &self.underscore);
         } else if self.is("c_sharp") && parent.is_some() {
             // `Put()` / `_Put()` are two C# methods (#4415).
             id = python_underscore_salted_nid(&id, &sanitized, &self.csharp_member_groups);
+            if n.kind_name() == "method_declaration" {
+                // Overloads shared one id, and every later one vanished into
+                // the first: the first declaration keeps the plain id, each
+                // other signature is salted like #3302/#4415.
+                let (signature, mut meta) = csharp_method_signature(n, self.source);
+                let group = self.csharp_overloads.entry(id.clone()).or_default();
+                let plain = id.clone();
+                if !group.is_empty() && !group.iter().any(|(sig, _, _)| *sig == signature) {
+                    use sha1::Digest;
+                    let salt = format!("{:x}", sha1::Sha1::digest(signature.as_bytes()));
+                    id = make_id([id.as_str(), &salt[..6]]);
+                }
+                meta["signature"] = json!(signature);
+                overload = Some((plain, signature, meta));
+            }
+        } else if self.js()
+            && let Some(class) = parent
+            && matches!(
+                n.kind_name(),
+                "method_definition" | "method_signature" | "abstract_method_signature"
+            )
+        {
+            id = self.js_member_nid(class, n, &sanitized);
         }
         let mut meta = Value::Null;
+        if let Some((_, _, overload_meta)) = &overload {
+            meta = overload_meta.clone();
+        }
         if self.is("ruby") && parent.is_some() {
             let kind = if n.kind_name() == "singleton_method" {
                 if self.singleton_depth == 0
@@ -594,6 +658,7 @@ impl<'a, 't> Engine<'a, 't> {
                 node["metadata"]["ruby_method_kind"] = json!(kind);
             }
         }
+        let fresh = !self.seen.contains(&id);
         self.add_node(
             &id,
             &format!("{}{name}()", if parent.is_some() { "." } else { "" }),
@@ -601,6 +666,12 @@ impl<'a, 't> Engine<'a, 't> {
             None,
             meta,
         );
+        if let Some((plain, signature, meta)) = overload {
+            let group = self.csharp_overloads.entry(plain).or_default();
+            if fresh && !group.iter().any(|(sig, _, _)| *sig == signature) {
+                group.push((signature, id.clone(), meta));
+            }
+        }
         let owner = parent.unwrap_or(&self.file).to_string();
         self.edge(
             &owner,
@@ -671,6 +742,50 @@ impl<'a, 't> Engine<'a, 't> {
                 self.java_anonymous_classes(body, &id);
             }
         }
+    }
+    /// `_js_member_nid` (0.9.92, #4475): `make_id` drops `_`, `$` and `#`, so
+    /// `updateHash` / `_updateHash`, `close` / `#close` and `set` / `$set` in
+    /// one class body minted one id and the second vanished. The member names
+    /// of the class body (methods, signatures and function-valued fields) are
+    /// grouped by the id they would get; a unique public name keeps the plain
+    /// id and every other colliding name is salted. Getter/setter pairs and
+    /// overloads share one name, so they are no collision.
+    pub fn js_member_nid(&mut self, class: &str, member: Node<'t>, name: &str) -> String {
+        let plain = make_id([class, name]);
+        let Some(body) = member.parent() else {
+            return plain;
+        };
+        let key = (class.to_string(), body.start_byte(), body.end_byte());
+        if !self.js_member_groups.contains_key(&key) {
+            let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for c in children(body) {
+                let name_node = match c.kind_name() {
+                    "method_definition" | "method_signature" | "abstract_method_signature" => {
+                        c.child_by_field_name("name")
+                    }
+                    "field_definition" | "public_field_definition" => {
+                        if !c.child_by_field_name("value").is_some_and(|v| {
+                            set("_JS_FUNCTION_VALUE_TYPES").contains(v.kind_name())
+                        }) {
+                            continue;
+                        }
+                        c.child_by_field_name("property")
+                            .or_else(|| c.child_by_field_name("name"))
+                    }
+                    _ => continue,
+                };
+                let text = name_node.map(|n| self.text(n)).unwrap_or_default();
+                if !text.is_empty() {
+                    names
+                        .entry(make_id([class, text.as_str()]))
+                        .or_default()
+                        .insert(text);
+                }
+            }
+            names.retain(|_, names| names.len() >= 2);
+            self.js_member_groups.insert(key.clone(), names);
+        }
+        underscore_salted_nid(&plain, name, &self.js_member_groups[&key], &['_', '$', '#'])
     }
     pub fn nested(&mut self, n: Node<'t>, parent: &str) {
         for c in children(n) {
@@ -851,6 +966,10 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         lexical_bases: BTreeMap::new(),
         python_var_types: BTreeMap::new(),
         python_attr_types: BTreeMap::new(),
+        csharp_overloads: BTreeMap::new(),
+        python_fixture_params: BTreeMap::new(),
+        js_factory_scope: Table::new(),
+        js_member_groups: BTreeMap::new(),
     };
     if e.is("c_sharp") {
         e.interfaces = csharp_pre_scan_interfaces(root, source);

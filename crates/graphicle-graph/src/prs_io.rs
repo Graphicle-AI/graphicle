@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/prs.py
 use crate::{
     Result, fsutil, process,
@@ -94,8 +94,14 @@ pub fn detect_default_branch(commands: &dyn Commands, repo: Option<&str>) -> Str
         {
             let refname = String::from_utf8_lossy(&result.stdout);
             let refname = refname.trim_matches(crate::dedup_strings::whitespace);
+            // Strip the prefix rather than keep the last segment, so a
+            // default branch with a slash in its name (release/2.x) survives
+            // whole (Graphify 0.9.93, #4534).
             if !refname.is_empty() {
-                return refname.rsplit('/').next().unwrap().into();
+                let branch = refname
+                    .strip_prefix("refs/remotes/origin/")
+                    .unwrap_or(refname);
+                return if branch.is_empty() { "main" } else { branch }.into();
             }
         }
     }

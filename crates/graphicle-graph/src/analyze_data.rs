@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/analyze.py
 // Exact constant sets from the pinned Graphify application.
 // graphify/analyze.py sha256:aba5d0fa9c19465ce5adb07c8130a075c42d7c20d29d88b9105ac62134ebc8a9
@@ -216,6 +216,9 @@ pub const CODE_EXTENSIONS: &[&str] = &[
     ".vh",
     ".vue",
     ".xaml",
+    // Graphify 0.9.95 (#2214): YAML is code, structurally extracted.
+    ".yaml",
+    ".yml",
     ".zig",
 ];
 pub const PAPER_EXTENSIONS: &[&str] = &[".pdf"];

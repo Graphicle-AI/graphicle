@@ -5,7 +5,7 @@ This product is licensed under the Apache License, Version 2.0 (see LICENSE).
 
 The program links the Graphicle graph engine and memory library
 (../graphicle-graph/, ../graphicle-memory/), which include software adapted from
-Graphify (https://github.com/Graphify-Labs/graphify), release 0.9.91. The
+Graphify (https://github.com/Graphify-Labs/graphify), release 0.9.95. The
 NOTICE of Graphify, reproduced as Apache-2.0 section 4(d) requires:
 
   Graphify

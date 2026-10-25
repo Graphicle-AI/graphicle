@@ -485,7 +485,9 @@ fn ts_public_twins_are_marked() {
         .filter(|n| n["_ts_public_twin"] == true)
         .filter_map(|n| n["label"].as_str())
         .collect();
-    assert_eq!(marked, [".foo()"]);
+    // Since Graphify 0.9.92 (#4475) `foo` and `#foo` are two nodes; the mark
+    // goes to every method whose bare name the class declares both ways.
+    assert_eq!(marked, [".foo()", ".#foo()"]);
 }
 
 // ── 0.9.88 ──────────────────────────────────────────────────────────────────

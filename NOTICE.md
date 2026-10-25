@@ -28,7 +28,7 @@ What the long-form notices cover:
   Graphiti, Hindsight, MemOS, Onyx, Mastra, claude-mem, OpenMemory,
   agent-memory-server, LongMemEval and others), the grammar pack and the web
   fonts (SIL Open Font License 1.1).
-- **Graph engine:** the port of Graphify 0.9.91; the parts derived from CPython
+- **Graph engine:** the port of Graphify 0.9.95; the parts derived from CPython
   3.12, with the summary of changes the PSF License asks for; NetworkX, PyYAML,
   Robot Framework, the FalkorDB SDK, jieba, MT19937, SipHash and the Unicode
   data files; the vendored tree-sitter grammars, including the declared-MIT

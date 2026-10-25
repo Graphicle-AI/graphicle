@@ -91,6 +91,10 @@ try:
         s=rng.choice(['','a😀b','\x1b[31mred\x1b[0m','日本語','x'*100])
         compare('_pad',s=s,width=rng.randrange(-2,12));compare('_truncate',s=s,n=rng.randrange(-2,12))
         compare('_parse_ci',rollup=[{'conclusion':rng.choice(['SUCCESS','FAILURE','CANCELLED','TIMED_OUT',None,'SKIPPED']),'status':rng.choice(['IN_PROGRESS','QUEUED','COMPLETED'])} for _ in range(4)])
+        # 0.9.93 (#4533): legacy StatusContext entries carry only `state`.
+        compare('_parse_ci',rollup=[rng.choice([{'conclusion':rng.choice(['SUCCESS','FAILURE',None,'','SKIPPED']),'status':rng.choice(['IN_PROGRESS','COMPLETED',None])},
+                                                {'state':rng.choice(['SUCCESS','FAILURE','ERROR','PENDING','EXPECTED','',None])},
+                                                {'conclusion':rng.choice([None,'']),'state':rng.choice(['ERROR','PENDING','SUCCESS'])}]) for _ in range(rng.randrange(0,4))])
     oracle._NO_COLOR=True
     # Recorded PR transport fixtures are selected by their actual argv.
     raw=[{'number':1,'title':'API 🧠','headRefName':'feature','baseRefName':'main','author':{'login':'alice'},'isDraft':False,'reviewDecision':'',
@@ -114,11 +118,12 @@ try:
     for item in [raw[0],{'number':7,'title':'Minimal PR','headRefName':'patch-1','baseRefName':'main','updatedAt':NOW.isoformat()},
                  {**raw[0],'author':None,'reviewDecision':None,'statusCheckRollup':None},{'title':'No number','updatedAt':NOW.isoformat()}]:
         compare('_parse_pr_dict',item=item,expected_base='main')
-    for data,fallback,repo in [(None,'refs/remotes/origin/develop\n',None),({},'',None),(None,'should not run','other/repo')]:
+    # 0.9.93 (#4534): only the refs/remotes/origin/ prefix is stripped, so a slashed branch survives.
+    for data,fallback,repo in [(None,'refs/remotes/origin/develop\n',None),({},'',None),(None,'should not run','other/repo'),(None,'refs/remotes/origin/release/2.x\n',None)]:
         responses=[{'program':'gh','stdout':json.dumps(data)}]
         if repo is None:responses.append({'program':'git','stdout':fallback})
         got=call('_detect_default_branch',repo=repo,command_responses=responses)
-        expected='develop' if fallback.startswith('refs/') else 'main'
+        expected=fallback.strip().removeprefix('refs/remotes/origin/') if fallback.startswith('refs/') else 'main'
         assert got['value']==expected,got
         assert len(got['command_calls'])==(2 if repo is None else 1),got
     candidates=[oracle.PRInfo(1,'API','feature','main','alice',False,'','SUCCESS',NOW,expected_base='main'),

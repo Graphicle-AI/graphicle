@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/interface_dispatch.py
 //! Interface dispatch to every implementer, shared by the C# and Swift passes.
 //!
@@ -180,31 +180,74 @@ fn dispatch_edges<P: PerFile, E: Rec>(
         let score = dispatch_confidence(gated.len());
         for (implementation, impl_node) in gated {
             for (name, declared) in declared_names {
-                if declared.len() != 1 {
-                    continue;
-                }
                 // Ambiguity is per implementer: one implementer overloading a
                 // name does not disqualify its siblings.
-                let Some(candidates) = methods
+                let candidates = methods
                     .get(&implementation)
                     .and_then(|names| names.iter().find(|(n, _)| n == name))
-                    .map(|(_, v)| v)
-                    .filter(|v| v.len() == 1)
-                else {
-                    continue;
-                };
-                let source = &declared[0];
-                let target = &candidates[0];
-                let pair = (key(source)?, key(target)?);
-                if pair.0 == pair.1 || !pairs.insert(pair) {
-                    continue;
+                    .map_or(&[][..], |(_, v)| v.as_slice());
+                for (source, target) in overload_pairs(declared, candidates, &by_id)? {
+                    let pair = (key(&source)?, key(&target)?);
+                    if pair.0 == pair.1 || !pairs.insert(pair) {
+                        continue;
+                    }
+                    added.push(edge_record(json!({"source":source,"target":target,"relation":DISPATCH_RELATION,"context":"call","confidence":"INFERRED","confidence_score":score,
+                        "source_file":text(impl_node,"source_file"),"source_location":impl_node["source_location"],"weight":1.0})));
                 }
-                added.push(edge_record(json!({"source":source,"target":target,"relation":DISPATCH_RELATION,"context":"call","confidence":"INFERRED","confidence_score":score,
-                    "source_file":text(impl_node,"source_file"),"source_location":impl_node["source_location"],"weight":1.0})));
             }
         }
     }
     Ok(())
+}
+/// `_overload_pairs` (Graphify 0.9.95, #4584): an interface's methods of one
+/// name paired with an implementer's. One of each pairs as always. Otherwise
+/// (C# overloads) each interface method pairs with the one implementer method
+/// of the same declared signature, else of the same parameter count among
+/// those no signature claimed; no unique match, no edge. An implementer method
+/// takes at most one interface method.
+fn overload_pairs(
+    declared: &[Value],
+    candidates: &[Value],
+    by_id: &BTreeMap<ScalarKey, &Value>,
+) -> Result<Vec<(Value, Value)>> {
+    if declared.len() == 1 && candidates.len() == 1 {
+        return Ok(vec![(declared[0].clone(), candidates[0].clone())]);
+    }
+    let null = Value::Null;
+    let meta = |id: &Value| -> Result<&Value> {
+        Ok(by_id
+            .get(&key(id)?)
+            .map(|n| &n["metadata"])
+            .filter(|m| m.is_object())
+            .unwrap_or(&null))
+    };
+    let mut sources = declared.to_vec();
+    sources.sort_by_key(crate::python_compat::string);
+    let mut pairs: Vec<(Value, Value)> = vec![];
+    for field in ["signature", "arity"] {
+        let taken = pairs.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>();
+        for source in &sources {
+            let want = &meta(source)?[field];
+            if want.is_null() || pairs.iter().any(|(s, _)| s == source) {
+                continue;
+            }
+            let mut hits = vec![];
+            for candidate in candidates {
+                if !taken.contains(candidate) && meta(candidate)?[field] == *want {
+                    hits.push(candidate);
+                }
+            }
+            if let [hit] = hits[..] {
+                pairs.push((source.clone(), hit.clone()));
+            }
+        }
+    }
+    // Two interface methods on one implementer method: neither is certain.
+    let targets = pairs.iter().map(|(_, t)| t.clone()).collect::<Vec<_>>();
+    Ok(pairs
+        .into_iter()
+        .filter(|(_, t)| targets.iter().filter(|other| *other == t).count() == 1)
+        .collect())
 }
 fn suffixes(request: &Value) -> Result<Vec<String>> {
     request["suffixes"]

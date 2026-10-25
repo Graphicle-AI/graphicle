@@ -3,6 +3,179 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.7 - 2026-10-25
+
+Every crate is at 0.1.7, and `graphicle --version` prints
+`graphicle 0.1.7 (core)`. The Python and TypeScript SDKs, at 0.1.0 until
+now, are at 0.1.7 too.
+
+### Code graph
+
+- The engine follows Graphify 0.9.95 (0.1.6 followed 0.9.91): the four
+  releases 0.9.92 to 0.9.95 are ported. Against 0.9.95 every comparison check
+  passes on Linux, and the file ledger marks all 96 application modules
+  verified
+  ([docs/benchmarks.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.7/docs/benchmarks.md#parity-with-graphify)).
+  What changes in the graph:
+  - YAML: `.yaml` and `.yml` files are code, read structurally: a node per
+    key under its file, with `contains` edges, keys nested at most seven
+    levels deep and 500 keys a file. YAML that holds data rather than
+    configuration is declined by design and listed as skipped, and unsafe
+    tags are refused.
+  - C#: each overload of a method is a node of its own (the first keeps its
+    id, the others get ids salted by their signature), and calls bind by
+    argument count. A `delegate` is a type.
+  - Type aliases and declarations: Python `TypeAlias`, `type X =` and
+    `NewType`; Go `type A = B`; Rust `type` aliases and `union` items; C++
+    namespace-scope `using A = B;` and `typedef`; Kotlin `typealias`; Dart
+    `typedef`; Swift `macro` declarations and `#macro(...)` calls.
+  - Names that differ only by `_`, `$`, `#` or case keep separate nodes:
+    JavaScript and TypeScript members, Python module-level classes beside a
+    function or class of the same id, Go and Rust declarations.
+  - Calls: TypeScript `this.field` is typed from an assignment in any method;
+    a JavaScript call on an untyped receiver waits for receiver-typed
+    resolution; a CommonJS `require` binding no longer shadows the export it
+    requires; a pytest fixture parameter is typed from the fixture's return;
+    Python `module.func()` binds the child named exactly `func`; a bare call
+    resolved only through a module import stays `INFERRED`; Solidity
+    inherited calls, `super` calls and modifiers resolve through C3
+    linearization; a Rust `use` rooted at a sibling `mod` reaches its
+    declaration; an Objective-C member call resolves across a header and an
+    implementation in different folders; a cross-repository call edge points
+    at the call site.
+  - SQL: T-SQL names are unbracketed (`dbo.Alpha`, not `[dbo].[Alpha]`),
+    procedures record `reads_from` and `writes_to`, `GO` ends a statement, a
+    table referenced before its `CREATE TABLE` folds onto it, and a
+    `CREATE TABLE` the grammar cannot parse is recovered.
+  - Each `package.json` dependency entry declares the node its importers
+    resolve to, labelled `name@range`. Markdown vault-relative wikilinks
+    resolve, and a bare method link needs its class cited. Objective-C
+    `NS_CLOSED_ENUM` is an enum, and category ids are relative to the
+    repository. Metal and CUDA qualifiers no longer create nodes without a
+    source, and a `.h` with `extern "C"` goes to the C++ extractor.
+  - Graph building: string confidences that drifted from the enum are
+    folded onto it, on nodes as on edges; a node with a source file wins
+    over a namesake without one; a build without clustering resolves imports
+    through the old-stem alias index. An incremental build no longer queues
+    again a file declined by design.
+- The AST cache format changed, so the first sync after upgrading re-extracts
+  every file once.
+- graph.json keeps parallel edges between two nodes (`multigraph: true`).
+  Every reader of a saved graph.json, not only the MCP server (`export` and
+  `merge-driver` among them), reads a file written before (parallel links
+  under `multigraph: false`) the same way, so a result does not depend on
+  which release wrote the file.
+- A dependency entry of a JSON manifest such as `package.json`, which the
+  engine now labels `name@range` and joins to the package it declares, keeps
+  the stable id of its name (its label up to the first `@` after the first
+  character), so a reviewed memory linked to it survives the new label and
+  later version bumps. Other keys that hold `@`, such as pnpm overrides or a
+  jest `moduleNameMapper` pattern, keep their whole label.
+- A code graph episode is named by the engine's graph format as well as the
+  project's files, so the first sync after upgrading builds the graph again
+  even when no file changed: C# overloads become nodes of their own and the
+  nodes the new engine no longer makes are closed. Before, an unchanged
+  project kept the older engine's graph until one of its files changed.
+- `graphicle graph update` works on a project whose graph is over 512 MiB,
+  such as kubernetes: before, even its first update failed, reading back its
+  own temporary graph under the size cap. The engine reads a graph.json over
+  the cap that it wrote itself (`update`, `watch`, `serve`, `query`,
+  `explain`, `path`, `merge-graphs`, `cluster-only`, `label`); a larger
+  graph.json from elsewhere is still refused, and `GRAPHICLE_MAX_GRAPH_BYTES`,
+  when set, applies to every file. A graph.json over the cap that an earlier
+  release wrote has no record of being the engine's own, so updates and hook
+  rebuilds refuse it until it is rebuilt once, as the error says: run
+  `GRAPHICLE_MAX_GRAPH_BYTES=<N>GB graphicle graph extract --force <project>`,
+  with N above the file's size (add `--code-only` when no LLM backend is set
+  up).
+- The engine extracts YAML structurally (above), so graph.json and the
+  `graphicle graph` commands have its keys, but Graphicle Core does not yet
+  use those keys for its answers: its code graph leaves out the YAML files
+  the engine reads as keys (the `apm.yml` package manifests stay in, as
+  before), and a YAML path quoted in a memory is taken for data, as a JSON
+  path is, not for a code file.
+
+### Commands, hooks and the language model
+
+- `GRAPHICLE_BACKEND` chooses the LLM provider (`none` turns LLM work off);
+  an auto-detected provider is named before anything is sent.
+- The semantic extraction prompt now pins each node to the file it came
+  from; cached semantic results are extracted again once, which costs one
+  round of LLM calls.
+- Git hooks: a rebase, `pull --rebase`, cherry-pick or revert rebuilds the
+  graph once; a merge commit rebuilds; a new branch at the same commit does
+  not; hooks run from the repository's top level. Run
+  `graphicle-graph hook install` to add the post-rewrite hook and update the
+  others.
+- `--version` and `--help` no longer refresh installed skills, and `--help`
+  lists every `--platform` value.
+- `query` refuses a name shared by several nodes (exit 3) and an unknown
+  `--seed` exits 4; `explain`, `get_node` and `get_neighbors` report a
+  substring near miss instead of answering with it.
+- Merged graphs: `explain` and `path` keep same-path files of two repos
+  apart and name the repo; the tree export draws one root per repo.
+- `prs` reads CI state from legacy status contexts and keeps a default
+  branch such as `release/2.x` whole; a Maven pom contributes only its own
+  dependencies; `serve` over streamable-http on an IPv6 address accepts its
+  `[::1]:port` Host header.
+- Detection: only a valid `.git` marks a repository root; versioned shebangs
+  such as `python3.12` are recognised; an unreadable PDF warns once; images,
+  audio and video count no words; a `.graphiclerc` saved with a byte order
+  mark keeps its first setting.
+
+### Connections
+
+- The `graphicle` program allows plain `http://` to every loopback address
+  for the services it calls (models, connectors, OAuth, vector and graph
+  endpoints): the rest of 127.0.0.0/8, such as `127.0.0.2`, and IPv4-mapped
+  loopback, such as `[::ffff:127.0.0.1]`, as well as `localhost`,
+  `127.0.0.1` and `[::1]`. Before, a local model or connector on another
+  loopback address was refused (#11, by @rudycelekli).
+
+### SDKs
+
+- The Python SDK keeps the service's `Retry-After` on an error:
+  `GraphicleError.retry_after` is the delay in seconds (from a number of
+  seconds or an HTTP date), and the error's text names it, so a caller whose
+  monthly request budget is spent knows when to try again, as the
+  TypeScript SDK's `retryAfterSeconds` already says (#10, by @rudycelekli).
+  A `Retry-After` that is neither leaves `retry_after` as `None`, and the
+  error is still a `GraphicleError`.
+
+### Security
+
+- URLs with credentials, a bad or zero port, or no host are refused;
+  multicast addresses are blocked; Obsidian tags and Google Workspace
+  sidecars escape hostile values.
+- Installing or refreshing a skill (`graphicle graph install`) no longer
+  writes through a symbolic link. A link at the skill's `SKILL.md`, or at
+  the version stamp beside it, is replaced by the new file, and the file it
+  pointed to is left alone; before, that file was overwritten.
+  `references/` is staged in a new private folder with a random name
+  instead of `references.tmp`, so a link put there in advance cannot
+  redirect the copy, and the backups (`SKILL.md.bak` and the
+  `.graphicle-bak` copies of agent settings) never follow a link.
+- A symbolic link that a repository commits at `.graphicle/.rebuild.lock`,
+  at the rebuild's temporary graph or at `.gitattributes` is no longer
+  followed: before, `graphicle graph update`, a hook rebuild or
+  `graphicle graph hook install` could truncate, overwrite or add a line to
+  the file it names. `update --no-cluster` and the GraphML export replace a
+  link at their output instead of writing through it.
+- Credential-shaped text in docstrings and comments is redacted before it
+  becomes a rationale label.
+
+### Dependencies and packaging
+
+- yoke-derive 0.8.4 replaces 0.8.3, which its authors yanked and
+  `cargo deny` warned about. Only the lock files and the third-party
+  licence pages change.
+- `server.json` at the repository's root is again the MCP Registry entry of
+  the latest listed release (0.1.6; it still named 0.1.2). An entry lists
+  the SHA-256 of each bundle the `mcp-registry` workflow builds from the
+  release, so a release's entry is committed after its listing, as
+  [packaging/mcpb/README.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.7/packaging/mcpb/README.md#steps-at-release-time)
+  describes.
+
 ## 0.1.6 - 2026-10-24
 
 Every crate is at 0.1.6, and `graphicle --version` prints

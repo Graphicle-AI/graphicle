@@ -142,6 +142,30 @@
           ],
           "adaptation": "Not ported to structure.rs, which keeps its 20a20d30 scope: its per-file analyses only feed the service's fallback graph for repositories without a recorded Graphify episode. graphicle ports engine.py at v0.9.91 and builds the episode graph the service queries.",
           "full_application_port": false
+        },
+        {
+          "commit": "92741d162b2094ffc2fed58cfbd8ee823e9da62c",
+          "committed_at": "2026-10-23T17:20:06Z",
+          "review": "Reviewed 2026-10-24 at the v0.9.95 release tag (GitHub archive of the tag commit and the PyPI wheel of 0.9.95); the graph engine qualifies against this release.",
+          "url": "https://github.com/Graphify-Labs/graphify/tree/92741d162b2094ffc2fed58cfbd8ee823e9da62c",
+          "selected_files": [
+            {
+              "path": "graphify/extractors/engine.py",
+              "sha256": "c4eb3d6db872edaa4b2427813b0eca5134e4e070f7f1b2c4ea8a3eb2cf7b8b77",
+              "inspection": "Changes from v0.9.91 to v0.9.95 (0.9.92 to 0.9.95): JavaScript and TypeScript members that differ only by `_`, `$` or `#` are separate nodes (#4475), TypeScript `this.field` is typed from an assignment in any method (#4473), a member call on an untyped JavaScript receiver waits for receiver-typed resolution (#4598) and a CommonJS `require` binding no longer shadows the required export (#4621); Python pytest fixture receivers (#4332), module-level class ids salted apart (#2810) and explicit type aliases (#4578); each C# overload a node of its own with calls bound by argument count (#4584, #4591) and C# delegates (#4552); Kotlin `typealias` (#4553), Swift macros (#4551), C++ namespace-scope aliases (#4580) and Metal and CUDA qualifiers (#4550). models.py is unchanged since v0.9.91; base.py only shares the scan root through a module variable (#3666), which changes no behaviour. graphicle ports them in src/extractors/engine.rs and its engine_* modules."
+            }
+          ],
+          "rust_files": [
+            "src/structure.rs",
+            "../graphicle-graph/src/extractors/engine.rs",
+            "../graphicle-graph/src/extractors/engine_calls.rs",
+            "../graphicle-graph/src/extractors/engine_declarations.rs",
+            "../graphicle-graph/src/extractors/engine_extra.rs",
+            "../graphicle-graph/src/extractors/engine_scope.rs",
+            "../graphicle-graph/src/extractors/engine_types.rs"
+          ],
+          "adaptation": "Not ported to structure.rs, which keeps its 20a20d30 scope: its per-file analyses only feed the service's fallback graph for repositories without a recorded Graphify episode. graphicle ports engine.py at v0.9.95 and builds the episode graph the service queries.",
+          "full_application_port": false
         }
       ]
     },

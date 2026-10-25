@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Symbol disambiguation and shortest paths in stored edge direction.
 use crate::{Result, graph::Graph, serve_search::*};
@@ -168,13 +168,29 @@ pub fn ambiguity(g: &Graph, index: &SearchIndex, query: &str) -> Vec<usize> {
     }
     vec![]
 }
-/// One node per distinct source file in `tier`, or none for a single file.
+/// `str(value or "")`: the text of a truthy value, else nothing.
+fn or_empty(value: &Value) -> String {
+    if crate::build::truthy(value) {
+        string(value)
+    } else {
+        String::new()
+    }
+}
+/// One node per distinct file in `tier`, or none for a single file. A file is
+/// its repo plus its source_file: a merged graph keeps source_file relative to
+/// each repo, so two repos that both have `dup.py` hold two files (Graphify
+/// 0.9.93, #4512). A single-repo graph has no `repo` and groups by path alone.
 fn rivals_across_files(g: &Graph, tier: &[usize]) -> Vec<usize> {
     let mut seen = BTreeSet::new();
     let by_source = tier
         .iter()
         .copied()
-        .filter(|i| seen.insert(text(field(g, *i, "source_file"))))
+        .filter(|i| {
+            seen.insert((
+                or_empty(field(g, *i, "repo")),
+                or_empty(field(g, *i, "source_file")),
+            ))
+        })
         .collect::<Vec<_>>();
     if by_source.len() > 1 {
         by_source
@@ -186,17 +202,88 @@ fn rivals_across_files(g: &Graph, tier: &[usize]) -> Vec<usize> {
 /// tools: the single winner of the first non-empty tier, or the refusal when
 /// there is no match or that tier holds several nodes, in different files or
 /// in one, as the `path` endpoints refuse them (Graphify 0.9.86, #4320).
+///
+/// A prefix match still resolves (the caller started typing the real name),
+/// but a substring-only match is a search hit, not the symbol the caller named:
+/// it comes back as a near miss listing the candidates (Graphify 0.9.94,
+/// #3917).
 pub fn resolve(g: &Graph, index: &SearchIndex, query: &str) -> std::result::Result<usize, String> {
     let [source_exact, exact, prefix, substring] = tiers(g, index, query);
     let file_query = !source_exact.is_empty() && !query.contains("::");
-    let tier = [source_exact, exact, prefix, substring]
+    let Some(tier) = [source_exact, exact, prefix]
         .into_iter()
         .find(|tier| !tier.is_empty())
-        .ok_or_else(|| format!("No node matching '{query}' found."))?;
+    else {
+        if substring.is_empty() {
+            return Err(format!("No node matching '{query}' found."));
+        }
+        return Err(near_miss_message(g, query, &substring, 5));
+    };
     if let Some(refusal) = tier_refusal(g, index, query, &tier, file_query) {
         return Err(refusal);
     }
     Ok(tier[0])
+}
+/// `_near_miss_message` (Graphify 0.9.94, #3917): `No exact match`, then the
+/// substring matches that are the closest names, labelled as such, so the
+/// caller retries with the real name instead of trusting a different node.
+fn near_miss_message(g: &Graph, query: &str, hits: &[usize], limit: usize) -> String {
+    let sanitize = |s: &str| crate::security::sanitize_label(&Value::String(s.into()));
+    let name = |i: usize| {
+        let label = or_empty(field(g, i, "label"));
+        sanitize(&if label.is_empty() { id(g, i) } else { label })
+    };
+    let source = |i: usize| strip(&or_empty(field(g, i, "source_file"))).to_owned();
+    let mut listing = hits
+        .iter()
+        .take(limit)
+        .map(|&i| {
+            let location = or_empty(field(g, i, "source_location"));
+            let place = [source(i), strip(&location).to_owned()]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if place.is_empty() {
+                format!("  {}", name(i))
+            } else {
+                format!("  {}  {}", name(i), sanitize(&place))
+            }
+        })
+        .collect::<Vec<_>>();
+    if hits.len() > limit {
+        listing.push(format!("  ... and {} more", hits.len() - limit));
+    }
+    let example = name(hits[0]);
+    let example_source = source(hits[0]);
+    let example_form = if example_source.is_empty() {
+        example
+    } else {
+        format!("{}::{example}", sanitize(&example_source))
+    };
+    format!(
+        "No exact match for '{}'. These names contain it, but none is called that:\n{}\nRetry with the exact label, a path::symbol form (e.g. {example_form}), or the full node id.",
+        sanitize(query),
+        listing.join("\n")
+    )
+}
+/// `_query_name_refusal` (Graphify 0.9.93, #4511, #4517): refuse a `query` or
+/// `--seed` value only when it is itself the exact name of several nodes, as
+/// `explain` and `path` do. A bare keyword that only prefix- or
+/// substring-matches labels is a search and still scores.
+pub fn query_name_refusal(g: &Graph, index: &SearchIndex, query: &str) -> Option<String> {
+    let [source_exact, exact, _, _] = tiers(g, index, query);
+    let file_query = !source_exact.is_empty() && !query.contains("::");
+    let tier = if source_exact.is_empty() {
+        exact
+    } else {
+        source_exact
+    };
+    if tier.is_empty() {
+        return None;
+    }
+    tier_refusal(g, index, query, &tier, file_query)
+        .filter(|refusal| is_ambiguity_refusal(Some(refusal)))
 }
 /// The refusal when the winning `tier` names more than one node, else `None`.
 /// Shared by `explain`, get_node / get_neighbors and the `path` endpoints. A
@@ -228,13 +315,27 @@ pub fn is_ambiguity_refusal(message: Option<&str>) -> bool {
     message.is_some_and(|m| m.starts_with(AMBIGUOUS))
 }
 pub fn ambiguity_message(g: &Graph, query: &str, rivals: &[usize]) -> String {
+    // The repo is named only when the candidates span several: then the bare
+    // path cannot tell them apart (Graphify 0.9.93, #4512).
+    let several_repos = rivals
+        .iter()
+        .map(|i| or_empty(field(g, *i, "repo")))
+        .collect::<BTreeSet<_>>()
+        .len()
+        > 1;
     let listing = rivals
         .iter()
         .map(|i| {
-            let sf = text(field(g, *i, "source_file"));
+            let sf = or_empty(field(g, *i, "source_file"));
+            let repo = field(g, *i, "repo");
+            let place = if several_repos && crate::build::truthy(repo) && !sf.is_empty() {
+                format!("{}/{sf}", string(repo))
+            } else {
+                sf
+            };
             format!(
                 "  {}\n    id: {}",
-                if sf.is_empty() { id(g, *i) } else { sf },
+                if place.is_empty() { id(g, *i) } else { place },
                 id(g, *i)
             )
         })
@@ -244,11 +345,27 @@ pub fn ambiguity_message(g: &Graph, query: &str, rivals: &[usize]) -> String {
     // nest a path-scoped one (`index.ts::foo()`) behind a second path.
     let own = rivals
         .first()
-        .map(|i| text(field(g, *i, "label")))
+        .map(|i| or_empty(field(g, *i, "label")))
         .unwrap_or_default();
     let symbol = if own.is_empty() { query } else { own.as_str() };
+    // The same path in two repos: `<path>::symbol` matches both, so only the
+    // node id tells them apart.
+    let sources = rivals
+        .iter()
+        .map(|i| or_empty(field(g, *i, "source_file")))
+        .collect::<Vec<_>>();
+    let shared_path = sources
+        .iter()
+        .any(|src| !src.is_empty() && sources.iter().filter(|s| *s == src).count() > 1);
+    let retry = if shared_path {
+        "Retry with the full node id: the same path exists in more than one repo, so a path cannot tell them apart.".to_owned()
+    } else {
+        format!(
+            "Retry with path::symbol using one of the paths above (e.g. <path>::{symbol}) or the full node id."
+        )
+    };
     format!(
-        "{AMBIGUOUS}'{query}' matches {} nodes in different files.\n{listing}\nRetry with path::symbol using one of the paths above (e.g. <path>::{symbol}) or the full node id.",
+        "{AMBIGUOUS}'{query}' matches {} nodes in different files.\n{listing}\n{retry}",
         rivals.len()
     )
 }

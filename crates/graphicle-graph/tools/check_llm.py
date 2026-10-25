@@ -55,6 +55,8 @@ PURE=[
     '_format_backend_env_keys','_default_model_for_backend','backend_detection_env_vars','_thinking_disabled_via_env',
     '_envelope_after_preamble','_claude_cli_envelope','_claude_cli_error','_parse_label_response',
     '_resolve_ollama_seed','_stamp_semantic_origin',
+    # 0.9.92 (#4361): the explicit selector and disable switch.
+    'detect_backend_with_source','backend_disabled_by_env',
 ]
 def wrapper(name,original):
     signature=inspect.signature(original)
@@ -74,6 +76,7 @@ def wrapper(name,original):
                 if 'image' in item:item['image']['source']['bytes']=bytes(item['image']['source']['bytes'])
         if name=='backend_detection_env_vars':value=tuple(value)
         if name=='_parse_label_response':value={int(k):v for k,v in value.items()}
+        if name=='detect_backend_with_source':value=tuple(value)
         return value
     return invoke
 class Reports:
@@ -118,9 +121,17 @@ def check_configuration():
             inp,out=rng.randrange(100000),rng.randrange(100000)
             compare('estimate_cost',oracle.estimate_cost(backend,inp,out),backend=backend,input_tokens=inp,output_tokens=out)
     envs=[{},*[{k:'offline'} for k in oracle.backend_detection_env_vars() if k not in ('OLLAMA_BASE_URL','OLLAMA_HOST')],{'OLLAMA_HOST':'localhost'},{'OLLAMA_BASE_URL':'http://localhost:11434/v1'},dict(KEYS)]
+    # 0.9.92 (#4361): an explicit GRAPHIFY_BACKEND (a name, a disable sentinel in any
+    # case, blank) beside ambient keys.
+    envs+=[{**dict(KEYS),'GRAPHIFY_BACKEND':value} for value in ['openai',' Claude ','none','OFF','disable','Disabled','','  ']]
+    envs+=[{'GEMINI_API_KEY':'k','GRAPHIFY_BACKEND':'none'},{'AWS_REGION':'eu-west-1'},{'MOONSHOT_API_KEY':'k'}]
     for env in envs:
         with patch.dict(os.environ,env,clear=True):expected=quiet(oracle.detect_backend)
         compare('detect_backend',expected,env=env)
+        with patch.dict(os.environ,env,clear=True):expected=quiet(oracle.detect_backend_with_source)
+        compare('detect_backend_with_source',list(expected),env=env)
+        with patch.dict(os.environ,env,clear=True):expected=oracle.backend_disabled_by_env()
+        compare('backend_disabled_by_env',expected,env=env)
 
 def check_seed_and_origin():
     # 0.9.86 (#4168): the opt-in Ollama seed; invalid values fail with the reference message.
@@ -232,7 +243,14 @@ def run():
            # 0.9.91 (#4413): Ollama's native /api/chat; their cases drive the mocked
            # OpenAI client and are deselected like the rest (the native request,
            # fallback and reply are compared in tests/compat_0_9_91_cli.rs).
-           'test_ollama_native_chat.py','test_ollama_retry_cap.py']
+           'test_ollama_native_chat.py','test_ollama_retry_cap.py',
+           # 0.9.92 (#4361): GRAPHIFY_BACKEND selection and the disable switch; its
+           # extract_files_direct and labeling cases are deselected like the rest
+           # (tests/compat_0_9_95_cli.rs checks the native refusals).
+           'test_backend_opt_in.py',
+           # 0.9.93 (#4537): salvaged label values are JSON-decoded; its cases that
+           # reach _parse_label_response run natively, the rest are deselected.
+           'test_labeling.py']
     status=pytest.main(['-q','-p','no:cacheprovider',*[str(SOURCE/'tests'/n) for n in names]],plugins=[reports]);assert status==0,status
     for name,original in saved.items():setattr(reference,name,original)
     check_configuration();check_seed_and_origin();check_parser()

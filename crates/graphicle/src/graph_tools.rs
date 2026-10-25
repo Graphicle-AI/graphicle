@@ -949,20 +949,18 @@ fn named_nodes(resident: &Resident, tool: &str, args: &Value, text: &str) -> Nam
                     } else {
                         (center, neighbour)
                     };
-                    let Some(edge) = g
-                        .edges_between(&g.nodes()[a].id, &g.nodes()[b].id)
-                        .first()
-                        .copied()
-                    else {
-                        continue;
-                    };
-                    let relation = edge
-                        .attributes
-                        .get("relation")
-                        .map(graphicle::serve_search::string)
-                        .unwrap_or_default();
-                    if filter.is_empty() || relation.to_lowercase().contains(&filter) {
-                        listed.push(neighbour);
+                    // The engine prints one line per relationship: a pair
+                    // joined by parallel edges is listed once per edge
+                    // (Graphify 0.9.92, #4500).
+                    for edge in g.edges_between(&g.nodes()[a].id, &g.nodes()[b].id) {
+                        let relation = edge
+                            .attributes
+                            .get("relation")
+                            .map(graphicle::serve_search::string)
+                            .unwrap_or_default();
+                        if filter.is_empty() || relation.to_lowercase().contains(&filter) {
+                            listed.push(neighbour);
+                        }
                     }
                 }
             }
@@ -1384,5 +1382,52 @@ mod tests {
             audit(&g),
             "Total edges: 3\nEXTRACTED: 2 (67%)\nINFERRED: 1 (33%)\nAMBIGUOUS: 0 (0%)\n"
         );
+    }
+    /// The engine prints a pair joined by parallel edges once per edge
+    /// (Graphify 0.9.92, #4500); the citations read one neighbour per printed
+    /// line, so none is left unmatched, with or without a relation filter.
+    #[test]
+    fn get_neighbors_citations_follow_parallel_edges() {
+        let graph = Graph::from_node_link(
+            &json!({"directed": true, "multigraph": true, "graph": {},
+                "nodes": [
+                    {"id": "alpha", "label": "alpha()", "source_file": "a.py", "source_location": "L1"},
+                    {"id": "beta", "label": "beta()", "source_file": "a.py", "source_location": "L4"},
+                    {"id": "gamma", "label": "gamma()", "source_file": "b.py", "source_location": "L1"}],
+                "links": [
+                    {"source": "alpha", "target": "beta", "relation": "calls", "key": "calls"},
+                    {"source": "alpha", "target": "beta", "relation": "references", "key": "references"},
+                    {"source": "gamma", "target": "alpha", "relation": "calls", "key": "calls"}]}),
+            "links",
+        )
+        .unwrap();
+        let resident = Resident {
+            repository: "r".into(),
+            episode: "e".into(),
+            context: GraphContext::new(graph).unwrap(),
+            labels: json!({}),
+            starts: HashMap::new(),
+            by_location: HashMap::new(),
+            by_label: HashMap::new(),
+        };
+        let index = |id: &str| resident.context.graph.node_index(&json!(id)).unwrap();
+        let (alpha, beta, gamma) = (index("alpha"), index("beta"), index("gamma"));
+        for (filter, lines, cited) in [
+            ("", 3, vec![alpha, beta, gamma]),
+            ("refer", 1, vec![alpha, beta]),
+        ] {
+            let args = json!({"label": "alpha", "relation_filter": filter});
+            let text =
+                graphicle::serve::call_graph_tool(&resident.context, "get_neighbors", &args, None)
+                    .unwrap();
+            let arrows = text
+                .lines()
+                .filter(|line| line.starts_with("  --> ") || line.starts_with("  <-- "))
+                .count();
+            assert_eq!(arrows, lines, "{text}");
+            let named = named_nodes(&resident, "get_neighbors", &args, &text);
+            assert_eq!(named.unmatched, 0, "{text}");
+            assert_eq!(named.nodes, cited, "{text}");
+        }
     }
 }

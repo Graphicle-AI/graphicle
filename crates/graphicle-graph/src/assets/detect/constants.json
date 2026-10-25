@@ -113,7 +113,9 @@
     ".sol",
     ".erl",
     ".hrl",
-    ".escript"
+    ".escript",
+    ".yaml",
+    ".yml"
   ],
   "DOC_EXTENSIONS": [
     ".html",
@@ -125,9 +127,7 @@
     ".qmd",
     ".rst",
     ".skill",
-    ".txt",
-    ".yaml",
-    ".yml"
+    ".txt"
   ],
   "PAPER_EXTENSIONS": [
     ".pdf"

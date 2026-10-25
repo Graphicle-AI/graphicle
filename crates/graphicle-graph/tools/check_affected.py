@@ -51,7 +51,9 @@ def load(path):
 try:
     for name,func in zip(names,[normalize,bare,relative,prefer,resolve,hits,label,location,format_affected,load]):setattr(reference,name,func)
     tests=upstream_tests("tests/test_affected_cli.py","tests/test_affected_member_seed.py","tests/test_js_dynamic_import_affected.py",
-        "tests/test_affected_defines.py","tests/test_affected_overrides.py")
+        "tests/test_affected_defines.py","tests/test_affected_overrides.py",
+        # 0.9.95 (#4698): a path whose file-node label the #2032 pass disambiguated.
+        "tests/test_affected_path_file_node.py")
     # Do not recursively invoke wrappers while comparing generated cases.
     for name in names:setattr(reference,name,original[name])
     rng=random.Random(20260923)
@@ -64,7 +66,7 @@ try:
     for _ in range(500):
         graph=rng.choice([nx.Graph,nx.DiGraph,nx.MultiGraph,nx.MultiDiGraph])()
         for i in range(rng.randrange(1,25)):
-            graph.add_node(f"n{i}",label=rng.choice(["foo","foo()","FooBar()","a.py","Auditoría","résumé","resume",None,123]),source_file=rng.choice(["src/a.py","src/b.py","pkg/foo.py","",None]),source_location=rng.choice(["L1","L9",None]))
+            graph.add_node(f"n{i}",label=rng.choice(["foo","foo()","FooBar()","a.py","Auditoría","résumé","resume",None,123,"src/a.py","pkg/foo.py"]),source_file=rng.choice(["src/a.py","src/b.py","pkg/foo.py","",None]),source_location=rng.choice(["L1","L9",None]))
         for _ in range(40):
             source,target=rng.choices(list(graph),k=2)
             graph.add_edge(source,target,relation=rng.choice(["calls","imports","contains","method","other","dynamic_import",None,"defines","inherits","implements","extends"]),source_file=rng.choice(["src/a.py","other.py","",None]),source_location=rng.choice(["L23","L81",None]))

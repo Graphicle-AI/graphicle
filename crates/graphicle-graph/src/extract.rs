@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Complete native AST corpus extraction and cross-file assembly.
 pub mod per_file;
@@ -61,7 +61,8 @@ pub struct ExtractOptions {
 /// dumps the raw extraction as graph.json (`--no-cluster`) leaves them out:
 /// they put the checkout path and user name into the graph and differ between
 /// a first build and a rebuild of the same tree (Graphify 0.9.80).
-pub const RUN_ONLY_EXTRACTION_KEYS: [&str; 2] = ["extracted_sources", "failed_sources"];
+pub const RUN_ONLY_EXTRACTION_KEYS: [&str; 3] =
+    ["extracted_sources", "failed_sources", "skipped_sources"];
 /// Opt-in precise mode (`--precise` / `GRAPHICLE_PRECISE=1`): resolution passes
 /// beyond the upstream port's, which change the graph and so are off by default.
 pub static PRECISE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -165,6 +166,8 @@ pub fn header_kind(path: &Path, objc: bool) -> bool {
             "#import",
         ]
     } else {
+        // `extern "C"` (0.9.93, #4526): a C-API header guarded by
+        // `#ifdef __cplusplus`, whose linkage block the C grammar rejects.
         &[
             "class ",
             "namespace ",
@@ -173,6 +176,7 @@ pub fn header_kind(path: &Path, objc: bool) -> bool {
             "public:",
             "private:",
             "protected:",
+            "extern \"C\"",
         ]
     };
     markers.iter().any(|m| source.contains(m))
@@ -188,6 +192,7 @@ pub fn extract_file(path: &Path, root: Option<&Path>) -> Value {
         "mcp_config" => Ok(crate::mcp_ingest::extract_mcp_config(path)),
         "package_manifest" => crate::manifest_ingest::extract_package_manifest(path),
         "robot" => Ok(extractors::robot::extract_robot(path)),
+        "yaml" => Ok(extractors::yaml_config::extract_yaml(path)),
         "rst" => extractors::rst::extract_rst(path),
         "lazarus_package" | "slnx" | "csproj" | "xaml" => {
             Ok(projects::extract_project(path, &kind, root))
@@ -426,6 +431,16 @@ pub fn register_resolvers() {
                 Ok(())
             }),
         );
+        // After the type pass: it walks the `inherits` edges that pass binds
+        // (0.9.92, #4379).
+        add(
+            "solidity_inherited_calls",
+            &[".sol"],
+            Arc::new(|p, n, e| {
+                extractors::solidity::resolve_solidity_inherited_calls(p, n, e);
+                Ok(())
+            }),
+        );
         add(
             "erlang_remote_calls",
             &[".erl", ".hrl", ".escript"],
@@ -512,6 +527,13 @@ pub fn register_resolvers() {
                 "solidity_type_references",
                 resolver_registry::any_form!(|p, n, e| {
                     extractors::solidity::resolve_solidity_type_references_any(p, n, e);
+                    Ok(())
+                }),
+            ),
+            (
+                "solidity_inherited_calls",
+                resolver_registry::any_form!(|p, n, e| {
+                    extractors::solidity::resolve_solidity_inherited_calls_any(p, n, e);
                     Ok(())
                 }),
             ),
@@ -1192,9 +1214,15 @@ pub(crate) fn assemble_with_corpus(
 }
 
 /// The failed sources of a run (and a warning per file with syntax errors).
-fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> Vec<String> {
+/// The sources that failed (an error, or zero nodes from a wired extractor)
+/// and those the extractor declined by design (`skipped`, Graphify 0.9.94,
+/// #2879): stamped, yet with zero nodes, which the manifest marks `ast_empty`
+/// so an incremental build stops re-queuing them.
+fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> (Vec<String>, Vec<String>) {
     let mut failed = vec![];
     let mut failed_seen = BTreeSet::new();
+    let mut skipped = vec![];
+    let mut skipped_seen = BTreeSet::new();
     for (r, p) in per.iter().zip(paths) {
         let empty = r.nodes().is_none_or(<[P::R]>::is_empty);
         if crate::build::truthy(r.at("error"))
@@ -1203,6 +1231,11 @@ fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> Vec<String> {
             let sf = p.to_string_lossy().into_owned();
             if failed_seen.insert(sf.clone()) {
                 failed.push(sf);
+            }
+        } else if crate::build::truthy(r.at("skipped")) {
+            let sf = p.to_string_lossy().into_owned();
+            if skipped_seen.insert(sf.clone()) {
+                skipped.push(sf);
             }
         }
         if let Some(errors) = r.key("parse_errors")
@@ -1214,7 +1247,7 @@ fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> Vec<String> {
             );
         }
     }
-    failed
+    (failed, skipped)
 }
 
 /// Copy every per-file node into `nodes` and move (with the intermediate
@@ -1466,12 +1499,63 @@ fn raw_calls_of<P: PerFile>(per: &[P]) -> Vec<&P::R> {
         .collect()
 }
 
+/// `_stamp_python_fixture_paths` (Graphify 0.9.92, #4332): repo-relative
+/// locations for the pytest-fixture arm of the Python member resolver. A
+/// re-extracted file carries absolute paths while an unchanged file's context
+/// node is repo-relative, and the arm walks directories, so it gets one form.
+/// In memory only: the results were cached before resolution.
+fn stamp_python_fixture_paths(per: &mut PerList, root: &Path) {
+    let rel = |source: &str| -> String {
+        let path = Path::new(source);
+        if !path.is_absolute() {
+            return crate::fsutil::rel_string(path);
+        }
+        match resolved(path).strip_prefix(root) {
+            Ok(relative) => crate::fsutil::rel_string(relative),
+            Err(_) => crate::fsutil::rel_string(path),
+        }
+    };
+    let truthy = |value: Option<&Value>| value.is_some_and(crate::build::truthy);
+    let indices: Vec<usize> = per_dispatch!(&*per, p => p
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| {
+            r.raw_calls().into_iter().flatten().any(|rc| truthy(rc.rec_get("_python_fixture_param")))
+                || r.nodes().into_iter().flatten().any(|n| truthy(n.rec_get("_py_fixture")))
+        })
+        .map(|(i, _)| i)
+        .collect());
+    for i in indices {
+        per.edit_json(i, |result| {
+            for call in result["raw_calls"].as_array_mut().into_iter().flatten() {
+                if truthy(call.get("_python_fixture_param")) && truthy(call.get("source_file")) {
+                    let source = crate::python_compat::string(&call["source_file"]);
+                    call["_python_test_file"] = json!(rel(&source));
+                }
+            }
+            let mut located = serde_json::Map::new();
+            for node in result["nodes"].as_array().into_iter().flatten() {
+                if truthy(node.get("_py_fixture")) && truthy(node.get("source_file")) {
+                    let source = crate::python_compat::string(&node["source_file"]);
+                    located.insert(
+                        crate::python_compat::string(&node["id"]),
+                        json!(rel(&source)),
+                    );
+                }
+            }
+            if !located.is_empty() {
+                result["_python_fixture_files"] = Value::Object(located);
+            }
+        });
+    }
+}
+
 /// [`bind_raw_calls`] over the edge list in record form when it converts.
 fn bind_per_file<P: PerFile>(per: &[P], nodes: &[Value], edges: &mut EdgeList, root: &Path) {
     let raw = raw_calls_of(per);
     match edges.records() {
-        Some(records) => bind_raw_calls(&raw[..], nodes, records, root),
-        None => bind_raw_calls(&raw[..], nodes, edges.values(), root),
+        Some(records) => bind_raw_calls(&raw[..], nodes, records, &[], root),
+        None => bind_raw_calls(&raw[..], nodes, edges.values(), &[], root),
     }
 }
 
@@ -1553,7 +1637,7 @@ fn assemble_records(
         }))
     .then(|| extractors::resolution_js::source_corpus(corpus_paths));
     let _corpus = extractors::resolution_js::enter_source_corpus(corpus);
-    let failed = per_dispatch!(&per, p => failed_sources(&p[..], paths));
+    let (failed, skipped) = per_dispatch!(&per, p => failed_sources(&p[..], paths));
     per_dispatch!(&per, p => warn_symbolless_files(&p[..], paths, root));
     for (i, p) in paths.iter().enumerate() {
         if [".tf", ".tfvars", ".hcl"].contains(&languages::suffix(p).as_str()) {
@@ -1646,6 +1730,7 @@ fn assemble_records(
     // cloned and added in that form. Passes that read only JSON get it back
     // losslessly for their run (`EdgeList`).
     let mut edges = EdgeList::Values(edges);
+    stamp_python_fixture_paths(&mut per, root);
     if options.resolution_context_nodes.is_empty() && options.resolution_context_edges.is_empty() {
         let profiled = crate::profile::span("assemble.bind_raw_calls");
         per_dispatch!(&per, p => bind_per_file(&p[..], &nodes, &mut edges, root));
@@ -1688,6 +1773,7 @@ fn assemble_records(
             &raw_calls_of(&p[..])[..],
             &resolution_nodes,
             edges,
+            &options.resolution_context_edges,
             root,
         ));
         mark("bind_raw_calls");
@@ -1816,6 +1902,7 @@ fn assemble_records(
     result.insert("input_tokens".into(), json!(0));
     result.insert("output_tokens".into(), json!(0));
     result.insert("failed_sources".into(), json!(failed));
+    result.insert("skipped_sources".into(), json!(skipped));
     result.insert("extracted_sources".into(), json!(paths));
     let mut result = Value::Object(result);
     if let Some(mut unresolved) = unresolved_calls {
@@ -1851,12 +1938,64 @@ fn drop_rust_use_groups<E: Rec>(edges: &mut Vec<E>) {
         !group.is_some_and(|g| crate::build::truthy(&g))
     });
 }
+/// The nodes by id and the type of each C# method with an arity, built once
+/// per binding pass when a C# call first meets several candidates.
+type OverloadIndex<'a> = (FxHashMap<&'a str, &'a Value>, FxHashMap<String, String>);
+/// `_csharp_collapse_overloads` (Graphify 0.9.95, #4584): the overloads of
+/// one C# method among `candidates` fold into one. Overloads of a name on one
+/// type are separate nodes, so a bare-name lookup saw rival definitions that,
+/// all in one file, no tie-breaker could choose between: the argument count
+/// picks the overload when exactly one fits, else the first declared one
+/// stands for the name. `owner` maps a method with an arity to its type.
+fn csharp_collapse_overloads(
+    candidates: Vec<String>,
+    argc: Option<i64>,
+    owner: &FxHashMap<String, String>,
+    node_by_id: &FxHashMap<&str, &Value>,
+) -> Vec<String> {
+    let mut groups: Vec<(Option<&str>, Vec<&str>)> = vec![];
+    for c in &candidates {
+        let key = owner.get(c.as_str()).map(String::as_str);
+        match groups.iter_mut().find(|(k, members)| {
+            (key.is_some() && *k == key)
+                || (key.is_none() && k.is_none() && members[0] == c.as_str())
+        }) {
+            Some((_, members)) => members.push(c.as_str()),
+            None => groups.push((key, vec![c.as_str()])),
+        }
+    }
+    if groups.len() == candidates.len() {
+        return candidates;
+    }
+    let null = Value::Null;
+    let mut keep: FxHashSet<String> = FxHashSet::default();
+    for (_, members) in &groups {
+        if members.len() == 1 {
+            keep.insert(members[0].to_string());
+            continue;
+        }
+        let picked = crate::extractors::engine_types::csharp_pick_overload(
+            members
+                .iter()
+                .map(|m| (*m, node_by_id.get(m).map_or(&null, |n| &n["metadata"]))),
+            argc,
+        );
+        keep.insert(picked.unwrap_or(members[0]).to_string());
+    }
+    candidates
+        .into_iter()
+        .filter(|c| keep.contains(c))
+        .collect()
+}
 pub fn bind_raw_calls<E: Rec, R: Rec>(
     raw: &[&R],
     nodes: &[Value],
     edges: &mut Vec<E>,
+    context_edges: &[Value],
     root: &Path,
 ) {
+    // C# overload index (0.9.95, #4584), built on first use.
+    let mut overload_index: Option<OverloadIndex<'_>> = None;
     // Every table here is lookup-only, so hashing replaces ordered maps.
     let mut labels: FxHashMap<&str, Vec<String>> = FxHashMap::default();
     let mut ci: FxHashMap<String, Vec<String>> = FxHashMap::default();
@@ -1998,6 +2137,11 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
             || rc.rec_get("is_member_call") == Some(&Value::Bool(true))
             || rc.rec_get("is_mixin") == Some(&Value::Bool(true))
             || ["bash", "markdown"].contains(&rs(rc, "language"))
+            // A Solidity name is visible only through the caller contract's own
+            // bases; `resolve_solidity_inherited_calls` binds those (0.9.92,
+            // #4379). A corpus-wide match would link `_transfer()` to any
+            // contract's `_transfer`.
+            || rc.rec_get("solidity_call").is_some_and(crate::build::truthy)
             || (rs(rc, "language") == "go" && extractors::go::PREDECLARED_FUNCS.contains(&callee))
         {
             continue;
@@ -2009,6 +2153,37 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         // An enum member or a field/property is never a C# call target, nor
         // what `new X()` constructs (#3815, #3888, #4245).
         let csharp_new = rc.rec_get("csharp_new").is_some_and(crate::build::truthy);
+        if rs(rc, "lang") == "csharp" && !csharp_new && cs.len() > 1 {
+            let (node_by_id, owner) = overload_index.get_or_insert_with(|| {
+                let node_by_id = nodes
+                    .iter()
+                    .map(|n| (s(n, "id"), n))
+                    .collect::<FxHashMap<_, _>>();
+                let mut owner = FxHashMap::default();
+                let has_arity = |id: &str| {
+                    node_by_id
+                        .get(id)
+                        .is_some_and(|n| n["metadata"].get("arity").is_some())
+                };
+                for e in edges.iter() {
+                    if rs(e, "relation") == "method" && has_arity(rs(e, "target")) {
+                        owner.insert(rs(e, "target").to_string(), rs(e, "source").to_string());
+                    }
+                }
+                for e in context_edges {
+                    if s(e, "relation") == "method" && has_arity(s(e, "target")) {
+                        owner.insert(s(e, "target").to_string(), s(e, "source").to_string());
+                    }
+                }
+                (node_by_id, owner)
+            });
+            cs = csharp_collapse_overloads(
+                std::mem::take(&mut cs),
+                rc.rec_get("arity").and_then(Value::as_i64),
+                owner,
+                node_by_id,
+            );
+        }
         if csharp_new || rs(rc, "lang") == "csharp" {
             cs.retain(|c| !member_ids.contains(c.as_str()));
         }
@@ -2121,7 +2296,10 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
             } else {
                 let module = cs.iter().filter(|c| has_module(c)).collect::<Vec<_>>();
                 if module.len() == 1 {
-                    (module[0].clone(), true)
+                    // A module import only proves the caller pulled in the
+                    // callee's file, not this symbol: the edge stays INFERRED
+                    // (0.9.95, #2945).
+                    (module[0].clone(), false)
                 } else if csharp_new && !rs(rc, "qualified_prefix").is_empty() {
                     // A qualified construction (`new Outer.Slot()`) names
                     // which Slot it means: the one nested in a type called

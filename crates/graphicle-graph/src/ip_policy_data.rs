@@ -13,7 +13,7 @@ pub const BLOCKED_V4: &[(u128, u128)] = &[
     (0xc6120000, 0xc613ffff),
     (0xc6336400, 0xc63364ff),
     (0xcb007100, 0xcb0071ff),
-    (0xf0000000, 0xffffffff),
+    (0xe0000000, 0xffffffff),
 ];
 pub const BLOCKED_V6: &[(u128, u128)] = &[
     (0x0, 0x1fffffffffffffffffffffffffffffff),
@@ -52,5 +52,9 @@ pub const BLOCKED_V6: &[(u128, u128)] = &[
     (
         0x40000000000000000000000000000000,
         0xfebfffffffffffffffffffffffffffff,
+    ),
+    (
+        0xff000000000000000000000000000000,
+        0xffffffffffffffffffffffffffffffff,
     ),
 ];

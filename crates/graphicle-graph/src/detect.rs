@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/detect.py
 //! File discovery and incremental corpus detection from graphify/detect.py.
 pub use crate::detect_documents::{
@@ -416,7 +416,9 @@ impl Detector {
                 .as_array_mut()
                 .unwrap()
                 .push(json!(fsutil::path_string(&admitted)));
-            if kind != FileType::Video {
+            // Binary media never counts as text (Graphify 0.9.95, #4548); this
+            // also bypasses counts cached from such bytes before.
+            if !crate::detect_documents::is_binary_media(&admitted) {
                 counted.push(admitted);
             }
         }
@@ -662,6 +664,7 @@ pub fn dispatch(r: &Value) -> Result<Value> {
                     .filter(|v| !v.is_null())
                     .map(string_list),
                 clear_ast: r.get("clear_ast").filter(|v| !v.is_null()).map(string_list),
+                ast_empty: r.get("ast_empty").filter(|v| !v.is_null()).map(string_list),
                 now: r["now"].as_f64(),
             },
         )

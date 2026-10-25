@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/watch.py
 //! Incremental rebuilds, conservative reconciliation, and filesystem watching.
 use crate::extractors::resolution::resolved;
@@ -222,7 +222,8 @@ pub fn write_flag_config(out: &Path, key: &str) {
     let _ = paths::write_json_atomic(&out.join(".graphicle_build.json"), &config, None, false);
 }
 pub struct RebuildLock {
-    _file: File,
+    file: Option<File>,
+    path: PathBuf,
 }
 /// Graphify's `_rebuild_lock` on Windows, where byte-range locks are
 /// mandatory: lock one byte at offset 4096 so other processes can still read
@@ -232,13 +233,27 @@ const WINDOWS_LOCK_OFFSET: u64 = 4096;
 impl RebuildLock {
     pub fn acquire(out: &Path, blocking: bool) -> Result<Option<Self>> {
         fs::create_dir_all(out).map_err(crate::Error::from)?;
-        let mut f = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(out.join(".rebuild.lock"))
-            .map_err(crate::Error::from)?;
+        let path = out.join(".rebuild.lock");
+        // A symbolic link at the lock's name (a repository can commit one) is
+        // removed and a regular file created in its place, and the open never
+        // follows a link (O_NOFOLLOW) should one appear meanwhile, so the PID
+        // write below never truncates the file a link names. A deliberate
+        // difference: upstream opens the name with "a+" and truncates it.
+        let open = || {
+            if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+                fs::remove_file(&path).map_err(crate::Error::from)?;
+            }
+            let mut options = OpenOptions::new();
+            options.create(true).read(true).write(true).truncate(false);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(nix::libc::O_NOFOLLOW);
+            }
+            options.open(&path).map_err(crate::Error::from)
+        };
+        #[cfg_attr(windows, allow(unused_mut))]
+        let mut f = open()?;
         #[cfg(windows)]
         while !crate::win::try_lock_range(&f, WINDOWS_LOCK_OFFSET, 1).map_err(crate::Error::from)? {
             if !blocking {
@@ -247,24 +262,82 @@ impl RebuildLock {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         #[cfg(not(windows))]
-        if blocking {
-            f.lock().map_err(crate::Error::from)?;
-        } else {
-            match f.try_lock() {
-                Ok(()) => {}
-                Err(std::fs::TryLockError::WouldBlock) => return Ok(None),
-                Err(e) => return Err(e.into()),
+        {
+            let lock = |f: &File| -> Result<bool> {
+                if blocking {
+                    f.lock().map_err(crate::Error::from)?;
+                    return Ok(true);
+                }
+                match f.try_lock() {
+                    Ok(()) => Ok(true),
+                    Err(std::fs::TryLockError::WouldBlock) => Ok(false),
+                    Err(e) => Err(e.into()),
+                }
+            };
+            if !lock(&f)? {
+                return Ok(None);
+            }
+            // flock locks the open file's inode, not the path (Graphify
+            // #4273): the holder unlinks the path on release, so a waiter that
+            // was parked in flock() can wake holding an orphaned inode while a
+            // later caller locks a fresh file at the path. Keep the lock only
+            // when the locked file is still the one at the path; otherwise
+            // retry against the current path, and give up after 100 rounds.
+            let mut confirmed = false;
+            for _ in 0..100 {
+                if same_file(&f, &path) {
+                    confirmed = true;
+                    break;
+                }
+                let _ = f.unlock();
+                f = open()?;
+                if !lock(&f)? {
+                    return Ok(None);
+                }
+            }
+            if !confirmed {
+                let _ = f.unlock();
+                return Ok(None);
             }
         }
         let _ = f.set_len(0);
         let _ = writeln!(f, "{}", std::process::id());
-        Ok(Some(Self { _file: f }))
+        Ok(Some(Self {
+            file: Some(f),
+            path,
+        }))
     }
 }
-#[cfg(windows)]
+/// Whether the open `file` is the file now at `path` (same device and inode).
+#[cfg(not(windows))]
+fn same_file(file: &File, path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (file.metadata(), fs::metadata(path)) {
+        (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+        _ => false,
+    }
+}
+/// The holder removes the lock file on release, so a poller waiting for its
+/// absence unblocks promptly (Graphify #4273). With flock the path is unlinked
+/// before the unlock: a waiter wakes only at the unlock, so its same-file
+/// check then sees the path gone.
 impl Drop for RebuildLock {
     fn drop(&mut self) {
-        crate::win::unlock_range(&self._file, WINDOWS_LOCK_OFFSET, 1);
+        #[cfg(not(windows))]
+        {
+            let _ = fs::remove_file(&self.path);
+            if let Some(file) = &self.file {
+                let _ = file.unlock();
+            }
+        }
+        #[cfg(windows)]
+        {
+            if let Some(file) = &self.file {
+                crate::win::unlock_range(file, WINDOWS_LOCK_OFFSET, 1);
+            }
+            drop(self.file.take());
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 pub fn node_communities(data: &Value) -> BTreeMap<String, i64> {
@@ -1309,7 +1382,14 @@ fn labels_text(labels: &Value) -> Result<String> {
     String::from_utf8(text).map_err(|e| e.to_string().into())
 }
 fn read_graph(path: &Path) -> Result<Value> {
-    security::check_graph_file_size_cap(path)?;
+    security::check_own_graph_size_cap(path)?;
+    parse_graph(path)
+}
+/// [`read_graph`] without the size cap: the rebuild's own candidate, which it
+/// wrote moments before. Upstream reads its temporary graph without the cap
+/// too (`json.loads(graph_tmp.read_text())`); the cap guards the existing
+/// graph.json.
+fn parse_graph(path: &Path) -> Result<Value> {
     let b = fs::read(path).map_err(crate::Error::from)?;
     let v = serde_json::from_slice::<Value>(&b).map_err(|e| {
         format!(
@@ -1397,18 +1477,18 @@ impl Candidate {
         }
     }
 }
-/// The candidate graph at `path`: [`read_graph`], streamed record by record
+/// The candidate graph at `path` (the rebuild's own temporary graph, read
+/// without the size cap as [`parse_graph`] does), streamed record by record
 /// unless `whole` (the shrink check then reads whole nodes) or the document
 /// is not one the stream reader takes ([`stream_candidate`]).
 fn read_candidate(path: &Path, whole: bool) -> Result<Candidate> {
     if !whole {
-        security::check_graph_file_size_cap(path)?;
         let bytes = fs::read(path).map_err(crate::Error::from)?;
         if let Some(candidate) = stream_candidate(&bytes) {
             return Ok(candidate);
         }
     }
-    read_graph(path).map(Candidate::Whole)
+    parse_graph(path).map(Candidate::Whole)
 }
 /// [`Candidate::Streamed`] of a graph document's text; `None` where it is
 /// not a JSON object, has a repeated top-level key, a `nodes`, `links`,
@@ -2045,9 +2125,17 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 return Err(refused(&refusal));
             }
             export::backup_if_protected(out, &mut build::Diagnostics::default());
-            paths::write_text_atomic(
+            // Renamed over graph.json itself, as upstream's `_rebuild_code`
+            // replaces it (`os_replace_with_fallback(graph_tmp,
+            // existing_graph)`): a symlink there is replaced, never written
+            // through. The clustered path below does the same.
+            paths::replace_file(
                 &graph_path,
-                &paths::compact_json_text(&candidate).map_err(crate::Error::from)?,
+                ".graph.",
+                paths::compact_json_text(&candidate)
+                    .map_err(crate::Error::from)?
+                    .as_bytes(),
+                paths::NewMode::Default,
             )
             .map_err(crate::Error::from)?;
             result.changed = true;
@@ -2147,7 +2235,23 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([]))},"token_cost":{"input":0,"output":0},"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
     )?;
     timer.mark("report");
-    let tmp = out.join(".graph.tmp.json");
+    // A randomly named file in the output folder, created exclusively, then
+    // renamed over graph.json below and removed if the rebuild stops first.
+    // A deliberate difference: upstream writes the fixed name
+    // `.graph.tmp.json`, through a link if a repository commits one there.
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".graph.").suffix(".tmp.json");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // A new file's mode (0666 less the umask): `to_json` keeps the mode
+        // of the file it replaces, and graph.json is not private.
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let mut tmp = builder
+        .tempfile_in(out)
+        .map_err(crate::Error::from)?
+        .into_temp_path();
     export::to_json(
         &graph,
         &communities,
@@ -2184,7 +2288,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         && report_for_compare(&old_report) == report_for_compare(&report);
     timer.mark("final_compare");
     if unchanged {
-        let _ = fs::remove_file(&tmp);
+        drop(tmp);
     } else {
         let mut refusal = vec![];
         if !candidate.check_shrink(
@@ -2196,13 +2300,15 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             &deleted,
             &mut refusal,
         ) {
-            let _ = fs::remove_file(tmp);
+            drop(tmp);
             return Err(refused(&refusal));
         }
         fs::write(out.join(crate::exporters::html::HTML_STALE_MARKER), b"")
             .map_err(crate::Error::from)?;
         export::backup_if_protected(out, &mut build::Diagnostics::default());
         paths::os_replace_with_fallback(&tmp, &graph_path).map_err(crate::Error::from)?;
+        // Renamed into place: there is nothing left to remove.
+        tmp.disable_cleanup(true);
         paths::write_text_atomic(&out.join("GRAPH_REPORT.md"), &report)
             .map_err(crate::Error::from)?;
         // Split back into the tracked (curated) file and the pending

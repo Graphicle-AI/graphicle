@@ -45,7 +45,7 @@ def wrap(name):
                     if isinstance(old,dict):old.clear();old.update(new)
             for line in result['stderr']:print(line,file=sys.stderr)
             return result['nodes'],params['edges']
-        if name=='_collision_rank':return (*result[:4],tuple(result[4]))
+        if name=='_collision_rank':return (*result[:5],tuple(result[5]))
         return result
     return invoke
 names=['_full_stem','_extension_qualified_id','_mentions','_own_page_files','_slice_references','_disambiguate_defining_collisions','_path_qualify_dropped_collisions','_norm','_entropy','_shingles','_is_variant_pair','_short_label_blocked','_numeric_tokens_differ','_same_word_variant','_content_token_swap','_crossfile_fileanchored_blocked','_is_code','_id_prefixes','_defines_id','_reads_as_file_entity','_lifecycle_penalty','_rank_path','_collision_rank','_same_source_entity','_merge_missing_attributes','_report_id_collision','_remap_hyperedge_members','_content_richness','_pick_winner','deduplicate_entities']

@@ -1,10 +1,10 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 //! Native platform skill installation and project configuration.
 pub use crate::install_platforms::{
     configure, install, uninstall, uninstall_all, unsafe_purge_reason,
 };
-use crate::{Result, install_fs as f};
+use crate::{Result, install_fs as f, paths};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -231,12 +231,37 @@ pub fn skill_registration(path: &str) -> String {
     )
 }
 pub fn write_version(dst: &Path, version: &str) -> Result<()> {
-    f::write(
-        &dst.parent()
-            .ok_or("Invalid skill path")?
-            .join(".graphicle_version"),
-        version,
-    )
+    write_version_named(dst, ".graphicle_version", version)
+}
+/// The mode bits of a file.
+#[cfg(unix)]
+fn mode_bits(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o7777
+}
+/// Elsewhere files have no mode bits; nothing reads this value.
+#[cfg(not(unix))]
+fn mode_bits(_: &fs::Metadata) -> u32 {
+    0o600
+}
+/// The mode [`paths::replace_file`] gives a file that replaces `path`: an
+/// existing regular file's own, else `fallback` (also in place of a link).
+fn kept_mode(path: &Path, fallback: paths::NewMode) -> paths::NewMode {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(fs::Metadata::is_file)
+        .map_or(fallback, |m| paths::NewMode::Bits(mode_bits(&m)))
+}
+/// Graphify `_write_version_stamp` (#3286, #4513): the stamp `name` beside
+/// `dst` is written to a private temporary file renamed over the stamp, so a
+/// symlink there (or a dangling one) is replaced, never written through. A
+/// new stamp, or one in place of a link, keeps the temporary file's 0600, as
+/// upstream's `mkstemp` leaves it; an existing regular stamp keeps its mode.
+pub fn write_version_named(dst: &Path, name: &str, version: &str) -> Result<()> {
+    let stamp = dst.parent().ok_or("Invalid skill path")?.join(name);
+    let mode = kept_mode(&stamp, paths::NewMode::Bits(0o600));
+    paths::replace_file(&stamp, &format!("{name}."), version.as_bytes(), mode)
+        .map_err(crate::Error::from)
 }
 pub fn copy_skill(name: &str, o: &Options) -> Result<PathBuf> {
     copy_skill_reporting(name, o).map(|(dst, _)| dst)
@@ -251,28 +276,46 @@ pub fn copy_skill_reporting(name: &str, o: &Options) -> Result<(PathBuf, Option<
     // 0.9.72: every writer of a skill directory holds its lock (install and
     // uninstall wait for it; unavailable locking proceeds unlocked).
     let _lock = skill_lock(dir, &o.home, true);
-    let refs = dir.join("references");
-    let staged = dir.join("references.tmp");
-    f::remove(&staged)?;
+    // Every write is staged under a random name (Graphify 0.9.95, #4513):
+    // the references in a private temporary directory, SKILL.md and the
+    // version stamp in exclusive temporary files, so a symlink pre-created at
+    // a predictable name redirects nothing. SKILL.md and the stamp are then
+    // renamed over their own names, as upstream's `os.replace` does: a
+    // symlink there (a cloned repository can commit one) is replaced, its
+    // target left alone.
+    let staging = f::references_staging(dir)?;
+    let staged = staging.path().join("references");
     f::write(
         &staged.join("workflows.md"),
         &crate::cli::program_text(include_str!("assets/install/workflows.md")),
     )?;
-    f::remove(&refs)?;
-    fs::rename(&staged, &refs).map_err(crate::Error::from)?;
+    f::swap_in_references(&staged, &dir.join("references"))?;
     let mut backup = None;
     // A copy is kept only when it differs from the packaged skill as written
     // for some program: a copy another executable embedding this command line
     // installed differs from this one's only in the command name.
-    let modified = |bytes: Vec<u8>| {
-        !String::from_utf8(bytes).is_ok_and(|s| crate::cli::same_but_program(&s, packaged))
+    let modified = |bytes: &[u8]| {
+        !std::str::from_utf8(bytes).is_ok_and(|s| crate::cli::same_but_program(s, packaged))
     };
-    if dst.exists() && fs::read(&dst).is_ok_and(modified) {
+    // A linked SKILL.md is replaced below without touching the file it names,
+    // so nothing of that file is copied: the link could name any readable
+    // file, and the copy would land in the skill folder (a deliberate
+    // difference: upstream's `shutil.copy2` copies it into SKILL.md.bak). The
+    // copy itself is renamed over SKILL.md.bak, so a link there is replaced
+    // rather than written through (upstream's copy follows it).
+    // Nothing is read through a link either (it could name a device).
+    let linked = fs::symlink_metadata(&dst).is_ok_and(|m| m.file_type().is_symlink());
+    let previous = if linked { None } else { fs::read(&dst).ok() };
+    if let Some(bytes) = previous.filter(|b| modified(b.as_slice())) {
         let path = dst.with_extension("md.bak");
-        fs::copy(&dst, &path).map_err(crate::Error::from)?;
+        let mode = fs::metadata(&dst).map_or(0o644, |m| mode_bits(&m));
+        paths::replace_file(&path, ".SKILL.md.bak.", &bytes, paths::NewMode::Bits(mode))
+            .map_err(crate::Error::from)?;
         backup = Some(path);
     }
-    f::write(&dst, &content)?;
+    let mode = kept_mode(&dst, paths::NewMode::Default);
+    paths::replace_file(&dst, ".SKILL.md.", content.as_bytes(), mode)
+        .map_err(crate::Error::from)?;
     write_version(&dst, crate::VERSION)?;
     Ok((dst, backup))
 }
@@ -819,7 +862,11 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         "copy_skill" => json!(copy_skill(s("platform"), &o)?),
         "remove_skill" => json!(remove_skill(s("platform"), &o)?),
         "write_version" => {
-            write_version(p("path"), s("version"))?;
+            write_version_named(
+                p("path"),
+                r["name"].as_str().unwrap_or(".graphicle_version"),
+                s("version"),
+            )?;
             Value::Null
         }
         "install_refs" => {

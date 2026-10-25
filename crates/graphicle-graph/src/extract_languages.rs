@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! File wrappers, source normalization and rationale extraction from extract.py.
 use crate::{
@@ -43,7 +43,10 @@ fn edge(src: &str, tgt: &str, rel: &str, path: &Path, line: usize) -> Value {
 /// `max_lines=1`, `break_long_words=True`, `break_on_hyphens=True`) plus the
 /// upstream fallback to plain character truncation when the result would be
 /// content-free. Lengths are in code points, like Python `len`.
+/// Credential-shaped text is redacted first (Graphify 0.9.93, #4566): a token
+/// cut by the truncation could not be recognized afterwards.
 pub fn shorten_rationale(text: &str, width: usize) -> String {
+    let text = crate::security::redact_secrets(text);
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let label = textwrap_shorten(&flat, width, '…');
     if label.is_empty() || label == "…" {

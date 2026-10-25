@@ -1,5 +1,252 @@
 # Upstream issue and PR review
 
+## Re-pin to the 0.9.95 release tag (24 October 2026)
+
+The port now follows Graphify **0.9.95**, commit
+`92741d162b2094ffc2fed58cfbd8ee823e9da62c` (the v0.9.95 tag, 23 October
+2026), read from the GitHub archive of the tag commit (SHA-256
+`b4bc34d33b48ca6e9b981809d104eaffcf4e53c9dfffc34bb317294863e4f2ec`). The
+ledger accounts for all 1,101 archive files: 96 application modules (0.9.95
+adds `graphify/extractors/yaml_config.py`), 89,145 Python source lines and 456
+upstream test files. The reference environment is the 0.9.91 one with only
+`graphifyy` moved to 0.9.95: its new `pyyaml>=6.0` requirement was already
+pinned (PyYAML 6.0.3), and its `tree-sitter-dm <0.26` cap matches the pinned
+0.25.1. `since-pinned.json` compares the tag with `v8`: identical.
+
+Graphify 0.9.92 (16 October), 0.9.93 (20 October), 0.9.94 (22 October) and
+0.9.95 (23 October) hold 81 release-note items in 147 commits. Every
+application change is a native default. Of the 81 items, 69 are adopted (the
+engine does what 0.9.95 does), 3 needed no change, 2 are adapted (the same
+behaviour in a native form) and 7 are skipped with a reason. Two more
+upstream fixes found while porting are adopted.
+
+Extraction and resolution:
+
+- JavaScript and TypeScript: members that differ only by `_`, `$` or `#` are
+  separate nodes (#4475, #4479); `this.field` is typed from an assignment in
+  any method, `static` and accessors included (#4473, #4482); workspace
+  `exports` into `dist/` fall back to `src/` (#4485, #4489); a dangling
+  barrel-named import edge is dropped once the import resolves through the
+  barrel (#4486, #4488); a member call on an untyped receiver waits for
+  receiver-typed resolution (#4598, #4605); a CommonJS `require` binding no
+  longer shadows the required export (#4621, #4634).
+- Python: module-level class ids that collide with a function or class are
+  salted apart (#2810, #4467); member calls on a pytest fixture parameter are
+  typed from the fixture's returned class (#4332, #4333); `module.func()`
+  binds the module child named exactly `func` (#4577); `TypeAlias`,
+  `type X =` and `NewType` are type nodes (#4578); a bare call resolved only
+  through a module import stays `INFERRED` (#2945, #4707).
+- C#: each overload is a node, the first with the plain id and the others
+  salted by their signature, and calls bind by argument count (#4584, #4591);
+  `delegate` declarations are types (#4552, #4556).
+- Go and Rust declarations that differ only by case are separate nodes
+  (#4468); Go `type A = B` (#4579), Rust `type` aliases and `union` items
+  (#4581) and C++ namespace-scope `using`/`typedef` (#4580) are type nodes; a
+  Rust `use` rooted at a sibling `mod` reaches its declaration (#4564,
+  #4567). Kotlin `typealias` (#4553, #4557), Dart `typedef` (#4582) and Swift
+  `macro` declarations with `#macro(...)` calls (#4551, #4555) are extracted.
+  Metal and CUDA qualifiers mint no sourceless nodes (#4550, #4554), and a
+  `.h` with `extern "C"` goes to the C++ extractor (#4526).
+- Solidity inherited calls, `super` calls and modifiers resolve through C3
+  linearization (#4379, #4384).
+- Objective-C: category ids are relative to the repository (#4666, #4642); a
+  member call resolves across a header and an implementation in different
+  folders (#4673, #4674); `NS_CLOSED_ENUM` is an enum (#4705); a class
+  declared in one repository and implemented in another is one definition
+  (#4690, #4691); a cross-repository call edge points at the call site
+  (#4668, #4669).
+- SQL: T-SQL names are unbracketed and procedure bodies record `reads_from`
+  and `writes_to` (#4635, #4649); `GO` ends a statement (#4651, #4652); a
+  table referenced before its `CREATE TABLE` folds onto it and
+  schema-qualified names bind (#4653, #4654); a `CREATE TABLE` the grammar
+  cannot parse is recovered from the error node (#4613, #4677).
+- Markdown: vault-relative wikilinks resolve (#4559); a bare method link
+  needs its class cited (#4609, #4617). Each `package.json` dependency entry
+  declares the node its importers resolve to, labelled `name@range` (#4569,
+  #4572).
+- YAML is code: `.yaml` and `.yml` are read structurally into a file node
+  and `contains` edges to their keys, data YAML is declined by design, unsafe
+  tags are refused, and output is capped at 1 MiB, 500 pairs and depth 6
+  (#2214, #4706). The engine reads YAML with its own `safe_load_all`
+  equivalent (Python dict keys, merge keys, non-finite floats).
+- Credential-shaped text in rationale labels is redacted (#4566).
+- An incremental build stops re-queuing a file declined by design: such
+  files are `skipped_sources` and carry `ast_empty` in the manifest (#2543,
+  #4672). As upstream, a manifest written before the marker re-queues a
+  declined file once more.
+- The engine's AST cache schema moves from 9 to 10 (upstream's moves from 17
+  to 25), so the first build after upgrading re-extracts every file.
+
+Build, serve, command line, security, hooks, installer, language model,
+exports:
+
+- Parallel edges survive graph.json and query output (#4500, #4503); a node's
+  confidence folds like an edge's (#4495, #4501, #4529, #4531); a node with a
+  source wins an id collision over a sourceless namesake (#4492, #4496); raw
+  builds resolve imports through the old-stem alias index (#4670, #4676).
+- Serve and query: near misses are reported rather than answered (#3917,
+  #4618), an exact name of several nodes is refused (#4511, #4517),
+  same-path files of two repositories stay apart in `explain` and `path`
+  (#4512), an IPv6 bind accepts `[::1]:port` (#4656).
+- Security: `validate_url` refuses hostless URLs, bad or zero ports and
+  embedded credentials (#4643, #4644, #4645); the SSRF guard blocks multicast
+  (#4708; `migration/IP_POLICY.json` regenerated); Obsidian file-type and
+  confidence tags are sanitized (#4709); the Google Workspace sidecar escapes
+  YAML fully (#4710); skill installs stage through random exclusive names
+  (#4513); a text capture never writes through an entry (#4657).
+- Detection: only a valid `.git` is a repository root (#4444, #4464);
+  versioned shebang interpreters classify (#4535); an unreadable PDF warns
+  once (#4527); binary media counts no words (#4548); an rc file is read as
+  `utf-8-sig` (#4538).
+- Hooks: post-merge runs on real merges, post-rewrite rebuilds after a
+  rebase, cherry-pick or revert, once (#4463, #4476, #4490, #4491), and every
+  hook runs from the top level (#3258, #4689).
+- Command line: `--version` and `--help` leave installed skills alone
+  (#4545); `--help` lists every `--platform` value (#4655).
+- LLM: the extraction prompt pins `source_file` (#3377, #2270, #4487), which
+  changes the semantic cache key, as upstream; `GRAPHICLE_BACKEND` selects or
+  disables the provider (#4361, #4376); salvaged community labels are
+  JSON-decoded (#4537).
+- `prs` reads StatusContext states (#4533) and keeps a slashed default branch
+  whole (#4534); a Maven pom contributes only its own dependencies (#4596);
+  `affected` resolves a disambiguated file label (#4698, #4713); the tree
+  export draws one root per repository on a merged graph (#4524, #4525).
+- Adopted with no change needed: the GraphML writer already wrote
+  multigraph edges with `id=key` (#4536); every native hook command already
+  quoted a spaced executable (#4662); Rust's file calls already take the
+  extended-length form for long Windows cache paths (#4542).
+- Adapted: the native post-commit block leaves the sequencer rule to
+  `hook launch` (#4463 and the rebase items); the unreadable-PDF warning is
+  upstream's message with the native parser's error text (#4527).
+- Found while porting, both adopted: the rebuild lock file is removed on
+  release (#4273, 0.9.8x), which supersedes the 0.9.70 note below that the
+  lock inode stays; post-checkout skips a checkout that keeps HEAD (#2421).
+- Found in review, adopted: the installed SKILL.md and the version stamp are
+  renamed over their own names, as upstream's `os.replace` does, so a
+  symbolic link there is replaced rather than written through (#3286), and
+  references/ stages in a 0700 folder (#4513); `update --no-cluster` and the
+  GraphML export replace a link at their output as well; a redirect's
+  `Location` is checked as `urllib` joins it, so an empty user name is
+  refused (#4643).
+
+Skipped, with the reason:
+
+- The scan root shared through `extractors/base.py` (#3666, #3758): a Python
+  import-structure refactor with no behaviour change; the engine already
+  scopes the scan root per extraction.
+- Skill text: code-only `--update` materializing the extraction (#4447,
+  #4313, #4456), stray backticks in `-c` blocks (#4461, #4462), Pi
+  semantic subagents (#4494, #4502), the exact Neo4j and FalkorDB push URI
+  (#4349) and self-reported chunk coverage (#3987, #2225). Graphicle's skill
+  runs the native `update`, which does the AST pass and the merge in one
+  process, and has none of those blocks.
+- The `tree-sitter-dm <0.26` pip cap (#4044): Python packaging. The engine
+  pins the crate `tree-sitter-dm =0.25.1`, whose `parser.c` has
+  `LANGUAGE_VERSION 15`, the version upstream's lock file pins.
+
+Superseded adaptations: `tools/upstream_fixes.py` drops the #2712/#2716
+bracket hunks, because 0.9.94 (#4635) unbrackets T-SQL names upstream and the
+engine follows it (labels are `dbo.Alpha`, not `[dbo].[Alpha]`); the
+"Adopted changes" row for PR 2716 below describes the earlier behaviour. The
+#3020 hunk stays, re-anchored after the recovered-table pre-registration of
+#4613. `adaptations.json` drops the #2716 record.
+
+Graphicle's own defaults beyond 0.9.95, outside the parity claim:
+
+- Every reader that builds a graph from a saved graph.json repairs a file
+  whose links hold parallel edges under `multigraph: false`, as 0.9.95's MCP
+  loader does, so the same links read the same whichever release wrote the
+  file (`build::mark_parallel_links`): the MCP server, `affected::load_graph`
+  (the memory library, Pro and sessions), the command-line loader (`query`,
+  `explain`, `path`, `merge-graphs`), the global graph, `export` (every
+  format), `merge-driver` and `paths::load_node_link_graph` (`benchmark`,
+  `prs` and the `paths.load_graph` operation). Upstream repairs only in its
+  MCP loader. `cluster-only` rebuilds the graph from the file's links, `tree`
+  reads them directly and callflow reads them as a multigraph, so none of
+  these depends on the flag.
+- A graph.json over the 512 MiB cap that the engine wrote itself is read
+  whatever its size where the engine updates, serves or queries it
+  (`security::check_own_graph_size_cap`: `update`, `watch`, `serve`, `query`,
+  `explain`, `path`, `merge-graphs`, `cluster-only` and `label`); a file
+  from elsewhere keeps the cap, as do the global graph's inputs, `prs`,
+  `benchmark`, the exports and the incremental merge of `extract`. A file
+  over the cap that an earlier release wrote has no record and is refused
+  too; the error names the one-time rebuild that records it
+  (`GRAPHICLE_MAX_GRAPH_BYTES=<N>GB graphicle-graph extract --force`).
+
+Found while re-pinning and corrected: the rebuild read back its own
+temporary graph under the size cap, which upstream's `_rebuild_code` does
+not do (it caps only the existing graph.json), so on a project whose graph is
+over 512 MiB, kubernetes among them, even the first `update` failed.
+
+Writes a symbolic link could redirect: a cloned repository can commit a link
+at any path the engine writes. Where upstream 0.9.95 renames over the path
+(`os.replace`), the engine replaces the link (`paths::replace_file`: a private
+temporary file renamed over the name, the link's target left alone, nothing
+created through a dangling link); it follows a link only where upstream does,
+except for the deliberate differences marked below.
+
+| Write | Upstream 0.9.95 | Engine |
+|---|---|---|
+| SKILL.md, every platform (install, `--project`, vscode, the automatic refresh) | temporary file and `os.replace`: link replaced | replaced |
+| .graphicle_version | temporary file and `os.replace`; 0600 when new | replaced, same modes |
+| references/ | `mkdtemp` (0700) staging and `os.replace`; a link at references/ is unlinked | the same |
+| SKILL.md.bak | `shutil.copy2`: copies the file a linked SKILL.md names, writes through a link at SKILL.md.bak | no copy when SKILL.md is a link; the copy is renamed over SKILL.md.bak (deliberate differences) |
+| settings `*.graphicle-bak` (Claude, Codex, Gemini, CodeBuddy hooks) | `shutil.copy2`: writes through a link at the backup | renamed over the backup's name (deliberate difference) |
+| settings.json, the CLAUDE.md, AGENTS.md, GEMINI.md, CODEBUDDY.md and copilot-instructions sections, rule, steering, command and plugin files, opencode.json | `write_text`: follows (documented for nix and home-manager, #3805) | follows, as upstream |
+| graph.json from `update` and hook rebuilds | a temporary graph, then `os_replace` over graph.json: link replaced | replaced |
+| graph.json from extract, `cluster-only` and `label` | `write_json_atomic`: resolves and writes through (documented for shared output folders) | follows, as upstream |
+| GRAPH_REPORT.md, label and signature sidecars, manifest, analysis, html, tree, callflow, svg, canvas, cypher, wiki and Obsidian vault | `write_text_atomic`, `write_text`, `open('w')`, `savefig`: follow | follow, as upstream |
+| graph.graphml | temporary file and `os_replace`: link replaced | replaced |
+| cache entries, the stat index and the engine's syntax facts | `mkstemp` and `os.replace`: link replaced | replaced |
+| the rebuild's temporary graph | the fixed name `.graph.tmp.json`, written through a link, then moved over graph.json | a random name created exclusively in the output folder, renamed over graph.json, removed if the rebuild stops (deliberate difference) |
+| .graphicle_root, the html stale marker | `write_text`, `touch`: follow | follow, as upstream |
+| .rebuild.lock | `open('a+')`, then truncate and write the PID: follows | a link is removed and a regular file created; the open never follows a link (`O_NOFOLLOW`) (deliberate difference) |
+| git hooks | `write_text`: follows | follows, as upstream (hooks live in .git, which a clone does not carry) |
+| .gitattributes (hook install and uninstall) | `write_text`: appends through a link | a linked .gitattributes is neither read nor written, and reported as left alone; writes refuse a link (`O_NOFOLLOW`) (deliberate difference) |
+| .graphiclerc, .graphicleignore | never written | never written |
+
+The three deliberate differences beyond upstream close what upstream still
+allows: a repository that commits a link at `.graphicle/.rebuild.lock`,
+`.graphicle/.graph.tmp.json` or `.gitattributes` would have the file it names
+truncated to a PID line, overwritten with graph JSON, or given a merge line by
+`update`, a hook rebuild or `hook install`. For .gitattributes, refusing
+matches git, which does not read an in-tree .gitattributes that is a symbolic
+link (since 2.32); replacing the link would change a tracked file's type and
+drop what it named. Test: `compat_0_9_95_cli`
+`links_at_the_lock_the_graph_temp_and_gitattributes_are_not_followed`.
+
+Known differences:
+
+- YAML: PyYAML rejects a tab used as separation after a token in more places
+  than the engine detects (the engine refuses leading tabs, as PyYAML does);
+  neither the upstream tests nor the generated cases have one. A non-finite
+  float inside `!!set`, `!!omap` or `!!pairs` makes the engine refuse the
+  file, while PyYAML loads it.
+- Secret redaction (#4566): the engine's regular expression engine stops a
+  search after a fixed amount of backtracking, where Python's `re.sub` has no
+  limit, and a search it cannot finish redacts its text whole rather than
+  keep a possible secret. The engine searches a docstring or comment one
+  line at a time, which gives `re.sub`'s result (no credential shape spans a
+  line break), so the limit applies per line: only a single line of tens of
+  thousands of characters comes back as `[redacted]` where upstream keeps
+  it. Before, a whole text of about 50,000 to 90,000 characters of ordinary
+  prose did. Test: `security::tests::a_long_docstring_is_searched_line_by_line`.
+- A drifted `"nan"` or `"inf"` confidence gives Python a non-finite score
+  (written as `NaN`/`Infinity`); a JSON value cannot hold one, so the engine
+  records `null`.
+- A salvaged community label holding a lone surrogate escape (`\ud800`) is
+  valid for Python's `json` and not for the engine's parser; it stays raw.
+- The comparison checks compare the force-directed layout with NetworkX at an
+  absolute tolerance of 1e-8 (2e-9 before): on the Linux x86-64 host one
+  coordinate of 22 differs by 2.2e-9, with the same values at 0.9.91 and at
+  0.9.95.
+- Upstream tests that exercise only a Python seam are recorded as not
+  applicable in the checks' receipts: the declined-file rebuild test patches
+  the private `_DISPATCH` table; the scan-root test reads a module variable;
+  `test_cache_long_paths.py` runs only on Windows; `test_serve_http.py` needs
+  `mcp` and `starlette`, which the reference environment does not install.
+
 ## Re-pin to the 0.9.72 release tag (30 September 2026)
 
 The former pin, `4d01104edf9f5057fbb841523c7cbdb380c7f60c`, was a

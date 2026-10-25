@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py, graphify/extractors/resolution.py
 //! Corpus symbol resolution and collision handling from the pinned application.
 
@@ -89,13 +89,16 @@ impl<'r> SourceKeys<'r> {
         })
     }
 }
+/// A dotted label names a namespace or module in most languages, but a SQL
+/// table is `schema.name`: a type-like definition a reference binds to
+/// (Graphify 0.9.94, #4653).
 pub fn is_type_like_definition(n: &Value) -> bool {
     let label = s(n, "label").trim();
     s(n, "type") != "namespace"
         && !label.is_empty()
         && !label.ends_with(')')
         && !label.starts_with('.')
-        && !label.contains('.')
+        && (!label.contains('.') || s(n, "source_file").to_lowercase().ends_with(".sql"))
         && s(n, "file_type") == "code"
 }
 pub fn js_source_path(source: &str, root: &Path) -> Option<PathBuf> {
@@ -256,6 +259,9 @@ type Key = (P, u32);
 type Origins = FxHashMap<Key, Key>;
 type Symbols = FxHashMap<Key, Sym>;
 type Stars = FxHashMap<P, Vec<P>>;
+/// An import's authored site (importer, `L<line>`, target file) and the
+/// `(barrel, imported name)` pairs it named there (#4486).
+type ImportSites<'a> = FxHashMap<(P, String, P), Vec<(P, &'a str)>>;
 /// The node a symbol names, by its number among the pass's fresh nodes
 /// ([`Nodes`]) or its index in the context nodes, so the tables hold no copy
 /// of the id.
@@ -980,7 +986,6 @@ fn apply_pass_facts(
         }
     }
     facts.free_exports();
-    drop(exports);
     drop(path_map);
     // Retargeting above changed edge identities in place.
     if retargeted {
@@ -1019,6 +1024,62 @@ fn apply_pass_facts(
             }
         }
     }
+    // The structural extractor names the imported symbol on the immediate
+    // barrel, which defines nothing, so its edge dangles and build mints an
+    // external stub beside the edge the loop above added to the defining
+    // symbol (0.9.92, #4486). Drop it once the import resolved through the
+    // barrel to a node the corpus owns; a chain ending outside the corpus
+    // keeps its edge, and a barrel exporting one name from two modules keeps
+    // the edge on the barrel (#2034).
+    let mut superseded: FxHashSet<usize> = FxHashSet::default();
+    {
+        let mut sites: ImportSites<'_> = FxHashMap::default();
+        for i in facts.imports() {
+            let target = rs.get(i.target_path);
+            sites
+                .entry((rs.get(i.file_path), format!("L{}", i.line), target))
+                .or_default()
+                .push((target, i.imported_name));
+        }
+        for (index, edge) in edges.iter().enumerate() {
+            if s(edge, "relation") != "imports" || owned.contains(s(edge, "target")) {
+                continue;
+            }
+            let target_file = s(edge, "target_file");
+            if target_file.is_empty() {
+                continue;
+            }
+            let Some(source) = rs.source(s(edge, "source_file"), root) else {
+                continue;
+            };
+            let target_path = PathBuf::from(target_file);
+            let site = (
+                source,
+                s(edge, "source_location").to_string(),
+                rs.get(&target_path),
+            );
+            let stem = file_stem(&target_path);
+            for (barrel, name) in sites.get(&site).into_iter().flatten() {
+                if s(edge, "target") != make_id([stem.as_str(), name]) {
+                    continue;
+                }
+                let barrel_key = (*barrel, names.id(name));
+                let (cs, _) = candidates(&barrel_key, &exports, &stars, &FxHashSet::default());
+                if cs.len() == 1 {
+                    let origin = *cs.iter().next().unwrap();
+                    if origin != barrel_key
+                        && symbols
+                            .get(&origin)
+                            .is_some_and(|sym| owned.contains(sym_id(*sym, all, context_nodes)))
+                    {
+                        superseded.insert(index);
+                    }
+                }
+                break;
+            }
+        }
+    }
+    drop(exports);
     facts.free_imports();
     // #3777: a provisional AST `imports_from` edge whose package id collided
     // with a same-named sibling module file (`from nettacker import logger`
@@ -1037,7 +1098,7 @@ fn apply_pass_facts(
             }
         }
     }
-    let mut retracted = FxHashSet::default();
+    let mut retracted = superseded;
     for (from, to, line, local) in facts.module_imports() {
         if let (Ok(from_rel), Ok(to_rel)) = (from.strip_prefix(root), to.strip_prefix(root)) {
             let src = make_id([file_stem(from_rel).as_str()]);

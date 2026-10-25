@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/export.py
 //! Graphify's Obsidian vault and Canvas exports, including ownership manifests.
 use crate::{
@@ -124,14 +124,20 @@ pub fn to_obsidian(
             .as_str()
             .ok_or("Community name must be a string")?;
         let ftype = n.attributes.get("file_type").cloned().unwrap_or(json!(""));
+        // File type and confidence pass through the same tag sanitizer as the
+        // community tag, so a crafted value cannot break out of the YAML list
+        // (Graphify 0.9.95, #4709). The four standard file types are unchanged.
         let ft = if truth(&ftype) {
-            format!("graphicle/{}", string(&ftype))
+            format!("graphicle/{}", obsidian_tag(&string(&ftype)))
         } else {
             "graphicle/document".into()
         };
         let tags = [
             ft,
-            format!("graphicle/{}", string(&dominant_confidence(graph, i))),
+            format!(
+                "graphicle/{}",
+                obsidian_tag(&string(&dominant_confidence(graph, i)))
+            ),
             format!("community/{}", obsidian_tag(cname)),
         ];
         let mut lines = vec![

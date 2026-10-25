@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/export.py
 //! Native graphify/export.py: protected artifacts and graph serialization.
 pub use crate::export_formats::{to_graphml, to_svg};
@@ -638,6 +638,13 @@ pub fn to_json(
             .collect::<Vec<_>>()
     });
     let edge_count = originals.as_ref().map_or(edges.len(), Vec::len);
+    // The flag comes from the in-memory graph, but restored links may hold
+    // parallel edges (#3999); keep the serialized flag consistent with them, or
+    // readers collapse them (Graphify 0.9.92, #4500).
+    let multigraph = graph.multigraph
+        || originals.as_ref().is_some_and(|links| {
+            crate::build::has_parallel_links(links.iter().copied(), graph.directed)
+        });
     // Each record is built exactly as `to_node_link` plus the fields below
     // would build it, but only while it is being keyed or written, so the
     // document is never held as one Value tree next to the graph.
@@ -730,7 +737,7 @@ pub fn to_json(
     });
     let document = NodeLinkDocument {
         directed: graph.directed,
-        multigraph: graph.multigraph,
+        multigraph,
         graph: &graph_attributes,
         nodes: Records {
             order: &node_order,

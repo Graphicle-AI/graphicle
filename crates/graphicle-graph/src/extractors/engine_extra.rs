@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 #[derive(Clone, Copy)]
 pub struct CallableInfo<'a> {
@@ -263,7 +263,9 @@ impl<'a, 't> Engine<'a, 't> {
         {
             let name = self.text(name);
             if !name.is_empty() {
-                let id = make_id([parent, name.as_str()]);
+                // Salted apart from a sibling differing only by `_`, `$` or `#`
+                // (0.9.92, #4475).
+                let id = self.js_member_nid(parent, n, &name);
                 self.js_callable(
                     &id,
                     CallableInfo {
@@ -317,18 +319,19 @@ impl<'a, 't> Engine<'a, 't> {
                             value,
                         );
                         found = true;
-                    } else if (exported
-                        && name.kind_name() == "identifier"
-                        && !crate::ids::normalize_id(&name_text).is_empty())
-                        || [
-                            "object",
-                            "array",
-                            "as_expression",
-                            "satisfies_expression",
-                            "call_expression",
-                            "new_expression",
-                        ]
-                        .contains(&value.kind_name())
+                    } else if !js_value_is_require(value, self.source)
+                        && ((exported
+                            && name.kind_name() == "identifier"
+                            && !crate::ids::normalize_id(&name_text).is_empty())
+                            || [
+                                "object",
+                                "array",
+                                "as_expression",
+                                "satisfies_expression",
+                                "call_expression",
+                                "new_expression",
+                            ]
+                            .contains(&value.kind_name()))
                     {
                         if exported && name.kind_name() == "object_pattern" {
                             for prop in named(name) {
@@ -436,6 +439,22 @@ impl<'a, 't> Engine<'a, 't> {
                 self.walk(c, parent);
             }
             return true;
+        }
+        // A namespace- or file-scope alias (`using X = ...;`, `typedef ... X;`)
+        // gets a type node contained by the file, so a reference to it lands
+        // on a sourced declaration (0.9.95, #4580). The walk goes on, so a
+        // typedef'd struct body still gets its own node.
+        if self.is("cpp") && matches!(t, "alias_declaration" | "type_definition") {
+            let line = n.start_position().row + 1;
+            for alias in cpp_alias_names(n, self.source) {
+                let id = make_id([self.stem.as_str(), alias.as_str()]);
+                if !self.seen.contains(&id) {
+                    self.add_node(&id, &alias, line, None, Value::Null);
+                    let file = self.file.clone();
+                    self.edge(&file, &id, "contains", line, None, Value::Null);
+                }
+            }
+            return false;
         }
         if let Some(parent) = parent
             && ((self.is("scala") && t == "enum_case_definitions")

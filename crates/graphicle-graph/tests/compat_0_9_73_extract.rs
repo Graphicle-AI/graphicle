@@ -159,7 +159,11 @@ fn cpp_enum_specifier_members_are_extracted() {
         assert!(case_of.contains(&pair(a, b)), "missing case_of {a} -> {b}");
     }
     assert!(!labels.contains("A"));
-    assert!(!labels.contains("Flag"));
+    // Graphify 0.9.95 (#4580): the typedef name `Flag` is a type alias node of
+    // its own, contained by the file, with no members.
+    assert!(!labels.contains(""));
+    assert!(edge_labels(&r, "contains").contains(&pair("colors.hpp", "Flag")));
+    assert!(!case_of.iter().any(|(source, _)| source == "Flag"));
 }
 
 // test_cpp_nested_and_cli.py::test_cpp_enum_nested_in_class_and_namespace_is_extracted

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/analyze.py
 //! Native, ordered unweighted Brandes and bounded directed-cycle algorithms.
 //! These cover the NetworkX operations used by graphify/analyze.py.

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Cross-file receiver binding for the application extraction pipeline.
 use crate::{
@@ -69,6 +69,15 @@ pub fn park<R: Rec>(node: Option<&mut Value>, callee: &str, receiver: &str, lang
             .rec_get("source_location")
             .cloned()
             .unwrap_or(Value::Null);
+    }
+    // The call-site file (0.9.94, #4668): the line above is in it, which is not
+    // always the caller node's own file (an Objective-C method declared in a
+    // `.h` and called from its `.m`).
+    if let Some(file) = raw
+        .rec_get("source_file")
+        .filter(|file| crate::build::truthy(file))
+    {
+        v["file"] = json!(crate::python_compat::string(file));
     }
     calls.push(v);
 }
@@ -468,6 +477,11 @@ fn typed_member_edges<'p, P: PerFile, E: Rec>(
     let mut bases: Index = BTreeMap::new();
     let mut file_of: BTreeMap<&str, &str> = BTreeMap::new();
     let mut imports: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    // TS (0.9.92, #4475): `updateHash` / `_updateHash` are two nodes of one
+    // class, so the exact member name is tried first; the folded key stays the
+    // fallback unless several members fold to it.
+    let mut method_exact: BTreeMap<(&str, String), &str> = BTreeMap::new();
+    let mut method_key_ambiguous: BTreeSet<(&str, String)> = BTreeSet::new();
     for rel in if lang == "cpp" {
         vec!["defines", "method"]
     } else {
@@ -476,7 +490,20 @@ fn typed_member_edges<'p, P: PerFile, E: Rec>(
         for e in edges.iter().filter(|e| rs(*e, "relation") == rel) {
             if let Some(n) = snapshot.get(rs(e, "target")) {
                 enclosing.entry(rs(e, "target")).or_insert(rs(e, "source"));
-                methods.insert((rs(e, "source"), key(s(n, "label"), lang)), rs(e, "target"));
+                let folded = (rs(e, "source"), key(s(n, "label"), lang));
+                if lang == "typescript" {
+                    if methods
+                        .get(&folded)
+                        .is_some_and(|old| *old != rs(e, "target"))
+                    {
+                        method_key_ambiguous.insert(folded.clone());
+                    }
+                    let label = s(n, "label");
+                    let exact = label.strip_suffix("()").unwrap_or(label);
+                    let exact = exact.strip_prefix('.').unwrap_or(exact);
+                    method_exact.insert((rs(e, "source"), exact.to_string()), rs(e, "target"));
+                }
+                methods.insert(folded, rs(e, "target"));
             }
         }
     }
@@ -807,11 +834,52 @@ fn typed_member_edges<'p, P: PerFile, E: Rec>(
                     || (lang == "objc" && !is_language_builtin(&ty)))
             {
                 parked.push((caller.to_string(), callee.to_string(), ty, raw));
+            } else if lang == "objc"
+                && let Some(classes) = defs.get(&key(&ty, lang)).filter(|d| d.len() > 1)
+            {
+                // `_resolve_member_target` (0.9.94, #4673): same-named classes are
+                // a class split across directories or categories that the
+                // decl/def fold (dir-local, #1556) left apart. The selector binds
+                // when exactly one of them DEFINES it (an implementation in a
+                // `.m`/`.mm`, or a folded node naming one); two unrelated
+                // classes that both define it stay ambiguous.
+                let selector = key(callee, lang);
+                let definitions = classes
+                    .iter()
+                    .filter_map(|class| methods.get(&(*class, selector.clone())).copied())
+                    .filter(|method| {
+                        snapshot.get(*method).is_some_and(|n| {
+                            n.get("definition_file").is_some_and(truthy)
+                                || matches!(
+                                    crate::path_syntax::suffix(
+                                        s(n, "source_file").rsplit('/').next().unwrap_or_default()
+                                    )
+                                    .to_lowercase()
+                                    .as_str(),
+                                    ".m" | ".mm"
+                                )
+                        })
+                    })
+                    .collect::<BTreeSet<_>>();
+                if definitions.len() == 1 {
+                    let target = *definitions.iter().next().unwrap();
+                    emit_with(&mut added, &mut seen, raw, target, "calls", exact);
+                }
             }
             continue;
         };
         let mut target = methods.get(&(owner, key(callee, lang))).copied();
+        let mut exact_name = false;
+        if lang == "typescript" {
+            if let Some(found) = method_exact.get(&(owner, callee.to_string())) {
+                target = Some(*found);
+                exact_name = true;
+            } else if method_key_ambiguous.contains(&(owner, key(callee, lang))) {
+                target = None;
+            }
+        }
         if lang == "typescript"
+            && !exact_name
             && let Some(method) = target.and_then(|t| snapshot.get(t))
             && s(method, "label").trim_start_matches('.').starts_with('#')
             && !callee.starts_with('#')
@@ -881,6 +949,9 @@ pub fn csharp_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
     }
     let resolver = CsharpNameResolver::new_of(nodes_ro, edges_ro);
     let mut method_index: BTreeMap<(String, String), String> = BTreeMap::new();
+    // Overloads share a key (0.9.95, #4584): the first declared one stands
+    // for the name, and the call's argument count picks among them below.
+    let mut method_peers: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     let mut enclosing: BTreeMap<String, String> = BTreeMap::new();
     for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
         let Some(method) = node_by_id.get(rs(e, "target")) else {
@@ -889,10 +960,14 @@ pub fn csharp_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
         enclosing
             .entry(rs(e, "target").into())
             .or_insert_with(|| rs(e, "source").into());
-        method_index.insert(
-            (rs(e, "source").into(), ckey(s(method, "label"))),
-            rs(e, "target").into(),
-        );
+        let method_key = (rs(e, "source").to_string(), ckey(s(method, "label")));
+        method_index
+            .entry(method_key.clone())
+            .or_insert_with(|| rs(e, "target").into());
+        method_peers
+            .entry(method_key)
+            .or_default()
+            .push(rs(e, "target").into());
     }
     let mut bases_of: Index = BTreeMap::new();
     let mut unresolved: BTreeSet<String> = BTreeSet::new();
@@ -1123,9 +1198,30 @@ pub fn csharp_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
             };
             (type_nid, false)
         };
-        let Some(method) = method_on_type_or_bases(&type_nid, &ckey(callee)) else {
+        let Some(mut method) = method_on_type_or_bases(&type_nid, &ckey(callee)) else {
             continue;
         };
+        if let Some(peers) = enclosing
+            .get(&method)
+            .and_then(|owner| method_peers.get(&(owner.clone(), ckey(callee))))
+            .filter(|peers| peers.len() > 1)
+        {
+            let null = Value::Null;
+            let picked = crate::extractors::engine_types::csharp_pick_overload(
+                peers.iter().map(|id| {
+                    (
+                        id.as_str(),
+                        node_by_id
+                            .get(id.as_str())
+                            .map_or(&null, |n| &n["metadata"]),
+                    )
+                }),
+                rc.rec_get("arity").and_then(Value::as_i64),
+            );
+            if let Some(picked) = picked {
+                method = picked.to_string();
+            }
+        }
         if method == caller || !seen.insert(caller, &method) {
             continue;
         }
@@ -1838,6 +1934,9 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
     let mut files: BTreeMap<&'a str, &'a str> = BTreeMap::new();
     let mut imports: BTreeMap<&'a str, BTreeSet<&'a str>> = BTreeMap::new();
     let mut aliases: BTreeMap<(&'a str, &'a str), String> = BTreeMap::new();
+    // The same children by exact name, for a folded key several of them share
+    // (`dataclass_schema()` beside `class DataclassSchema`, 0.9.93, #4577).
+    let mut children_exact: BTreeMap<(&'a str, &'a str), Vec<&'a str>> = BTreeMap::new();
     for e in edges {
         let (src, tgt) = (rs(e, "source"), rs(e, "target"));
         match rs(e, "relation") {
@@ -1863,6 +1962,10 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
                         .entry(keys.key(s(n, "label")))
                         .or_default()
                         .push(tgt);
+                    let exact = s(n, "label")
+                        .trim_matches(['(', ')'])
+                        .trim_start_matches('.');
+                    children_exact.entry((src, exact)).or_default().push(tgt);
                     files.insert(tgt, src);
                 }
             }
@@ -1993,6 +2096,75 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
         }
         None
     };
+    // pytest fixture nodes by name, with their repo-relative file: stamped on
+    // re-extracted files, already relative on an unchanged file's node.
+    let mut fixture_files: FxHashMap<String, String> = FxHashMap::default();
+    for r in per {
+        if let Some(located) = r.key("_python_fixture_files").and_then(Value::as_object) {
+            for (id, file) in located {
+                fixture_files.insert(id.clone(), string(file));
+            }
+        }
+    }
+    let mut fixtures_by_name: FxHashMap<String, Vec<(String, &'a Value)>> = FxHashMap::default();
+    let mut fixture_nodes = by_id
+        .values()
+        .copied()
+        .filter(|n| {
+            n.get("_py_fixture").is_some_and(truthy) && n.get("source_file").is_some_and(truthy)
+        })
+        .collect::<Vec<_>>();
+    // `all_nodes` order: the by-id table has one node per id.
+    fixture_nodes.sort_by_key(|n| s(n, "id"));
+    for n in fixture_nodes {
+        let file = fixture_files
+            .get(s(n, "id"))
+            .cloned()
+            .unwrap_or_else(|| s(n, "source_file").replace('\\', "/"));
+        let name = py_strip(s(n, "label")).trim_start_matches('.');
+        let name = name.strip_suffix("()").unwrap_or(name).to_string();
+        fixtures_by_name.entry(name).or_default().push((file, n));
+    }
+    // `_nearest_fixture`: pytest's order, nearest first; two definitions in
+    // one place are ambiguous.
+    let nearest_fixture = |test_file: &str, name: &str| -> Option<&'a Value> {
+        let candidates = fixtures_by_name.get(name)?;
+        if test_file.is_empty() {
+            return None;
+        }
+        let at = |file: &str| {
+            candidates
+                .iter()
+                .filter(|(w, _)| w == file)
+                .map(|(_, n)| *n)
+                .collect::<Vec<_>>()
+        };
+        let mut here = at(test_file);
+        let mut directory = test_file.to_string();
+        while here.is_empty() {
+            let parent = match directory.rfind('/') {
+                Some(0) => "/".to_string(),
+                Some(i) => directory[..i].to_string(),
+                None => String::new(),
+            };
+            if parent == directory {
+                return None;
+            }
+            directory = parent;
+            let conftest = if directory.is_empty() {
+                "conftest.py".to_string()
+            } else if directory.ends_with('/') {
+                format!("{directory}conftest.py")
+            } else {
+                format!("{directory}/conftest.py")
+            };
+            here = at(&conftest);
+            if directory.is_empty() {
+                break;
+            }
+        }
+        (here.len() == 1).then(|| here[0])
+    };
     let mut seen: Seen<&'a str> = pairs(edges, false);
     let mut added = vec![];
     // `_emit_call`: an attribute read only runs a property getter, and only
@@ -2089,6 +2261,32 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
                 _ => {}
             }
         }
+        if raw.rec_get("_python_fixture_param").is_some_and(truthy) {
+            // Fixture arm (0.9.92, #4332): `runner.invoke()` in a test whose
+            // parameter `runner` is a pytest fixture: the nearest one in pytest's
+            // order (the module, then the `conftest.py` of its directory and of
+            // each directory above). Its returned class goes through the
+            // typed-receiver gate, judged from the fixture's own file.
+            if let Some(fixture) = nearest_fixture(rs(raw, "_python_test_file"), receiver)
+                && let kind = s(fixture, "_py_fixture")
+                && !kind.is_empty()
+                && kind != crate::extractors::engine_scope::PYTEST_FIXTURE_UNTYPED
+                && let Some(class) = classes.get(pkey(kind).as_str()).filter(|c| c.len() == 1)
+                && let Some(fixture_file) = file_node(s(fixture, "id"))
+            {
+                let class = *class.iter().next().unwrap();
+                let imported = imports.get(fixture_file);
+                let class_file = file_node(class);
+                if class_file == Some(fixture_file)
+                    || imported.is_some_and(|i| {
+                        i.contains(class) || class_file.is_some_and(|f| i.contains(f))
+                    })
+                {
+                    emit_call(raw, method_of(class, callee), true, &mut added);
+                }
+            }
+            continue;
+        }
         let receiver_type = rs(raw, "receiver_type");
         if !receiver_type.is_empty() && !upper(receiver) {
             // A local or parameter typed by an annotation or a constructor
@@ -2156,11 +2354,22 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             if mods.len() != 1 {
                 continue;
             }
-            children
+            let found = children
                 .get(mods[0])
                 .and_then(|m| m.get(pkey(callee).as_str()))
-                .filter(|c| c.len() == 1)
-                .map(|c| c[0])
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            // The key folds case and drops `_`; Python names are exact, so
+            // among several the one named exactly `callee` is the target.
+            let found = if found.len() > 1 {
+                children_exact
+                    .get(&(mods[0], callee))
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+            } else {
+                found
+            };
+            (found.len() == 1).then(|| found[0])
         };
         emit_call(raw, target, false, &mut added);
     }

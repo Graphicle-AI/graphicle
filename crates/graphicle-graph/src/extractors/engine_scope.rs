@@ -1,10 +1,193 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Binding and receiver scopes from graphify/extractors/engine.py.
 use super::{base::read_text, engine_types::*, models::LanguageConfig};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::Node;
+/// `PYTEST_FIXTURE_UNTYPED` (0.9.92, #4332): a fixture whose returned type is
+/// unknown still shadows one further up.
+pub const PYTEST_FIXTURE_UNTYPED: &str = "?";
+/// `_python_is_test_module`: a `conftest.py`, `test_*.py` or `*_test.py`.
+pub fn python_is_test_module(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    let name = normalized.rsplit('/').next().unwrap_or("");
+    name == "conftest.py"
+        || (name.starts_with("test_") && name.ends_with(".py"))
+        || name.ends_with("_test.py")
+}
+/// `_python_is_pytest_fixture`: decorated `@pytest.fixture`, `@fixture` or
+/// `@pytest_asyncio.fixture`, with or without arguments.
+pub fn python_is_pytest_fixture(func: Node<'_>, source: &[u8]) -> bool {
+    let Some(parent) = func
+        .parent()
+        .filter(|p| p.kind_name() == "decorated_definition")
+    else {
+        return false;
+    };
+    children(parent)
+        .into_iter()
+        .filter(|d| d.kind_name() == "decorator")
+        .any(|d| {
+            let mut expr = named(d).into_iter().next();
+            if expr.is_some_and(|e| e.kind_name() == "call") {
+                expr = expr.and_then(|e| e.child_by_field_name("function"));
+            }
+            expr.is_some_and(|e| {
+                ["pytest.fixture", "fixture", "pytest_asyncio.fixture"]
+                    .contains(&read_text(e, source).as_str())
+            })
+        })
+}
+/// `_python_annotation_class`: `Client`, `mod.Client`, or the item of
+/// `Iterator[Client]` / `Generator[Client, None, None]` (a yield fixture).
+fn python_annotation_class(type_node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
+    let mut node = type_node;
+    while let Some(n) = node.filter(|n| n.kind_name() == "type") {
+        node = named(n).into_iter().next();
+    }
+    let node = node?;
+    if node.kind_name() == "generic_type" {
+        let parts = named(node);
+        let head = parts
+            .iter()
+            .find(|c| matches!(c.kind_name(), "identifier" | "attribute"))?;
+        let params = parts.iter().find(|c| c.kind_name() == "type_parameter")?;
+        let head = read_text(*head, source);
+        if ![
+            "Iterator",
+            "Iterable",
+            "Generator",
+            "AsyncIterator",
+            "AsyncIterable",
+            "AsyncGenerator",
+        ]
+        .contains(&head.rsplit('.').next().unwrap_or(""))
+        {
+            return None;
+        }
+        return python_annotation_class(named(*params).into_iter().next(), source);
+    }
+    if !matches!(node.kind_name(), "identifier" | "attribute") {
+        return None;
+    }
+    let text = read_text(node, source);
+    let name = text.rsplit('.').next().unwrap_or("");
+    name.chars()
+        .next()
+        .is_some_and(char::is_uppercase)
+        .then(|| name.to_string())
+}
+/// `_python_fixture_type`: the class a fixture returns or yields, from its
+/// return annotation, else every `return` / `yield` naming one class
+/// (`return CliRunner()`, `yield client` after `client = Client()`); anything
+/// else is [`PYTEST_FIXTURE_UNTYPED`].
+pub fn python_fixture_type(func: Node<'_>, source: &[u8], locals: &PythonBindings) -> String {
+    if let Some(ret) = func.child_by_field_name("return_type") {
+        return python_annotation_class(Some(ret), source)
+            .unwrap_or_else(|| PYTEST_FIXTURE_UNTYPED.into());
+    }
+    let mut found: BTreeSet<Option<String>> = BTreeSet::new();
+    let mut stack = func
+        .child_by_field_name("body")
+        .map(children)
+        .unwrap_or_default();
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind_name(),
+            "function_definition" | "class_definition" | "lambda"
+        ) {
+            continue;
+        }
+        if !matches!(node.kind_name(), "return_statement" | "yield") {
+            stack.extend(children(node));
+            continue;
+        }
+        let Some(value) = named(node).into_iter().next() else {
+            continue;
+        };
+        if value.kind_name() == "call" {
+            let name = value
+                .child_by_field_name("function")
+                .filter(|f| matches!(f.kind_name(), "identifier" | "attribute"))
+                .map(|f| {
+                    let text = read_text(f, source);
+                    text.rsplit('.').next().unwrap_or("").to_string()
+                })
+                .unwrap_or_default();
+            found.insert(
+                name.chars()
+                    .next()
+                    .is_some_and(char::is_uppercase)
+                    .then_some(name),
+            );
+        } else if value.kind_name() == "identifier" {
+            found.insert(locals.get(&read_text(value, source)).cloned().flatten());
+        } else {
+            found.insert(None);
+        }
+    }
+    if found.len() == 1
+        && let Some(Some(only)) = found.into_iter().next()
+        && !only.is_empty()
+    {
+        return only;
+    }
+    PYTEST_FIXTURE_UNTYPED.into()
+}
+/// `_python_untouched_params`: parameters with no annotation and no default
+/// that the body never rebinds, the ones pytest may fill with a fixture.
+pub fn python_untouched_params(func: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    let mut names = func
+        .child_by_field_name("parameters")
+        .map(children)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|c| c.kind_name() == "identifier")
+        .map(|c| read_text(c, source))
+        .collect::<BTreeSet<_>>();
+    let mut rebound = BTreeSet::new();
+    let mut stack = func
+        .child_by_field_name("body")
+        .map(children)
+        .unwrap_or_default();
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind_name(),
+            "function_definition" | "class_definition" | "lambda"
+        ) {
+            continue;
+        }
+        match node.kind_name() {
+            "assignment" | "augmented_assignment" | "for_statement" | "for_in_clause" => {
+                python_collect_assignment_targets(
+                    node.child_by_field_name("left"),
+                    source,
+                    &mut rebound,
+                )
+            }
+            "named_expression" => python_collect_assignment_targets(
+                node.child_by_field_name("name"),
+                source,
+                &mut rebound,
+            ),
+            "as_pattern_target" | "global_statement" | "nonlocal_statement"
+            | "delete_statement" => {
+                let mut ids = vec![node];
+                while let Some(current) = ids.pop() {
+                    if current.kind_name() == "identifier" {
+                        rebound.insert(read_text(current, source));
+                    }
+                    ids.extend(children(current));
+                }
+            }
+            _ => {}
+        }
+        stack.extend(children(node));
+    }
+    names.retain(|n| !rebound.contains(n) && n != "self" && n != "cls");
+    names
+}
 pub fn python_collect_assignment_targets(
     node: Option<Node<'_>>,
     source: &[u8],
@@ -1273,9 +1456,12 @@ pub fn ts_receiver_type_table(
             .map(|c| read_text(c, source))
     };
     let annotated = |ann: Node<'_>| bare(ann).or_else(|| optional(ann));
-    // Constructor `this.x = ...` assignments, merged after the walk: a
-    // declared field type wins over an assignment.
-    let mut assigned: TsFieldTable = BTreeMap::new();
+    // `this.x = ...` assignments, merged after the walk: declared fields win,
+    // then constructor assignments, then other methods' as fallback evidence;
+    // a conflicting assignment at a higher tier blocks the lower (0.9.92, #4473).
+    type Assigned = BTreeMap<(String, bool), BTreeMap<String, BTreeSet<String>>>;
+    let mut constructor_assigned: Assigned = BTreeMap::new();
+    let mut method_assigned: Assigned = BTreeMap::new();
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
         if let Some(fields) = field_table.as_deref_mut() {
@@ -1333,42 +1519,44 @@ pub fn ts_receiver_type_table(
                 "method_definition" => {
                     let mname = n.child_by_field_name("name");
                     let owner = class_name(n.parent());
-                    let accessor = children(n)
-                        .into_iter()
-                        .map(|c| c.kind_name())
-                        .find(|k| matches!(*k, "get" | "set"));
-                    if let (Some(mname), Some(owner), Some(accessor)) =
-                        (mname, owner.clone(), accessor)
-                    {
-                        // `get repo(): Repo` / `set repo(r: Repo)` type `this.repo`.
-                        let ty = if accessor == "get" {
-                            n.child_by_field_name("return_type").and_then(annotated)
-                        } else {
-                            n.child_by_field_name("parameters")
-                                .and_then(|ps| {
-                                    named(ps).into_iter().find(|p| {
-                                        matches!(
-                                            p.kind_name(),
-                                            "required_parameter" | "optional_parameter"
-                                        )
+                    if let (Some(mname), Some(owner)) = (mname, owner) {
+                        let method_name = read_text(mname, source);
+                        let is_constructor = method_name == "constructor";
+                        let is_static = children(n).iter().any(|c| c.kind_name() == "static");
+                        let field_owner = (owner.clone(), is_static);
+                        let accessor = children(n)
+                            .into_iter()
+                            .map(|c| c.kind_name())
+                            .find(|k| matches!(*k, "get" | "set"));
+                        if let Some(accessor) = accessor {
+                            // `get repo(): Repo` / `set repo(r: Repo)` type
+                            // `this.repo`, static accessors apart (0.9.92).
+                            let ty = if accessor == "get" {
+                                n.child_by_field_name("return_type").and_then(annotated)
+                            } else {
+                                n.child_by_field_name("parameters")
+                                    .and_then(|ps| {
+                                        named(ps).into_iter().find(|p| {
+                                            matches!(
+                                                p.kind_name(),
+                                                "required_parameter" | "optional_parameter"
+                                            )
+                                        })
                                     })
-                                })
-                                .and_then(|p| p.child_by_field_name("type"))
-                                .and_then(annotated)
-                        };
-                        if let Some(ty) = ty.filter(|t| !t.is_empty()) {
-                            fields
-                                .entry((owner, false))
-                                .or_default()
-                                .entry(read_text(mname, source))
-                                .or_insert(ty);
+                                    .and_then(|p| p.child_by_field_name("type"))
+                                    .and_then(annotated)
+                            };
+                            if let Some(ty) = ty.filter(|t| !t.is_empty()) {
+                                fields
+                                    .entry(field_owner.clone())
+                                    .or_default()
+                                    .entry(method_name.clone())
+                                    .or_insert(ty);
+                            }
                         }
-                    }
-                    if let (Some(mname), Some(owner)) = (mname, owner)
-                        && read_text(mname, source) == "constructor"
-                    {
-                        // Parameter properties (`constructor(private repo:
-                        // Repo)`) and `this.repo = repo` / `= new Repo()`.
+                        // Parameter properties are declarations and outrank
+                        // assignments; typed parameters let any method infer
+                        // `this.field = parameter` (0.9.92, #4473).
                         let mut typed: BTreeMap<String, String> = BTreeMap::new();
                         for p in n
                             .child_by_field_name("parameters")
@@ -1393,9 +1581,11 @@ pub fn ts_receiver_type_table(
                             };
                             let pname = read_text(pat, source);
                             typed.insert(pname.clone(), ty.clone());
-                            if children(p).iter().any(|c| {
-                                matches!(c.kind_name(), "accessibility_modifier" | "readonly")
-                            }) {
+                            if is_constructor
+                                && children(p).iter().any(|c| {
+                                    matches!(c.kind_name(), "accessibility_modifier" | "readonly")
+                                })
+                            {
                                 fields
                                     .entry((owner.clone(), false))
                                     .or_default()
@@ -1403,41 +1593,60 @@ pub fn ts_receiver_type_table(
                                     .or_insert(ty);
                             }
                         }
-                        for stmt in n.child_by_field_name("body").map(named).unwrap_or_default() {
-                            let expr = (stmt.kind_name() == "expression_statement")
-                                .then(|| named(stmt).into_iter().next())
-                                .flatten()
-                                .filter(|e| e.kind_name() == "assignment_expression");
-                            let Some(expr) = expr else { continue };
-                            let (Some(left), Some(right)) = (
-                                expr.child_by_field_name("left"),
-                                expr.child_by_field_name("right"),
-                            ) else {
-                                continue;
-                            };
-                            if left.kind_name() != "member_expression" {
-                                continue;
-                            }
-                            let (Some(obj), Some(prop)) = (
-                                left.child_by_field_name("object"),
-                                left.child_by_field_name("property"),
-                            ) else {
-                                continue;
-                            };
-                            if obj.kind_name() != "this" {
-                                continue;
-                            }
-                            let ty = match right.kind_name() {
-                                "identifier" => typed.get(&read_text(right, source)).cloned(),
-                                "new_expression" => new_type(right),
-                                _ => None,
-                            };
-                            if let Some(ty) = ty.filter(|t| !t.is_empty()) {
-                                assigned
-                                    .entry((owner.clone(), false))
-                                    .or_default()
-                                    .entry(read_text(prop, source))
-                                    .or_insert(ty);
+                        // Field assignments anywhere in the method, nested
+                        // blocks and arrows (which keep `this`) included; a
+                        // plain nested function has its own `this`.
+                        if let Some(body) = n.child_by_field_name("body") {
+                            let mut pending = vec![body];
+                            while let Some(item) = pending.pop() {
+                                if item != body
+                                    && matches!(
+                                        item.kind_name(),
+                                        "method_definition"
+                                            | "function_declaration"
+                                            | "function_expression"
+                                            | "generator_function_declaration"
+                                            | "generator_function"
+                                    )
+                                {
+                                    continue;
+                                }
+                                if item.kind_name() == "assignment_expression"
+                                    && let (Some(left), Some(right)) = (
+                                        item.child_by_field_name("left"),
+                                        item.child_by_field_name("right"),
+                                    )
+                                    && left.kind_name() == "member_expression"
+                                    && let (Some(obj), Some(prop)) = (
+                                        left.child_by_field_name("object"),
+                                        left.child_by_field_name("property"),
+                                    )
+                                    && obj.kind_name() == "this"
+                                {
+                                    let field = read_text(prop, source);
+                                    let ty = match right.kind_name() {
+                                        "identifier" => {
+                                            typed.get(&read_text(right, source)).cloned()
+                                        }
+                                        "new_expression" => new_type(right),
+                                        _ => None,
+                                    };
+                                    if !field.is_empty()
+                                        && let Some(ty) = ty.filter(|t| !t.is_empty())
+                                    {
+                                        let tier = if is_constructor {
+                                            &mut constructor_assigned
+                                        } else {
+                                            &mut method_assigned
+                                        };
+                                        tier.entry(field_owner.clone())
+                                            .or_default()
+                                            .entry(field)
+                                            .or_default()
+                                            .insert(ty);
+                                    }
+                                }
+                                pending.extend(children(item));
                             }
                         }
                     }
@@ -1501,10 +1710,30 @@ pub fn ts_receiver_type_table(
         stack.extend(children(n));
     }
     if let Some(fields) = field_table {
-        for (class, names) in assigned {
-            let table = fields.entry(class).or_default();
-            for (name, ty) in names {
-                table.entry(name).or_insert(ty);
+        let mut conflicts = BTreeSet::new();
+        for (class, names) in constructor_assigned {
+            for (name, types) in names {
+                if types.len() == 1 {
+                    fields
+                        .entry(class.clone())
+                        .or_default()
+                        .entry(name)
+                        .or_insert_with(|| types.into_iter().next().unwrap());
+                } else {
+                    conflicts.insert((class.clone(), name));
+                }
+            }
+        }
+        for (class, names) in method_assigned {
+            for (name, types) in names {
+                if types.len() != 1 || conflicts.contains(&(class.clone(), name.clone())) {
+                    continue;
+                }
+                fields
+                    .entry(class.clone())
+                    .or_default()
+                    .entry(name)
+                    .or_insert_with(|| types.into_iter().next().unwrap());
             }
         }
     }
@@ -1715,6 +1944,16 @@ pub fn ts_mark_public_twins(
             n["_ts_public_twin"] = serde_json::json!(true);
         }
     }
+}
+/// `_js_value_is_require` (0.9.94, #4621): a literal `require(...)` call (or
+/// `require(...).x`). A `const X = require('./m')` binding is an import, not a
+/// module-scope data binding: a node for it shadowed the class the required
+/// file exports. [`find_require_call`] matches any `identifier(...)` callee,
+/// so the name is checked here (a real `const x = factory()` keeps its node).
+pub fn js_value_is_require(value: Node<'_>, source: &[u8]) -> bool {
+    find_require_call(Some(value))
+        .and_then(|call| call.child_by_field_name("function"))
+        .is_some_and(|function| read_text(function, source) == "require")
 }
 pub fn find_require_call(node: Option<Node<'_>>) -> Option<Node<'_>> {
     let n = node?;

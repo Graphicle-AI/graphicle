@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/google_workspace.py
 //! Google Drive shortcut metadata and the optional `gws` export integration.
 use crate::{Result, fsutil, io_compat, process, python_compat};
@@ -27,11 +27,29 @@ pub fn google_workspace_enabled(value: Option<&str>) -> bool {
 fn py_space(c: char) -> bool {
     c.is_whitespace() || ('\x1c'..='\x1f').contains(&c)
 }
+/// `_safe_yaml_str` (Graphify 0.9.95, #4710): full YAML double-quoted-scalar
+/// escaping, as the ingest captures use, plus U+0085: backslash, quote, tab,
+/// NUL and the other C0/DEL controls, and the Unicode line breaks U+2028,
+/// U+2029 and U+0085, so a hostile shortcut url or file id cannot break out
+/// of the scalar into sibling frontmatter keys.
 pub fn safe_yaml_str(value: &str) -> String {
-    value
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"")
-        .replace(['\n', '\r'], " ")
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\0' => out.push_str("\\0"),
+            '\u{2028}' => out.push_str("\\L"),
+            '\u{2029}' => out.push_str("\\P"),
+            '\u{85}' => out.push_str("\\x85"),
+            c if c < ' ' || c == '\x7f' => out.push_str(&format!("\\x{:02x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
 }
 fn decoded_query(value: &str) -> String {
     let bytes = value.as_bytes();

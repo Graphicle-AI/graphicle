@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/multigraph_compat.py
 //! Port of graphify/multigraph_compat.py; probes the actual Rust graph backend.
 use crate::{Result, graph::Graph};

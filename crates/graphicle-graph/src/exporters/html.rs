@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/exporters/html.py
 //! Interactive graph view. Browser HTML/JS/CSS remains in its native format;
 //! graph assembly, aggregation, annotation and output are implemented in Rust.

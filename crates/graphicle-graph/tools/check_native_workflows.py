@@ -152,12 +152,14 @@ def navigation(root,project,gp,env):
     assert gp.with_name('GRAPH_REPORT.md').exists();assert all('community' in n for n in graph(gp)['nodes'])
     def stable(text):
         lines=text.splitlines();return [s for s in lines if not s.startswith('EDGE ')]+sorted(s for s in lines if s.startswith('EDGE '))
-    for args in [['query','handle'],['query','handle','--dfs'],['query','handle','--context','call'],['query','handle','--seed','helpers.py'],['path','handle','status'],['explain','handle'],['explain','handle','--all'],['affected','handle'],['god-nodes','--json']]:
+    # A --seed that resolves keeps its output compared (helpers.py is ignored by now: its miss is below).
+    for args in [['query','handle'],['query','handle','--dfs'],['query','handle','--context','call'],['query','handle','--seed','service.py'],['path','handle','status'],['explain','handle'],['explain','handle','--all'],['affected','handle'],['god-nodes','--json']]:
         args += ['--graph',gp]
         a=cli(args,project,env,oracle=True);b=cli(args,project,env)
         same('native_cli_navigation',stable(a.stdout),stable(b.stdout))
-    # 0.9.86 (#4320): lookups exit 3 for an ambiguous name and 4 for no match.
-    for args in [['explain','zzqqxx'],['path','handle','zzqqxx'],['query','zzqqxx']]:
+    # 0.9.86 (#4320): lookups exit 3 for an ambiguous name and 4 for no match;
+    # since 0.9.93 (#4511) a --seed that resolves to no node is a miss too.
+    for args in [['explain','zzqqxx'],['path','handle','zzqqxx'],['query','zzqqxx'],['query','handle','--seed','helpers.py']]:
         args += ['--graph',gp]
         a=cli(args,project,env,oracle=True,ok=False);b=cli(args,project,env,ok=False)
         if a.returncode!=4 or b.returncode!=4:native.fail(command=list(map(str,args)),oracle_exit=a.returncode,native_exit=b.returncode)

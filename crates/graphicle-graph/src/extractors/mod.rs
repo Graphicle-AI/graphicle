@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/__init__.py
 //! Native extractor modules; unported languages are listed in the migration ledger.
 pub mod apex;
@@ -73,5 +73,6 @@ pub mod sql;
 pub mod terraform;
 pub mod vbnet;
 pub mod verilog;
+pub mod yaml_config;
 pub(crate) mod yaml_frontmatter;
 pub mod zig;

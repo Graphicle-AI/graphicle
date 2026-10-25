@@ -1,6 +1,6 @@
 """The single name translation table between the pinned reference and the engine.
 
-Development-only. The comparison suite runs Python Graphify 0.9.91 unchanged
+Development-only. The comparison suite runs Python Graphify 0.9.95 unchanged
 under its own names (`import graphify`, `python -m graphify`, the output folder
 `graphify-out`, `GRAPHIFY_*` settings) and the unchanged upstream test files.
 The engine ships Graphicle names. Checks translate names here, at the harness

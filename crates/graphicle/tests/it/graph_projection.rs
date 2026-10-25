@@ -377,6 +377,93 @@ fn projection_keeps_edge_identities_distinct_with_embedded_nul() {
     }
 }
 
+/// An episode is one engine graph format's graph of one head set: a head set an
+/// older engine recorded (0.1.6 named it by the heads alone) is projected again
+/// by the first sync after an upgrade, as a new episode.
+#[test]
+fn a_head_set_recorded_by_an_older_engine_is_projected_again() {
+    let f = Fixture::new(&[("a.py", A_V1), ("b.py", B)]);
+    let first = f.project();
+    let heads = graphicle_runtime::store::heads(&f.db(), &f.repo).unwrap();
+    let legacy = graphicle_runtime::digest(&json!(heads));
+    assert_eq!(
+        first["episode"],
+        json!(graph_projection::episode_of(&heads))
+    );
+    assert_ne!(first["episode"], json!(legacy));
+    // Relabel the recorded episode as the older engine's id of the same heads
+    // (rows that name the episode keep the new id, as the projection below
+    // records it again; an edition's tables can hold such rows).
+    let db = f.db();
+    db.pragma_update(None, "foreign_keys", false).unwrap();
+    db.execute(
+        "UPDATE gf_episodes SET episode=? WHERE repository_id=?",
+        rusqlite::params![legacy, f.repo],
+    )
+    .unwrap();
+    drop(db);
+    let again = f.project();
+    assert_eq!(again["replayed"], false);
+    assert_eq!(again["episode"], first["episode"]);
+    assert_eq!(f.count("gf_episodes"), 2);
+    // A later sync of the same heads replays the current engine's episode.
+    assert_eq!(f.project()["replayed"], true);
+    assert_eq!(f.count("gf_episodes"), 2);
+}
+
+/// YAML keys stay out of the code graph: the engine extracts them since
+/// Graphify 0.9.95, but Graphicle core does not use them for answers yet. The
+/// package manifests `apm.yml` and `apm.yaml`, which the engine reads with its
+/// package-manifest extractor, keep their package nodes and dependency edges,
+/// as in 0.1.6.
+#[test]
+fn yaml_keys_stay_out_of_the_code_graph_and_apm_manifests_stay_in() {
+    let manifest =
+        "apiVersion: v1\nkind: Service\nmetadata:\n  name: web\nspec:\n  ports:\n    - port: 80\n";
+    let f = Fixture::new(&[
+        ("a.py", A_V1),
+        ("deploy/web.yaml", manifest),
+        ("deploy/job.yml", manifest),
+        (
+            "apm.yml",
+            "name: app\nversion: 1.0.0\ndependencies:\n  - lib\n",
+        ),
+        ("lib/apm.yaml", "name: lib\nversion: 0.1.0\n"),
+    ]);
+    f.project();
+    let db = f.db();
+    let yaml_keys: i64 = db
+        .query_row(
+            "SELECT count(*) FROM gf_nodes WHERE repository_id=? AND \
+             json_extract(attributes,'$.source_file') LIKE '%deploy/%'",
+            [&f.repo],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(yaml_keys, 0);
+    let mut statement = db
+        .prepare(
+            "SELECT json_extract(attributes,'$.label') FROM gf_nodes WHERE repository_id=? AND \
+             json_extract(attributes,'$.ecosystem')='apm' ORDER BY 1",
+        )
+        .unwrap();
+    let packages: Vec<String> = statement
+        .query_map([&f.repo], |r| r.get(0))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap();
+    assert_eq!(packages, ["app", "lib"]);
+    let dependencies: i64 = db
+        .query_row(
+            "SELECT count(*) FROM gf_edges WHERE repository_id=? AND relation='depends_on'",
+            [&f.repo],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(dependencies, 1);
+    assert!(f.count("gf_nodes") > packages.len() as i64);
+}
+
 #[test]
 fn reprojecting_identical_content_is_idempotent() {
     let f = Fixture::new(&[("a.py", A_V1), ("b.py", B)]);

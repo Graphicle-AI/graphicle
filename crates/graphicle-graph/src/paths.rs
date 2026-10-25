@@ -1,5 +1,5 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
-// Upstream: graphify/affected.py, graphify/paths.py
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Upstream: graphify/paths.py
 //! Port of graphify/paths.py: durable identity spelling and atomic output helpers.
 pub use crate::security::{DEFAULT_OUT_DIR, OUT_DIR};
 /// The configuration folder: `~/.graphicle-graph` (global graph, provider
@@ -307,6 +307,16 @@ pub fn os_replace_with_fallback_with(
     dst: &Path,
     ops: &impl ReplaceOps,
 ) -> io::Result<()> {
+    replace_or_copy(src, dst, ops)?;
+    // Every graph.json the engine writes lands here: atomic writes,
+    // `replace_file` and the rebuild's rename of its temporary graph. A large
+    // one is recorded so the engine's own later reads pass the size cap
+    // (`security::check_own_graph_size_cap`).
+    crate::security::note_written_graph(dst);
+    Ok(())
+}
+/// [`os_replace_with_fallback_with`] without the graph record.
+fn replace_or_copy(src: &Path, dst: &Path, ops: &impl ReplaceOps) -> io::Result<()> {
     match ops.replace(src, dst) {
         Ok(()) => return Ok(()),
         Err(failure) => {
@@ -367,6 +377,76 @@ pub fn os_replace_with_fallback_with(
 }
 pub fn os_replace_with_fallback(src: &Path, dst: &Path) -> io::Result<()> {
     os_replace_with_fallback_with(src, dst, &SystemReplace)
+}
+/// The permission bits [`replace_file`] gives the new file (Unix; elsewhere
+/// files keep the platform's default).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewMode {
+    /// What a newly created file gets: 0666 less the umask.
+    Default,
+    /// These bits.
+    Bits(u32),
+}
+/// Atomically replace `path` itself with `bytes`, as `os.replace(tmp, path)`
+/// does upstream: the bytes go into a private, randomly named temporary file
+/// in `path`'s directory (the only part of the path that is resolved), which
+/// is then renamed over the final name. A symlink at `path` is replaced by the
+/// new file and its target is left alone; a dangling one creates nothing at
+/// its target. Upstream writes this way where a link must not redirect the
+/// write: the installed SKILL.md and version stamp (`_copy_skill_file`,
+/// `_write_version_stamp`, #3286), graph.json in a rebuild and the GraphML
+/// export. The generic writers below write through a link, as upstream's
+/// `_atomic_replace` does. A failed rename leaves `path` as it was and
+/// removes the temporary file.
+pub fn replace_file(path: &Path, prefix: &str, bytes: &[u8], mode: NewMode) -> io::Result<()> {
+    replace_file_with(path, prefix, bytes, mode, &SystemReplace)
+}
+/// [`replace_file`] with the rename operations given.
+pub fn replace_file_with(
+    path: &Path,
+    prefix: &str,
+    bytes: &[u8],
+    mode: NewMode,
+    ops: &impl ReplaceOps,
+) -> io::Result<()> {
+    let dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(prefix).suffix(".tmp");
+    #[cfg(unix)]
+    if mode == NewMode::Default {
+        use std::os::unix::fs::PermissionsExt;
+        // The creation applies the umask; the result is read back below.
+        builder.permissions(fs::Permissions::from_mode(0o666));
+    }
+    let mut temp = builder.tempfile_in(dir)?;
+    #[cfg(unix)]
+    let bits = {
+        use std::os::unix::fs::PermissionsExt;
+        let created = temp.as_file().metadata()?.permissions().mode() & 0o7777;
+        // Private while the content is written, as `mkstemp` leaves it.
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o600))?;
+        match mode {
+            NewMode::Default => created,
+            NewMode::Bits(bits) => bits,
+        }
+    };
+    #[cfg(not(unix))]
+    let _ = mode;
+    temp.as_file_mut().write_all(bytes)?;
+    temp.as_file_mut().flush()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(bits))?;
+    }
+    let mut temp = temp.into_temp_path();
+    os_replace_with_fallback_with(&temp, path, ops)?;
+    // Renamed into place: there is nothing left to remove.
+    temp.disable_cleanup(true);
+    Ok(())
 }
 pub fn atomic_replace_with(
     path: &Path,
@@ -532,7 +612,10 @@ pub fn load_node_link_graph(data_or_path: &Value) -> Result<Graph> {
     crate::security::check_graph_file_size_cap(path)?;
     let text =
         fs::read_to_string(path).map_err(|error| crate::io_compat::read_error(&error, path))?;
-    let data: Value = serde_json::from_str(&text).map_err(crate::Error::from)?;
+    let mut data: Value = serde_json::from_str(&text).map_err(crate::Error::from)?;
+    // A saved graph.json written before 0.9.92 reads as a newer one does
+    // (`build::mark_parallel_links`); upstream's loader honours the flag.
+    crate::build::mark_parallel_links(&mut data);
     load_node_link_graph_owned(data)
 }
 /// [`load_node_link_graph`] of a parsed document the caller no longer needs.
@@ -722,6 +805,46 @@ mod tests {
         assert!(!link.is_symlink());
         assert_eq!(fs::read_to_string(&link).unwrap(), "replace link");
         assert_eq!(fs::read_to_string(&target).unwrap(), "through link");
+    }
+    /// `replace_file` writes over the name itself, as `os.replace` does: a
+    /// symlink is replaced and the file it names left alone, a dangling one
+    /// creates nothing, and a failed rename keeps the old file and leaves no
+    /// temporary file (test_atomic_version_stamp.py, #3286).
+    #[test]
+    #[cfg(unix)]
+    fn replace_file_replaces_a_link_and_keeps_the_old_file_on_failure() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("victim");
+        fs::write(&target, "precious").unwrap();
+        let link = dir.path().join("SKILL.md");
+        symlink(&target, &link).unwrap();
+        replace_file(&link, ".SKILL.md.", b"new", NewMode::Bits(0o640)).unwrap();
+        assert!(!link.is_symlink());
+        assert_eq!(fs::read_to_string(&link).unwrap(), "new");
+        assert_eq!(
+            fs::metadata(&link).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "precious");
+        let dangling = dir.path().join(".graphicle_version");
+        let missing = outside.path().join("created");
+        symlink(&missing, &dangling).unwrap();
+        replace_file(&dangling, ".graphicle_version.", b"1", NewMode::Bits(0o600)).unwrap();
+        assert!(!dangling.is_symlink() && !missing.exists());
+        assert!(
+            replace_file_with(
+                &link,
+                ".SKILL.md.",
+                b"newer",
+                NewMode::Default,
+                &fault(false, None, 0)
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_to_string(&link).unwrap(), "new");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 2);
     }
     #[test]
     #[cfg(unix)]

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py
 //! Schema recovery, portable source identities, and legacy graph identifiers.
 use crate::{
@@ -189,7 +189,9 @@ pub fn lost_saved_semantic_nodes(
 }
 /// Fold legacy node field aliases onto canonical keys (#2194, 0.9.88 #4391):
 /// `name` -> `label`, and the first non-blank of `file`, `path`, `filepath`
-/// -> `source_file`. A canonical field that already holds a value wins.
+/// -> `source_file`. A canonical field that already holds a value wins. A
+/// node's `confidence`/`confidence_score` pair folds like an edge's
+/// (Graphify 0.9.93, #4529); a node with neither is left untouched.
 pub fn fold_node_aliases(node: &mut Value) {
     let Some(n) = node.as_object_mut() else {
         return;
@@ -214,6 +216,7 @@ pub fn fold_node_aliases(node: &mut Value) {
             }
         }
     }
+    fold_confidence(n);
 }
 pub fn fold_edge_aliases(edge: &mut Value) {
     if let Some(e) = edge.as_object_mut() {
@@ -232,17 +235,82 @@ pub(crate) fn fold_edge_record_aliases<R: Record>(e: &mut R) {
             e.put("relation", v);
         }
     }
-    if let Some(v) = e.get("confidence").filter(|v| v.is_number()).cloned() {
-        if e.get("confidence_score").is_none_or(Value::is_null) {
-            e.put("confidence_score", json!(v.as_f64().unwrap_or(1.0)));
+    fold_confidence(e);
+}
+/// `_fold_confidence` (Graphify 0.9.92-0.9.93, #2194, #4495, #4529): a legacy
+/// or model-drifted `confidence` folds onto the enum, in place, on nodes,
+/// edges and hyperedges alike.
+///
+/// - A number (pre-enum graphs stored the semantic pass's float) becomes
+///   `INFERRED`; the float moves to `confidence_score` unless one is set.
+/// - A string that is a case variant of an enum value is corrected to it.
+/// - Any other string (`high`, `confirmed`) becomes `INFERRED`, and when it
+///   parses as a float it backfills a missing `confidence_score`.
+/// - A `confidence_score` with no `confidence` backfills `INFERRED`.
+pub(crate) fn fold_confidence<R: Record>(e: &mut R) {
+    let score_missing = |e: &R| e.get("confidence_score").is_none_or(Value::is_null);
+    match e.get("confidence").cloned() {
+        Some(Value::Number(v)) => {
+            if score_missing(e) {
+                e.put("confidence_score", json!(v.as_f64().unwrap_or(1.0)));
+            }
+            e.put("confidence", json!("INFERRED"));
         }
-        e.put("confidence", json!("INFERRED"));
+        Some(Value::String(text))
+            if !crate::validate::VALID_CONFIDENCES.contains(&text.as_str()) =>
+        {
+            let upper = text.to_uppercase();
+            if crate::validate::VALID_CONFIDENCES.contains(&upper.as_str()) {
+                e.put("confidence", json!(upper));
+            } else {
+                if score_missing(e)
+                    && let Some(score) = python_float(&text)
+                {
+                    e.put("confidence_score", json!(score));
+                }
+                e.put("confidence", json!("INFERRED"));
+            }
+        }
+        _ => {}
     }
     if !e.get("confidence").is_some_and(truthy)
         && e.get("confidence_score").is_some_and(|v| !v.is_null())
     {
         e.put("confidence", json!("INFERRED"));
     }
+}
+/// Python `float(text)` for a string: surrounding whitespace, Unicode decimal
+/// digits, and `_` only between two digits (PEP 515); `None` where Python
+/// raises `ValueError`.
+pub(crate) fn python_float(text: &str) -> Option<f64> {
+    let mut ascii = String::with_capacity(text.len());
+    for c in text.chars() {
+        if dedup_strings::whitespace(c) {
+            ascii.push(' ');
+        } else if c.is_ascii() {
+            ascii.push(c);
+        } else if dedup_strings::decimal(c) {
+            let ranges = crate::decimal_data::DECIMAL;
+            let i = ranges.partition_point(|&(lo, _)| lo <= c as u32);
+            ascii.push(char::from(b'0' + ((c as u32 - ranges[i - 1].0) % 10) as u8));
+        } else {
+            return None;
+        }
+    }
+    if ascii.contains('_') {
+        let bytes = ascii.as_bytes();
+        let digit = |i: Option<usize>| i.and_then(|i| bytes.get(i)).is_some_and(u8::is_ascii_digit);
+        if (0..bytes.len())
+            .any(|i| bytes[i] == b'_' && !(digit(i.checked_sub(1)) && digit(Some(i + 1))))
+        {
+            return None;
+        }
+        ascii.retain(|c| c != '_');
+    }
+    let trimmed = ascii.trim_matches(' ');
+    // Rust also reads `infinity`/`nan` in any case, with a sign; Python's
+    // grammar is the same for ASCII decimal text.
+    trimmed.parse::<f64>().ok()
 }
 /// The edge part of [`coerce_non_string_ids`], on an edge record of either
 /// form: a numeric endpoint becomes its text, in place.

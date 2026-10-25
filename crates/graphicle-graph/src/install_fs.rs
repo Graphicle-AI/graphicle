@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 //! Installer file operations preserve unrelated configuration and user text.
 use crate::{Result, paths};
@@ -251,12 +251,23 @@ pub fn write_settings(path: &Path, value: &Value, backup: bool) -> Result<bool> 
             return Ok(false);
         }
         if backup {
-            fs::copy(
-                path,
-                path.with_file_name(format!(
-                    "{}.graphicle-bak",
-                    path.file_name().unwrap().to_string_lossy()
-                )),
+            // The previous file is renamed in over the backup's own name, so
+            // a symlink there is replaced rather than written through (a
+            // deliberate difference: upstream's `shutil.copy2` follows it).
+            let name = format!(
+                "{}.graphicle-bak",
+                path.file_name().unwrap().to_string_lossy()
+            );
+            let bytes = fs::read(path).map_err(crate::Error::from)?;
+            let mode = fs::metadata(path)
+                .ok()
+                .and_then(|m| mode_of(&m))
+                .map_or(paths::NewMode::Default, paths::NewMode::Bits);
+            paths::replace_file(
+                &path.with_file_name(&name),
+                &format!(".{name}."),
+                &bytes,
+                mode,
             )
             .map_err(crate::Error::from)?;
         }
@@ -291,13 +302,69 @@ pub fn install_refs(dst: &Path, source: &Path) -> Result<()> {
         Ok(())
     }
     let dir = dst.parent().ok_or("Skill path needs a parent")?;
-    let staged = dir.join("references.tmp");
-    let final_path = dir.join("references");
-    remove(&staged)?;
-    if let Err(e) = copy(source, &staged) {
-        let _ = remove(&staged);
-        return Err(e);
+    let staging = references_staging(dir)?;
+    let staged = staging.path().join("references");
+    copy(source, &staged)?;
+    swap_in_references(&staged, &dir.join("references"))
+}
+/// A private, randomly named directory beside a skill's `references/` to
+/// stage it in (Graphify 0.9.95, #4513): created exclusively, mode 0700 on
+/// Unix, as `mkdtemp` does, so a pre-created `references.tmp` symlink cannot
+/// redirect the write. A fixed-name `references.tmp` an older release left as
+/// a real directory is removed; a symlink there is left alone. The directory
+/// is removed when the returned guard drops.
+pub fn references_staging(dir: &Path) -> Result<tempfile::TempDir> {
+    let legacy = dir.join("references.tmp");
+    if !legacy.is_symlink() && legacy.is_dir() {
+        let _ = fs::remove_dir_all(&legacy);
     }
-    remove(&final_path)?;
-    fs::rename(staged, final_path).map_err(crate::Error::from)
+    fs::create_dir_all(dir).map_err(crate::Error::from)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".references.").suffix(".tmp");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        builder.permissions(fs::Permissions::from_mode(0o700));
+    }
+    builder.tempdir_in(dir).map_err(crate::Error::from)
+}
+/// A file's mode bits (Unix only).
+#[cfg(unix)]
+fn mode_of(metadata: &fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(metadata.permissions().mode() & 0o7777)
+}
+#[cfg(not(unix))]
+fn mode_of(_: &fs::Metadata) -> Option<u32> {
+    None
+}
+/// Move the staged `references/` into place with one rename. A symlink at
+/// `references` is unlinked, never followed into its target.
+pub fn swap_in_references(staged: &Path, refs: &Path) -> Result<()> {
+    if refs.is_symlink() {
+        fs::remove_file(refs).map_err(crate::Error::from)?;
+    } else {
+        remove(refs)?;
+    }
+    fs::rename(staged, refs).map_err(crate::Error::from)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    /// references/ is staged in a private directory, as upstream's `mkdtemp`
+    /// makes it (Graphify 0.9.95, #4513).
+    #[test]
+    fn references_stage_in_a_private_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let staging = references_staging(dir.path()).unwrap();
+        let mode = fs::metadata(staging.path()).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+        let name = staging.path().file_name().unwrap().to_string_lossy();
+        assert!(
+            name.starts_with(".references.") && name.ends_with(".tmp"),
+            "{name}"
+        );
+    }
 }

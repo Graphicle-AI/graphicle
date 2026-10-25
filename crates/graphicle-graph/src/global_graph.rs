@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/global_graph.py
 //! Complete native translation of global_graph.py and its persistent store.
 use crate::{
@@ -287,6 +287,9 @@ fn load_graph(path: &Path, limit: u64) -> Result<Graph> {
     if data.get("links").is_none() && data.get("edges").is_some() {
         data["links"] = data["edges"].take();
     }
+    // A graph.json written before 0.9.92 reads as a newer one does
+    // (`build::mark_parallel_links`).
+    crate::build::mark_parallel_links(&mut data);
     Graph::from_node_link_owned(data, "links")
 }
 /// [`load_graph`] keeping each link's stored direction as `_src`/`_tgt`.
@@ -296,6 +299,7 @@ fn load_graph_with_arcs(path: &Path, limit: u64) -> Result<Graph> {
     if data.get("links").is_none() && data.get("edges").is_some() {
         data["links"] = data["edges"].take();
     }
+    crate::build::mark_parallel_links(&mut data);
     Graph::from_node_link_owned_with_arcs(data, "links")
 }
 pub fn file_hash(path: &Path) -> Result<String> {

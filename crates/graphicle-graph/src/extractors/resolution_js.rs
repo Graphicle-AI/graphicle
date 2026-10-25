@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/resolution.py
 //! JS/TS module, workspace, package exports and JSONC resolution.
 use super::{base::make_id, resolution_paths::resolve_cached};
@@ -493,6 +493,50 @@ fn exports_candidates(dir: &Path, targets: Vec<String>, platform: Option<&str>) 
     }
     out
 }
+/// `_with_source_twins` (Graphify 0.9.92, #4485): `exports` that point only into
+/// build output (`"./dist/index.js"`) never name `src/`, and `dist/` is usually
+/// ignored, so the import became an external stub. Each build-output target's
+/// source twin (`dist/sub.js` -> `src/sub`) is appended, and for the root entry
+/// `src/index` / `index` as the `main` path already does (#3834). They go
+/// last: the workspace resolver prefers a file outside build output.
+fn with_source_twins(dir: &Path, mut candidates: Vec<PathBuf>, root_entry: bool) -> Vec<PathBuf> {
+    let mut extra: Vec<PathBuf> = vec![];
+    for candidate in &candidates {
+        let Ok(rel) = candidate.strip_prefix(dir) else {
+            continue;
+        };
+        let parts = rel
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        if parts.len() < 2 || !BUILD_OUTPUT_DIRS.contains(&parts[0].as_str()) {
+            continue;
+        }
+        let mut name = parts[parts.len() - 1].as_str();
+        for suffix in [".d.ts", ".d.mts", ".d.cts", ".js", ".mjs", ".cjs"] {
+            if let Some(stem) = name.strip_suffix(suffix) {
+                name = stem;
+                break;
+            }
+        }
+        let mut twin = dir.join("src");
+        for part in &parts[1..parts.len() - 1] {
+            twin.push(part);
+        }
+        twin.push(name);
+        extra.push(twin);
+    }
+    if root_entry {
+        extra.push(dir.join("src/index"));
+        extra.push(dir.join("index"));
+    }
+    for path in extra {
+        if !candidates.contains(&path) {
+            candidates.push(path);
+        }
+    }
+    candidates
+}
 pub fn package_entry_candidates(dir: &Path, subpath: &str, platform: Option<&str>) -> Vec<PathBuf> {
     let d = read_json_config(&dir.join("package.json")).unwrap_or(Value::Null);
     let exports = &d["exports"];
@@ -503,7 +547,7 @@ pub fn package_entry_candidates(dir: &Path, subpath: &str, platform: Option<&str
             if !targets.is_empty() {
                 let c = exports_candidates(dir, targets, platform);
                 if !c.is_empty() {
-                    return c;
+                    return with_source_twins(dir, c, false);
                 }
             } else {
                 for (pattern, value) in obj {
@@ -523,7 +567,7 @@ pub fn package_entry_candidates(dir: &Path, subpath: &str, platform: Option<&str
                             .collect();
                         let c = exports_candidates(dir, targets, platform);
                         if !c.is_empty() {
-                            return c;
+                            return with_source_twins(dir, c, false);
                         }
                     }
                 }
@@ -532,11 +576,11 @@ pub fn package_entry_candidates(dir: &Path, subpath: &str, platform: Option<&str
         return vec![dir.join(subpath)];
     }
     if let Some(s) = exports.as_str() {
-        return vec![dir.join(s)];
+        return with_source_twins(dir, vec![dir.join(s)], true);
     }
     let targets = resolve_export_targets(&exports["."], platform);
     if !targets.is_empty() {
-        return exports_candidates(dir, targets, platform);
+        return with_source_twins(dir, exports_candidates(dir, targets, platform), true);
     }
     let mut out = vec![];
     for k in ["svelte", "module", "main", "types"] {

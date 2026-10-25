@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.77 (5c7b8479), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: tests/test_skill_auto_refresh.py
 //! #1805: a CLI run after an upgrade refreshes the skills an older release
 //! installed, under upstream's limits and skill-directory lock.
@@ -28,8 +28,11 @@ fn graph_cli(home: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     cmd.envs(env.iter().copied()).output().unwrap()
 }
 
+/// One ordinary command line: `global path` reads nothing and writes nothing.
+/// Since Graphify 0.9.93 (#4545) `--version` and `--help` only report, so
+/// they no longer stand in for the first run after an upgrade.
 fn version(home: &Path, env: &[(&str, &str)]) -> (String, String) {
-    let out = graph_cli(home, &["--version"], env);
+    let out = graph_cli(home, &["global", "path"], env);
     assert!(out.status.success());
     (
         String::from_utf8(out.stdout).unwrap(),
@@ -112,7 +115,8 @@ fn every_stale_copy_is_refreshed_and_stdout_stays_clean() {
         .map(|dir| stale(home, dir, OLD, PACKAGED))
         .collect();
     let (stdout, stderr) = version(home, &[]);
-    assert_eq!(stdout, format!("graphicle-graph {VERSION}\n"));
+    assert_eq!(stdout.lines().count(), 1, "{stdout}");
+    assert!(!stdout.contains("refreshed"), "{stdout}");
     for dst in &dsts {
         assert_eq!(stamp(dst), VERSION, "{}", dst.display());
         assert_eq!(std::fs::read_to_string(dst).unwrap(), PACKAGED);
@@ -351,6 +355,43 @@ fn a_copy_written_for_another_program_name_keeps_no_backup() {
     assert_eq!(messages, [refreshed(&dst)]);
     assert_eq!(std::fs::read_to_string(&dst).unwrap(), other);
     assert!(!dst.with_extension("md.bak").exists());
+}
+
+/// Graphify 0.9.93 (#4545): checking the version or asking for help leaves
+/// a stale skill as it is, though the staleness warning still prints; help
+/// words inside a free-text command (a query) do not count as a help request.
+#[test]
+fn version_and_help_leave_a_stale_skill_alone() {
+    for args in [
+        &[][..],
+        &["--version"],
+        &["-v"],
+        &["version"],
+        &["--help"],
+        &["-h"],
+        &["-?"],
+        &["update", "--help"],
+    ] {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let dst = stale(home, ".codex/skills/graphicle", OLD, OLD_BODY);
+        let out = graph_cli(home, args, &[]);
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(stamp(&dst), OLD, "{args:?}");
+        assert_eq!(std::fs::read_to_string(&dst).unwrap(), OLD_BODY, "{args:?}");
+        assert!(!dst.with_extension("md.bak").exists(), "{args:?}");
+        // With no arguments and no terminal on stdin the executable serves
+        // JSON Lines, which reports nothing; every other line warns.
+        assert!(
+            args.is_empty() || stderr.contains("is from graphicle 0.0.1"),
+            "{args:?}: {stderr}"
+        );
+    }
+    let home = tempfile::tempdir().unwrap();
+    let home = home.path();
+    let dst = stale(home, ".codex/skills/graphicle", OLD, OLD_BODY);
+    graph_cli(home, &["query", "what does", "--help", "do"], &[]);
+    assert_eq!(stamp(&dst), VERSION);
 }
 
 #[test]

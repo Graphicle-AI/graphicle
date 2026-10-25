@@ -49,7 +49,10 @@ module. `Tools` adapts the service's MCP tools to model tool schemas.
 
 Requests do not follow credential-bearing redirects or automatically retry
 mutations. A timed-out write may have completed; inspect current state before
-resubmitting. Never put an access capability in a URL or public frontend bundle.
+resubmitting. A refused request raises `GraphicleError` with `status`, `message`,
+the parsed `body` and, when the service sends `Retry-After` (a spent monthly
+budget, for example), `retry_after` in seconds. Never put an access capability
+in a URL or public frontend bundle.
 
 Licensed under the Apache License 2.0; see LICENSE and NOTICE. The native
 server and optional model/runtime dependencies are separate artifacts with

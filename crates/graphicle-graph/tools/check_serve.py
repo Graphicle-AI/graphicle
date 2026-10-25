@@ -54,6 +54,8 @@ actions={
  '_find_node_tiers':('find_tiers',{'G':'graph','label':'label'}),'_find_node':('find_node',{'G':'graph','label':'label'}),'find_node_ambiguity':('ambiguity',{'G':'graph','label':'label'}),
  '_resolve_single_node':('resolve',{'G':'graph','label':'label'}),'_tier_refusal':('tier_refusal',{'G':'graph','label':'label','tier':'tier','file_query':'file_query'}),
  '_is_ambiguity_refusal':('is_ambiguity_refusal',{'message':'value'}),'_no_scoped_match_message':('no_scoped_match',{'G':'graph','path_part':'path_part','symbol_part':'symbol_part'}),
+ # 0.9.92 (#4500): one neighbor line per parallel edge.
+ '_neighbor_lines':('neighbor_lines',{'G':'graph','nid':'nid','rel_filter':'rel_filter'}),
  '_resolve_python_qualified':('python_qualified',{'G':'graph','label':'label'}),'_shortest_path_text':('shortest_path_text',{'G':'graph','arguments':'arguments'}),'_community_header':('community_header',{'cid':'cid','community_name':'name'}),
 }
 for name,(action,fields)in actions.items():
@@ -86,6 +88,18 @@ for name,(action,fields)in actions.items():
         if isinstance(expected,nx.Graph):return expected
         return actual
     setattr(ref,name,wrapper)
+# 0.9.92 (#4500): the MCP loader repairs a file whose links hold parallel edges while
+# its flag says multigraph:false. The native load must agree on the flag and keep
+# every edge; the reference graph is returned, so the rest of a test is unchanged.
+original_load_graph=ref._load_graph
+@functools.wraps(original_load_graph)
+def load_graph(graph_path):
+    expected=original_load_graph(graph_path)
+    native.use_working_directory(Path.cwd());actual=native.result('serve',action='load',path=str(graph_path));counts['_load_graph']=counts.get('_load_graph',0)+1
+    if bool(actual.get('multigraph'))!=expected.is_multigraph() or len(actual.get('links',[]))!=expected.number_of_edges():
+        native.fail(function='_load_graph',path=str(graph_path),expected_multigraph=expected.is_multigraph(),expected_edges=expected.number_of_edges(),actual=actual)
+    return expected
+ref._load_graph=load_graph
 if __name__=='__main__':
     paths=['tests/'+p.name for p in sorted((SOURCE/'tests').glob('test_serve*.py'))if 'http'not in p.name]
     paths += ['tests/test_query_mcp_direction.py','tests/test_query_induced_edges.py','tests/test_file_label_disambiguation.py','tests/test_terraform.py','tests/test_query_names_its_graph.py']
@@ -109,6 +123,18 @@ if __name__=='__main__':
             g.add_edge(u,v,relation=rng.choice(['calls','references','contains']),confidence=rng.choice(['EXTRACTED','INFERRED']),_src=src,_tgt=tgt)
         src,tgt=rng.sample(ids,2)
         ref._shortest_path_text(g,{'source':src,'target':tgt,'undirected':bool(case%2),'max_hops':rng.choice([1,2,8])})
+    # 0.9.93 (#4512): in a merged graph the same path in two repos is two files, and the
+    # refusal names each repo. Lookups go through the wrappers above (native against reference).
+    merged=nx.Graph()
+    for repo in ['alpha','beta']:
+        merged.add_node(repo+'_dup',label='dup.py',source_file='dup.py',repo=repo)
+        merged.add_node(repo+'_dup_run',label='run()',source_file='dup.py',source_location='L3',repo=repo)
+        merged.add_edge(repo+'_dup',repo+'_dup_run',relation='contains',confidence='EXTRACTED')
+    merged.add_node('gamma_run',label='run()',source_file='other.py',source_location='L1',repo='gamma')
+    merged.add_node('gamma_util',label='util()',source_file='util.py',source_location='L1',repo='gamma')
+    merged.add_node('delta_util',label='util()',source_file='lib.py',source_location='L1',repo='delta')
+    for label in ['run()','run','dup.py','dup.py::run()','util()']:
+        ref._resolve_single_node(merged,label);ref.find_node_ambiguity(merged,label)
     native.close()
     not_run={'tests/test_serve_http.py':'Module-level importorskip("mcp") and ("starlette"): the pinned reference venv (tools/reference-requirements.txt) has neither, so the file skips on '
              'both sides, and its Starlette TestClient drives the reference ASGI app in process, which has no native seam. The native HTTP transport is driven by '

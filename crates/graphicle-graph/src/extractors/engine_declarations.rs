@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Class, field and signature traversal for the shared engine.
 use super::{
@@ -50,11 +50,15 @@ impl<'a, 't> Engine<'a, 't> {
             // `Pair` / `_Pair` in one file share an id otherwise (#4415).
             id = python_underscore_salted_nid(&id, &name, &self.csharp_type_groups);
         }
-        // Python nested classes are qualified by their class (0.9.81, #4228).
+        // Python nested classes are qualified by their class (0.9.81, #4228);
+        // a module-level class colliding with a function or class is salted
+        // apart (`Session` / `session()`, `Foo` / `FOO`, 0.9.92, #2810).
         if self.is("python")
             && let Some(parent) = parent
         {
             id = make_id([parent, name.as_str()]);
+        } else if self.is("python") {
+            id = python_underscore_salted_nid(&id, &name, &self.underscore);
         }
         let mut meta = json!({});
         if self.is("c_sharp") {

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/go.py
 //! Go package-scoped types, case-stable symbols, signatures and call candidates.
 use super::base::{file_stem, is_language_builtin, make_id, read_text};
@@ -126,6 +126,27 @@ pub fn collect_type_refs(
 /// `_go_strip_generic_args`: a generic receiver's type text without its
 /// instantiation arguments (`Box[T]` -> `Box`), so a generic type's methods
 /// attach to the type's own id (#4438).
+/// `_go_alias_re_exports` (0.9.95, #4579): `type A = pkg.A` (or `pkg.A[...]`)
+/// re-exports another package's type under its own name and declares none:
+/// references to `A` keep resolving to the original.
+fn alias_re_exports(alias: Node<'_>, source: &[u8]) -> bool {
+    let mut target = alias.child_by_field_name("type");
+    if let Some(generic) = target.filter(|n| n.kind() == "generic_type") {
+        target = generic.child_by_field_name("type");
+    }
+    let Some(target) = target.filter(|n| n.kind() == "qualified_type") else {
+        return false;
+    };
+    match (
+        alias.child_by_field_name("name"),
+        target.child_by_field_name("name"),
+    ) {
+        (Some(name), Some(target_name)) => {
+            read_text(name, source) == read_text(target_name, source)
+        }
+        _ => false,
+    }
+}
 pub fn strip_generic_args(type_text: &str) -> &str {
     trim(type_text.split('[').next().unwrap_or(""))
 }
@@ -244,7 +265,7 @@ impl<'tree> Extractor<'_, 'tree> {
         self.edges.push(e);
     }
     fn named(&mut self, name: &str) -> String {
-        let local = make_id([self.scope.as_str(), name]);
+        let local = self.type_symbol(name);
         if self.seen.contains(&local) {
             return local;
         }
@@ -346,7 +367,7 @@ impl<'tree> Extractor<'_, 'tree> {
         if node.kind() == "type_spec"
             && let Some(name) = node.child_by_field_name("name")
         {
-            let owner = make_id([self.scope.as_str(), read_text(name, self.source).as_str()]);
+            let owner = self.type_symbol(&read_text(name, self.source));
             for body in children(node).filter(|n| n.kind() == "interface_type") {
                 for elem in children(body).filter(|n| n.kind() == "method_elem") {
                     if let Some(method) = elem.child_by_field_name("name") {
@@ -365,7 +386,7 @@ impl<'tree> Extractor<'_, 'tree> {
                 let base = if node.kind() == "method_declaration" {
                     self.receiver(node)
                         .filter(|s| !s.is_empty())
-                        .map(|r| make_id([self.scope.as_str(), r.as_str()]))
+                        .map(|r| self.type_symbol(&r))
                         .unwrap_or_else(|| self.stem.clone())
                 } else {
                     self.stem.clone()
@@ -379,6 +400,43 @@ impl<'tree> Extractor<'_, 'tree> {
         }
         for n in children(node) {
             self.scan(n);
+        }
+    }
+    /// `_scan_type_names` (0.9.92, #4468; aliases 0.9.95, #4579): every type
+    /// declared in the file joins the case-collision groups under the package
+    /// scope first, so `type ResponseWriter interface` and `type
+    /// responseWriter struct` get distinct ids, and a method is keyed under its
+    /// owner's final id. Declarations inside function bodies are not counted.
+    fn scan_types(&mut self, node: Node<'_>) {
+        if (node.kind() == "type_spec"
+            || (node.kind() == "type_alias" && !alias_re_exports(node, self.source)))
+            && let Some(name) = node.child_by_field_name("name")
+        {
+            let name = read_text(name, self.source);
+            self.groups
+                .entry(make_id([self.scope.as_str(), name.as_str()]))
+                .or_default()
+                .insert(name);
+        }
+        if matches!(node.kind(), "function_declaration" | "method_declaration") {
+            return;
+        }
+        for n in children(node) {
+            self.scan_types(n);
+        }
+    }
+    /// `type_symbol_nid`: the id of a type name, salted when the file declares
+    /// it beside a case-only sibling.
+    fn type_symbol(&self, name: &str) -> String {
+        let plain = make_id([self.scope.as_str(), name]);
+        if self
+            .groups
+            .get(&plain)
+            .is_some_and(|names| names.contains(name))
+        {
+            self.symbol(plain, name)
+        } else {
+            plain
         }
     }
     fn symbol(&self, plain: String, name: &str) -> String {
@@ -427,7 +485,7 @@ impl<'tree> Extractor<'_, 'tree> {
                 let receiver_type = self.receiver(node).filter(|s| !s.is_empty());
                 let receiver_name = self.receiver_name(node);
                 let id = if let Some(receiver) = receiver_type.clone() {
-                    let parent = make_id([self.scope.as_str(), receiver.as_str()]);
+                    let parent = self.type_symbol(&receiver);
                     self.node(&parent, &receiver, line);
                     self.callable_class.insert(parent.clone());
                     let id = self.symbol(make_id([parent.as_str(), name.as_str()]), &name);
@@ -455,16 +513,26 @@ impl<'tree> Extractor<'_, 'tree> {
                 return;
             }
             "type_declaration" => {
-                for spec in children(node).filter(|n| n.kind() == "type_spec") {
+                for spec in
+                    children(node).filter(|n| matches!(n.kind(), "type_spec" | "type_alias"))
+                {
+                    if spec.kind() == "type_alias" && alias_re_exports(spec, self.source) {
+                        continue;
+                    }
                     let Some(name) = spec.child_by_field_name("name") else {
                         continue;
                     };
                     let name = read_text(name, self.source);
                     let line = spec.start_position().row + 1;
-                    let id = make_id([self.scope.as_str(), name.as_str()]);
+                    let id = self.type_symbol(&name);
                     self.node(&id, &name, line);
                     self.callable_class.insert(id.clone());
                     self.edge(&self.file.clone(), &id, "contains", line, None);
+                    // `type A = B` declares a type like `type A B` (0.9.95,
+                    // #4579): references land on it. Its right side is not walked.
+                    if spec.kind() == "type_alias" {
+                        continue;
+                    }
                     // A generic type's own parameters (`type Box[T any]`) are
                     // bindings for its fields and methods (#4383).
                     let type_params = type_param_names(spec, self.source);
@@ -753,6 +821,7 @@ pub fn extract_go(path: &Path) -> Value {
         raw_calls: vec![],
     };
     ex.node(&file, &name, 1);
+    ex.scan_types(tree.root_node());
     ex.scan(tree.root_node());
     ex.walk(tree.root_node());
     // A type carries both markers: `_callable_class` narrows `_callable`.

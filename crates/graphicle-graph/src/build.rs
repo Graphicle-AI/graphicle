@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py
 //! Native graph construction and conservative normalization of extraction output.
 pub use crate::build_global::{distinct_repo_tags, prefix_graph_for_global, prune_repo_from_graph};
@@ -145,12 +145,14 @@ pub fn mint_external_stubs_in_data(data: &mut Value) {
 }
 /// `finalize_raw_graph_endpoints` (0.9.80, #4189/#4181): apply
 /// [`build_from_json`]'s endpoint rules to a raw (`--no-cluster`) graph. An
-/// import of an external module gets its typed stub; an endpoint that differs
-/// from a declared id only by normalization is repointed to it; every other
-/// edge without two declared endpoints is dropped; and a stub no edge or
-/// hyperedge references any more is dropped, as a fresh build would not have it.
+/// endpoint that differs from a declared id only by normalization, or that
+/// names a declared node in an old-stem spelling ([`alias_index`], Graphify
+/// 0.9.95, #4670), is repointed to it first; whatever still names an
+/// undeclared node is external: an import of an external module gets its
+/// typed stub, every other edge without two declared endpoints is dropped,
+/// and a stub no edge or hyperedge references any more is dropped, as a fresh
+/// build would not have it.
 pub fn finalize_raw_graph_endpoints(data: &mut Value) {
-    mint_external_stubs_in_data(data);
     let key = if data.get("links").is_some_and(Value::is_array) {
         "links"
     } else {
@@ -161,22 +163,64 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
     {
         return;
     }
-    let mut declared = data["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|n| n.as_object()?.get("id")?.as_str())
-        .map(str::to_owned)
-        .collect::<Vec<_>>();
+    let declared_ids = |data: &Value| {
+        data["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|n| n.as_object()?.get("id")?.as_str())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let mut declared = declared_ids(&*data);
     declared.sort();
     declared.dedup();
     // Two ids with one normalized spelling: the later in sorted order wins,
     // the same stable choice build_from_json makes (the reference iterates a set).
-    let norm_to_id: HashMap<String, String> = declared
+    let mut norm_to_id: FxHashMap<String, String> = declared
         .iter()
         .map(|nid| (ids::normalize_id(nid), nid.clone()))
         .collect();
+    // Only fills gaps: never overrides a real node id.
+    let index = alias_index(
+        data["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|n| {
+                let node = n.as_object()?;
+                Some((node.get("id")?.as_str()?, node))
+            }),
+    );
+    for (alias, canonical) in index {
+        norm_to_id.entry(alias).or_insert(canonical);
+    }
     let declared: std::collections::HashSet<String> = declared.into_iter().collect();
+    // Repoint every endpoint that has a canonical form before stubbing, so an
+    // import that names a real file is not frozen onto a stub minted for its
+    // unresolved spelling.
+    for object in data[key]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .filter_map(Value::as_object_mut)
+    {
+        for (primary, alias) in [("source", "from"), ("target", "to")] {
+            let field = if object.contains_key(primary) {
+                primary
+            } else {
+                alias
+            };
+            if let Some(endpoint) = object.get(field).and_then(Value::as_str)
+                && !declared.contains(endpoint)
+                && let Some(canonical) = norm_to_id.get(&ids::normalize_id(endpoint))
+            {
+                object.insert(field.into(), json!(canonical));
+            }
+        }
+    }
+    mint_external_stubs_in_data(data);
+    let declared: std::collections::HashSet<String> = declared_ids(&*data).into_iter().collect();
     let mut referenced = BTreeSet::new();
     let links = std::mem::take(data[key].as_array_mut().unwrap());
     let mut kept = Vec::with_capacity(links.len());
@@ -246,6 +290,141 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
                 || scalar_key(n.get("id").unwrap_or(&Value::Null))
                     .is_some_and(|id| referenced.contains(&id))
         });
+    }
+}
+/// The normalized method name of an AST `.name()` label (#3705).
+fn method_name(label: &str) -> String {
+    let stem = label.strip_prefix('.').unwrap_or(label);
+    ids::make_id([stem.strip_suffix("()").unwrap_or(stem)])
+}
+/// `_alias_index` (Graphify 0.9.95, #4670): every old-stem spelling of a
+/// node mapped to that node's id. A file's pre-migration node id was keyed on
+/// its stem (`Kit/Event/ToolEvent.h` was `toolevent`, now
+/// `kit_event_toolevent`, #1504/#1509), so each node registers its old-stem
+/// forms, normalized and raw. An alias is committed only when exactly one
+/// node claims it: `ping.h` and `ping.php` in different folders both alias
+/// to `ping`. A Python module whose bare stem is a stdlib name
+/// (`scripts/logging.py`) never claims the bare-stem alias (0.9.84, #4261).
+/// Shared by the clustered build and [`finalize_raw_graph_endpoints`].
+fn alias_index<'a, P: Properties + 'a>(
+    nodes: impl IntoIterator<Item = (&'a str, &'a P)>,
+) -> FxHashMap<String, String> {
+    let mut aliases = FxHashMap::<String, BTreeSet<String>>::default();
+    // A file's stem id, name and former stems, derived once per file rather
+    // than for each of its nodes.
+    let mut files = HashMap::<String, (String, String, Vec<String>, bool)>::new();
+    for (nid, attributes) in nodes {
+        let Some(sf) = attributes.get("source_file").filter(|v| truthy(v)) else {
+            continue;
+        };
+        let sf = python_compat::string(sf);
+        if crate::paths::is_absolute_any_platform(Some(&sf)) {
+            continue;
+        }
+        let (stem, file_name, olds, py_stdlib_stem) = files.entry(sf).or_insert_with_key(|sf| {
+            let rel = Path::new(sf);
+            let name = rel
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            // The directory-scoped alias ("scripts_logging") is still registered.
+            let py_stdlib_stem =
+                matches!(crate::detect_types::suffix(rel).as_str(), ".py" | ".pyi")
+                    && is_python_stdlib_module(&ids::make_id([crate::detect_types::stem(&name)]));
+            (
+                ids::make_id([base::file_stem(rel)]),
+                name,
+                old_file_stems(rel),
+                py_stdlib_stem,
+            )
+        });
+        if stem.is_empty() {
+            continue;
+        }
+        let py_stdlib_stem = *py_stdlib_stem;
+        let stem = &*stem;
+        let normalized_id = ids::normalize_id(nid);
+        let suffix = if value_string(attributes, "label") == *file_name {
+            ""
+        } else {
+            normalized_id.strip_prefix(stem).unwrap_or("")
+        };
+        for old in olds.iter() {
+            if old == stem || (py_stdlib_stem && is_python_stdlib_module(old)) {
+                continue;
+            }
+            let alias = format!("{old}{suffix}");
+            aliases
+                .entry(ids::normalize_id(&alias))
+                .or_default()
+                .insert(nid.into());
+            aliases.entry(alias).or_default().insert(nid.into());
+        }
+        if attributes.get("_origin").is_some_and(|v| v == "ast") {
+            let label = value_string(attributes, "label");
+            if label.starts_with('.') {
+                // #3705: `<file_stem>_<method>` alias for AST `.name()` nodes.
+                let m_alias = format!(
+                    "{stem}_{}",
+                    method_name(label.trim_matches(dedup_strings::whitespace))
+                );
+                if normalized_id != ids::normalize_id(&m_alias) {
+                    aliases
+                        .entry(ids::normalize_id(&m_alias))
+                        .or_default()
+                        .insert(nid.into());
+                    aliases.entry(m_alias).or_default().insert(nid.into());
+                }
+            }
+        }
+    }
+    aliases
+        .into_iter()
+        .filter(|(_, candidates)| candidates.len() == 1)
+        .map(|(alias, candidates)| (alias, candidates.into_iter().next().unwrap()))
+        .collect()
+}
+/// `has_parallel_links` (Graphify 0.9.92, #4500): whether two link records
+/// share their endpoints, as an unordered pair when `directed` is false. Keeps
+/// a serialized `multigraph` flag consistent with the links stored: readers
+/// that honour the flag otherwise collapse the parallel edges on load.
+pub fn has_parallel_links<'a>(links: impl IntoIterator<Item = &'a Value>, directed: bool) -> bool {
+    let mut seen = BTreeSet::new();
+    for link in links.into_iter().filter_map(Value::as_object) {
+        let endpoint = |k: &str| scalar_key(link.get(k).unwrap_or(&Value::Null));
+        let (Some(source), Some(target)) = (endpoint("source"), endpoint("target")) else {
+            continue;
+        };
+        let pair = if directed || source <= target {
+            (source, target)
+        } else {
+            (target, source)
+        };
+        if !seen.insert(pair) {
+            return true;
+        }
+    }
+    false
+}
+/// The load-time repair of the MCP loader (`_load_graph`, Graphify 0.9.92,
+/// #4500), for every reader of a saved graph.json: a document whose `links`
+/// hold two records on one pair is read as a multigraph, whatever its
+/// `multigraph` flag says. Writers before 0.9.92 restored such links with the
+/// flag `false`, so without this a file read the same links collapsed or kept
+/// depending on the release that wrote it. Pairs compare as the document's
+/// `directed` flag says; readers that force `directed` set it first.
+pub fn mark_parallel_links(data: &mut Value) {
+    let directed = data
+        .get("directed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if data
+        .get("links")
+        .and_then(Value::as_array)
+        .is_some_and(|links| has_parallel_links(links, directed))
+    {
+        data["multigraph"] = json!(true);
     }
 }
 /// `_fold_type_only` for a stored edge and an incoming one ([`execution_wins`]).
@@ -585,6 +764,8 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
         fold_node_aliases(node);
         node["file_type"] = normalized_file_type(&node["file_type"])?;
     }
+    // A hyperedge carries the same confidence pair an edge does, and folds the
+    // same legacy or drifted values (Graphify 0.9.92, #4495).
     for he in extraction
         .get_mut("hyperedges")
         .and_then(Value::as_array_mut)
@@ -592,6 +773,9 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
         .flatten()
     {
         messages.stderr.extend(hyperedge_members::normalize(he));
+        if let Some(he) = he.as_object_mut() {
+            fold_confidence(he);
+        }
     }
     for edge in edges.iter_mut() {
         if let Some(e) = edge.record_mut() {
@@ -781,10 +965,6 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
     let mut ast_files = Vec::new();
     // #3705: (source_file, normalized method name) -> AST `.name()` nodes.
     let mut ast_methods = FxHashMap::<(String, String), Vec<String>>::default();
-    let method_name = |label: &str| {
-        let stem = label.strip_prefix('.').unwrap_or(label);
-        ids::make_id([stem.strip_suffix("()").unwrap_or(stem)])
-    };
     let mut method_ghosts = BTreeMap::<String, String>::new();
     for (nid, index) in &sorted_nodes {
         let attributes = &graph.nodes[*index].attributes;
@@ -905,83 +1085,16 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
         norm_to_id.insert(ids::normalize_id(ghost), canonical.clone());
         norm_to_id.insert(ghost.clone(), canonical.clone());
     }
-    let mut aliases = FxHashMap::<String, BTreeSet<String>>::default();
-    // A file's stem id, name and former stems, derived once per file rather
-    // than for each of its nodes.
-    let mut files = HashMap::<String, (String, String, Vec<String>, bool)>::new();
-    for node in &graph.nodes {
-        let Some(sf) = node.attributes.get("source_file").filter(|v| truthy(v)) else {
-            continue;
-        };
-        let sf = python_compat::string(sf);
-        if crate::paths::is_absolute_any_platform(Some(&sf)) {
-            continue;
-        }
-        let (stem, file_name, olds, py_stdlib_stem) = files.entry(sf).or_insert_with_key(|sf| {
-            let rel = Path::new(sf);
-            let name = rel
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            // A Python module whose bare stem is a stdlib name (`scripts/logging.py`)
-            // never claims the bare-stem alias ("logging"): it would capture a
-            // genuine external `import logging` edge (0.9.84, #4261). The
-            // directory-scoped alias ("scripts_logging") is still registered.
-            let py_stdlib_stem =
-                matches!(crate::detect_types::suffix(rel).as_str(), ".py" | ".pyi")
-                    && is_python_stdlib_module(&ids::make_id([crate::detect_types::stem(&name)]));
-            (
-                ids::make_id([base::file_stem(rel)]),
-                name,
-                old_file_stems(rel),
-                py_stdlib_stem,
-            )
-        });
-        let py_stdlib_stem = *py_stdlib_stem;
-        let stem = &*stem;
-        let nid = node.id.as_str().unwrap();
-        let normalized_id = ids::normalize_id(nid);
-        let suffix = if value_string(&node.attributes, "label") == *file_name {
-            ""
-        } else {
-            normalized_id.strip_prefix(stem).unwrap_or("")
-        };
-        for old in olds.iter() {
-            if old == stem || (py_stdlib_stem && is_python_stdlib_module(old)) {
-                continue;
-            }
-            let alias = format!("{old}{suffix}");
-            aliases
-                .entry(ids::normalize_id(&alias))
-                .or_default()
-                .insert(nid.into());
-            aliases.entry(alias).or_default().insert(nid.into());
-        }
-        if node.attributes.get("_origin").is_some_and(|v| v == "ast") {
-            let label = value_string(&node.attributes, "label");
-            if label.starts_with('.') {
-                // #3705: `<file_stem>_<method>` alias for AST `.name()` nodes.
-                let m_alias = format!(
-                    "{stem}_{}",
-                    method_name(label.trim_matches(dedup_strings::whitespace))
-                );
-                if normalized_id != ids::normalize_id(&m_alias) {
-                    aliases
-                        .entry(ids::normalize_id(&m_alias))
-                        .or_default()
-                        .insert(nid.into());
-                    aliases.entry(m_alias).or_default().insert(nid.into());
-                }
-            }
-        }
-    }
-    for (alias, candidates) in aliases {
-        if candidates.len() == 1 {
-            norm_to_id
-                .entry(alias)
-                .or_insert_with(|| candidates.into_iter().next().unwrap());
-        }
+    // The index lives in [`alias_index`] so the raw (`--no-cluster`) write
+    // path resolves endpoints identically (Graphify 0.9.95, #4670).
+    let index = alias_index(
+        graph
+            .nodes
+            .iter()
+            .filter_map(|node| Some((node.id.as_str()?, &node.attributes))),
+    );
+    for (alias, canonical) in index {
+        norm_to_id.entry(alias).or_insert(canonical);
     }
     Ok(norm_to_id)
 }

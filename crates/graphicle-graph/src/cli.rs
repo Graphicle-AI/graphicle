@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.91 (10130e79), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Native command routing; JSON Lines remains available for embedding clients.
 use crate::{Result, build, paths};
@@ -9,6 +9,12 @@ use std::{
     path::{Path, PathBuf},
 };
 pub const HELP: &str = include_str!("assets/cli/help.txt");
+/// The usage text. Its install platforms come from the installer's own table,
+/// the source the install usage reads, so the two cannot drift (Graphify
+/// 0.9.94, #4655).
+pub fn help_text() -> String {
+    program_text(HELP).replace("@PLATFORMS@", &crate::install::platforms().join("|"))
+}
 /// The name of this crate's executable. Help, usage and error messages,
 /// `--version` and the commands written into installed skills, rules and
 /// hooks name the program the command line runs as: this one, or the name an
@@ -345,6 +351,11 @@ pub fn load_as(
             }
         }
     }
+    if multigraph.is_none() {
+        // A graph.json written before 0.9.92 reads as a newer one does
+        // (`build::mark_parallel_links`); upstream's CLI loaders honour the flag.
+        crate::build::mark_parallel_links(&mut raw);
+    }
     let hyperedges = raw
         .get_mut("hyperedges")
         .filter(|v| v.is_array())
@@ -366,7 +377,7 @@ pub fn load_indexed(
     if !path.is_file() {
         return Err(format!("graph file not found: {}", path.display()).into());
     }
-    crate::security::check_graph_file_size_cap(path)?;
+    crate::security::check_own_graph_size_cap(path)?;
     let build = || {
         let g = load_as(path, direction, multigraph)?;
         let index = crate::serve_search::SearchIndex::new(&g);
@@ -403,6 +414,27 @@ pub fn run(args: &[String]) -> Output {
 pub fn run_as(program: &'static str, args: &[String]) -> Output {
     with_program(program, || run_program(args))
 }
+/// Commands whose free-text arguments may contain a help flag.
+const FREE_TEXT_COMMANDS: [&str; 6] = [
+    "query",
+    "explain",
+    "path",
+    "save-result",
+    "install",
+    "uninstall",
+];
+/// Version and help only report, so they leave installed files alone
+/// (Graphify 0.9.93, #4545): no arguments, a version or help command, or a
+/// help flag after any command that takes no free text.
+fn informational(args: &[String]) -> bool {
+    let help = |s: &str| ["-h", "--help", "-?"].contains(&s);
+    let Some(first) = args.first().map(String::as_str) else {
+        return true;
+    };
+    ["-v", "--version", "version", "help"].contains(&first)
+        || help(first)
+        || (!FREE_TEXT_COMMANDS.contains(&first) && args[1..].iter().any(|a| help(a)))
+}
 fn run_program(args: &[String]) -> Output {
     let mut out = Output::default();
     if !args.iter().any(|s| {
@@ -411,13 +443,16 @@ fn run_program(args: &[String]) -> Output {
         let options = crate::install::Options::default();
         // Graphify 0.9.72 (#1805): refresh skills an upgrade left behind
         // first, so the check below only warns for copies the refresh could
-        // not or must not touch.
-        for message in crate::install::refresh_stale_skills(&options) {
-            out.warn(message);
-        }
-        // Graphify 0.9.84 (#3554/#3732): OpenCode plugins an older release wrote.
-        for message in crate::install::refresh_v1_opencode_plugins(&options) {
-            out.warn(message);
+        // not or must not touch. Not for `--version` or `--help` (0.9.93,
+        // #4545): the staleness warning below still prints.
+        if !informational(args) {
+            for message in crate::install::refresh_stale_skills(&options) {
+                out.warn(message);
+            }
+            // Graphify 0.9.84 (#3554/#3732): OpenCode plugins an older release wrote.
+            for message in crate::install::refresh_v1_opencode_plugins(&options) {
+                out.warn(message);
+            }
         }
         let mut destinations = BTreeMap::<PathBuf, Vec<String>>::new();
         for name in crate::install::platforms() {
@@ -441,12 +476,12 @@ fn run_into(args: &[String], out: &mut Output) -> Result<()> {
     // 0.9.72: the usage text opens with the logo banner (terminal only).
     let Some(command) = args.first().map(String::as_str) else {
         crate::install_platforms::print_banner();
-        out.line(program_text(HELP));
+        out.line(help_text());
         return Ok(());
     };
     if ["-h", "--help", "-?", "help"].contains(&command) {
         crate::install_platforms::print_banner();
-        out.line(program_text(HELP));
+        out.line(help_text());
         return Ok(());
     }
     if ["-v", "--version", "version"].contains(&command) {
@@ -497,7 +532,7 @@ fn run_into(args: &[String], out: &mut Output) -> Result<()> {
         crate::extractors::evidence::MIN_LEVEL.store(rank, std::sync::atomic::Ordering::Relaxed);
     }
     if a.flag("help") {
-        out.line(program_text(HELP));
+        out.line(help_text());
         return Ok(());
     }
     if command == "install"
@@ -600,7 +635,8 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             p("graph"),
             p("root"),
             &s::strings(&r["unchanged"]),
-            r["semantic"].as_bool().unwrap_or(false)
+            r["semantic"].as_bool().unwrap_or(false),
+            r["manifest_path"].as_str().map(Path::new),
         )),
         "prune" => json!(s::prune_sources(p("graph"), &s::strings(&r["stale"]))?),
         "bash_search" => json!(crate::cli_guard::bash_search(text("command"))),
