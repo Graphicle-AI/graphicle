@@ -2309,6 +2309,21 @@ struct ServeOptions {
     public_origin: Option<String>,
     session: local::Session,
 }
+/// Host values the local server accepts for `address`. The socket always
+/// prints its port. HTTP clients omit port 80, so that form is accepted too.
+fn serve_hosts(address: SocketAddr) -> Vec<String> {
+    let port = address.port();
+    let mut hosts = vec![address.to_string(), format!("localhost:{port}")];
+    if port == 80 {
+        hosts.push(match address.ip() {
+            IpAddr::V4(ip) => ip.to_string(),
+            IpAddr::V6(ip) => format!("[{ip}]"),
+        });
+        hosts.push("localhost".to_string());
+    }
+    hosts
+}
+
 async fn serve(store: Store, config: model::Config, options: ServeOptions) -> Result<()> {
     let ServeOptions {
         listen,
@@ -2338,7 +2353,7 @@ async fn serve(store: Store, config: model::Config, options: ServeOptions) -> Re
         .await
         .map_err(|error| crate::terminal::bind_error(port, error))?;
     let actual = listener.local_addr()?;
-    let hosts = vec![actual.to_string(), format!("localhost:{}", actual.port())];
+    let hosts = serve_hosts(actual);
     let mut app = App::new(store, config, hosts)?;
     if let Some(origin) = public_origin {
         app = app.hosted(&origin)?;
@@ -2455,6 +2470,32 @@ fn shutdown_signal() -> Result<impl std::future::Future<Output = ()>> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+
+    /// Browsers and curl omit the port when it is the default for http, so
+    /// `graphicle serve --port 80` must accept Host without `:80`.
+    #[test]
+    fn the_default_http_port_allows_the_host_header_without_a_port() {
+        let v4: SocketAddr = "127.0.0.1:80".parse().unwrap();
+        let hosts = super::serve_hosts(v4);
+        assert!(hosts.contains(&"127.0.0.1:80".to_string()), "{hosts:?}");
+        assert!(hosts.contains(&"localhost:80".to_string()), "{hosts:?}");
+        assert!(hosts.contains(&"127.0.0.1".to_string()), "{hosts:?}");
+        assert!(hosts.contains(&"localhost".to_string()), "{hosts:?}");
+
+        let v6: SocketAddr = "[::1]:80".parse().unwrap();
+        let hosts = super::serve_hosts(v6);
+        assert!(hosts.contains(&"[::1]:80".to_string()), "{hosts:?}");
+        assert!(hosts.contains(&"[::1]".to_string()), "{hosts:?}");
+        assert!(hosts.contains(&"localhost".to_string()), "{hosts:?}");
+
+        let usual: SocketAddr = "127.0.0.1:8854".parse().unwrap();
+        assert_eq!(
+            super::serve_hosts(usual),
+            vec!["127.0.0.1:8854".to_string(), "localhost:8854".to_string()]
+        );
+    }
+
     #[test]
     fn serving_refuses_pro_configuration_no_extension_reads() {
         let billing = |name: &str| name == "GRAPHICLE_BILLING_CONFIG";
