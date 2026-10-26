@@ -8,10 +8,10 @@
 <h3 align="center">Code graph and memory for your coding agents, in one Rust program.</h3>
 
 <p align="center">
-  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-3D5AFE"></a>
-  <a href="https://github.com/graphicle-ai/graphicle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/graphicle-ai/graphicle?color=3D5AFE"></a>
-  <img alt="Platforms: macOS, Linux and Windows (preview)" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%28preview%29-3D5AFE">
-  <a href="https://discord.com/invite/rWuU7cWU4E"><img alt="Chat on Discord" src="https://img.shields.io/badge/chat-Discord-3D5AFE?logo=discord&amp;logoColor=white"></a>
+  <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-8B5CF6?style=flat-square&amp;labelColor=1E2235"></a>
+  <a href="https://github.com/graphicle-ai/graphicle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/graphicle-ai/graphicle?style=flat-square&amp;color=5B7CFF&amp;labelColor=1E2235"></a>
+  <img alt="Platforms: macOS, Linux and Windows (preview)" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%28preview%29-0EA5E9?style=flat-square&amp;labelColor=1E2235">
+  <a href="https://discord.com/invite/rWuU7cWU4E"><img alt="Chat on Discord" src="https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&amp;labelColor=1E2235&amp;logo=discord&amp;logoColor=white"></a>
 </p>
 
 <p align="center">
