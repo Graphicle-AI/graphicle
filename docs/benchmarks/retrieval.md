@@ -1,11 +1,12 @@
 # Retrieval benchmark: finding the files a fix changes
 
-Measured on 21 October 2026, offline: no model is called by any system here.
+Graphicle 0.1.8 was measured on 25 October 2026 and the other systems on
+21 October 2026, offline: no model is called by any system here.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="../assets/retrieval-dark.svg">
-    <img src="../assets/retrieval-light.svg" alt="Finding the files a fix changes: 100 SWE-bench Verified issues, held out from tuning. Top 1: Graphicle 0.1.3 43, Graphicle 0.1.2 13, BM25 (SWE-bench style) 35, grep for the issue's names 20; Top 5: Graphicle 0.1.3 75, Graphicle 0.1.2 30, BM25 (SWE-bench style) 61, grep for the issue's names 54; Top 10: Graphicle 0.1.3 82, Graphicle 0.1.2 30, BM25 (SWE-bench style) 77, grep for the issue's names 71; MRR: Graphicle 0.1.3 0.562, Graphicle 0.1.2 0.191, BM25 (SWE-bench style) 0.478, grep for the issue's names 0.365.">
+    <img src="../assets/retrieval-light.svg" alt="Finding the files a fix changes: 100 SWE-bench Verified issues, held out from tuning. Top 1: Graphicle 0.1.8 43, BM25 (SWE-bench style) 35, grep for the issue's names 20; Top 5: Graphicle 0.1.8 75, BM25 (SWE-bench style) 61, grep for the issue's names 54; Top 10: Graphicle 0.1.8 81, BM25 (SWE-bench style) 77, grep for the issue's names 71; MRR: Graphicle 0.1.8 0.561, BM25 (SWE-bench style) 0.478, grep for the issue's names 0.365.">
   </picture>
 </p>
 
@@ -16,31 +17,47 @@ is among the first k files a system returns (hit@k, for k = 1, 5 and 10), and
 how high the first such file comes (mean reciprocal rank, MRR).
 
 It measures ranking only. It does not measure whether a coding agent finds or
-fixes more issues with Graphicle: that needs an agent test, and the agent test
-of 0.1.3 is pending. Our earlier agent tests, of 0.1.0 and 0.1.1 with
-Claude Code, found Graphicle tied with plain Claude Code on finding the files
-a fix changes
+fixes more issues with Graphicle: that needs an agent test, and no agent test
+of this ranking has been run yet. Our earlier agent tests, of 0.1.0 and 0.1.1
+with Claude Code, found Graphicle tied with plain Claude Code on finding the
+files a fix changes
 ([agent tests](../benchmarks.md#coding-agents-with-graphicle-graphify-or-neither)).
 The two baselines below are fixed procedures, defined exactly; they are not
 what an agent does when it searches with grep or a search engine.
 
 It does not measure how long a question takes. For the time of
 `graphicle context` per question on kubernetes, measured independently by
-the reporter of issue #8, see
+the reporter of issue #8 and in our own run of 0.1.8 against 0.1.7, see
 [Independent measurements](../benchmarks.md#independent-measurements).
 
 ## Results
 
 ### Held-out set: 100 SWE-bench Verified issues, never used for tuning
 
+Graphicle 0.1.8 is a release build of the 0.1.8 source, measured on
+25 October 2026. The 0.1.3 and 0.1.2 rows, and BM25 and grep, are the
+21 October 2026 run, on the same checkouts.
+
 | System | hit@1 | hit@5 | hit@10 | MRR |
 |---|---|---|---|---|
-| Graphicle 0.1.3 | 43 | 75 | 82 | 0.562 |
-| Graphicle 0.1.2 | 13 | 30 | 30 | 0.191 |
+| Graphicle 0.1.8 | 43 | 75 | 81 | 0.561 |
 | BM25, SWE-bench style | 35 | 61 | 77 | 0.478 |
 | grep for the names in the issue (rg 14.1.1) | 20 | 54 | 71 | 0.365 |
+| Graphicle 0.1.8, its ranking before the packet | 42 | 76 | 81 | 0.563 |
+| Graphicle 0.1.3 | 43 | 75 | 82 | 0.562 |
+| Graphicle 0.1.2 | 13 | 30 | 30 | 0.191 |
 | Graphicle 0.1.3, its ranking before the packet | 42 | 76 | 82 | 0.564 |
 | Graphicle 0.1.2, its ranking before the packet | 16 | 29 | 35 | 0.225 |
+
+McNemar exact test, Graphicle 0.1.8 against BM25, SWE-bench style:
+
+| k | only Graphicle 0.1.8 has a hit | only BM25, SWE-bench style has a hit | p (two-sided) |
+|---|---|---|---|
+| 1 | 19 | 11 | 0.200 |
+| 5 | 21 | 7 | 0.013 |
+| 10 | 13 | 9 | 0.523 |
+
+At the 0.05 level, against BM25: the first file, p = 0.200, not significant; the first 5 files, p = 0.013, significant; the first 10 files, p = 0.523, not significant.
 
 McNemar exact test, Graphicle 0.1.3 against BM25, SWE-bench style:
 
@@ -50,13 +67,16 @@ McNemar exact test, Graphicle 0.1.3 against BM25, SWE-bench style:
 | 5 | 21 | 7 | 0.013 |
 | 10 | 13 | 8 | 0.383 |
 
-At the 0.05 level, against BM25: the first file, p = 0.200, not significant; the first 5 files, p = 0.013, significant; the first 10 files, p = 0.383, not significant.
+0.1.8 has a file the fix changed among its first 10 files for one issue fewer
+than 0.1.3 (81 against 82); the first file and the first 5 are the same
+counts.
 
 ### Development set: 80 issues filed in July 2026, used for tuning
 
 0.1.3's ranking changes were developed and measured on this set, so its
 Graphicle 0.1.3 numbers are optimistic; the held-out set is the fair
-comparison.
+comparison. These rows are the 21 October 2026 run; 0.1.8 was not run on
+this set.
 
 | System | hit@1 | hit@5 | hit@10 | MRR |
 |---|---|---|---|---|
@@ -88,7 +108,7 @@ words followed by the error in an `<error>` block.
 
 The 100 issues of our 15 October agent test, from SWE-bench Verified (`princeton-nlp/SWE-bench_Verified` at revision c104f840), all in Python: django/django 46, sympy/sympy 15, sphinx-doc/sphinx 9, matplotlib/matplotlib 7, scikit-learn/scikit-learn 7, astropy/astropy 4, pydata/xarray 4, pytest-dev/pytest 4, psf/requests 2, pylint-dev/pylint 2.
 
-Never used for tuning: 0.1.3's ranking changes were developed and chosen on the development set. This set's totals were checked for each candidate build, and no per-issue result of it was read before the final build was fixed.
+Never used for tuning: 0.1.3's ranking changes were developed and chosen on the development set. This set's totals were checked for each candidate build, and no per-issue result of it was read before the final build was fixed. Later releases were measured on it, not tuned on it.
 
 Gold files: 1 gold file for 87 issues; 2 gold files for 8 issues; 3 gold files for 3 issues; 4 gold files for 1 issue; 21 gold files for 1 issue.
 
@@ -131,6 +151,9 @@ Gold files: 1 gold file for 50 issues; 2 gold files for 14 issues; 3 gold files 
 Each issue's repository is checked out at the issue's base commit, and every
 system works on that checkout alone.
 
+- **Graphicle 0.1.8.** A release build of the 0.1.8 source, run as 0.1.3
+  below, with the same arguments, which are also 0.1.8's `graphicle context`
+  defaults.
 - **Graphicle 0.1.3.** A release build of the 0.1.3 source. `graphicle setup`
   syncs the checkout into a fresh data folder with its defaults. Then `graphicle call context` answers the question
   with the arguments `graphicle context` uses by default: at most 8,400
@@ -188,18 +211,19 @@ List at most 5 files, the most likely first. List only files that exist in the r
 - **hit@k.** The number of issues with a gold file among the first k files.
 - **MRR.** The mean over the issues of 1 / the rank of the first gold file,
   0 when it is not in the first 100.
-- **McNemar exact test.** Graphicle 0.1.3 against BM25 at each k, on the same
-  issues: a two-sided binomial test on the issues where exactly one of the two
-  has a hit.
+- **McNemar exact test.** Graphicle 0.1.8, and 0.1.3, against BM25 at each
+  k, on the same issues: a two-sided binomial test on the issues where exactly
+  one of the two has a hit.
 
 ## Limitations
 
 - **Ranking, not agent success.** A file in the first 10 is not a fix, and an
-  agent may find the file another way; the agent test of 0.1.3 is pending.
+  agent may find the file another way; no agent test of this ranking has been
+  run yet.
 - **Prompt formats.** Both sets wrap every issue in the same instructions and
-  `<issue>` tags, and 0.1.3 reads marked content first. The check below
-  re-wraps the development issues in three other formats; the held-out set
-  was not re-wrapped.
+  `<issue>` tags, and 0.1.3 and later read marked content first. The check
+  below re-wraps the development issues in three other formats; the held-out
+  set was not re-wrapped.
 - **Python only, held out.** The held-out issues are all Python, and 46 of
   them are Django's. The development set covers the other languages, but it
   was used for tuning.
@@ -208,10 +232,12 @@ List at most 5 files, the most likely first. List only files that exist in the r
 - **Different units.** BM25 and grep rank whole files. Graphicle ranks
   passages and reports files, within a character budget.
 - **Budgets.** Graphicle 0.1.2 ran with its own default budget, 12,000
-  characters against 0.1.3's 8,400, which gives its packet more room.
+  characters against 8,400 for 0.1.3 and 0.1.8, which gives its packet more
+  room.
 - **Long questions.** Graphicle 0.1.2 refuses a question over 16,000 bytes.
   Two development issues are that long, and they count as misses for it;
-  0.1.3 shortens such a question instead. No held-out question is that long.
+  0.1.3 and 0.1.8 shorten such a question instead. No held-out question is
+  that long.
 - **Size.** 100 held-out issues: the McNemar tests above give the chance of
   differences this large between two equal systems.
 - **One run.** One run per system on one Linux machine; the systems are
@@ -220,8 +246,9 @@ List at most 5 files, the most likely first. List only files that exist in the r
 ## Files
 
 - [`retrieval.json`](retrieval.json): every issue of both sets, with its
-  repository, language, gold files and each system's rank of its first gold
-  file, and the chart's texts.
+  repository, language and number of gold files; each system's results; for
+  each pair compared, the issues where only one of the two has a hit at each
+  k; and the chart's texts.
 - [`retrieval_chart.py`](retrieval_chart.py): prints the results tables and
   McNemar tests on this page from `retrieval.json` (`--tables`) and draws the
   chart (`docs/assets/retrieval-light` and `-dark`, SVG and PNG). The prompt

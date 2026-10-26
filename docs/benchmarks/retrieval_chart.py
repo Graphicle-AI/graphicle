@@ -7,9 +7,10 @@
 The first form writes retrieval-light.svg, retrieval-dark.svg and their PNGs (twice the SVG's size) to
 --out; the second prints the Markdown tables of docs/benchmarks/retrieval.md. The data file holds each
 set's results per system (hit@k: the issues with a file the fix changed among the first k files; MRR: the
-mean of 1/rank of the first such file, 0 past rank 100) and, for the two systems compared, the issues
-where only one of them has a hit at each k; this script computes the McNemar exact test from those (a
-two-sided binomial test on the issues where exactly one system has a hit).
+mean of 1/rank of the first such file, 0 past rank 100) and, for each pair of systems compared, the
+issues where only one of them has a hit at each k; this script computes the McNemar exact test from those
+(a two-sided binomial test on the issues where exactly one system has a hit). The chart shows the systems
+and the comparison its "chart" entry names, each system in the colour its entry names.
 
 Needs matplotlib 3.11 and the Inter 4.1 and JetBrains Mono 2.304 TTF files in FONT_DIR (rsms/inter and
 JetBrains/JetBrainsMono releases); without them it uses DejaVu Sans and says so. The SVGs carry their
@@ -41,35 +42,36 @@ def p_text(p):
 
 
 def summarise(data, set_key):
+    """A set's results, and per compared pair (a, b) and k its discordant counts with the exact p."""
     s = data["sets"][set_key]
     out = {"n": s["n"], "systems": {k: dict(v) for k, v in s["results"].items()}, "mcnemar": {}}
-    for k, t in s.get("mcnemar", {}).items():
-        out["mcnemar"][int(k)] = {**t, "p": mcnemar_exact(t["only_a"], t["only_b"])}
+    for c in s.get("mcnemar", []):
+        out["mcnemar"][(c["a"], c["b"])] = {int(k): {**c[str(k)], "p": mcnemar_exact(c[str(k)]["only_a"], c[str(k)]["only_b"])}
+                                            for k in KS}
     return out
 
 
 def tables(data):
     lines = []
-    a, b = data["compare"]
     for set_key, s in data["sets"].items():
         if "results" not in s:
             continue
         m = summarise(data, set_key)
         lines += [f"{s['table_title']} ({m['n']} issues)", "",
                   "| System | hit@1 | hit@5 | hit@10 | MRR |", "|---|---|---|---|---|"]
-        for key in data["systems"]:
+        for key in s.get("table_order", data["systems"]):
             if key not in m["systems"]:
                 continue
             sm = m["systems"][key]
             name = data["systems"][key]["label"]
             lines.append(f"| {name} | {sm['hit@1']} | {sm['hit@5']} | {sm['hit@10']} | {sm['mrr']:.3f} |")
-        if m["mcnemar"]:
+        for (a, b), tests in m["mcnemar"].items():
             la, lb = data["systems"][a]["label"], data["systems"][b]["label"]
             lines += ["", f"McNemar exact test, {la} against {lb}:", "",
                       f"| k | only {la} has a hit | only {lb} has a hit | p (two-sided) |",
                       "|---|---|---|---|"]
             for k in KS:
-                t = m["mcnemar"][k]
+                t = tests[k]
                 lines.append(f"| {k} | {t['only_a']} | {t['only_b']} | {t['p']:.3f} |")
         lines.append("")
     return "\n".join(lines)
@@ -80,7 +82,8 @@ def alt_text(data):
     descriptions, the McNemar results and the footer."""
     ch = data["chart"]
     m = summarise(data, ch["set"])
-    a_key, b_key = data["compare"]
+    a_key, b_key = ch["compare"]
+    tests = m["mcnemar"][(a_key, b_key)]
     short, full = [], []
     for metric in [f"hit@{k}" for k in KS] + ["mrr"]:
         panel = ch["panels"][metric]
@@ -93,7 +96,7 @@ def alt_text(data):
         line = f"{panel['title']} ({panel['sub'].format(n=m['n'])}): " + ", ".join(values)
         if metric != "mrr":
             k = int(metric[4:])
-            t = m["mcnemar"][k]
+            t = tests[k]
             diff = m["systems"][a_key][metric] - m["systems"][b_key][metric]
             line += (f"; {ch['compare_label']} {'+' if diff > 0 else ''}{diff} issues, {p_text(t['p'])}"
                      + ("" if t["p"] < 0.05 else ", not significant"))
@@ -105,13 +108,17 @@ def alt_text(data):
 
 
 # ----------------------------------------------------------------------------- drawing
+# Each system's entry names its colour: "graphicle" (the release shown), "graphicle-earlier", "baseline" and
+# "baseline-2", so a system keeps its colour whichever systems the chart shows.
 THEMES = {
     "light": {"surface": "#FFFFFF", "ink": "#0A0B0F", "ink2": "#2E3440", "muted": "#5B6474", "hair": "#E3E6EC",
               "chip_win": "#3F5EFB", "tie_bg": "#EBEEF2", "tie_fg": "#3E4757",
-              "series": ["#3F5EFB", "#A9B7FD", "#8A93A3", "#C3C9D4"]},
+              "series": {"graphicle": "#3F5EFB", "graphicle-earlier": "#A9B7FD", "baseline": "#8A93A3",
+                         "baseline-2": "#C3C9D4"}},
     "dark": {"surface": "#0D1117", "ink": "#F4F6FA", "ink2": "#C9CED8", "muted": "#8A93A6", "hair": "#2A2F3B",
              "chip_win": "#3F5EFB", "tie_bg": "#262C36", "tie_fg": "#C9CED8",
-             "series": ["#5B7CFF", "#2E3D85", "#6B7385", "#3A3F4B"]},
+             "series": {"graphicle": "#5B7CFF", "graphicle-earlier": "#2E3D85", "baseline": "#6B7385",
+                        "baseline-2": "#3A3F4B"}},
 }
 FONT_FILES = {"regular": "Inter-Regular.ttf", "medium": "Inter-Medium.ttf", "semibold": "Inter-SemiBold.ttf",
               "bold": "Inter-Bold.ttf", "display": "InterDisplay-SemiBold.ttf", "mono": "JetBrainsMono-Regular.ttf"}
@@ -138,7 +145,7 @@ def draw(data, theme, fonts_dir, base):
     ch = data["chart"]
     m = summarise(data, ch["set"])
     keys = ch["systems"]
-    colors = dict(zip(keys, C["series"]))
+    colors = {k: C["series"][data["systems"][k]["color"]] for k in keys}
     missing = [f for f in FONT_FILES.values() if not os.path.exists(os.path.join(fonts_dir or "", f))]
     cache = {}
 
@@ -240,7 +247,8 @@ def draw(data, theme, fonts_dir, base):
     panels.append({"metric": "mrr", "k": None, "title": ch["panels"]["mrr"]["title"], "sub": ch["panels"]["mrr"]["sub"],
                    "max": 1.0})
     PW = (W - 2 * M - GAP * 3) / 4
-    a_key, b_key = data["compare"]
+    a_key, b_key = ch["compare"]
+    tests = m["mcnemar"][(a_key, b_key)]
     sub_lines = [wrap(p["sub"], "regular", 18, PW) for p in panels]
     plot_top = panels_top + 30 + 24 * max(len(s) for s in sub_lines) + 54
     notes_h = 2 * 30 + 24
@@ -270,7 +278,7 @@ def draw(data, theme, fonts_dir, base):
         box(x0, base_y - 0.75, PW, 1.5, C["hair"], z=3.5)
         ny = base_y + 28 + 44
         if p["k"]:
-            t = m["mcnemar"][p["k"]]
+            t = tests[p["k"]]
             diff = m["systems"][a_key][p["metric"]] - m["systems"][b_key][p["metric"]]
             label = ch["compare_label"]
             text(x0, ny, label, "regular", 18, C["muted"])

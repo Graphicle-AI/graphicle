@@ -25,7 +25,18 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.gif" alt="A terminal in four steps. graphicle setup syncs a small repository, builds its code graph, finds five agent clients, connects them and lists every file it changed. graphicle ask returns four cited excerpts, the first shop/pricing.py lines 1 to 7, price_with_tax(). After an edit, graphicle context syncs the changed file before answering. graphicle doctor shows 18 checks passing and one warning: no answer model is set." width="860">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/hero-setup-dark.png">
+    <img src="assets/hero-setup-light.png" alt="A terminal in ~/code/shop, a small Python repository. graphicle setup --yes syncs its 4 files, builds the code graph (11 nodes, 15 edges) and prints a summary: 4 files and 6 symbols; Claude Code, Codex, Cursor, VS Code and Claude Desktop added, one MCP server each with the code graph, recall and memory, and Claude Code given five of its tools; session capture added for Claude Code and Codex; AGENTS.md added; post-commit, post-merge and post-checkout Git hooks added; files that change are synced before each answer; no answer model, so graphicle ask shows the evidence without a written answer. Real output of Graphicle 0.1.8, cut after the summary." width="860">
+  </picture>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/speed-kubernetes-dark.svg">
+    <img src="assets/speed-kubernetes-light.svg" alt="Questions on kubernetes: Graphicle 0.1.8 against 0.1.7. Time per question, the median seconds of a graphicle context call: 22 questions on 16 cores, 0.1.7 2.99 s, 0.1.8 1.34 s; 22 questions on 4 cores, 3.89 s and 1.38 s; 22 questions on 4 cores with the file cache dropped before each call, 4.55 s and 1.90 s; 8 lookups on 16 cores, 2.52 s and 0.96 s. Peak memory of a call, the median over the 22 questions on 16 cores: 3.5 GB and 0.6 GB. On the same store, both releases gave the same packet for every question, byte for byte. Our Linux server (Intel Xeon Platinum 8480C); kubernetes at ca8a2a9e4, a shallow clone of 30,315 files; the 22 questions of issue 8; each call a new process, as the prompt hook runs it; 25 October 2026." width="860">
+  </picture>
+  <br><sub>Graphicle 0.1.8 against 0.1.7 on kubernetes (a shallow clone at <code>ca8a2a9e4</code>), the 22 questions of <a href="https://github.com/graphicle-ai/graphicle/issues/8">issue #8</a>, our Linux server: a median of 1.34 s per <code>graphicle context</code> call on 16 cores, against 2.99 s, each call a new process. <a href="docs/benchmarks.md#our-own-run-on-kubernetes-017-and-018">Method and every row</a></sub>
 </p>
 
 ## Quick start
@@ -48,7 +59,7 @@ Then ask your agent to *"use graphicle to find where failed requests are retried
 ```console
 $ graphicle ask "where is tax added to prices?"
 Evidence for "where is tax added to prices?"
-4 excerpts · 598 of 3,000 tokens
+4 excerpts · 606 of 3,000 tokens
 
 [1] shop/pricing.py:1-7  price_with_tax()
     """Prices and tax."""
@@ -93,13 +104,6 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 - **Answers you can check.** Every excerpt names its file and lines. Memories an agent proposes wait for your approval.
 - **One program, not a stack.** The code graph, the memory, one MCP server, the web app and the command line come in one install, with one SQLite file. No Python, Docker or database server.
 - **Local and private.** No account and no telemetry. Your code and data leave your machine only when you ask. The only automatic request is a daily check for a new release, which `GRAPHICLE_NO_UPDATE_NOTIFIER=1` turns off.
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/graphicle-011-13-repos-dark.svg">
-    <img src="assets/graphicle-011-13-repos-light.svg" alt="Two bar charts comparing Graphicle with Graphify 0.9.91 (Python) on 13 codebases. Left, speed: Graphify 0.9.91's time divided by Graphicle's for a code-only extract, highest first: kubernetes 22.7×, rails 7.0×, flask 6.9×, prometheus 6.6×, react 6.2×, scikit-learn 6.1×, pandas 5.8×, vscode 5.4×, ripgrep 5.3×, tokio 5.1×, redis 4.3×, next.js 4.0×, spring-boot 3.3×. A line on each bar spans its 3 operations (code-only extract, priming update and update with no change). Graphicle took less time in all 39 measurements and in every run, 3.0× to 22.7× less. Speed label: Graphicle's 0.1.1 memory engine (a pre-release build) against Graphify 0.9.91 on the same machine, 3 CPUs and 8 workers each, one session per program, 15 Oct 2026; median of 3 runs (1 for Kubernetes and VS Code). The graphs differ slightly: node counts within 4.7%, edge counts within 2.0%. Right, peak memory: Graphicle's peak divided by Graphify 0.9.91's peak for a code-only extract, lowest first: ripgrep 0.31×, flask 0.37×, pandas 0.38×, redis 0.39×, tokio 0.40×, scikit-learn 0.41×, prometheus 0.43×, react 0.50×, next.js 0.51×, vscode 0.52×, kubernetes 0.76×, rails 0.77×, spring-boot 0.94×. Lower in all 39 measurements, at 0.29× to 0.97× of Graphify's peak, on a pre-release memory build whose graphs differ from Graphify's; Graphicle's peak RSS or PSS, whichever is larger, against Graphify's peak PSS. A build of the merged 0.1.1 source stayed below in the 5 measurements rechecked. Speed and memory tables and method: docs/benchmarks.md." width="860">
-  </picture>
-</p>
 
 ## What it does
 
@@ -158,6 +162,28 @@ The left column is a code-graph tool, such as Graphify's open-source engine, plu
 
 Every figure is labelled, and [docs/benchmarks.md](docs/benchmarks.md) has the full tables, methods and limits. In the agent tests, a difference counts only when its 95% interval excludes 0; otherwise it is a tie. Long sessions and memory built up across coding sessions are not tested yet.
 
+- **Time per question** (0.1.8, the chart at the top). On kubernetes at `ca8a2a9e4` (a shallow clone, 30,315 files), over the 22 questions of issue #8, the median `graphicle context` call took 1.34 s with 0.1.8 against 2.99 s with 0.1.7 on 16 cores of our Linux server, 1.38 s against 3.89 s on 4 cores, and 1.90 s against 4.55 s on 4 cores with the file cache dropped before each call; 8 lookups took 0.96 s against 2.52 s on 16 cores. Each call was a new process, as the prompt hook runs it. On the same store, both releases gave the same packet for every question, and the peak memory of a call fell from 3.5 GB to 0.6 GB ([method and rounds](docs/benchmarks.md#our-own-run-on-kubernetes-017-and-018)).
+
+### Finding the files a fix changes
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/retrieval-dark.svg">
+    <img src="docs/assets/retrieval-light.svg" alt="Finding the files a fix changes: 100 SWE-bench Verified issues, held out from tuning. Top 1: Graphicle 0.1.8 43, BM25 (SWE-bench style) 35, grep for the issue's names 20; Top 5: Graphicle 0.1.8 75, BM25 (SWE-bench style) 61, grep for the issue's names 54; Top 10: Graphicle 0.1.8 81, BM25 (SWE-bench style) 77, grep for the issue's names 71; MRR: Graphicle 0.1.8 0.561, BM25 (SWE-bench style) 0.478, grep for the issue's names 0.365.">
+  </picture>
+</p>
+
+**Offline ranking, 100 SWE-bench Verified issues never used for tuning.** Graphicle 0.1.8 put a file the fix changed in its first 5 files for 75 issues, against 61 for BM25 (SWE-bench style), a significant difference (McNemar exact p = 0.013); for the first file (43 vs 35) and the first 10 (81 vs 77) the differences are not significant. This measures ranking, not whether a coding agent fixes more issues; no agent test of this ranking has been run yet ([method, task lists and limits](docs/benchmarks/retrieval.md)).
+
+### Speed, memory and agent tests of 0.1.0 and 0.1.1
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/graphicle-011-13-repos-dark.svg">
+    <img src="assets/graphicle-011-13-repos-light.svg" alt="Two bar charts comparing Graphicle with Graphify 0.9.91 (Python) on 13 codebases. Left, speed: Graphify 0.9.91's time divided by Graphicle's for a code-only extract, highest first: kubernetes 22.7×, rails 7.0×, flask 6.9×, prometheus 6.6×, react 6.2×, scikit-learn 6.1×, pandas 5.8×, vscode 5.4×, ripgrep 5.3×, tokio 5.1×, redis 4.3×, next.js 4.0×, spring-boot 3.3×. A line on each bar spans its 3 operations (code-only extract, priming update and update with no change). Graphicle took less time in all 39 measurements and in every run, 3.0× to 22.7× less. Speed label: Graphicle's 0.1.1 memory engine (a pre-release build) against Graphify 0.9.91 on the same machine, 3 CPUs and 8 workers each, one session per program, 15 Oct 2026; median of 3 runs (1 for Kubernetes and VS Code). The graphs differ slightly: node counts within 4.7%, edge counts within 2.0%. Right, peak memory: Graphicle's peak divided by Graphify 0.9.91's peak for a code-only extract, lowest first: ripgrep 0.31×, flask 0.37×, pandas 0.38×, redis 0.39×, tokio 0.40×, scikit-learn 0.41×, prometheus 0.43×, react 0.50×, next.js 0.51×, vscode 0.52×, kubernetes 0.76×, rails 0.77×, spring-boot 0.94×. Lower in all 39 measurements, at 0.29× to 0.97× of Graphify's peak, on a pre-release memory build whose graphs differ from Graphify's; Graphicle's peak RSS or PSS, whichever is larger, against Graphify's peak PSS. A build of the merged 0.1.1 source stayed below in the 5 measurements rechecked. Speed and memory tables and method: docs/benchmarks.md." width="860">
+  </picture>
+</p>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/graphicle-011-hero-dark.svg">
@@ -165,23 +191,12 @@ Every figure is labelled, and [docs/benchmarks.md](docs/benchmarks.md) has the f
   </picture>
 </p>
 
-- **Speed.** The chart under [Why Graphicle](#why-graphicle) and the first panel above: on 13 codebases, 3 operations each, Graphicle's 0.1.1 memory engine (a pre-release build) took 3.0 to 22.7 times less time than Graphify 0.9.91 in all 39 measurements, on the same machine with 3 CPUs and 8 workers each (one session per program; median of 3 runs, 1 for Kubernetes and VS Code). The graphs differ slightly: node counts within 4.7%, edge counts within 2.0% ([every measurement, with both graphs' sizes](docs/benchmarks.md#speed-on-13-codebases-against-graphify-0991)). [docs/benchmarks.md](docs/benchmarks.md) also has the earlier runs in which both programs built the same graph: the 0.1.0 engine against Graphify 0.9.88 on Kubernetes ([Kubernetes run](docs/benchmarks.md#speed-on-kubernetes)), and a pre-release build on Django, which ran a code-only extract in 7.5 s against 72.8 s for Graphify 0.9.77 (medians of five alternating runs, one shared Linux host, 8 workers; [the 8 October record](docs/benchmarks.md#speed-against-graphify-0977)).
+- **Speed.** The 13-codebase chart and the first panel of the four-panel chart above: on 13 codebases, 3 operations each, Graphicle's 0.1.1 memory engine (a pre-release build) took 3.0 to 22.7 times less time than Graphify 0.9.91 in all 39 measurements, on the same machine with 3 CPUs and 8 workers each (one session per program; median of 3 runs, 1 for Kubernetes and VS Code). The graphs differ slightly: node counts within 4.7%, edge counts within 2.0% ([every measurement, with both graphs' sizes](docs/benchmarks.md#speed-on-13-codebases-against-graphify-0991)). [docs/benchmarks.md](docs/benchmarks.md) also has the earlier runs in which both programs built the same graph: the 0.1.0 engine against Graphify 0.9.88 on Kubernetes ([Kubernetes run](docs/benchmarks.md#speed-on-kubernetes)), and a pre-release build on Django, which ran a code-only extract in 7.5 s against 72.8 s for Graphify 0.9.77 (medians of five alternating runs, one shared Linux host, 8 workers; [the 8 October record](docs/benchmarks.md#speed-against-graphify-0977)).
 - **Updates.** After each of 30 commits on prometheus, tokio and poetry, Graphicle 0.1.0's `graph update` took 6 to 8 times less time than Graphify 0.9.91's (one Linux node, 4 CPUs per run), and both matched a fresh build apart from three kinds of keying difference that both programs share. In a 30-note sample, the 15 notes whose function changed were flagged and no other; a wider exploratory check found some false flags ([details and limits](docs/benchmarks.md#updates-after-commits)).
-- **Peak memory.** A pre-release build with 0.1.1's changes to how the engine holds its data, later than the one timed above, used less peak memory than Graphify 0.9.91 in all 39 measurements (13 repositories; extract and two kinds of update), for example 2,092 against 2,767 MiB on the Kubernetes extract and 1,426 against 2,800 MiB on the next.js extract. A build of the merged 0.1.1 source stayed below in the 5 measurements rechecked; the second panel above shows its Kubernetes extract, 2,148 against 2,767 MiB (the higher peak of 2 runs). One Linux 8×H100 node, GPUs not used; 8 workers; Graphicle's peak RSS against Graphify's peak PSS ([every measurement](docs/benchmarks.md#peak-memory-against-graphify-0991)).
+- **Peak memory.** A pre-release build with 0.1.1's changes to how the engine holds its data, later than the one timed above, used less peak memory than Graphify 0.9.91 in all 39 measurements (13 repositories; extract and two kinds of update), for example 2,092 against 2,767 MiB on the Kubernetes extract and 1,426 against 2,800 MiB on the next.js extract. A build of the merged 0.1.1 source stayed below in the 5 measurements rechecked; the second panel of the four-panel chart shows its Kubernetes extract, 2,148 against 2,767 MiB (the higher peak of 2 runs). One Linux 8×H100 node, GPUs not used; 8 workers; Graphicle's peak RSS against Graphify's peak PSS ([every measurement](docs/benchmarks.md#peak-memory-against-graphify-0991)).
 - **Finding code** (Claude Code 2.1.287 on a Linux node, Opus 5.5, effort medium). Graphicle ties grep. On 100 SWE-bench Verified tasks, plain Claude Code, Graphicle 0.1.0's default setup and Graphify 0.9.91 found every file the fix changed in 95, 95 and 94 of them; Graphicle used 16% and Graphify 29% more tokens than plain Claude Code, and the agent never called Graphicle's tools. On 93 tasks from our own code, which the model has not seen, all three tied again, and a prototype card from Graphicle 0.1.0's index (not shipped) used about 20% fewer tokens than Graphify.
 - **Answering questions** (the same setup). On Graphify's showcase corpus (30 questions), the 0.1.1 agent defaults (a pre-release build) found 99.2% of the facts, against 94.7% for plain Claude Code (a tie) and 87.8% for Graphify 0.9.91: more facts than Graphify, with fewer tokens. On 60 questions about our own project all three tied, and Graphify used about 48k more tokens per question than Graphicle (pre-release 0.1.1 plus a prototype context hook) ([every agent test](docs/benchmarks.md#coding-agents-with-graphicle-graphify-or-neither)).
 - **Agent memory.** In a comparison with seven memory systems, registered before any answer was scored and run with one open model as every system's reader and judge, a pre-release build of Graphicle trails none on three development sets. [Every score, with its method and caveats](docs/benchmarks.md#agent-memory-comparison-with-seven-memory-systems).
-
-### Finding the files a fix changes
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/retrieval-dark.svg">
-    <img src="docs/assets/retrieval-light.svg" alt="Finding the files a fix changes: 100 SWE-bench Verified issues, held out from tuning. Top 1: Graphicle 0.1.3 43, Graphicle 0.1.2 13, BM25 (SWE-bench style) 35, grep for the issue's names 20; Top 5: Graphicle 0.1.3 75, Graphicle 0.1.2 30, BM25 (SWE-bench style) 61, grep for the issue's names 54; Top 10: Graphicle 0.1.3 82, Graphicle 0.1.2 30, BM25 (SWE-bench style) 77, grep for the issue's names 71; MRR: Graphicle 0.1.3 0.562, Graphicle 0.1.2 0.191, BM25 (SWE-bench style) 0.478, grep for the issue's names 0.365.">
-  </picture>
-</p>
-
-**Offline ranking, 100 SWE-bench Verified issues never used for tuning.** Graphicle 0.1.3 put a file the fix changed in its first 5 files for 75 issues, against 61 for BM25 (SWE-bench style), a significant difference (McNemar exact p = 0.013); for the first file (43 vs 35) and the first 10 (82 vs 77) the differences are not significant. This measures ranking, not whether a coding agent fixes more issues; the agent test of 0.1.3 is pending ([method, task lists and limits](docs/benchmarks/retrieval.md)).
 
 ## FAQ
 
@@ -207,7 +222,7 @@ Local models through Ollama or any OpenAI-compatible server work ([configuration
 <details>
 <summary><b>Is Graphicle a fork of Graphify?</b></summary>
 
-The code-graph engine is a Rust port of Graphify, credited in its file headers and in [NOTICE](NOTICE). It follows Graphify 0.9.91, and later Graphify releases are ported in later versions; [the parity checks](docs/benchmarks.md#parity-with-graphify) compare it with that release.
+The code-graph engine is a Rust port of Graphify, credited in its file headers and in [NOTICE](NOTICE). It follows Graphify 0.9.95, and later Graphify releases are ported in later versions; [the parity checks](docs/benchmarks.md#parity-with-graphify) compare it with that release.
 The memory, the memory tools, the app and session capture are not part of Graphify. Coming from Graphify? `graphicle setup` offers to switch a repository,
 backs up each file and never deletes `graphify-out/` ([Moving from Graphify](docs/migrate-from-graphify.md)).
 </details>
