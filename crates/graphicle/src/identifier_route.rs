@@ -304,6 +304,67 @@ fn definitions(symbols: &[(usize, String, String)], name: &str) -> Vec<usize> {
     Vec::new()
 }
 
+/// The ends of `edge` as the extractor read them: its `_src` and `_tgt`
+/// when they name the edge's two ends (the stored edge may have lost the
+/// direction), else the stored ends.
+pub(crate) fn reference_ends(graph: &Graph, edge: &graphicle::graph::Edge) -> (usize, usize) {
+    let node = |key: &str| edge.attributes.get(key).and_then(|id| graph.node_index(id));
+    match (node("_src"), node("_tgt")) {
+        (Some(a), Some(b))
+            if BTreeSet::from([a, b]) == BTreeSet::from([edge.source, edge.target]) =>
+        {
+            (a, b)
+        }
+        _ => (edge.source, edge.target),
+    }
+}
+
+/// Where an edge says its relation was read: its `source_file` (with `/`
+/// separators) and its start line.
+pub(crate) fn reference_site(attributes: &impl Properties) -> (Option<String>, Option<usize>) {
+    (
+        text(attributes, "source_file").map(|path| path.replace('\\', "/")),
+        span::start_line(attributes),
+    )
+}
+
+/// Whether a relation names a reference: not containment, nor a relation
+/// between a rationale or a concept and code.
+fn refers(relation: &str) -> bool {
+    !graphicle::markdown_resolution::CONTAINMENT_RELATIONS.contains(&relation)
+        && !NOT_REFERENCES.contains(&relation)
+}
+
+/// The reference a relation from `referrer` gives: cited where the relation
+/// was read (`site`, the edge's file and line), else at the referrer's own
+/// file and line, when `citable` allows that file.
+fn reference(
+    relation: String,
+    site: (Option<String>, Option<usize>),
+    referrer: &impl Properties,
+    citable: &dyn Fn(&str) -> bool,
+) -> Option<Reference> {
+    let (relpath, line) = match site {
+        (Some(path), Some(line)) => (path, Some(line)),
+        _ => (
+            code_graph_arm::relpath(referrer)?,
+            span::start_line(referrer),
+        ),
+    };
+    if !citable(&relpath) {
+        return None;
+    }
+    let from = code_graph_arm::code_symbol(referrer)
+        .then(|| symbol_name(referrer))
+        .flatten();
+    Some(Reference {
+        relpath,
+        line,
+        relation,
+        from,
+    })
+}
+
 /// The references to node `index`: the other end of every relation that
 /// points to it, cited where the relation was read (the edge's file and
 /// line, else the referring node's), when `citable` allows that file and,
@@ -321,24 +382,12 @@ fn references(
     }
     let mut found = BTreeSet::new();
     for (_, _, edge) in incident {
-        // The extractor's direction (`_src`, `_tgt`) when the stored edge
-        // lost it.
-        let node = |key: &str| edge.attributes.get(key).and_then(|id| graph.node_index(id));
-        let (source, target) = match (node("_src"), node("_tgt")) {
-            (Some(a), Some(b))
-                if BTreeSet::from([a, b]) == BTreeSet::from([edge.source, edge.target]) =>
-            {
-                (a, b)
-            }
-            _ => (edge.source, edge.target),
-        };
+        let (source, target) = reference_ends(graph, edge);
         if target != index || source == index {
             continue;
         }
         let relation = text(&edge.attributes, "relation").unwrap_or_default();
-        if graphicle::markdown_resolution::CONTAINMENT_RELATIONS.contains(&relation.as_str())
-            || NOT_REFERENCES.contains(&relation.as_str())
-        {
+        if !refers(&relation) {
             continue;
         }
         if let Some(unchanged) = unchanged
@@ -349,30 +398,279 @@ fn references(
             continue;
         }
         let referrer = &graph.nodes()[source].attributes;
-        let (relpath, line) = match (
-            text(&edge.attributes, "source_file").map(|path| path.replace('\\', "/")),
-            span::start_line(&edge.attributes),
-        ) {
-            (Some(path), Some(line)) => (path, Some(line)),
-            _ => match code_graph_arm::relpath(referrer) {
-                Some(path) => (path, span::start_line(referrer)),
-                None => continue,
-            },
-        };
-        if !citable(&relpath) {
-            continue;
-        }
-        let from = code_graph_arm::code_symbol(referrer)
-            .then(|| symbol_name(referrer))
-            .flatten();
-        found.insert(Reference {
-            relpath,
-            line,
+        if let Some(reference) = reference(
             relation,
-            from,
-        });
+            reference_site(&edge.attributes),
+            referrer,
+            citable,
+        ) {
+            found.insert(reference);
+        }
     }
     found.into_iter().collect()
+}
+
+/// What the route reads of the episode's code graph: the resident graph
+/// ([`Resident`]), or the episode's query file ([`Saved`],
+/// [`crate::query_file`]), which gives the same answers. A read of the file
+/// that fails marks it corrupt ([`crate::query_file::QueryFile::corrupt`]),
+/// and [`answer`] then asks the resident graph.
+trait Lookup {
+    /// The nodes that define `name` ([`definitions`]).
+    fn definitions(&self, name: &str) -> Vec<usize>;
+    /// Node `index` located in `view` ([`code_graph_arm::locate`]).
+    fn locate(&self, index: usize, view: &HashMap<&str, &Value>) -> Option<Located>;
+    /// The references to node `index` ([`references`]).
+    fn references(
+        &self,
+        index: usize,
+        citable: &dyn Fn(&str) -> bool,
+        unchanged: Option<&BTreeSet<String>>,
+    ) -> Vec<Reference>;
+}
+
+/// The episode's resident graph, with its code symbols and, once read,
+/// its symbol start lines.
+struct Resident {
+    handle: graphicle::session::GraphHandle,
+    symbols: Vec<(usize, String, String)>,
+    starts: std::sync::OnceLock<HashMap<String, Vec<usize>>>,
+}
+
+impl Resident {
+    fn new(handle: graphicle::session::GraphHandle) -> Self {
+        let graph: &Graph = &handle;
+        let symbols: Vec<(usize, String, String)> = graph
+            .nodes()
+            .iter()
+            .enumerate()
+            .filter(|(_, node)| code_graph_arm::code_symbol(&node.attributes))
+            .filter_map(|(index, node)| {
+                Some((
+                    index,
+                    symbol_name(&node.attributes)?,
+                    code_graph_arm::relpath(&node.attributes)?,
+                ))
+            })
+            .collect();
+        Self {
+            handle,
+            symbols,
+            starts: std::sync::OnceLock::new(),
+        }
+    }
+}
+
+impl Lookup for Resident {
+    fn definitions(&self, name: &str) -> Vec<usize> {
+        definitions(&self.symbols, name)
+    }
+    fn locate(&self, index: usize, view: &HashMap<&str, &Value>) -> Option<Located> {
+        let graph: &Graph = &self.handle;
+        let starts = self
+            .starts
+            .get_or_init(|| code_graph_arm::symbol_starts(graph));
+        let node_id = match &graph.nodes()[index].id {
+            Value::String(id) => id.clone(),
+            other => other.to_string(),
+        };
+        code_graph_arm::locate(graph, starts, &node_id, view)
+    }
+    fn references(
+        &self,
+        index: usize,
+        citable: &dyn Fn(&str) -> bool,
+        unchanged: Option<&BTreeSet<String>>,
+    ) -> Vec<Reference> {
+        references(&self.handle, index, citable, unchanged)
+    }
+}
+
+/// The episode's query file.
+struct Saved(std::sync::Arc<crate::query_file::QueryFile>);
+
+impl Saved {
+    /// [`definitions`] over the code symbols that end in the name's last
+    /// segment: the only ones a suffix of the name can end.
+    fn definitions_of(
+        &self,
+        name: &str,
+    ) -> std::result::Result<Vec<usize>, crate::query_file::Corrupt> {
+        let file = &self.0;
+        let dotted = name.replace("::", ".").replace('#', ".");
+        let mut segments: Vec<&str> = dotted.split('.').filter(|s| !s.is_empty()).collect();
+        while segments.len() > 1 && ["self", "this", "crate", "super"].contains(&segments[0]) {
+            segments.remove(0);
+        }
+        let Some(last) = segments.last() else {
+            return Ok(Vec::new());
+        };
+        let bucket = file.symbols_ending(last)?;
+        let ends_with = |qualified: &str, path: &str| {
+            qualified == path
+                || qualified
+                    .strip_suffix(path)
+                    .is_some_and(|head| head.ends_with('.'))
+        };
+        for k in 0..segments.len() {
+            let suffix = segments[k..].join(".");
+            let last_only = k + 1 == segments.len() && segments.len() > 1;
+            let mut found = Vec::new();
+            for &position in &bucket {
+                let (index, qualified, relpath, _) = file.symbol(position)?;
+                if ends_with(qualified, &suffix)
+                    && (!last_only
+                        || relpath
+                            .split(['/', '.'])
+                            .any(|part| segments[..k].contains(&part)))
+                {
+                    found.push(index);
+                }
+            }
+            if !found.is_empty() {
+                return Ok(found);
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    fn locate_of(
+        &self,
+        index: usize,
+        view: &HashMap<&str, &Value>,
+    ) -> std::result::Result<Option<Located>, crate::query_file::Corrupt> {
+        let file = &self.0;
+        let attributes = file.attributes(index)?;
+        let Some(path) = code_graph_arm::relpath(&attributes) else {
+            return Ok(None);
+        };
+        let starts: HashMap<String, Vec<usize>> = file
+            .starts(&path)?
+            .map(|lines| HashMap::from([(path, lines)]))
+            .unwrap_or_default();
+        Ok(code_graph_arm::locate_record(
+            file.id(index)?.to_string(),
+            &attributes,
+            &starts,
+            view,
+        ))
+    }
+
+    fn references_of(
+        &self,
+        index: usize,
+        citable: &dyn Fn(&str) -> bool,
+        unchanged: Option<&BTreeSet<String>>,
+    ) -> std::result::Result<Vec<Reference>, crate::query_file::Corrupt> {
+        let file = &self.0;
+        let mut found = BTreeSet::new();
+        for id in file.adjacency(index)?.all() {
+            let edge = file.edge(id)?;
+            if edge.target != index || edge.source == index {
+                continue;
+            }
+            let relation = edge
+                .relation
+                .as_ref()
+                .and_then(Value::as_str)
+                .filter(|relation| !relation.is_empty())
+                .map(str::to_string)
+                .unwrap_or_default();
+            if !refers(&relation) {
+                continue;
+            }
+            if let Some(unchanged) = unchanged
+                && !edge.files.iter().any(|file| unchanged.contains(file))
+            {
+                continue;
+            }
+            let referrer = file.attributes(edge.source)?;
+            if let Some(reference) = reference(
+                relation,
+                (edge.site_file, edge.site_line),
+                &referrer,
+                citable,
+            ) {
+                found.insert(reference);
+            }
+        }
+        Ok(found.into_iter().collect())
+    }
+}
+
+impl Lookup for Saved {
+    fn definitions(&self, name: &str) -> Vec<usize> {
+        self.definitions_of(name).unwrap_or_default()
+    }
+    fn locate(&self, index: usize, view: &HashMap<&str, &Value>) -> Option<Located> {
+        self.locate_of(index, view).ok().flatten()
+    }
+    fn references(
+        &self,
+        index: usize,
+        citable: &dyn Fn(&str) -> bool,
+        unchanged: Option<&BTreeSet<String>>,
+    ) -> Vec<Reference> {
+        self.references_of(index, citable, unchanged)
+            .unwrap_or_default()
+    }
+}
+
+/// Each name's definitions (located in the caller's view of the project)
+/// and references, and the names whose definitions are all outside that
+/// view; `None` when the code graph defines none of the names.
+#[allow(clippy::type_complexity)]
+fn lookups(
+    source: &dyn Lookup,
+    db: &Connection,
+    repository: &Value,
+    p: &Principal,
+    names: &[String],
+    filter: Option<&crate::query::Filter>,
+    unchanged: Option<&BTreeSet<String>>,
+) -> Result<Option<(Vec<(String, Vec<Located>, Vec<Reference>)>, Vec<String>)>> {
+    // The names' definitions in the code graph first: when it defines none
+    // of them, the retrieval answers before any source is read here.
+    let candidates: Vec<(&String, Vec<usize>)> = names
+        .iter()
+        .map(|name| (name, source.definitions(name)))
+        .collect();
+    if candidates.iter().all(|(_, found)| found.is_empty()) {
+        return Ok(None);
+    }
+    let mut documents = crate::memory::documents(db, repository, p)?;
+    if let Some(filter) = filter {
+        documents.retain(|document| filter.keeps(document));
+    }
+    let view: HashMap<&str, &Value> = documents
+        .iter()
+        .map(|document| (s(document, "id"), document))
+        .collect();
+    let citable = |path: &str| {
+        view.contains_key(format!("file:{path}").as_str())
+            && unchanged.is_none_or(|unchanged| unchanged.contains(path))
+    };
+    let mut found: Vec<(String, Vec<Located>, Vec<Reference>)> = Vec::new();
+    let mut missing = Vec::new();
+    for (name, indices) in candidates {
+        let mut defined: Vec<(usize, Located)> = indices
+            .into_iter()
+            .filter_map(|index| source.locate(index, &view).map(|located| (index, located)))
+            .filter(|(_, located)| citable(&located.relpath))
+            .collect();
+        if defined.is_empty() {
+            missing.push(name.clone());
+            continue;
+        }
+        defined.sort_by(|(_, a), (_, b)| (&a.relpath, a.line).cmp(&(&b.relpath, b.line)));
+        let mut used = BTreeSet::new();
+        for (index, _) in &defined {
+            used.extend(source.references(*index, &citable, unchanged));
+        }
+        let defined = defined.into_iter().map(|(_, located)| located).collect();
+        found.push((name.clone(), defined, used.into_iter().collect()));
+    }
+    Ok(Some((found, missing)))
 }
 
 /// `path:line`, or `path:start-end`, or the path alone.
@@ -433,73 +731,48 @@ pub fn answer(db: &Connection, p: &Principal, repository: &Value, args: &Value) 
     else {
         return retrieval("no_code_graph", &names);
     };
-    let Ok(handle) = graph_projection::resident(db, id, &episode) else {
-        return retrieval("no_code_graph", &names);
-    };
-    let graph: &Graph = &handle;
-    // The names' definitions in the code graph first: when it defines none
-    // of them, the retrieval answers before any source is read here.
-    let symbols: Vec<(usize, String, String)> = graph
-        .nodes()
-        .iter()
-        .enumerate()
-        .filter(|(_, node)| code_graph_arm::code_symbol(&node.attributes))
-        .filter_map(|(index, node)| {
-            Some((
-                index,
-                symbol_name(&node.attributes)?,
-                code_graph_arm::relpath(&node.attributes)?,
-            ))
-        })
-        .collect();
-    let candidates: Vec<(&String, Vec<usize>)> = names
-        .iter()
-        .map(|name| (name, definitions(&symbols, name)))
-        .collect();
-    if candidates.iter().all(|(_, found)| found.is_empty()) {
-        return retrieval("not_in_code_graph", &names);
-    }
-    let mut documents = crate::memory::documents(db, repository, p)?;
-    if let Some(filter) = &filter {
-        documents.retain(|document| filter.keeps(document));
-    }
-    let view: HashMap<&str, &Value> = documents
-        .iter()
-        .map(|document| (s(document, "id"), document))
-        .collect();
     let unchanged = lag.as_ref().map(|lag| &lag.unchanged);
-    let citable = |path: &str| {
-        view.contains_key(format!("file:{path}").as_str())
-            && unchanged.is_none_or(|unchanged| unchanged.contains(path))
-    };
-    let starts = code_graph_arm::symbol_starts(graph);
-    let mut found: Vec<(String, Vec<Located>, Vec<Reference>)> = Vec::new();
-    let mut missing = Vec::new();
-    for (name, indices) in candidates {
-        let mut defined: Vec<(usize, Located)> = indices
-            .into_iter()
-            .filter_map(|index| {
-                let node_id = match &graph.nodes()[index].id {
-                    Value::String(id) => id.clone(),
-                    other => other.to_string(),
-                };
-                code_graph_arm::locate(graph, &starts, &node_id, &view)
-                    .map(|located| (index, located))
-            })
-            .filter(|(_, located)| citable(&located.relpath))
-            .collect();
-        if defined.is_empty() {
-            missing.push(name.clone());
-            continue;
+    // The episode's query file when this build wrote one; the resident
+    // graph when it has none, or a read of it fails.
+    let mut looked = None;
+    if let Some(file) = crate::query_file::open(db, id, &episode) {
+        let saved = Saved(file.clone());
+        let result = crate::phase::phase("route_query_file", || {
+            lookups(
+                &saved,
+                db,
+                repository,
+                p,
+                &names,
+                filter.as_ref(),
+                unchanged,
+            )
+        })?;
+        file.note("route_query_file_read");
+        if !file.corrupt() {
+            looked = Some(result);
         }
-        defined.sort_by(|(_, a), (_, b)| (&a.relpath, a.line).cmp(&(&b.relpath, b.line)));
-        let mut used = BTreeSet::new();
-        for (index, _) in &defined {
-            used.extend(references(graph, *index, &citable, unchanged));
-        }
-        let defined = defined.into_iter().map(|(_, located)| located).collect();
-        found.push((name.clone(), defined, used.into_iter().collect()));
     }
+    let looked = match looked {
+        Some(looked) => looked,
+        None => {
+            let Ok(handle) = graph_projection::resident(db, id, &episode) else {
+                return retrieval("no_code_graph", &names);
+            };
+            lookups(
+                &Resident::new(handle),
+                db,
+                repository,
+                p,
+                &names,
+                filter.as_ref(),
+                unchanged,
+            )?
+        }
+    };
+    let Some((found, missing)) = looked else {
+        return retrieval("not_in_code_graph", &names);
+    };
     if found.is_empty() {
         return retrieval("not_in_code_graph", &names);
     }
@@ -787,5 +1060,72 @@ mod tests {
             (false, false)
         );
         assert!(switch(&json!({"identifier_route":"no"})).is_err());
+    }
+
+    /// The query file finds the definitions, locations and references the
+    /// resident graph finds, on directed and undirected graphs, with and
+    /// without the lag fallback.
+    #[test]
+    fn the_query_file_answers_lookups_as_the_resident_graph() {
+        for directed in [true, false] {
+            let dir = tempfile::TempDir::new().unwrap();
+            let graph = crate::query_file::tests::sample_of(directed);
+            let file = std::sync::Arc::new(crate::query_file::tests::written(&graph, dir.path()));
+            let nodes = graph.nodes().len();
+            let resident = Resident::new(graphicle::session::GraphHandle::new(graph));
+            let saved = Saved(file.clone());
+            let mut paths = vec![
+                "src/store.rs".to_string(),
+                "src/query.rs".to_string(),
+                "docs/guide.md".to_string(),
+                "src/ünï.rs".to_string(),
+            ];
+            paths.extend((0..7).map(|i| format!("src/helpers/h{i}.rs")));
+            let content: String = (1..=120).map(|i| format!("line {i}\n")).collect();
+            let documents: Vec<Value> = paths
+                .iter()
+                .map(|path| json!({"id": format!("file:{path}"), "content": content}))
+                .collect();
+            let view: HashMap<&str, &Value> = documents
+                .iter()
+                .map(|document| (s(document, "id"), document))
+                .collect();
+            let citable = |path: &str| view.contains_key(format!("file:{path}").as_str());
+            let unchanged = BTreeSet::from(["src/query.rs".to_string()]);
+            for name in [
+                "Store.open",
+                "store.Store.close",
+                "Store::open",
+                "Store#open",
+                "run_query",
+                "query.run_query",
+                "plan",
+                "helper_3",
+                "Store",
+                "self.open",
+                "missing",
+                "",
+            ] {
+                let found = resident.definitions(name);
+                assert_eq!(found, saved.definitions(name), "{name}");
+                for index in found {
+                    assert_eq!(
+                        format!("{:?}", resident.locate(index, &view)),
+                        format!("{:?}", saved.locate(index, &view)),
+                        "{name}"
+                    );
+                }
+            }
+            for index in 0..nodes {
+                for lag in [None, Some(&unchanged)] {
+                    assert_eq!(
+                        resident.references(index, &citable, lag),
+                        saved.references(index, &citable, lag),
+                        "node {index}"
+                    );
+                }
+            }
+            assert!(!file.corrupt());
+        }
     }
 }

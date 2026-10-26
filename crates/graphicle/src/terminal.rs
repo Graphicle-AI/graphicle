@@ -4394,11 +4394,11 @@ fn apply_fixes(options: &Doctor<'_>) -> Vec<Value> {
                 local::sync(&store, &mut session, &folder, Some(&resolved.id))
             })
             .and_then(|synced| {
-                let graph = local::build_graph(&store, &session, &resolved.id, true)?;
+                let graph = local::sync_graph(&store, &session, &resolved.id, true)?;
                 Ok(json!({"fix":"sync","project":resolved.name,"folder":folder,
                         "changed":synced["replayed"]!=true,"graph":graph["status"]}))
             }),
-            None => local::build_graph(&store, &session, &resolved.id, true).map(
+            None => local::sync_graph(&store, &session, &resolved.id, true).map(
                 |graph| json!({"fix":"graph","project":resolved.name,"graph":graph["status"]}),
             ),
         };

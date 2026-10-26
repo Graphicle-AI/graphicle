@@ -856,14 +856,10 @@ pub fn ready(db: &Connection, repository: &str) -> Result<bool> {
     if reviewed {
         return Ok(false);
     }
-    let latest = crate::store::one(
-        db,
-        "SELECT episode FROM gf_episodes WHERE repository_id=? ORDER BY sequence DESC LIMIT 1",
-        [repository],
-    )?;
-    Ok(match latest {
+    // The code graph of the episode `context` reads.
+    Ok(match crate::query_graph::read_episode(db, repository)? {
         None => true,
-        Some(row) => crate::query_graph::saved(db, repository, s(&row, "episode")),
+        Some(episode) => crate::query_graph::saved(db, repository, &episode),
     })
 }
 
@@ -916,10 +912,11 @@ pub fn hook_route(db: &Connection, repository: &str) -> Result<HookRoute> {
 }
 
 /// What `doctor` and `setup` say about how fast questions to `repository`
-/// are: `state` (`ready`, `small`, `missing`, `stale`, `memory` or
-/// `graph`), a `detail` line and the command that `fix`es it. A project
-/// whose index is missing or stale reads every file for each question, and
-/// the prompt hook then gives the quick packet only.
+/// are: `state` (`ready`, `small`, `missing`, `stale`, `memory`, `graph` or
+/// `query_file`), a `detail` line and the command that `fix`es it, and the
+/// state of the code graph's query file (`crate::query_graph::query_file_state`).
+/// A project whose index is missing or stale reads every file for each
+/// question, and the prompt hook then gives the quick packet only.
 pub fn readiness(db: &Connection, repository: &str) -> Result<Value> {
     let heads = crate::store::heads(db, repository)?;
     let coverage = passage_index::coverage(db, repository, &heads)?;
@@ -929,14 +926,15 @@ pub fn readiness(db: &Connection, repository: &str) -> Result<Value> {
         [repository],
         |r| r.get(0),
     )?;
-    let latest = crate::store::one(
-        db,
-        "SELECT episode FROM gf_episodes WHERE repository_id=? ORDER BY sequence DESC LIMIT 1",
-        [repository],
-    )?;
-    let graph_saved = latest
-        .as_ref()
-        .is_none_or(|row| crate::query_graph::saved(db, repository, s(row, "episode")));
+    // The code graph and the query file of the episode `context` reads.
+    let episode = crate::query_graph::read_episode(db, repository)?;
+    let graph_saved = episode
+        .as_deref()
+        .is_none_or(|episode| crate::query_graph::saved(db, repository, episode));
+    let query_file = match episode.as_deref() {
+        Some(episode) => crate::query_graph::query_file_state(db, repository, episode),
+        None => json!({"state":"no_episode"}),
+    };
     let small = files < SMALL_PROJECT_FILES;
     let (state, detail, fix) = if !coverage.exists() {
         (
@@ -973,6 +971,32 @@ pub fn readiness(db: &Connection, repository: &str) -> Result<Value> {
                 .to_string(),
             "graphicle sync",
         )
+    } else if !small && query_file["state"] == "missing" {
+        (
+            "query_file",
+            "the code graph's query file is not saved: each question reads the whole saved graph"
+                .to_string(),
+            "graphicle sync",
+        )
+    } else if query_file["state"] == "failed" && query_file["permanent"] == true {
+        (
+            "query_file",
+            format!(
+                "the code graph cannot have a query file ({}): each question reads the whole saved graph",
+                s(&query_file, "error")
+            ),
+            "",
+        )
+    } else if query_file["state"] == "failed" {
+        (
+            "query_file",
+            format!(
+                "the code graph's query file could not be written ({}): each question reads the whole saved graph until it is. Fix the cause (for example, free disk space), then run graphicle sync; a sync also tries again by itself after {}",
+                s(&query_file, "error"),
+                s(&query_file, "retry_after")
+            ),
+            "graphicle sync",
+        )
     } else {
         (
             "ready",
@@ -985,7 +1009,8 @@ pub fn readiness(db: &Connection, repository: &str) -> Result<Value> {
     };
     Ok(
         json!({"state":state,"detail":detail,"fix":fix,"files":files,
-        "indexed":coverage.indexed,"missing":coverage.missing.len(),"graph_saved":graph_saved}),
+        "indexed":coverage.indexed,"missing":coverage.missing.len(),"graph_saved":graph_saved,
+        "query_file":query_file["state"]}),
     )
 }
 

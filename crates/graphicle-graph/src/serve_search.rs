@@ -196,6 +196,82 @@ pub struct NodeText {
     /// Label length in chars, or the id's when the label is empty.
     len: usize,
 }
+impl NodeText {
+    /// Every scoring string of the node, borrowed.
+    pub fn fields(&self) -> TextRef<'_> {
+        TextRef {
+            norm: &self.norm,
+            norm_lower: &self.norm_lower,
+            label: &self.label,
+            label_tokens: &self.label_tokens,
+            src_lower: &self.src_lower,
+            rationale: &self.rationale,
+            attr_norm: &self.attr_norm,
+            attr_tokens: &self.attr_tokens,
+            id: &self.id,
+            id_lower: &self.id_lower,
+            len: self.len,
+        }
+    }
+}
+/// A node's scoring strings ([`NodeText`]), borrowed from a resident index
+/// or from a stored copy of one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextRef<'a> {
+    pub norm: &'a str,
+    pub norm_lower: &'a str,
+    pub label: &'a str,
+    pub label_tokens: &'a str,
+    pub src_lower: &'a str,
+    pub rationale: &'a str,
+    pub attr_norm: &'a str,
+    pub attr_tokens: &'a str,
+    pub id: &'a str,
+    pub id_lower: &'a str,
+    /// Label length in chars, or the id's when the label is empty.
+    pub len: usize,
+}
+/// What [`score_on`] and [`pick_seeds_on`] read of an indexed graph: its
+/// node count, each node's scoring strings and degree, the IDF weights and
+/// the trigram candidates. A resident graph and its [`SearchIndex`] provide
+/// them ([`score_query`]); so can a host's stored copy of them, which then
+/// scores exactly as the resident graph does.
+pub trait ScoreSource {
+    /// Number of nodes.
+    fn size(&self) -> usize;
+    /// Node `i`'s scoring strings.
+    fn text(&self, i: usize) -> TextRef<'_>;
+    /// [`SearchIndex::idf`]: `ln(1 + n / (1 + df))` per term, `df` the nodes
+    /// whose `norm_lower` contains it and `n` the node count (at least 1).
+    fn idf(&self, terms: &[String]) -> BTreeMap<String, f64>;
+    /// [`SearchIndex::candidates`].
+    fn candidates(&self, needles: &[String], guard: f64) -> Option<Vec<usize>>;
+    /// Node `i`'s degree as [`degrees`] counts it.
+    fn degree(&self, i: usize) -> usize;
+}
+/// A resident graph and its index as a [`ScoreSource`].
+struct Resident<'a> {
+    g: &'a Graph,
+    index: &'a SearchIndex,
+    degrees: Vec<usize>,
+}
+impl ScoreSource for Resident<'_> {
+    fn size(&self) -> usize {
+        self.g.nodes.len()
+    }
+    fn text(&self, i: usize) -> TextRef<'_> {
+        self.index.text(i).fields()
+    }
+    fn idf(&self, terms: &[String]) -> BTreeMap<String, f64> {
+        self.index.idf(self.g, terms)
+    }
+    fn candidates(&self, needles: &[String], guard: f64) -> Option<Vec<usize>> {
+        self.index.candidates(needles, guard)
+    }
+    fn degree(&self, i: usize) -> usize {
+        self.degrees[i]
+    }
+}
 /// The node's scoring strings and its `search_text`, sharing each piece.
 fn node_text(g: &Graph, i: usize) -> (NodeText, String) {
     let nid = id(g, i);
@@ -582,34 +658,47 @@ pub fn score_query(
     terms: &[String],
     per_term: bool,
 ) -> QueryScores {
+    score_on(
+        &Resident {
+            g,
+            index,
+            degrees: degrees(g),
+        },
+        terms,
+        per_term,
+    )
+}
+/// [`score_query`] over any [`ScoreSource`]: the same ranking, per-term
+/// winners and term order for the same strings, degrees and postings.
+pub fn score_on(source: &impl ScoreSource, terms: &[String], per_term: bool) -> QueryScores {
     let mut seen = BTreeSet::new();
     let terms = terms
         .iter()
         .flat_map(|s| tokens(s))
         .filter(|s| seen.insert(s.clone()))
         .collect::<Vec<_>>();
-    let weights = index.idf(g, &terms);
+    let weights = source.idf(&terms);
     let joined = terms.join(" ");
     let joined_w = weights.values().copied().reduce(f64::max).unwrap_or(1.0);
     let mut needles = terms.clone();
     if !joined.is_empty() {
         needles.push(joined.clone());
     }
-    let candidates = index
+    let candidates = source
         .candidates(&needles, 0.1)
-        .unwrap_or_else(|| (0..g.nodes.len()).collect());
-    let ds = degrees(g);
+        .unwrap_or_else(|| (0..source.size()).collect());
     let mut result = QueryScores::default();
     let mut best = BTreeMap::<String, (f64, usize, usize, String, usize)>::new();
     for i in candidates {
-        let node = index.text(i);
-        let norm = node.norm.as_str();
+        let node = source.text(i);
+        let degree = source.degree(i);
+        let norm = node.norm;
         let bare = norm.trim_end_matches(['(', ')']);
-        let lt = node.label_tokens.as_str();
-        let src = node.src_lower.as_str();
-        let rationale = node.rationale.as_str();
-        let (an, at) = (node.attr_norm.as_str(), node.attr_tokens.as_str());
-        let nid = node.id_lower.as_str();
+        let lt = node.label_tokens;
+        let src = node.src_lower;
+        let rationale = node.rationale;
+        let (an, at) = (node.attr_norm, node.attr_tokens);
+        let nid = node.id_lower;
         let mut score = 0.0;
         if !joined.is_empty() {
             if [norm, bare, lt, nid].contains(&joined.as_str()) {
@@ -661,12 +750,13 @@ pub fn score_query(
                     && best.get(t).is_none_or(|old| {
                         singleton > old.0
                             || singleton == old.0
-                                && (ds[i] > old.1
-                                    || ds[i] == old.1
-                                        && (len < old.2 || len == old.2 && node.id < old.3))
+                                && (degree > old.1
+                                    || degree == old.1
+                                        && (len < old.2
+                                            || len == old.2 && node.id < old.3.as_str()))
                     })
                 {
-                    best.insert(t.clone(), (singleton, ds[i], len, node.id.clone(), i));
+                    best.insert(t.clone(), (singleton, degree, len, node.id.to_string(), i));
                 }
             }
         }
@@ -677,11 +767,22 @@ pub fn score_query(
             result.ranked.push((score, i));
         }
     }
-    result.ranked.sort_by(|(a, i), (b, j)| {
-        b.total_cmp(a)
-            .then_with(|| index.text(*i).len.cmp(&index.text(*j).len))
-            .then_with(|| index.text(*i).id.cmp(&index.text(*j).id))
+    // Each node's label length and id read once: a stable sort by the same
+    // keys gives the same order.
+    let mut keyed = result
+        .ranked
+        .iter()
+        .map(|&(score, i)| {
+            let text = source.text(i);
+            (score, i, text.len, text.id)
+        })
+        .collect::<Vec<_>>();
+    keyed.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(b.3))
     });
+    result.ranked = keyed.into_iter().map(|(score, i, ..)| (score, i)).collect();
     // Strongest per-term winner first: the key is (-singleton score, -degree,
     // label length, node id), and the singleton score already carries the
     // term's IDF weight, so a specific term's exact match leads and a common
@@ -733,15 +834,46 @@ pub fn pick_seeds_in_order(
     best: &BTreeMap<String, usize>,
     term_order: &[String],
 ) -> Vec<usize> {
-    let Some((top, _)) = ranked.first() else {
-        return vec![];
-    };
     let key = |i: usize| {
         g.map(|g| {
             let s = norm_label(g, i);
             if s.is_empty() { id(g, i) } else { s }
         })
         .unwrap_or_else(|| i.to_string())
+    };
+    pick_seeds_by(&key, g.is_some(), ranked, max, gap, best, term_order)
+}
+/// [`pick_seeds_in_order`] with a graph, over a [`ScoreSource`]: a node's
+/// label key is its scoring `norm` (`norm_label`), else its id.
+pub fn pick_seeds_on(
+    source: &impl ScoreSource,
+    ranked: &[(f64, usize)],
+    max: usize,
+    gap: f64,
+    best: &BTreeMap<String, usize>,
+    term_order: &[String],
+) -> Vec<usize> {
+    let key = |i: usize| {
+        let text = source.text(i);
+        if text.norm.is_empty() {
+            text.id.to_string()
+        } else {
+            text.norm.to_string()
+        }
+    };
+    pick_seeds_by(&key, true, ranked, max, gap, best, term_order)
+}
+fn pick_seeds_by(
+    key: &dyn Fn(usize) -> String,
+    per_term: bool,
+    ranked: &[(f64, usize)],
+    max: usize,
+    gap: f64,
+    best: &BTreeMap<String, usize>,
+    term_order: &[String],
+) -> Vec<usize> {
+    let Some((top, _)) = ranked.first() else {
+        return vec![];
     };
     let mut labels = BTreeSet::new();
     let mut seeds = vec![];
@@ -753,7 +885,7 @@ pub fn pick_seeds_in_order(
             seeds.push(*i);
         }
     }
-    if g.is_some() {
+    if per_term {
         let mut ordered = term_order
             .iter()
             .filter(|t| best.contains_key(*t))

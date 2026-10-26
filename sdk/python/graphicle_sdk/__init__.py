@@ -73,4 +73,4 @@ __all__ = [
     "resolve_tool_call",
     "tool_schemas",
 ]
-__version__ = "0.1.7"
+__version__ = "0.1.8"

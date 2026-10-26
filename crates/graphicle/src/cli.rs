@@ -1260,7 +1260,7 @@ where
                 }
                 report
             } else {
-                local::build_graph(&store, &session, &repository, true)?
+                local::sync_graph(&store, &session, &repository, true)?
             };
             crate::terminal::emit(&synced, json, crate::terminal::sync_text)
         }

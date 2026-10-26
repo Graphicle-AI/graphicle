@@ -21,7 +21,9 @@ use graphicle_memory::graph::{
 };
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 pub const ARM: &str = "code_graph";
 /// Per-arm candidate cap.
@@ -135,7 +137,13 @@ impl Arm {
 }
 
 fn attr(attributes: &impl graphicle::record::Properties, key: &str) -> Option<String> {
-    match attributes.get(key)? {
+    value_text(attributes.get(key))
+}
+
+/// [`attr`] of an attribute's value: `None` when it is missing, null or an
+/// empty string; a string as it is; any other value as its JSON text.
+fn value_text(value: Option<&Value>) -> Option<String> {
+    match value? {
         Value::Null => None,
         Value::String(text) if text.is_empty() => None,
         Value::String(text) => Some(text.clone()),
@@ -376,7 +384,21 @@ fn locate_index(
     documents: &HashMap<&str, &Value>,
 ) -> Option<Located> {
     let node = &graph.nodes()[index];
-    let attributes = &node.attributes;
+    let node_id = match &node.id {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    locate_record(node_id, &node.attributes, starts, documents)
+}
+
+/// [`locate`] for a node given by its id and attributes (a query file's
+/// record, [`crate::query_file`]).
+pub(crate) fn locate_record(
+    node_id: String,
+    attributes: &impl graphicle::record::Properties,
+    starts: &HashMap<String, Vec<usize>>,
+    documents: &HashMap<&str, &Value>,
+) -> Option<Located> {
     let path = relpath(attributes)?;
     let document = format!("file:{path}");
     let content = s(documents.get(document.as_str())?, "content");
@@ -387,10 +409,6 @@ fn locate_index(
         return None;
     }
     let file = attr(attributes, "kind").as_deref() == Some("file");
-    let node_id = match &node.id {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    };
     let facts = json!({
         "node_id": node_id,
         "label": attributes.get("label").cloned().unwrap_or(Value::Null),
@@ -713,59 +731,128 @@ impl Plan {
 
 /// The arm's graph half on the episode it reads: lexical candidates and their
 /// one-hop neighbourhood ([`Plan`]). With `documents` false
-/// (`doc_links: false`) the episode's document nodes take no part.
+/// (`doc_links: false`) the episode's document nodes take no part. The
+/// episode's query file ([`crate::query_file`]) answers when this build
+/// wrote one; else the resident graph does, with the same result.
 pub fn plan(db: &Connection, repository: &str, question: &str, documents: bool) -> Result<Plan> {
     // The head set is read once: its digest names the current episode, and
     // the lag fallback and a skipped arm measure the latest episode against
     // it.
     let heads = crate::store::heads(db, repository)?;
     let current = graph_projection::episode_of(&heads);
-    let mut plan = Plan {
-        skipped: None,
-        episode: String::new(),
-        lag: None,
-        documents,
-        terms: Vec::new(),
-        matched: 0,
-        candidates: 0,
-        seeds: Vec::new(),
-        expanded: 0,
-        nodes: Vec::new(),
-        starts: HashMap::new(),
-    };
     let Some(Reading { episode, lag }) = reading(db, repository, &heads, &current)? else {
+        let mut plan = Plan::empty(String::new(), documents);
         plan.skipped = Some(skip_reason(db, repository, &heads, &current)?);
         return Ok(plan);
     };
-    plan.episode = episode.clone();
-    let handle = crate::phase::phase("arm_resident", || {
-        graph_projection::resident(db, repository, &episode)
-    })?;
-    let reference = graph_projection::graph_ref(repository, &episode);
-    let index = crate::phase::phase("arm_index", || resident_index(&reference, &handle));
-    let graph: &Graph = &handle;
-    let candidates = crate::phase::phase("arm_candidates", || {
-        if documents {
-            lexical_candidates(graph, &index, question, CAP)
-        } else {
-            code_candidates(graph, &index, question)
+    if let Some(file) = crate::phase::phase("arm_query_file", || {
+        crate::query_file::open(db, repository, &episode)
+    }) {
+        let saved = Saved::new(file);
+        let planned = plan_on(&saved, episode.clone(), lag.clone(), question, documents);
+        saved.file.note("arm_query_file_read");
+        if !saved.corrupt() {
+            return planned;
         }
-    });
-    plan.terms = candidates.terms.clone();
-    if candidates.candidates.is_empty() {
-        let mut skipped = json!({"status":"no_match"});
-        skipped["episode"] = json!(episode);
-        skipped["episode_lag"] = json!(0);
-        skipped["terms"] = json!(candidates.terms);
-        plan.skipped = Some(skipped);
-        plan.lag = lag;
-        return Ok(plan);
+        // A query file that does not decode: the resident graph answers.
     }
-    let seeds: Vec<Value> = candidates.seeds.iter().map(|id| json!(id)).collect();
-    // Depth 1 from the seeds: their neighbours, without the traversal view
-    // of the whole graph (`expand_seeds`, equal to `expand` there).
-    let expansion = crate::phase::phase("arm_expand", || {
-        if DEPTH == 1 {
+    let resident = Resident::open(db, repository, &episode)?;
+    plan_on(&resident, episode, lag, question, documents)
+}
+
+/// What [`plan`] reads of an episode's graph: the resident graph
+/// ([`Resident`]) or the episode's query file ([`Saved`]), which answer
+/// each read alike.
+trait Episode {
+    /// The lexical candidates as [`lexical_candidates`] finds them (or
+    /// [`code_candidates`], without `documents`): node ids and scores, best
+    /// first, at most [`CAP`].
+    fn candidates(&self, question: &str, documents: bool) -> Found;
+    /// The seeds' neighbourhood as [`expand_seeds`] finds it.
+    fn expand(&self, seeds: &[String], question: &str) -> Result<Expanded>;
+    /// [`current_edge`] between `a` and `b`.
+    fn current_edge(
+        &self,
+        a: &str,
+        b: &str,
+        filters: &[String],
+        unchanged: &BTreeSet<String>,
+    ) -> Option<(String, String)>;
+    /// Whether node `id` is a document node ([`document_node`]).
+    fn is_document(&self, id: &str) -> bool;
+    /// Node `id`'s attributes.
+    fn attributes(&self, id: &str) -> Option<Map<String, Value>>;
+    /// [`edge_derivation`] between `a` and `b`.
+    fn derivation(&self, a: &str, b: &str) -> String;
+    /// The symbol start lines of `path` ([`symbol_starts`]).
+    fn starts(&self, path: &str) -> Option<Vec<usize>>;
+}
+
+/// The lexical candidates of a question.
+struct Found {
+    terms: Vec<String>,
+    matched: usize,
+    /// (node id, score), best first.
+    candidates: Vec<(String, f64)>,
+    seeds: Vec<String>,
+}
+
+/// The seeds' neighbourhood.
+struct Expanded {
+    /// (node id, seed), in the traversal's order.
+    nodes: Vec<(String, bool)>,
+    /// (source, target, relation) from a seed to a node that is not one.
+    edges: Vec<(String, String, String)>,
+    filters: Vec<String>,
+}
+
+/// The episode's resident graph and its search index.
+struct Resident {
+    handle: graphicle::session::GraphHandle,
+    index: std::sync::Arc<graphicle::serve_search::SearchIndex>,
+    starts: std::sync::OnceLock<HashMap<String, Vec<usize>>>,
+}
+
+impl Resident {
+    fn open(db: &Connection, repository: &str, episode: &str) -> Result<Self> {
+        let handle = crate::phase::phase("arm_resident", || {
+            graph_projection::resident(db, repository, episode)
+        })?;
+        let reference = graph_projection::graph_ref(repository, episode);
+        let index = crate::phase::phase("arm_index", || resident_index(&reference, &handle));
+        Ok(Self {
+            handle,
+            index,
+            starts: std::sync::OnceLock::new(),
+        })
+    }
+}
+
+impl Episode for Resident {
+    fn candidates(&self, question: &str, documents: bool) -> Found {
+        let graph: &Graph = &self.handle;
+        let found = if documents {
+            lexical_candidates(graph, &self.index, question, CAP)
+        } else {
+            code_candidates(graph, &self.index, question)
+        };
+        Found {
+            terms: found.terms,
+            matched: found.matched,
+            candidates: found
+                .candidates
+                .into_iter()
+                .map(|candidate| (candidate.node_id, candidate.score))
+                .collect(),
+            seeds: found.seeds,
+        }
+    }
+    fn expand(&self, seeds: &[String], question: &str) -> Result<Expanded> {
+        let graph: &Graph = &self.handle;
+        let seeds: Vec<Value> = seeds.iter().map(|id| json!(id)).collect();
+        // Depth 1 from the seeds: their neighbours, without the traversal
+        // view of the whole graph (`expand_seeds`, equal to `expand` there).
+        let expansion = if DEPTH == 1 {
             expand_seeds(graph, &seeds, question)
         } else {
             expand(
@@ -777,20 +864,329 @@ pub fn plan(db: &Connection, repository: &str, question: &str, documents: bool) 
                     ..Default::default()
                 },
             )
+        }?;
+        Ok(Expanded {
+            nodes: expansion
+                .nodes
+                .into_iter()
+                .map(|node| (node.node_id, node.seed))
+                .collect(),
+            edges: expansion
+                .edges
+                .into_iter()
+                .map(|edge| (edge.source, edge.target, edge.relation))
+                .collect(),
+            filters: expansion.filters,
+        })
+    }
+    fn current_edge(
+        &self,
+        a: &str,
+        b: &str,
+        filters: &[String],
+        unchanged: &BTreeSet<String>,
+    ) -> Option<(String, String)> {
+        current_edge(&self.handle, a, b, filters, unchanged)
+    }
+    fn is_document(&self, id: &str) -> bool {
+        let graph: &Graph = &self.handle;
+        graph
+            .node_index(&json!(id))
+            .is_some_and(|index| document_node(&graph.nodes()[index].attributes))
+    }
+    fn attributes(&self, id: &str) -> Option<Map<String, Value>> {
+        let graph: &Graph = &self.handle;
+        graph
+            .node_index(&json!(id))
+            .map(|index| graph.nodes()[index].attributes.to_map())
+    }
+    fn derivation(&self, a: &str, b: &str) -> String {
+        edge_derivation(&self.handle, &json!(a), &json!(b))
+    }
+    fn starts(&self, path: &str) -> Option<Vec<usize>> {
+        self.starts
+            .get_or_init(|| {
+                crate::phase::phase("arm_symbol_starts", || symbol_starts(&self.handle))
+            })
+            .get(path)
+            .cloned()
+    }
+}
+
+/// The episode's query file. A read that fails marks the file corrupt
+/// ([`crate::query_file::QueryFile::corrupt`]), and [`plan`] then asks the
+/// resident graph instead.
+struct Saved {
+    file: std::sync::Arc<crate::query_file::QueryFile>,
+    /// Adjacency records decoded so far, by node.
+    adjacency: RefCell<HashMap<usize, Rc<crate::query_file::Adjacency>>>,
+}
+
+impl Saved {
+    fn new(file: std::sync::Arc<crate::query_file::QueryFile>) -> Self {
+        Self {
+            file,
+            adjacency: RefCell::new(HashMap::new()),
         }
-    })?;
+    }
+    /// The value of a read; `None` when it failed (the file is then
+    /// marked corrupt).
+    fn ok<T>(&self, result: std::result::Result<T, crate::query_file::Corrupt>) -> Option<T> {
+        result.ok()
+    }
+    fn corrupt(&self) -> bool {
+        self.file.corrupt()
+    }
+    /// Node `i`'s id ("" when the read failed).
+    fn id(&self, i: usize) -> String {
+        self.ok(self.file.id(i)).unwrap_or_default().to_string()
+    }
+    fn node_index(&self, id: &str) -> Option<usize> {
+        self.ok(self.file.node_index(id)).flatten()
+    }
+    fn is_document(&self, i: usize) -> bool {
+        self.ok(self.file.is_document(i)).unwrap_or(false)
+    }
+    fn adjacency(&self, i: usize) -> Option<Rc<crate::query_file::Adjacency>> {
+        if let Some(found) = self.adjacency.borrow().get(&i) {
+            return Some(found.clone());
+        }
+        let decoded = Rc::new(self.ok(self.file.adjacency(i))?);
+        self.adjacency.borrow_mut().insert(i, decoded.clone());
+        Some(decoded)
+    }
+    /// The edges between `a` and `b` in both directions, as
+    /// `edges_between(a, b)` then `edges_between(b, a)` list them.
+    fn both_ways(&self, a: &str, b: &str) -> Option<Vec<crate::query_file::EdgeRecord>> {
+        let (a, b) = (self.node_index(a)?, self.node_index(b)?);
+        let adjacency = self.adjacency(a)?;
+        let mut ids = adjacency.out_to(b).to_vec();
+        ids.extend_from_slice(adjacency.in_from(b));
+        self.ok(self.file.edges(&ids))
+    }
+}
+
+impl Episode for Saved {
+    fn candidates(&self, question: &str, documents: bool) -> Found {
+        use graphicle::serve_search::{CONSTANTS, pick_seeds_on, score_on};
+        let file = &*self.file;
+        let terms = graphicle::query_terms::query_terms(question);
+        let mut scored = score_on(file, &terms, true);
+        // Without documents, as `code_candidates` leaves them out.
+        if !documents {
+            scored.ranked.retain(|(_, i)| !self.is_document(*i));
+            scored
+                .best_seed_by_term
+                .retain(|_, i| !self.is_document(*i));
+        }
+        let intent = CONSTANTS["_RELATIONAL_INTENT_TERMS"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if terms.iter().any(|t| !intent.contains(&json!(t))) {
+            scored
+                .best_seed_by_term
+                .retain(|t, _| !intent.contains(&json!(t)));
+        }
+        // `code_candidates` picks its per-term seeds in term order.
+        let order: &[String] = if documents { &scored.term_order } else { &[] };
+        let seeds = pick_seeds_on(
+            file,
+            &scored.ranked,
+            3,
+            0.2,
+            &scored.best_seed_by_term,
+            order,
+        );
+        Found {
+            terms,
+            matched: scored.ranked.len(),
+            candidates: scored
+                .ranked
+                .iter()
+                .take(CAP)
+                .map(|&(score, i)| (self.id(i), score))
+                .collect(),
+            seeds: seeds.iter().map(|&i| self.id(i)).collect(),
+        }
+    }
+    fn expand(&self, seeds: &[String], question: &str) -> Result<Expanded> {
+        use graphicle::serve_search::text;
+        let file = &*self.file;
+        let mut indices: Vec<usize> = Vec::new();
+        for seed in seeds {
+            if let Some(i) = self.node_index(seed)
+                && !indices.contains(&i)
+            {
+                indices.push(i);
+            }
+        }
+        let (filters, _) = graphicle::serve_search::resolve_contexts(question, &[]);
+        let kept = |context: &Option<Value>| {
+            filters.is_empty() || filters.contains(&context.as_ref().map(text).unwrap_or_default())
+        };
+        let seedset: BTreeSet<usize> = indices.iter().copied().collect();
+        let mut visited = seedset.clone();
+        let mut edges = Vec::new();
+        for &i in &seedset {
+            let Some(adjacency) = self.adjacency(i) else {
+                continue;
+            };
+            for nb in adjacency.neighbours() {
+                if seedset.contains(&nb) {
+                    continue;
+                }
+                // `edges_between(low, high)`, then on a directed graph
+                // `edges_between(high, low)`, from the seed's own record.
+                let (forward, backward) = (adjacency.out_to(nb), adjacency.in_from(nb));
+                let (first, second) = if i <= nb {
+                    (forward, backward)
+                } else {
+                    (backward, forward)
+                };
+                let mut ids = first.to_vec();
+                if file.directed {
+                    ids.extend_from_slice(second);
+                }
+                let list = self.ok(file.edges(&ids)).unwrap_or_default();
+                // A plain graph's view keeps one merged entry per pair, kept
+                // when its last context passes; a multigraph's keeps every arc.
+                let surviving = if file.multigraph {
+                    list.into_iter()
+                        .filter(|edge| kept(&edge.context))
+                        .collect()
+                } else {
+                    let mut context = None;
+                    for edge in &list {
+                        if let Some(value) = &edge.context {
+                            context = Some(text(value));
+                        }
+                    }
+                    if filters.is_empty() || filters.contains(&context.unwrap_or_default()) {
+                        list
+                    } else {
+                        Vec::new()
+                    }
+                };
+                if surviving.is_empty() {
+                    continue;
+                }
+                let mut relation = String::new();
+                for edge in &surviving {
+                    if let Some(value) = &edge.relation {
+                        relation = text(value);
+                    }
+                }
+                visited.insert(nb);
+                edges.push((i, nb, relation));
+            }
+        }
+        Ok(Expanded {
+            nodes: visited
+                .iter()
+                .map(|&i| (self.id(i), seedset.contains(&i)))
+                .collect(),
+            edges: edges
+                .into_iter()
+                .map(|(u, v, relation)| (self.id(u), self.id(v), relation))
+                .collect(),
+            filters,
+        })
+    }
+    fn current_edge(
+        &self,
+        a: &str,
+        b: &str,
+        filters: &[String],
+        unchanged: &BTreeSet<String>,
+    ) -> Option<(String, String)> {
+        self.both_ways(a, b)?
+            .into_iter()
+            .filter(|edge| {
+                filters.is_empty()
+                    || filters.contains(&value_text(edge.context.as_ref()).unwrap_or_default())
+            })
+            .find(|edge| edge.files.iter().any(|file| unchanged.contains(file)))
+            .map(|edge| {
+                (
+                    value_text(edge.relation.as_ref()).unwrap_or_default(),
+                    value_text(edge.derivation.as_ref()).unwrap_or_else(|| "unknown".to_string()),
+                )
+            })
+    }
+    fn is_document(&self, id: &str) -> bool {
+        self.node_index(id).is_some_and(|i| self.is_document(i))
+    }
+    fn attributes(&self, id: &str) -> Option<Map<String, Value>> {
+        let i = self.node_index(id)?;
+        self.ok(self.file.attributes(i))
+    }
+    fn derivation(&self, a: &str, b: &str) -> String {
+        self.both_ways(a, b)
+            .and_then(|list| {
+                list.into_iter()
+                    .find_map(|edge| value_text(edge.derivation.as_ref()))
+            })
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+    fn starts(&self, path: &str) -> Option<Vec<usize>> {
+        self.ok(self.file.starts(path)).flatten()
+    }
+}
+
+impl Plan {
+    fn empty(episode: String, documents: bool) -> Self {
+        Self {
+            skipped: None,
+            episode,
+            lag: None,
+            documents,
+            terms: Vec::new(),
+            matched: 0,
+            candidates: 0,
+            seeds: Vec::new(),
+            expanded: 0,
+            nodes: Vec::new(),
+            starts: HashMap::new(),
+        }
+    }
+}
+
+/// [`plan`] on the episode `source` reads.
+fn plan_on(
+    source: &dyn Episode,
+    episode: String,
+    lag: Option<Lag>,
+    question: &str,
+    documents: bool,
+) -> Result<Plan> {
+    let mut plan = Plan::empty(episode.clone(), documents);
+    let candidates =
+        crate::phase::phase("arm_candidates", || source.candidates(question, documents));
+    plan.terms = candidates.terms.clone();
+    if candidates.candidates.is_empty() {
+        let mut skipped = json!({"status":"no_match"});
+        skipped["episode"] = json!(episode);
+        skipped["episode_lag"] = json!(0);
+        skipped["terms"] = json!(candidates.terms);
+        plan.skipped = Some(skipped);
+        plan.lag = lag;
+        return Ok(plan);
+    }
+    let expansion =
+        crate::phase::phase("arm_expand", || source.expand(&candidates.seeds, question))?;
     // Neighbour → the seed that reached it, the relation, and under the lag
     // fallback the derivation of the current edge it was reached through
     // (first edge wins; on the current episode the derivation is read when
     // the neighbour is cited). Under the lag fallback a neighbour that only
     // edges read from changed or removed files reach is left out.
     let mut reached_via: HashMap<&str, (&str, String, Option<String>)> = HashMap::new();
-    for edge in &expansion.edges {
+    for (source_id, target_id, relation) in &expansion.edges {
         let seed_side = |id: &str| candidates.seeds.iter().any(|seed| seed == id);
-        let (from, to) = if seed_side(&edge.source) && !seed_side(&edge.target) {
-            (edge.source.as_str(), edge.target.as_str())
-        } else if seed_side(&edge.target) && !seed_side(&edge.source) {
-            (edge.target.as_str(), edge.source.as_str())
+        let (from, to) = if seed_side(source_id) && !seed_side(target_id) {
+            (source_id.as_str(), target_id.as_str())
+        } else if seed_side(target_id) && !seed_side(source_id) {
+            (target_id.as_str(), source_id.as_str())
         } else {
             continue;
         };
@@ -799,11 +1195,11 @@ pub fn plan(db: &Connection, repository: &str, question: &str, documents: bool) 
         }
         match &lag {
             None => {
-                reached_via.insert(to, (from, edge.relation.clone(), None));
+                reached_via.insert(to, (from, relation.clone(), None));
             }
             Some(lag) => {
                 if let Some((relation, derivation)) =
-                    current_edge(graph, from, to, &expansion.filters, &lag.unchanged)
+                    source.current_edge(from, to, &expansion.filters, &lag.unchanged)
                 {
                     reached_via.insert(to, (from, relation, Some(derivation)));
                 }
@@ -813,36 +1209,29 @@ pub fn plan(db: &Connection, repository: &str, question: &str, documents: bool) 
     // Node ids in arm order, deduplicated, capped.
     let mut ordered: Vec<(String, u8, Option<f64>)> = Vec::new();
     let mut seen = BTreeSet::new();
-    for candidate in &candidates.candidates {
-        if seen.insert(candidate.node_id.clone()) {
-            ordered.push((candidate.node_id.clone(), 0, Some(candidate.score)));
+    for (node_id, score) in &candidates.candidates {
+        if seen.insert(node_id.clone()) {
+            ordered.push((node_id.clone(), 0, Some(*score)));
         }
     }
-    for node in &expansion.nodes {
+    for (node_id, seed) in &expansion.nodes {
         if ordered.len() >= CAP {
             break;
         }
         // Without documents, a page or section reached through its
         // `references` edge is no neighbour either.
-        if !documents
-            && graph
-                .node_index(&json!(node.node_id))
-                .is_some_and(|index| document_node(&graph.nodes()[index].attributes))
-        {
+        if !documents && source.is_document(node_id) {
             continue;
         }
-        if !node.seed && seen.insert(node.node_id.clone()) {
-            ordered.push((node.node_id.clone(), 1, None));
+        if !seed && seen.insert(node_id.clone()) {
+            ordered.push((node_id.clone(), 1, None));
         }
     }
     ordered.truncate(CAP);
     // Symbol starts per file: a node's range runs to the next symbol start in
     // the same file, the bytes its `revision` hashes.
-    let starts = crate::phase::phase("arm_symbol_starts", || symbol_starts(graph));
     for (node_id, hop, score) in ordered {
-        let attributes = graph
-            .node_index(&json!(node_id))
-            .map(|index| graph.nodes()[index].attributes.to_map());
+        let attributes = source.attributes(&node_id);
         let via = reached_via
             .get(node_id.as_str())
             .map(|(from, relation, derivation)| {
@@ -850,14 +1239,15 @@ pub fn plan(db: &Connection, repository: &str, question: &str, documents: bool) 
             });
         let derivation = match &via {
             Some((from, _, None)) if attributes.is_some() => {
-                Some(edge_derivation(graph, &json!(from), &json!(node_id)))
+                Some(source.derivation(from, &node_id))
             }
             _ => None,
         };
         if let Some(path) = attributes.as_ref().and_then(relpath)
-            && let Some(lines) = starts.get(&path)
+            && !plan.starts.contains_key(&path)
+            && let Some(lines) = source.starts(&path)
         {
-            plan.starts.entry(path).or_insert_with(|| lines.clone());
+            plan.starts.insert(path, lines);
         }
         plan.nodes.push(Planned {
             node_id,
@@ -1166,5 +1556,81 @@ mod tests {
         assert_eq!(unchunked[0]["source"]["code_graph"]["stable_id"], "s2");
         assert_eq!(unchunked[0]["source"]["byte_start"], 19);
         assert_eq!(unchunked[0]["text"], "def b():\n    pass\n");
+    }
+
+    /// The query file plans exactly as the resident graph does: the same
+    /// candidates, seeds, neighbours, attributes, derivations and start
+    /// lines, with and without documents and the lag fallback.
+    #[test]
+    fn the_query_file_plans_as_the_resident_graph() {
+        for directed in [true, false] {
+            plans_alike(crate::query_file::tests::sample_of(directed));
+        }
+    }
+
+    fn plans_alike(graph: Graph) {
+        use graphicle::serve_search::SearchIndex;
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = std::sync::Arc::new(crate::query_file::tests::written(&graph, dir.path()));
+        let index = std::sync::Arc::new(SearchIndex::new(&graph));
+        let resident = Resident {
+            handle: graphicle::session::GraphHandle::new(graph),
+            index,
+            starts: std::sync::OnceLock::new(),
+        };
+        let saved = Saved::new(file);
+        let describe = |plan: &Plan| {
+            let mut starts: Vec<_> = plan.starts.iter().collect();
+            starts.sort();
+            format!(
+                "{:?} {:?} {} {} {:?} {} {:?} {:?} {:?}",
+                plan.skipped,
+                plan.terms,
+                plan.matched,
+                plan.candidates,
+                plan.seeds,
+                plan.expanded,
+                plan.nodes,
+                starts,
+                plan.lag.as_ref().map(|lag| (&lag.current, lag.changed))
+            )
+        };
+        let lags = [
+            None,
+            Some(Lag {
+                current: "next".into(),
+                changed: 2,
+                unchanged: BTreeSet::from(["src/query.rs".to_string()]),
+            }),
+            Some(Lag {
+                current: "next".into(),
+                changed: 1,
+                unchanged: BTreeSet::from(["src/query.rs".to_string(), "src/store.rs".to_string()]),
+            }),
+        ];
+        for question in [
+            "Where does Store.open run?",
+            "Which code calls store open and close in the tests?",
+            "run_query plan helper_12",
+            "What does the store guide say about the write ahead log?",
+            "Ünïcode störe",
+            "helper",
+            "nothing matches zzqqxx",
+            "",
+        ] {
+            for documents in [true, false] {
+                for lag in &lags {
+                    let a =
+                        plan_on(&resident, "e".into(), lag.clone(), question, documents).unwrap();
+                    let b = plan_on(&saved, "e".into(), lag.clone(), question, documents).unwrap();
+                    assert_eq!(
+                        describe(&a),
+                        describe(&b),
+                        "{question:?} documents {documents}"
+                    );
+                }
+            }
+        }
+        assert!(!saved.corrupt());
     }
 }

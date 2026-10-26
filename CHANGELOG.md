@@ -3,6 +3,104 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.8 - 2026-10-26
+
+Every crate is at 0.1.8, and `graphicle --version` prints
+`graphicle 0.1.8 (core)`. The Python and TypeScript SDKs are at 0.1.8 too.
+
+### After upgrading
+
+- Run `graphicle sync` once in each project. Until that sync, a question
+  reads the code graph from the store, which on a shallow clone of
+  kubernetes took a median of 22.5 seconds per question (16 cores of a
+  Linux server, the 22 questions of #8), and on a project of 2,000 files
+  or more the prompt hook gives only the files that define the code names
+  a prompt gives.
+
+### Questions on large projects
+
+- A question no longer decodes the whole saved code graph (#8). After each
+  code graph build, a sync also saves a query file beside the saved graph
+  (`gf-cache/<project>/query/<episode>.query`). `graphicle context`, the
+  prompt hook and the memory server's `recall_project` read it in place
+  (mapped into memory on macOS and Linux, read whole on Windows) and decode
+  only what the question needs: every node's text once, to weigh the
+  question's words, then the postings of its own words, the scoring
+  strings of the nodes those leave and the records of the code it cites.
+  A lookup ("Where is X defined?", a bare name, "who calls X") reads the
+  symbols and references of its names. Packets and the prompt hook's
+  output are unchanged, byte for byte.
+  - Measured on a shallow clone of kubernetes at `ca8a2a9e4` (30,315
+    files) on a Linux server, against 0.1.7 on the same cores, each call a
+    new process as the hook runs it. Over the 22 questions of #8 the
+    median `graphicle context` call took 1.34 seconds on 16 cores, against
+    2.99 seconds with 0.1.7 (90th percentile 1.87 against 3.37 seconds),
+    and 1.38 seconds on 4 cores, against 3.89 seconds (90th percentile
+    1.87 against 4.56 seconds). On the 20 of them the prompt hook answers,
+    it took a median of 1.53 seconds on 16 cores and 1.59 seconds on 4,
+    against 3.11 and 3.96 seconds.
+  - Over 8 lookups the median `graphicle context` call took 0.96 seconds
+    on 16 cores and 0.99 seconds on 4, against 2.52 and 3.44 seconds.
+  - With the data folder and the program dropped from the operating
+    system's file cache before each call, the median over the 22 questions
+    was 1.84 seconds on 16 cores and 1.90 seconds on 4, against 3.68 and
+    4.55 seconds.
+  - The peak memory of a `graphicle context` call fell from 3.5 GB to 0.6
+    GB (the median over the 22 questions on 16 cores).
+  - A question read about a third of the query file (a median of 35% of
+    its pages over the 22 questions, at most 46%); a lookup read a median
+    of 0.3%.
+  - The query file takes 206 MB of the data folder for that clone, beside
+    the saved graph's 270 MB (6.45 GB in all, against 6.24 GB).
+  - The main figures of this run, with their labels, are in a table in
+    [docs/benchmarks.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.8/docs/benchmarks.md#our-own-run-on-kubernetes-017-and-018).
+- A sync that builds the code graph also writes the query file: on that
+  clone a sync after a one-file change took a median of 117.7 seconds,
+  against 109.5 seconds with 0.1.7, of which saving the graph and the
+  query file took 28.0 seconds, against 21.0 seconds for the graph alone.
+  A sync with nothing to do took 2.4 seconds, against 2.5.
+- Going back to the head set synced just before (a branch switched back
+  to) finds that head set's saved files: on that clone such a sync took a
+  median of 17.2 seconds, against 28.6 seconds with 0.1.7, and a question
+  then took a median of 1.38 seconds over the 22 questions. 0.1.7 kept the
+  saved graph of the latest episode only, so after such a switch its
+  questions read the code graph from the store, a median of 22.3 seconds
+  each, until the next code graph build.
+- The keys of the saved graph and of the query file now cover the
+  program's sources and its locked dependencies, not only the engine's, so
+  a file another build wrote is never read. The first sync after upgrading
+  writes both again (26.9 seconds on that clone). Until then a question
+  reads the code graph from the store (a median of 22.5 seconds on 16
+  cores over the 22 questions), on a project of 2,000 files or more the
+  prompt hook gives the files that define the code names a prompt gives,
+  and `graphicle doctor` says so.
+- A query file that cannot be written for a reason that can pass, such as
+  a full disk, is tried again by later syncs after a wait (10 minutes,
+  doubled after each failure in a row, at most 6 hours) and at once by
+  `graphicle sync`, `graphicle setup` and `graphicle doctor --fix`. A code
+  graph the file cannot hold (a node id that is not a string, a value
+  nested more than 64 levels deep, a section past 4 GiB) is not tried
+  again until the code graph or the program changes. `graphicle doctor`
+  says which, under Questions, and what to do.
+- A query file, saved graph or file relationships file that is truncated,
+  malformed or damaged is read around, with the same packet, and written
+  again. The query file has checksums over its header and each page, and
+  the saved graph and the file relationships now end with their length
+  and a checksum: a sync checks the query file's header and the other
+  files' lengths, and the read that finds damage removes the file, so the
+  next sync writes it. A file relationships file whose pairs name files
+  outside its table no longer makes `graphicle context` fail, as it did
+  in 0.1.7. `GRAPHICLE_QUERY_FILE=0` makes every question read the saved
+  graph.
+
+### Packaging
+
+- `server.json` at the repository's root is the MCP Registry entry of
+  0.1.7, the latest listed release (it named 0.1.6). A release's entry is
+  committed after its listing, as
+  [packaging/mcpb/README.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.8/packaging/mcpb/README.md#steps-at-release-time)
+  describes.
+
 ## 0.1.7 - 2026-10-25
 
 Every crate is at 0.1.7, and `graphicle --version` prints

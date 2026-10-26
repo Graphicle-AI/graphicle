@@ -62,6 +62,7 @@ pub mod projection;
 pub mod prompt_context;
 pub mod prompt_hook;
 pub mod query;
+pub mod query_file;
 pub mod query_graph;
 pub mod releases;
 pub mod retention;

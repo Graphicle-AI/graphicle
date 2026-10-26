@@ -1247,6 +1247,29 @@ pub fn build_graph(
     repository: &str,
     progress: bool,
 ) -> Result<Value> {
+    build_graph_with(store, session, repository, progress, false)
+}
+
+/// [`build_graph`] for the commands a person runs to bring a project up to
+/// date (`graphicle sync`, `setup`, `doctor --fix`): a query file whose
+/// write failed for a reason that can pass (a full disk) is also tried
+/// again at once, not only after its wait ([`crate::query_graph::ensure`]).
+pub fn sync_graph(
+    store: &Store,
+    session: &Session,
+    repository: &str,
+    progress: bool,
+) -> Result<Value> {
+    build_graph_with(store, session, repository, progress, true)
+}
+
+fn build_graph_with(
+    store: &Store,
+    session: &Session,
+    repository: &str,
+    progress: bool,
+    retry: bool,
+) -> Result<Value> {
     let mut report = build_graph_only(store, session, repository, progress)?;
     // The built graph saved for later processes (crate::query_graph); a
     // failure leaves them reading it from the store.
@@ -1254,7 +1277,7 @@ pub fn build_graph(
         let saved = crate::phase::phase("graph_save", || {
             store.authorized_read(&session.workspace, &session.capability, "read", |db, p| {
                 let project = crate::store::repo(db, p, repository)?;
-                crate::query_graph::ensure(db, s(&project, "id"))
+                crate::query_graph::ensure(db, s(&project, "id"), retry)
             })
         });
         report["saved_graph"] = match saved {

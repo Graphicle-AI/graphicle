@@ -1471,7 +1471,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "graphicle"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "aws-config",
  "aws-sdk-bedrockruntime",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "graphicle-graph"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "graphicle",
  "libmimalloc-sys",

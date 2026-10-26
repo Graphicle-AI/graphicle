@@ -30,6 +30,12 @@ pub mod graph;
 pub type Result<T> = std::result::Result<T, Error>;
 pub const ABI: u32 = 1;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// A hash of this crate's sources and version (its build script): a program
+/// that stores data derived with this crate's code can key it by it.
+pub fn build_code() -> &'static str {
+    env!("GRAPHICLE_MEMORY_CODE")
+}
 pub const MAX_REQUEST_BYTES: usize = 64 * 1024 * 1024;
 
 pub fn dispatch(request: Value) -> Result<Value> {

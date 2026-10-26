@@ -280,14 +280,22 @@ pub fn arm(
         report["status"] = json!("no_names");
         return Ok(skipped(report));
     }
-    let graph = if args["graph_retrieval"] == false {
+    let mut graph = if args["graph_retrieval"] == false {
         None
     } else {
-        crate::phase::phase("identifiers_graph", || code_graph(db, repository))
+        crate::phase::phase("identifiers_graph", || code_graph(db, repository, true))
     };
-    let ranked = crate::phase::phase("identifiers_rank", || {
+    let mut ranked = crate::phase::phase("identifiers_rank", || {
         rank(&passages.rows, &named, graph.as_ref())
     });
+    if let Some(graph) = &graph {
+        graph.note();
+    }
+    // A query file whose read failed: the resident graph ranks instead.
+    if graph.as_ref().is_some_and(CodeGraph::corrupt) {
+        graph = code_graph(db, repository, false);
+        ranked = rank(&passages.rows, &named, graph.as_ref());
+    }
     report["status"] = json!(if ranked.ranking.is_empty() {
         "no_match"
     } else {
@@ -311,24 +319,64 @@ pub fn arm(
 /// the project has no recorded episode or it cannot be opened (the arm then
 /// matches text alone).
 struct CodeGraph {
-    handle: GraphHandle,
-    /// Code symbols: (node index, dotted name, file).
-    symbols: Vec<(usize, String, String)>,
-    /// Symbols by the last segment of their dotted name.
-    by_last: HashMap<String, Vec<usize>>,
+    symbols: Symbols,
     /// Files the lag fallback may cite (`None`: all).
     unchanged: Option<BTreeSet<String>>,
 }
 
-fn code_graph(db: &Connection, repository: &str) -> Option<CodeGraph> {
+/// The episode's code symbols: from its query file ([`crate::query_file`])
+/// when this build wrote one, else from its resident graph.
+enum Symbols {
+    Resident {
+        handle: GraphHandle,
+        /// Code symbols: (node index, dotted name, file).
+        list: Vec<(usize, String, String)>,
+        /// Symbols by the last segment of their dotted name.
+        by_last: HashMap<String, Vec<usize>>,
+    },
+    Saved(std::sync::Arc<crate::query_file::QueryFile>),
+}
+
+/// The code symbols of `graph` with a dotted name and a file, in node
+/// order: (node index, dotted name, file, start line).
+pub(crate) fn symbols_of(graph: &Graph) -> Vec<(usize, String, String, Option<usize>)> {
+    graph
+        .nodes()
+        .iter()
+        .enumerate()
+        .filter(|(_, node)| code_graph_arm::code_symbol(&node.attributes))
+        .filter_map(|(index, node)| {
+            Some((
+                index,
+                crate::identifier_route::symbol_name(&node.attributes)?,
+                code_graph_arm::relpath(&node.attributes)?,
+                graphicle_memory::graph::span::start_line(&node.attributes),
+            ))
+        })
+        .collect()
+}
+
+/// The code graph of `repository`'s episode: its query file when this
+/// build wrote one and `saved` allows it, else its resident graph.
+fn code_graph(db: &Connection, repository: &str, saved: bool) -> Option<CodeGraph> {
     let heads = crate::store::heads(db, repository).ok()?;
     let current = graph_projection::episode_of(&heads);
     let Reading { episode, lag } = code_graph_arm::reading(db, repository, &heads, &current)
         .ok()
         .flatten()?;
+    let unchanged = lag.map(|lag| lag.unchanged);
+    if let Some(file) = saved
+        .then(|| crate::query_file::open(db, repository, &episode))
+        .flatten()
+    {
+        return Some(CodeGraph {
+            symbols: Symbols::Saved(file),
+            unchanged,
+        });
+    }
     let handle = graph_projection::resident(db, repository, &episode).ok()?;
     let graph: &Graph = &handle;
-    let symbols: Vec<(usize, String, String)> = graph
+    let list: Vec<(usize, String, String)> = graph
         .nodes()
         .iter()
         .enumerate()
@@ -342,22 +390,59 @@ fn code_graph(db: &Connection, repository: &str) -> Option<CodeGraph> {
         })
         .collect();
     let mut by_last: HashMap<String, Vec<usize>> = HashMap::new();
-    for (i, (_, name, _)) in symbols.iter().enumerate() {
+    for (i, (_, name, _)) in list.iter().enumerate() {
         let last = name.rsplit('.').next().unwrap_or(name);
         by_last.entry(last.to_string()).or_default().push(i);
     }
     Some(CodeGraph {
-        handle,
-        symbols,
-        by_last,
-        unchanged: lag.map(|lag| lag.unchanged),
+        symbols: Symbols::Resident {
+            handle,
+            list,
+            by_last,
+        },
+        unchanged,
     })
 }
 
 impl CodeGraph {
+    /// Whether a read of the query file failed: the arm then ranks again
+    /// with the resident graph.
+    fn corrupt(&self) -> bool {
+        matches!(&self.symbols, Symbols::Saved(file) if file.corrupt())
+    }
+
+    /// With `GRAPHICLE_PHASE_TIMINGS`, logs what the arm read of the query
+    /// file ([`crate::query_file::QueryFile::note`]).
+    fn note(&self) {
+        if let Symbols::Saved(file) = &self.symbols {
+            file.note("identifiers_query_file_read");
+        }
+    }
+
+    /// Symbol `i`: its dotted name and file.
+    fn symbol(&self, i: usize) -> (&str, &str) {
+        match &self.symbols {
+            Symbols::Resident { list, .. } => (list[i].1.as_str(), list[i].2.as_str()),
+            Symbols::Saved(file) => file
+                .symbol(i)
+                .map(|(_, name, relpath, _)| (name, relpath))
+                .unwrap_or(("", "")),
+        }
+    }
+
+    /// The start line of symbol `i`'s node.
+    fn start_line(&self, i: usize) -> Option<usize> {
+        match &self.symbols {
+            Symbols::Resident { handle, list, .. } => {
+                graphicle_memory::graph::span::start_line(&handle.nodes()[list[i].0].attributes)
+            }
+            Symbols::Saved(file) => file.symbol(i).ok().and_then(|(.., start)| start),
+        }
+    }
+
     /// The symbols `name` defines, as the identifier route finds them
     /// (`crate::identifier_route`'s longest matching suffix), by index into
-    /// `symbols`.
+    /// the symbols.
     fn definitions(&self, name: &str) -> Vec<usize> {
         let dotted = name
             .replace("::", ".")
@@ -370,9 +455,16 @@ impl CodeGraph {
         let Some(last) = segments.last() else {
             return Vec::new();
         };
-        let Some(bucket) = self.by_last.get(*last) else {
-            return Vec::new();
+        let bucket: Vec<usize> = match &self.symbols {
+            Symbols::Resident { by_last, .. } => match by_last.get(*last) {
+                Some(bucket) => bucket.clone(),
+                None => return Vec::new(),
+            },
+            Symbols::Saved(file) => file.symbols_ending(last).unwrap_or_default(),
         };
+        if bucket.is_empty() {
+            return Vec::new();
+        }
         let ends_with = |qualified: &str, path: &str| {
             qualified == path
                 || qualified
@@ -386,7 +478,7 @@ impl CodeGraph {
                 .iter()
                 .copied()
                 .filter(|&i| {
-                    let (_, qualified, relpath) = &self.symbols[i];
+                    let (qualified, relpath) = self.symbol(i);
                     ends_with(qualified, &suffix)
                         && (!last_only
                             || relpath
@@ -485,7 +577,7 @@ fn rank(rows: &[Value], named: &Named, graph: Option<&CodeGraph>) -> Ranked {
                 continue;
             }
             for i in found {
-                let (index, _, relpath) = &graph.symbols[i];
+                let (_, relpath) = graph.symbol(i);
                 if graph
                     .unchanged
                     .as_ref()
@@ -497,9 +589,7 @@ fn rank(rows: &[Value], named: &Named, graph: Option<&CodeGraph>) -> Ranked {
                 let Some((&file, _)) = by_file.get_key_value(origin.as_str()) else {
                     continue;
                 };
-                let line = graphicle_memory::graph::span::start_line(
-                    &graph.handle.nodes()[*index].attributes,
-                );
+                let line = graph.start_line(i);
                 defined[n].push((file.to_string(), line.unwrap_or(0)));
                 holders[n].insert(file);
             }
@@ -670,14 +760,22 @@ pub fn arm_indexed(
         report["status"] = json!("no_names");
         return Ok(skipped(report));
     }
-    let graph = if args["graph_retrieval"] == false {
+    let mut graph = if args["graph_retrieval"] == false {
         None
     } else {
-        crate::phase::phase("identifiers_graph", || code_graph(db, repository))
+        crate::phase::phase("identifiers_graph", || code_graph(db, repository, true))
     };
-    let ranked = crate::phase::phase("identifiers_rank", || {
+    let mut ranked = crate::phase::phase("identifiers_rank", || {
         rank_indexed(db, index, text, &named, graph.as_ref())
     })?;
+    if let Some(graph) = &graph {
+        graph.note();
+    }
+    // A query file whose read failed: the resident graph ranks instead.
+    if graph.as_ref().is_some_and(CodeGraph::corrupt) {
+        graph = code_graph(db, repository, false);
+        ranked = rank_indexed(db, index, text, &named, graph.as_ref())?;
+    }
     report["status"] = json!(if ranked.ranking.is_empty() {
         "no_match"
     } else {
@@ -801,7 +899,7 @@ fn rank_indexed(
                 continue;
             }
             for i in found {
-                let (node, _, relpath) = &graph.symbols[i];
+                let (_, relpath) = graph.symbol(i);
                 if graph
                     .unchanged
                     .as_ref()
@@ -815,9 +913,7 @@ fn rank_indexed(
                 else {
                     continue;
                 };
-                let line = graphicle_memory::graph::span::start_line(
-                    &graph.handle.nodes()[*node].attributes,
-                );
+                let line = graph.start_line(i);
                 defined[n].push((file, line.unwrap_or(0)));
                 holders[n].insert(file);
             }
@@ -1091,5 +1187,57 @@ mod tests {
             ["file:docs/example.md", "file:tests/conftest.py"]
         );
         assert!(defining_outside_source(&names, &[0, 3, 4], &defined).is_empty());
+    }
+
+    /// The query file's symbols find the definitions the resident graph's
+    /// do, with the same files and start lines.
+    #[test]
+    fn the_query_file_finds_the_resident_definitions() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let graph = crate::query_file::tests::sample();
+        let file = std::sync::Arc::new(crate::query_file::tests::written(&graph, dir.path()));
+        let handle = GraphHandle::new(graph);
+        let symbols = symbols_of(&handle);
+        let list: Vec<(usize, String, String)> = symbols
+            .iter()
+            .map(|(index, name, relpath, _)| (*index, name.clone(), relpath.clone()))
+            .collect();
+        let mut by_last: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, (_, name, _)) in list.iter().enumerate() {
+            let last = name.rsplit('.').next().unwrap_or(name);
+            by_last.entry(last.to_string()).or_default().push(i);
+        }
+        let resident = CodeGraph {
+            symbols: Symbols::Resident {
+                handle,
+                list,
+                by_last,
+            },
+            unchanged: None,
+        };
+        let saved = CodeGraph {
+            symbols: Symbols::Saved(file),
+            unchanged: None,
+        };
+        for name in [
+            "Store.open",
+            "store.Store.close",
+            "Store::open",
+            "self.open",
+            "run_query",
+            "query.run_query",
+            "helper_3",
+            "plan",
+            "Store",
+            "missing",
+            "",
+        ] {
+            let found = resident.definitions(name);
+            assert_eq!(found, saved.definitions(name), "{name}");
+            for i in found {
+                assert_eq!(resident.symbol(i), saved.symbol(i), "{name}");
+                assert_eq!(resident.start_line(i), saved.start_line(i), "{name}");
+            }
+        }
     }
 }

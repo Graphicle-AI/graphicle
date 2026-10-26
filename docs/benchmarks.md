@@ -1160,7 +1160,7 @@ numbers.
 
 People outside the project who measured Graphicle with their own scripts,
 on their own machines, and published the results. The numbers below are
-theirs.
+theirs, apart from our own run of the same questions, which says so.
 
 ### `graphicle context` on kubernetes, 0.1.3 and 0.1.5
 
@@ -1193,7 +1193,37 @@ configured, so no model calls; published 23 October 2026.
   is three rounds per question.
 - **Our own run.** On 16 cores of a Linux server, the same 22 questions took
   a median of 3.1 seconds with 0.1.5 (the 0.1.5 entry of the
-  [CHANGELOG](../CHANGELOG.md)).
+  [CHANGELOG](../CHANGELOG.md)). Our run of 0.1.8 against 0.1.7 is
+  [below](#our-own-run-on-kubernetes-017-and-018).
+
+### Our own run on kubernetes, 0.1.7 and 0.1.8
+
+0.1.8 reads the code graph's query file in place, instead of decoding the
+whole saved graph at each call as 0.1.7 does. We ran the same 22 questions on
+both releases.
+
+**Label:** one Linux server (Intel Xeon Platinum 8480C), 16 of its cores, or
+4 for a laptop-like run; kubernetes at `ca8a2a9e4`, a shallow clone (30,315
+files); the 22 questions of issue #8, and 8 lookups such as "Where is X
+defined?"; each call a new process, as the prompt hook runs it; both releases
+on the same cores, interleaved; medians; 25 October 2026.
+
+| Release | `graphicle context`, 22 questions, 16 cores | 22 questions, 4 cores | 8 lookups, 16 cores | 22 questions, 4 cores, file cache dropped before each call | Peak memory of a call, 22 questions, 16 cores |
+|---|---|---|---|---|---|
+| 0.1.7 | 2.99 s | 3.89 s | 2.52 s | 4.55 s | 3.5 GB |
+| 0.1.8 | 1.34 s | 1.38 s | 0.96 s | 1.90 s | 0.6 GB |
+
+- **Rounds.** The times are medians over 3 rounds of every question on 16
+  cores and 2 rounds on 4 cores, after one round that is not counted; with
+  the data folder and the program dropped from the file cache before each
+  call, over 1 round. The peak memory is the median of each call's peak
+  resident memory.
+- **Same packets.** On the same store, both releases gave the same packet
+  for every question, byte for byte.
+- **After upgrading.** Until the first `graphicle sync` after upgrading,
+  0.1.8 reads the code graph from the store instead (a median of 22.5 s per
+  question over the 22 questions, 16 cores); the
+  [CHANGELOG](../CHANGELOG.md) has the details.
 
 ## Reproducing
 

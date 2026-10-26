@@ -549,7 +549,23 @@ identifiers in each. A sync reads only the files that changed since the last
 one, and drops what it held of files that changed or went away. After each
 code graph build, Graphicle also saves the graph and its search index in the
 data folder (`gf-cache/<project>/query/`), so a question reads them instead of
-rebuilding them from the store.
+rebuilding them from the store, and beside them a query file, which a question
+reads in place instead of decoding the whole graph: every node's text once,
+to weigh the question's words, then the postings of its own words, the
+scoring strings of the nodes those leave and the records of the code it
+cites, or for a question that only asks where names are defined or used,
+the symbols and references of those names. The query file has checksums
+over its header and each page, and the saved graph and the file
+relationships end with their length and a checksum. A sync checks the
+headers and lengths, and a question checks what it reads: a file found
+truncated, malformed or damaged is read around (from the saved graph or
+the store, with the same packet), and the next sync writes it again. A
+query file that cannot be written (for example on a full disk) is tried
+again by syncs after a wait, 10 minutes at first and at most 6 hours, and
+at once by `graphicle sync`; one the code graph cannot have (for example
+with a node id that is not a string) is not tried again until the code
+graph or the program changes. The files of the head set questions read,
+and of the one synced before it, are kept.
 
 `graphicle context`, the memory server's `recall_project` and the prompt hook
 then look a question up in the index. The ranking is the one the full path
@@ -562,11 +578,13 @@ memory. So does a project whose index is missing (a store from an earlier
 version builds it at its next sync) or lacks more than 2,000 of its current
 files.
 
-`graphicle doctor` says, under Questions, whether the index and the saved
-graph are ready, and `graphicle setup` says so when they are not. The packet
-reports what it read in `passage_index`. `GRAPHICLE_PASSAGE_INDEX=0` makes
-every question take the full path, and `GRAPHICLE_SAVED_GRAPH=0` makes it
-read the code graph from the store.
+`graphicle doctor` says, under Questions, whether the index, the saved graph
+and the query file are ready, and `graphicle setup` says so when they are
+not. The packet reports what it read in `passage_index`.
+`GRAPHICLE_PASSAGE_INDEX=0` makes every question take the full path,
+`GRAPHICLE_QUERY_FILE=0` makes it read the whole saved graph instead of the
+query file, and `GRAPHICLE_SAVED_GRAPH=0` makes it read the code graph from
+the store.
 
 ## Freshness
 

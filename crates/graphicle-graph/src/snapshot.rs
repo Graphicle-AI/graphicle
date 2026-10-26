@@ -68,6 +68,13 @@ impl Variant {
     }
 }
 
+/// The hash of the engine source this build was made from, which every
+/// snapshot it writes carries: a host that stores data derived from the
+/// engine's graphs can key it the same way.
+pub fn build_code() -> &'static str {
+    CODE
+}
+
 pub fn enabled() -> bool {
     !std::env::var("GRAPHICLE_QUERY_SNAPSHOT").is_ok_and(|v| {
         matches!(

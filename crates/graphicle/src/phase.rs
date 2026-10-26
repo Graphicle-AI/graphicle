@@ -85,6 +85,14 @@ pub fn phase<T>(name: &str, f: impl FnOnce() -> T) -> T {
     result
 }
 
+/// Log `name` as a marker with `detail` (what a stretch of code found, such
+/// as how much of a file it read) and no duration, when enabled.
+pub fn note(name: &str, detail: &str) {
+    if enabled() {
+        eprintln!("phase={name} ms=0 {detail}");
+    }
+}
+
 /// Log `name` as a phase that started at `started` (for a stretch of code
 /// that is not one closure), when enabled.
 pub fn since(name: &str, started: Instant) {

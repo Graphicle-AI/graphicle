@@ -64,6 +64,7 @@ mod product_workspace;
 mod project_identity;
 mod provider_http_hosts;
 mod query_code_graph_arm;
+mod query_file;
 mod query_graph_source;
 mod query_variants;
 mod receipts;

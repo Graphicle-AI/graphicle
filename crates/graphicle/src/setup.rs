@@ -221,7 +221,7 @@ pub fn setup_report(
     })?;
     let repository = s(&synced, "repository_id").to_string();
     synced["graph"] = crate::phase::phase("setup_graph", || {
-        local::build_graph(store, &session, &repository, true)
+        local::sync_graph(store, &session, &repository, true)
     })?;
     let project = store.resolve_project(
         &session.workspace,
@@ -439,7 +439,7 @@ pub fn setup_report(
         })?;
         project_report["files"] = resynced["files"].clone();
         project_report["graph"] = crate::phase::phase("setup_resync_graph", || {
-            local::build_graph(store, &session, &repository, true)
+            local::sync_graph(store, &session, &repository, true)
         })?;
         project_report["symbols"] = json!(local::code_symbols(store, &session, &repository));
     }
