@@ -50,9 +50,9 @@
 
 ## Agent memory, compared
 
-In our October comparison with seven memory systems, Graphicle matched Hindsight's accuracy and beat Mem0's on LoCoMo-10, and made 12 model calls per conversation while ingesting it, against Hindsight's 160 and Mem0's 332. Labels: development sets; one open model (Qwen3.8-27B) as every system's reader, judge and model; a pre-release build of Graphicle.
+In our October comparison with seven memory systems, Graphicle matched Hindsight's accuracy and beat Mem0's on LoCoMo-10, and while ingesting made about 12 model calls per conversation, against about 160 for Hindsight and 332 for Mem0 (estimates per conversation; each system's total is exact). Labels: development sets; one open model (Qwen3.8-27B) as every system's reader, judge and model; a pre-release build of Graphicle.
 
-| System | LoCoMo-10 accuracy, points [95% CI] | Model calls per conversation, ingesting | Prompt tokens per conversation, ingesting |
+| System | LoCoMo-10 accuracy, points [95% CI] | Model calls per conversation, ingesting (estimate) | Prompt tokens per conversation, ingesting (estimate) |
 |---|---|---|---|
 | **Graphicle** (pre-release build) | **87.7** [85.1, 90.2] | **12** | **43K** |
 | Hindsight 0.10.2, observations on | 87.3 [85.6, 89.1] | 160 | 1.14M |
