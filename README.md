@@ -30,7 +30,7 @@
 </p>
 
 <p align="center">
-  <a href="#quick-start">Quick start</a> · <a href="#how-it-works">How it works</a> · <a href="#benchmarks">Benchmarks</a> · <a href="docs/quickstart.md">Docs</a> · <a href="docs/migrate-from-graphify.md">Coming from Graphify?</a> · <a href="https://github.com/graphicle-ai/graphicle/discussions">Discussions</a>
+  <a href="#quick-start">Quick start</a> · <a href="#how-it-works">How it works</a> · <a href="#benchmarks">Benchmarks</a> · <a href="#agent-memory-compared">Memory, compared</a> · <a href="docs/quickstart.md">Docs</a> · <a href="docs/migrate-from-graphify.md">Coming from Graphify?</a> · <a href="https://github.com/graphicle-ai/graphicle/discussions">Discussions</a>
 </p>
 
 <p align="center">
@@ -47,6 +47,23 @@
   </picture>
   <br><sub>Graphicle 0.1.8 against 0.1.7 on kubernetes (a shallow clone at <code>ca8a2a9e4</code>), the 22 questions of <a href="https://github.com/graphicle-ai/graphicle/issues/8">issue #8</a>, our Linux server: a median of 1.34 s per <code>graphicle context</code> call on 16 cores, against 2.99 s, each call a new process. <a href="docs/benchmarks.md#our-own-run-on-kubernetes-017-and-018">Method and every row</a></sub>
 </p>
+
+## Agent memory, compared
+
+In our October comparison with seven memory systems, Graphicle matched Hindsight's accuracy and beat Mem0's on LoCoMo-10, and made 12 model calls per conversation while ingesting it, against Hindsight's 160 and Mem0's 332. Labels: development sets; one open model (Qwen3.8-27B) as every system's reader, judge and model; a pre-release build of Graphicle.
+
+| System | LoCoMo-10 accuracy, points [95% CI] | Model calls per conversation, ingesting | Prompt tokens per conversation, ingesting |
+|---|---|---|---|
+| **Graphicle** (pre-release build) | **87.7** [85.1, 90.2] | **12** | **43K** |
+| Hindsight 0.10.2, observations on | 87.3 [85.6, 89.1] | 160 | 1.14M |
+| Mem0 OSS 2.2.1 | 81.9 [79.6, 84.4] | 332 | 3.18M |
+| MemMachine 0.4.0 | 79.6 [77.3, 82.0] | 23 | 140K |
+| Honcho 3.2.2 | 79.2 [76.2, 82.2] | 221 | 1.25M |
+| Cognee 1.6.3 | 69.5 [67.3, 71.2] | 206 | 291K |
+| Graphiti (graphiti-core 0.30.2) | 46.5 [44.0, 48.9] | 1,363 | 4.52M |
+| Mastra Observational Memory 1.36.0 | 38.6 [33.6, 43.1] | 22, and 1 per question | 356K |
+
+On the two other development sets, LME-84 and BEAM-100K, Graphicle trailed none of the systems it was compared with. [Every score, with its method and caveats](docs/benchmarks.md#agent-memory-comparison-with-seven-memory-systems).
 
 ## Quick start
 
