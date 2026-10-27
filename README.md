@@ -15,6 +15,15 @@
 </p>
 
 <p align="center">
+  <a href="https://www.producthunt.com/products/graphicle?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-graphicle">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1294027&amp;theme=dark">
+      <img alt="Graphicle on Product Hunt" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1294027&amp;theme=light" width="250" height="54">
+    </picture>
+  </a>
+</p>
+
+<p align="center">
   Graphicle maps your repository into a code graph, remembers your project's docs, decisions and past agent sessions,
   and gives your coding agent cited excerpts from both: the exact files and lines. It runs on your machine: no API key needed, no account, <a href="#privacy-and-local-first">no telemetry</a>.<br>
   <sub>Works with Claude Code · Cursor · Codex · VS Code · Claude Desktop · any MCP client</sub>
