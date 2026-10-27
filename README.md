@@ -65,6 +65,8 @@ In our October comparison with seven memory systems, Graphicle matched the accur
 
 On the two other development sets, LME-84 and BEAM-100K, Graphicle trailed none of the systems it was compared with. [Every score, with its method and caveats](docs/benchmarks.md#agent-memory-comparison-with-seven-memory-systems).
 
+Earlier, on 8 October, a pre-release build also ran three published protocols on GPT models. Under Mem0's own LoCoMo protocol (its prompts, GPT-5 as reader and judge), it scored 93.5%, against 91.6% in Mem0's published result files (paired difference +1.95 points [+0.55, +3.55]). On LongMemEval-S under the same protocol it scored 92.6%, against Mem0's 93.4%. Against Hindsight's published contexts, it tied with a GPT-5.4 reader (LoCoMo 90.4 vs 90.6, LongMemEval-S 94.6 vs 93.4) and with a GPT-4.1-mini reader on LoCoMo (86.4 vs 87.5), and trailed with GPT-4.1-mini on LongMemEval-S (85.8 vs 89.2). [Every GPT run, with its labels](docs/benchmarks.md#agent-memory-with-gpt-models-the-8-october-runs).
+
 ## Quick start
 
 ```sh

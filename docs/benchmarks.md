@@ -1130,6 +1130,59 @@ decision rule.
   them ended at their output limit. It made no embedding calls to the model
   servers, because it embeds in its own process.
 
+## Agent memory with GPT models: the 8 October runs
+
+Before the comparison above, on 8 October 2026, a pre-release build of Graphicle answered LoCoMo (1,540 questions) and LongMemEval-S (500 questions) through three published protocols, on Azure OpenAI models, as memory vendors publish their results:
+
+- **mem0:** Mem0's published prompts, with GPT-5 (2025-08-07) as reader and judge.
+- **gpt54-common:** the Omni prompts, with GPT-5.4 (2026-03-05, medium reasoning) as reader and GPT-4o (2024-11-20) as judge. This is not an exact replication of Zep's setup.
+- **omni-adapted:** the published Omni prompts, with GPT-4.1-mini (2025-04-14) as reader and GPT-4o (2024-11-20) as judge, in place of the unavailable GPT-4o-mini.
+
+Labels for every number in this section:
+
+- **The build.** A pre-release build of Graphicle, whose memory notes were written by GPT-4.1-mini. `graphicle` is its retrieval alone, `graphicle_observer` adds the notes, and `plain` is a baseline without Graphicle.
+- **The other rows are not fresh runs.** `hindsight_replay` and `amb_hybrid_replay` are fresh answers from the published, unchanged retrieval contexts of Hindsight's and the Agent Memory Benchmark's runs. The Mem0 figures are Mem0's own published result files: merged outputs, not a fresh run of the managed service.
+- **Missing notes.** When the answers were scored, notes were missing for 142 of the 500 LongMemEval histories and for 1 of the 10 LoCoMo conversations. Every question stayed in the denominator, and a failure scored 0.
+- **Intervals and gold labels.** LoCoMo intervals resample its ten conversations. About 6.4% of LoCoMo's gold answers are wrong (an independent audit), which caps a fully correct system near 93.6%.
+
+| Dataset | Protocol | Memory or context | Correct | Accuracy [95% interval] | Reader or judge errors | Context tokens, mean |
+| --- | --- | --- | ---: | --- | ---: | ---: |
+| LoCoMo | gpt54-common | graphicle_observer | 1,392 / 1,540 | 90.39% [88.9, 91.8] | 0 | 13,232 |
+| LoCoMo | gpt54-common | hindsight_replay | 1,395 / 1,540 | 90.58% [88.3, 92.6] | 2 | 35,604 |
+| LoCoMo | mem0 | graphicle | 1,413 / 1,540 | 91.75% [89.8, 93.8] | 9 | 6,208 |
+| LoCoMo | mem0 | graphicle_observer | 1,440 / 1,540 | 93.51% [92.0, 94.8] | 11 | 12,661 |
+| LoCoMo | mem0 | plain | 1,382 / 1,540 | 89.74% [87.9, 91.7] | 7 | 6,233 |
+| LoCoMo | omni-adapted | amb_hybrid_replay | 1,201 / 1,540 | 77.99% [75.2, 80.6] | 0 | 21,727 |
+| LoCoMo | omni-adapted | graphicle | 1,330 / 1,540 | 86.36% [85.0, 87.8] | 0 | 6,408 |
+| LoCoMo | omni-adapted | graphicle_observer | 1,330 / 1,540 | 86.36% [83.4, 89.2] | 0 | 13,232 |
+| LoCoMo | omni-adapted | hindsight_replay | 1,347 / 1,540 | 87.47% [85.8, 89.0] | 0 | 35,604 |
+| LoCoMo | omni-adapted | plain | 1,284 / 1,540 | 83.38% [82.1, 84.6] | 0 | 6,429 |
+| LongMemEval-S | gpt54-common | graphicle_observer | 473 / 500 | 94.60% [92.3, 96.3] | 0 | 25,242 |
+| LongMemEval-S | gpt54-common | hindsight_replay | 467 / 500 | 93.40% [90.9, 95.3] | 1 | 43,125 |
+| LongMemEval-S | mem0 | graphicle | 411 / 500 | 82.20% [78.6, 85.3] | 1 | 5,771 |
+| LongMemEval-S | mem0 | graphicle_observer | 463 / 500 | 92.60% [90.0, 94.6] | 1 | 24,176 |
+| LongMemEval-S | mem0 | plain | 385 / 500 | 77.00% [73.1, 80.5] | 0 | 5,806 |
+| LongMemEval-S | omni-adapted | amb_hybrid_replay | 385 / 500 | 77.00% [73.1, 80.5] | 0 | 22,907 |
+| LongMemEval-S | omni-adapted | graphicle | 386 / 500 | 77.20% [73.3, 80.7] | 0 | 5,997 |
+| LongMemEval-S | omni-adapted | graphicle_observer | 429 / 500 | 85.80% [82.5, 88.6] | 0 | 25,242 |
+| LongMemEval-S | omni-adapted | hindsight_replay | 446 / 500 | 89.20% [86.2, 91.6] | 0 | 43,125 |
+| LongMemEval-S | omni-adapted | plain | 380 / 500 | 76.00% [72.1, 79.5] | 0 | 6,035 |
+
+Paired differences, candidate minus control:
+
+| Dataset | Protocol | Comparison | Difference | Paired 95% interval |
+| --- | --- | --- | ---: | --- |
+| LongMemEval-S | omni-adapted | graphicle_observer vs hindsight_replay | -3.40 points | [-6.60, -0.20] |
+| LongMemEval-S | gpt54-common | graphicle_observer vs hindsight_replay | +1.20 points | [-0.80, +3.20] |
+| LoCoMo | omni-adapted | graphicle_observer vs hindsight_replay | -1.10 points | [-3.80, +1.79] |
+| LoCoMo | gpt54-common | graphicle_observer vs hindsight_replay | -0.19 points | [-1.28, +0.83] |
+| LoCoMo | mem0 | graphicle_observer vs Mem0's published files | +1.95 points | [+0.55, +3.55] |
+| LoCoMo | mem0 | graphicle vs Mem0's published files | +0.19 points | [-1.27, +1.88] |
+
+Mem0's published files score 1,410 of 1,540 (91.56%) on LoCoMo and 467 of 500 (93.4%) on LongMemEval-S under the mem0 protocol. These differ from the headlines in Mem0's README. No paired interval was computed for LongMemEval-S.
+
+A citation audit checked the notes' quoted byte spans against the source files: 3,894 spans on LoCoMo and 507,874 on LongMemEval, with 0 integrity errors. It checks that each quote is exact, not that each note is complete or correct.
+
 ## Agent memory: how the retrieval defaults were chosen
 
 Model-free retrieval runs chose the defaults. They ask whether the evidence
