@@ -68,12 +68,21 @@ yanked = "warn"
 # read its members in memory. zip 9 fixes them, but calamine 0.36.1, the latest
 # release, requires zip ^8.6 (its main branch already uses zip 9.0, unreleased).
 # Remove these three ignores, and move to zip 9, when calamine releases with it.
+# Also ignored: three advisories in zstd 0.13.3 and zstd-safe 7.3.0, which only
+# jieba-rs 0.11.0 (Chinese word splitting) brings in, through include-flate 0.3.4
+# (zstd ^0.13.3). Both are their latest releases; the fixes are in zstd 0.14.3
+# and zstd-safe 8.2.0. include-flate only unpacks jieba-rs's own dictionaries,
+# built into the program, each with a new zstd::stream::read::Decoder. Remove
+# these three when jieba-rs or include-flate moves to zstd 0.14.3 or later.
 # The other entries are "unmaintained" notices for transitive crates with no
 # known vulnerability and no maintained drop-in:
 ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip 8.6.0 (engine, program, calamine): SUID/SGID bits kept by ZipArchive::extract; archives are only read in memory, never extracted" },
     { id = "RUSTSEC-2026-0368", reason = "zip 8.6.0 (engine, program, calamine): symbolic links created by ZipArchive::extract; archives are only read in memory, never extracted" },
     { id = "RUSTSEC-2026-0369", reason = "zip 8.6.0 (engine, program, calamine): permissions applied through symbolic links by extract(); archives are only read in memory, never extracted" },
+    { id = "RUSTSEC-2026-0391", reason = "zstd 0.13.3 via jieba-rs -> include-flate: affects the stream with_context constructors, which include-flate never calls (a new decoder per dictionary)" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7.3.0 via jieba-rs -> include-flate: affects Seekable::decompress, which needs the seekable feature; it is off" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7.3.0 via jieba-rs -> include-flate: affects stream::write::Decoder; include-flate reads with stream::read::Decoder, which the advisory lists as not affected" },
     { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build time only) via neo4rs -> nav-types -> nalgebra -> simba" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser via pdf-extract -> lopdf; font tables are parsed only from local PDFs" },
     { id = "RUSTSEC-2025-0075", reason = "unic-char-range via rustpython-parser (Python literal parsing); no vulnerability" },
