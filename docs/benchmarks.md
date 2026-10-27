@@ -1130,9 +1130,9 @@ decision rule.
   them ended at their output limit. It made no embedding calls to the model
   servers, because it embeds in its own process.
 
-## Agent memory with GPT models: the 8 October runs
+## Agent memory with GPT models: early pre-release runs
 
-Before the comparison above, on 8 October 2026, a pre-release build of Graphicle answered LoCoMo (1,540 questions) and LongMemEval-S (500 questions) through three published protocols, on Azure OpenAI models, as memory vendors publish their results:
+Before the comparison above, in early pre-release evaluations on 8 October 2026, a pre-release build of Graphicle answered LoCoMo (1,540 questions) and LongMemEval-S (500 questions) through three published protocols, on Azure OpenAI models, as memory vendors publish their results:
 
 - **mem0:** Mem0's published prompts, with GPT-5 (2025-08-07) as reader and judge.
 - **gpt54-common:** the Omni prompts, with GPT-5.4 (2026-03-05, medium reasoning) as reader and GPT-4o (2024-11-20) as judge. This is not an exact replication of Zep's setup.
