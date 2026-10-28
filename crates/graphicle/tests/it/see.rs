@@ -9,6 +9,8 @@
 //! acknowledged one goes back on the next request; the run's cap and the
 //! step cap stop a run before the call that would pass them; a profile
 //! without a price is refused.
+// The fake driver is a shell script, so these tests run on Unix only.
+#![cfg(unix)]
 use axum::{Json, Router, extract::State, http::StatusCode, routing::post};
 use serde_json::{Value, json};
 use std::{
