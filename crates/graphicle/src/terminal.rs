@@ -1833,7 +1833,7 @@ pub fn repair_entry(store: &Store, check: &EntryCheck) -> Result<Value> {
             },
             crate::agent_setup::Policy {
                 refresh_ours: true,
-                drop_guards: false,
+                ..Default::default()
             },
         );
     }
@@ -1862,7 +1862,7 @@ pub fn repair_entry(store: &Store, check: &EntryCheck) -> Result<Value> {
             },
             crate::agent_setup::Policy {
                 refresh_ours: true,
-                drop_guards: false,
+                ..Default::default()
             },
         );
     }
@@ -2228,8 +2228,18 @@ pub const ANTHROPIC_MODEL: &str = "claude-opus-5-5";
 pub const OPENAI_MODEL: &str = "gpt-5-mini";
 /// The Ollama model `config set model ollama` chooses when none is pulled.
 pub const OLLAMA_MODEL: &str = "qwen3:4b";
+/// The Muse Spark model `config set model meta` chooses (Meta Model API).
+/// Never a `-contributor` model: that tier lets Meta train on the data.
+pub const META_MODEL: &str = "muse-spark-1.3";
+/// The Meta Model API's OpenAI-compatible address.
+pub const META_BASE_URL: &str = "https://api.meta.ai/v1";
+/// Muse Spark's context window holds the input and the output together.
+pub const META_WINDOW: usize = 1_048_576;
+/// The output limit of the `meta` profile: Muse Spark always reasons, and
+/// its reasoning counts in the output.
+pub const META_OUTPUT_LIMIT: usize = 32_000;
 /// The providers `config set model` knows.
-pub const PROVIDERS: &[&str] = &["anthropic", "openai", "ollama"];
+pub const PROVIDERS: &[&str] = &["anthropic", "openai", "ollama", "meta", "compatible"];
 
 /// An answer model `setup` can offer: what is configured in this
 /// environment, best first.
@@ -2514,9 +2524,40 @@ pub fn model_profile_at(
             }
             profile
         }
+        // Muse Spark or Muse Wonder through the Meta Model API: the Responses
+        // API (where a prompt cache retention of 24 hours can be asked for),
+        // the key in MODEL_API_KEY, reasoning effort medium ("none" is
+        // refused).
+        "meta" => {
+            if model.is_some_and(|m| m.ends_with("-contributor")) {
+                return Err(Error::bad(
+                    "A -contributor model lets Meta train on what you send; set it in the configuration file yourself if you mean to",
+                ));
+            }
+            json!({"protocol":"responses","base_url":url.unwrap_or(META_BASE_URL),
+            "model":model.unwrap_or(META_MODEL),"key_env":key_env.unwrap_or("MODEL_API_KEY"),
+            "input_limit":META_WINDOW - META_OUTPUT_LIMIT,"output_limit":META_OUTPUT_LIMIT,
+            "reasoning_effort":"medium"})
+        }
+        // Any OpenAI-compatible chat server: Muse Spark Open on vLLM or
+        // SGLang, or a hosted endpoint.
+        "compatible" => {
+            let url = url.ok_or_else(|| {
+                Error::bad("compatible needs --url, the server's OpenAI-compatible address (for example http://127.0.0.1:8000/v1)")
+            })?;
+            let model = model.ok_or_else(|| {
+                Error::bad("compatible needs the served model's name: compatible:MODEL")
+            })?;
+            let mut profile = json!({"protocol":"chat","base_url":url,"model":model,
+                "input_limit":128000,"output_limit":16000});
+            if let Some(key) = key_env {
+                profile["key_env"] = json!(key);
+            }
+            profile
+        }
         _ => {
             return Err(Error::bad(format!(
-                "Unknown model provider {provider:?}: choose anthropic, openai or ollama, optionally with a model (anthropic:MODEL, ollama:llama3.2)"
+                "Unknown model provider {provider:?}: choose anthropic, openai, ollama, meta or compatible, optionally with a model (anthropic:MODEL, ollama:llama3.2)"
             )));
         }
     })
@@ -2649,7 +2690,7 @@ pub fn set_answer_model(
         .map_or((spec, None), |(provider, model)| (provider, Some(model)));
     if !PROVIDERS.contains(&provider) {
         return Err(Error::bad(format!(
-            "Unknown model provider {provider:?}: choose anthropic, openai or ollama, optionally with a model (ollama:llama3.2), or none"
+            "Unknown model provider {provider:?}: choose anthropic, openai, ollama, meta or compatible, optionally with a model (ollama:llama3.2), or none"
         )));
     }
     let profile = model_profile(provider, model.or(named), key_env, url)?;
@@ -2926,7 +2967,7 @@ pub fn config_show_text(value: &Value, style: Style) -> String {
         );
     }
     out.push_str(
-        "\nChange the answer model:  graphicle config set model anthropic|openai|ollama[:MODEL]\n",
+        "\nChange the answer model:  graphicle config set model anthropic|openai|ollama|meta[:MODEL]\n",
     );
     out.push_str("Change a setting:         graphicle config set KEY VALUE (graphicle config example lists them)");
     out
@@ -2947,8 +2988,10 @@ pub enum ConfigAction {
     /// such as `models.anthropic.model`.
     Get { key: String },
     /// Change one setting. `model VALUE` sets the answer model: anthropic,
-    /// openai or ollama, optionally with a model (`ollama:llama3.2`), or
-    /// none. Other keys are dotted paths in the file; VALUE is JSON or text.
+    /// openai, ollama, meta (Muse Spark; meta:muse-wonder-1.0 for Muse
+    /// Wonder) or compatible (with --url),
+    /// optionally with a model (`ollama:llama3.2`), or none. Other keys are
+    /// dotted paths in the file; VALUE is JSON or text.
     Set {
         key: String,
         value: String,
@@ -3578,7 +3621,7 @@ pub fn job_failure(job: &Value, model: Option<&ModelState>) -> String {
         format!(
             "The evidence for this question does not fit the model's input limit ({} tokens). Raise it with `graphicle config set models.{profile}.input_limit {}`, or ask a narrower question.",
             count(limit as u64),
-            (limit * 2).min(128_000)
+            (limit * 2).min(crate::model::MAX_INPUT_LIMIT)
         )
     } else if error.contains("max_output_tokens") {
         let (limit, profile) = model.map_or((2048, "NAME".to_string()), |m| {
@@ -5718,8 +5761,40 @@ args = ["-y", "thing"]
         assert_eq!(ollama["protocol"], "ollama");
         assert!(ollama.get("key_env").is_none());
         assert!(model_profile("gemini", None, None, None).is_err());
+        // Muse Spark through the Meta Model API, never a -contributor model.
+        let meta = model_profile("meta", None, None, None).unwrap();
+        assert_eq!(meta["protocol"], "responses");
+        assert_eq!(meta["base_url"], "https://api.meta.ai/v1");
+        assert_eq!(meta["model"], META_MODEL);
+        assert_eq!(meta["key_env"], "MODEL_API_KEY");
+        assert_eq!(meta["input_limit"], META_WINDOW - META_OUTPUT_LIMIT);
+        assert_eq!(meta["reasoning_effort"], "medium");
+        assert!(meta.get("extra_body").is_none());
+        assert!(meta.get("price").is_none());
+        assert!(model_profile("meta", Some("muse-spark-1.2-contributor"), None, None).is_err());
+        assert!(model_profile("meta", Some("muse-spark-1.3-contributor"), None, None).is_err());
+        assert_eq!(
+            model_profile("meta", Some("muse-spark-1.2"), None, None).unwrap()["model"],
+            "muse-spark-1.2"
+        );
+        assert_eq!(
+            model_profile("meta", Some("muse-wonder-1.0"), None, None).unwrap()["model"],
+            "muse-wonder-1.0"
+        );
+        // Any OpenAI-compatible server, by its address and model.
+        assert!(model_profile("compatible", Some("m"), None, None).is_err());
+        assert!(model_profile("compatible", None, None, Some("http://127.0.0.1:8000/v1")).is_err());
+        let compatible = model_profile(
+            "compatible",
+            Some("muse-spark-open"),
+            None,
+            Some("http://127.0.0.1:8000/v1"),
+        )
+        .unwrap();
+        assert_eq!(compatible["protocol"], "chat");
+        assert!(compatible.get("key_env").is_none());
         // Each profile is valid as Graphicle reads it.
-        for profile in [anthropic, openai, ollama] {
+        for profile in [anthropic, openai, ollama, meta, compatible] {
             let config: model::Config =
                 serde_json::from_value(json!({"default_model":"m","models":{"m":profile}}))
                     .unwrap();

@@ -1,6 +1,6 @@
 [package]
 name = "graphicle-runtime"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 rust-version = "1.94.1"
 publish = false
@@ -20,7 +20,7 @@ test = false
 # This crate builds the Core edition. Another edition depends on it and adds
 # its features through the extension registry (src/extension.rs).
 [features]
-local-inference = ["dep:ort", "dep:tokenizers"]
+local-inference = ["dep:ort"]
 
 [dependencies]
 graphicle-memory = { path = "../graphicle-memory" }
@@ -47,7 +47,9 @@ rand = "0.8"
 sha2 = "0.10"
 sha1 = "0.10"
 ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["std", "load-dynamic"] }
-tokenizers = { version = "=0.22.2", optional = true, default-features = false, features = ["fancy-regex"] }
+# Exact token counts for `graphicle pack --tokenizer`, in every build: pure Rust
+# (fancy-regex; no onig, no esaxx C++).
+tokenizers = { version = "=0.22.2", default-features = false, features = ["fancy-regex"] }
 quick-xml = "0.41"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 calamine = "0.36"

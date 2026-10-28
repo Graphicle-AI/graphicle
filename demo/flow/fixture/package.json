@@ -1,0 +1,9 @@
+{
+  "name": "sketch-fixture",
+  "private": true,
+  "type": "module",
+  "description": "A small app with a planted bug, for Graphicle's flow on the mock: the main menu does not close on a press outside it.",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

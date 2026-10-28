@@ -1,0 +1,21 @@
+body { margin: 0; font: 16px/1.4 system-ui, sans-serif; color: #1b1b1f; }
+.canvas {
+  position: fixed; inset: 0; background-color: #fbfbfd;
+  background-image: radial-gradient(#d4d4dc 1px, transparent 1px); background-size: 24px 24px;
+}
+.toolbar { position: fixed; top: 16px; left: 16px; display: flex; align-items: center; gap: 12px; }
+.menu-trigger {
+  width: 40px; height: 40px; border: 1px solid #c9c9d3; border-radius: 8px; background: #fff;
+  font-size: 20px; cursor: pointer;
+}
+.title { font-weight: 600; }
+.dropdown-menu {
+  position: fixed; top: 64px; left: 16px; width: 220px; padding: 6px; background: #fff;
+  border: 1px solid #c9c9d3; border-radius: 10px; box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+}
+.dropdown-menu[hidden] { display: none; }
+.menu-item {
+  display: block; width: 100%; height: 36px; padding: 0 10px; border: 0; border-radius: 6px;
+  background: none; text-align: left; font: inherit; cursor: pointer;
+}
+.menu-item:hover { background: #eef0ff; }

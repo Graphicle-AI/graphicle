@@ -1,6 +1,6 @@
 {
   "name": "@graphicle/sdk",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Graphicle project evidence, memory, graph and workflow client",
   "private": true,
   "type": "module",

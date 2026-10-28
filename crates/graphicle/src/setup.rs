@@ -207,6 +207,8 @@ pub fn setup_report(
 ) -> Result<Value> {
     let started = std::time::Instant::now();
     let data = data_folder(store)?;
+    // The exclude lines a read-only `.git` refuses are this run's alone.
+    agent_files::take_unexcluded();
 
     // 1. The project: the folder decides it, and its code graph is
     // built in the foreground.
@@ -286,6 +288,7 @@ pub fn setup_report(
                 agent_setup::Policy {
                     refresh_ours: true,
                     drop_guards: true,
+                    skip_unwritable_hooks: true,
                 },
             ) {
                 Ok(result) => client_report(client, &result),
@@ -355,6 +358,29 @@ pub fn setup_report(
         (switch, &connected),
         options,
     )?;
+    // The lines a read-only `.git` (Codex's sandbox) kept out of an exclude
+    // file: the files they cover show in `git status` until they are added.
+    let mut unexcluded: Vec<(PathBuf, String, Vec<String>)> = Vec::new();
+    for line in agent_files::take_unexcluded() {
+        match unexcluded
+            .iter_mut()
+            .find(|(file, _, _)| *file == line.file)
+        {
+            Some((_, _, patterns)) => patterns.push(line.pattern),
+            None => unexcluded.push((line.file, line.reason, vec![line.pattern])),
+        }
+    }
+    let git_exclude: Vec<Value> = unexcluded
+        .into_iter()
+        .map(|(file, reason, patterns)| {
+            let named: Vec<&str> = patterns.iter().map(String::as_str).collect();
+            let by_hand = format!(
+                "To keep setup's files out of Git, add {} to it, one per line",
+                crate::disconnect::listed(&named)
+            );
+            json!({"file":file,"state":"skipped","reason":reason,"lines":patterns,"by_hand":by_hand})
+        })
+        .collect();
 
     // 7. The answer model.
     let model = model_step(store, &session, config, options, ui);
@@ -473,6 +499,9 @@ pub fn setup_report(
     if !prompt_context.is_null() {
         report["prompt_context"] = prompt_context;
     }
+    if !git_exclude.is_empty() {
+        report["git_exclude"] = json!(git_exclude);
+    }
     Ok(report)
 }
 
@@ -570,22 +599,44 @@ fn client_report(client: &str, result: &Value) -> Value {
     let mut report = json!({"client":client,"name":agent_detect::name(client),"state":state,
         "file":result["configuration"],"entry":result["entry"],"project":result["project"]["id"],
         "tools":result["tools"]});
+    // Hooks whose file could not be written: why, and how to add them later.
+    let skipped = |hooks: &Value| {
+        let mut skipped =
+            json!({"file":hooks["configuration"],"state":"skipped","reason":hooks["reason"]});
+        if let Some(by_hand) = hooks.get("by_hand") {
+            skipped["by_hand"] = by_hand.clone();
+        }
+        skipped
+    };
     if let Some(hooks) = result.get("hooks") {
         let installed = hooks["installed"].as_array().map_or(0, Vec::len);
-        report["capture"] = json!({"file":hooks["configuration"],"installed":hooks["installed"],
-            "state":if installed > 0 { "added" } else { "already set" },"next":hooks["next"]});
+        report["capture"] = if hooks["state"] == "skipped" {
+            skipped(hooks)
+        } else {
+            json!({"file":hooks["configuration"],"installed":hooks["installed"],
+                "state":if installed > 0 { "added" } else { "already set" },"next":hooks["next"]})
+        };
     }
     // Claude Code's guard hooks (`--guards`), or those of an earlier setup
     // that this run removed.
-    if let Some(guard) = result["graph"]["guard_hooks"].as_object() {
-        report["guard"] = json!({"file":guard.get("configuration"),"installed":guard.get("installed"),
-            "state":guard_state(guard)});
+    let guard_hooks = &result["graph"]["guard_hooks"];
+    if let Some(guard) = guard_hooks.as_object() {
+        report["guard"] = if guard_hooks["state"] == "skipped" {
+            skipped(guard_hooks)
+        } else {
+            json!({"file":guard.get("configuration"),"installed":guard.get("installed"),
+                "state":guard_state(guard)})
+        };
     }
     if let Some(access) = result.get("access") {
         report["access"] = access.clone();
     }
     if let Some(note) = result.get("note") {
         report["note"] = note.clone();
+    }
+    // Muse Code: its plugin, or why its settings entry was written instead.
+    if let Some(plugin) = result.get("plugin") {
+        report["plugin"] = plugin.clone();
     }
     report
 }
@@ -612,17 +663,28 @@ fn capture_report(clients: &[Value], chosen: &[&str], skipped: bool) -> Value {
         .iter()
         .filter(|client| client.get("capture").is_some())
         .map(|client| {
-            json!({"client":client["client"],"name":client["name"],"file":client["capture"]["file"],
-                "state":client["capture"]["state"]})
+            let capture = &client["capture"];
+            let mut hooked = json!({"client":client["client"],"name":client["name"],
+                "file":capture["file"],"state":capture["state"]});
+            for key in ["reason", "by_hand"] {
+                if let Some(value) = capture.get(key) {
+                    hooked[key] = value.clone();
+                }
+            }
+            hooked
         })
         .collect();
     if hooked.is_empty() {
-        let reason = if chosen.iter().any(|client| agent_setup::has_hooks(client)) {
+        let reason = if chosen.iter().any(|client| agent_setup::setup_hooks(client)) {
             "the connection failed"
         } else {
             "neither Claude Code nor Codex was connected"
         };
         return json!({"state":"skipped","reason":reason});
+    }
+    // Every hooks file refused (Claude Code's sandbox): each client says why.
+    if hooked.iter().all(|client| client["state"] == "skipped") {
+        return json!({"state":"skipped","reason":"no hooks file could be written","clients":hooked});
     }
     json!({"state":"on","clients":hooked,
         "what":"After each answer, the session's finished turns are stored as sources of this project (private spans dropped, credentials redacted); at session start the agent gets your reviewed memory. graphicle setup --no-capture skips this."})
@@ -775,9 +837,12 @@ fn write_instructions(
         agent_instructions::section()
     };
     let upserted = agent_instructions::upsert_section(&text, switch, &section);
-    if let Some(new) = upserted.text {
-        agent_files::backup_in(data, &target)?;
-        agent_files::write(&target, native(new, crlf).as_bytes(), 0o644)?;
+    if let Some(new) = upserted.text
+        && let Err(reason) = backup_and_write(data, &target, |path| {
+            agent_files::write(path, native(new, crlf).as_bytes(), 0o644)
+        })
+    {
+        return Ok(json!({"file":target,"state":"skipped","reason":reason}));
     }
     agent_files::record(
         data,
@@ -801,8 +866,31 @@ fn write_instructions(
     Ok(report)
 }
 
+/// Back up `path` and write it with `write`. A file setup cannot write (in
+/// Claude Code's sandbox, or a read-only folder) is skipped, not fatal: the
+/// error is the reason, which names the OS error.
+fn backup_and_write(
+    data: &Path,
+    path: &Path,
+    write: impl FnOnce(&Path) -> Result<()>,
+) -> std::result::Result<(), String> {
+    agent_files::backup_in(data, path)
+        .and_then(|_| write(path))
+        .map_err(|error| agent_files::write_failure(&error).unwrap_or(error.message))
+}
+
+/// The line to add by hand to each of `hooks`, in the hooks folder.
+fn hooks_by_hand(data: &Path, folder: &Path, hooks: &[&str]) -> String {
+    format!(
+        "Add this line to {} in that folder: {}",
+        crate::disconnect::listed(hooks),
+        git_hooks::manual_line(folder, data_argument(data))
+    )
+}
+
 /// Step 5: the freshness block in the repository's post-commit,
-/// post-merge and post-checkout hooks.
+/// post-merge and post-checkout hooks. A hook that cannot be written is
+/// skipped with its reason, and the step gives the line to add by hand.
 fn git_hooks_step(
     data: &Path,
     folder: &Path,
@@ -813,8 +901,7 @@ fn git_hooks_step(
         Ok(dir) => dir.clone(),
         Err(reason) => {
             return Ok(json!({"state":"skipped","reason":reason,
-                "by_hand":format!("Add this line to post-commit, post-merge and post-checkout in that folder: {}",
-                    git_hooks::manual_line(folder, data_argument(data)))}));
+                "by_hand":hooks_by_hand(data, folder, &git_hooks::HOOKS)}));
         }
     };
     let block = git_hooks::block(
@@ -824,6 +911,7 @@ fn git_hooks_step(
         data_argument(data),
     )?;
     let mut hooks = Vec::new();
+    let mut unwritten = Vec::new();
     for name in git_hooks::HOOKS {
         let path = hooks_dir.join(name);
         if path.is_symlink() {
@@ -850,8 +938,13 @@ fn git_hooks_step(
         };
         let mut entry = match git_hooks::upsert(text.as_deref(), &block, folder) {
             git_hooks::Upserted::Changed(new, state) => {
-                agent_files::backup_in(data, &path)?;
-                agent_files::write(&path, native(new, crlf).as_bytes(), 0o755)?;
+                if let Err(reason) = backup_and_write(data, &path, |path| {
+                    agent_files::write(path, native(new, crlf).as_bytes(), 0o755)
+                }) {
+                    hooks.push(json!({"hook":name,"file":path,"state":"skipped","reason":reason}));
+                    unwritten.push(name);
+                    continue;
+                }
                 json!({"hook":name,"file":path,"state":state})
             }
             git_hooks::Upserted::Unchanged => {
@@ -885,12 +978,21 @@ fn git_hooks_step(
     let changed = hooks
         .iter()
         .any(|hook| matches!(hook["state"].as_str(), Some("added" | "updated")));
-    let all_set = hooks.iter().all(|hook| hook["state"] == "already set");
-    Ok(
-        json!({"state":if changed { "added" } else if all_set { "already set" } else { "partly set" },
-        "directory":hooks_dir,"hooks":hooks,
-        "what":"After commits, merges and checkouts, Graphicle syncs this folder in the background"}),
-    )
+    let state = if changed {
+        "added"
+    } else if hooks.iter().all(|hook| hook["state"] == "already set") {
+        "already set"
+    } else if hooks.iter().all(|hook| hook["state"] == "skipped") {
+        "skipped"
+    } else {
+        "partly set"
+    };
+    let mut report = json!({"state":state,"directory":hooks_dir,"hooks":hooks,
+        "what":"After commits, merges and checkouts, Graphicle syncs this folder in the background"});
+    if !unwritten.is_empty() {
+        report["by_hand"] = json!(hooks_by_hand(data, folder, &unwritten));
+    }
+    Ok(report)
 }
 
 #[cfg(unix)]
@@ -1043,13 +1145,19 @@ fn graphify_step(
                 "state":"skipped","reason":"Graphicle's connection failed, so Graphify's entry stays"}));
             continue;
         }
-        let state = match &entry.group {
+        let removed = match &entry.group {
             Some(group) => remove_json_entry(data, owner, entry, group)?,
             None => remove_codex_entry(data, owner, entry)?,
         };
-        changed.push(
-            json!({"file":entry.file,"entry":entry.name,"client":entry.client,"state":state}),
-        );
+        let mut item = json!({"file":entry.file,"entry":entry.name,"client":entry.client});
+        match removed {
+            Ok(state) => item["state"] = json!(state),
+            Err(reason) => {
+                item["state"] = json!("skipped");
+                item["reason"] = json!(format!("{reason}, so Graphify's entry stays"));
+            }
+        }
+        changed.push(item);
     }
     if options.no_instructions && !graphify.sections.is_empty() {
         report["note"] =
@@ -1059,21 +1167,22 @@ fn graphify_step(
     Ok(report)
 }
 
-/// Remove Graphify's entry from a JSON client file, recording it.
+/// Remove Graphify's entry from a JSON client file, recording it; `Err`
+/// inside is why the file could not be written.
 fn remove_json_entry(
     data: &Path,
     (folder, project): (&Path, &str),
     entry: &agent_detect::GraphifyEntry,
     group: &str,
-) -> Result<&'static str> {
+) -> Result<std::result::Result<&'static str, String>> {
     let Some(mut document) = agent_detect::json_file(&entry.file) else {
-        return Ok("skipped");
+        return Ok(Ok("skipped"));
     };
     let Some(value) = document[group]
         .as_object_mut()
         .and_then(|servers| servers.shift_remove(&entry.name))
     else {
-        return Ok("skipped");
+        return Ok(Ok("skipped"));
     };
     // A group it was alone in goes with it.
     if document[group]
@@ -1088,8 +1197,11 @@ fn remove_json_entry(
     let edited = original
         .as_deref()
         .and_then(|text| crate::json_edit::remove(text, group, &entry.name));
-    agent_files::backup_in(data, &entry.file)?;
-    agent_files::write_json(&entry.file, original.as_deref(), edited, &document)?;
+    if let Err(reason) = backup_and_write(data, &entry.file, |path| {
+        agent_files::write_json(path, original.as_deref(), edited, &document)
+    }) {
+        return Ok(Err(reason));
+    }
     agent_files::record(
         data,
         Change {
@@ -1104,24 +1216,28 @@ fn remove_json_entry(
             ..Change::default()
         },
     )?;
-    Ok("removed")
+    Ok(Ok("removed"))
 }
 
-/// Remove Graphify's table from Codex's `config.toml`, recording it.
+/// Remove Graphify's table from Codex's `config.toml`, recording it; `Err`
+/// inside is why the file could not be written.
 fn remove_codex_entry(
     data: &Path,
     (folder, project): (&Path, &str),
     entry: &agent_detect::GraphifyEntry,
-) -> Result<&'static str> {
+) -> Result<std::result::Result<&'static str, String>> {
     let Ok(raw) = std::fs::read_to_string(&entry.file) else {
-        return Ok("skipped");
+        return Ok(Ok("skipped"));
     };
     let (text, crlf) = unix(&raw);
     let Some((new, removed, at)) = codex_config::remove(&text, &entry.name) else {
-        return Ok("skipped");
+        return Ok(Ok("skipped"));
     };
-    agent_files::backup_in(data, &entry.file)?;
-    agent_files::write(&entry.file, native(new, crlf).as_bytes(), 0o600)?;
+    if let Err(reason) = backup_and_write(data, &entry.file, |path| {
+        agent_files::write(path, native(new, crlf).as_bytes(), 0o600)
+    }) {
+        return Ok(Err(reason));
+    }
     agent_files::record(
         data,
         Change {
@@ -1135,7 +1251,7 @@ fn remove_codex_entry(
             ..Change::default()
         },
     )?;
-    Ok("removed")
+    Ok(Ok("removed"))
 }
 
 /// The summary's freshness (ux-fresh): the project's folder against its
@@ -1328,6 +1444,18 @@ pub fn render_setup(report: &Value) -> String {
             "  {label:<13} {:<15} {detail}",
             client["name"].as_str().unwrap_or_default()
         ));
+        // Muse Code: Graphicle's plugin, or why its settings got the entry.
+        match client["plugin"].as_str() {
+            Some(_) => line(format!(
+                "                {:<15} the graphicle plugin (server, skill, hooks): approve it once with muse plugins approve graphicle",
+                ""
+            )),
+            None => {
+                if let Some(reason) = client["plugin"]["reason"].as_str() {
+                    line(format!("                {:<15} no plugin: {reason}", ""));
+                }
+            }
+        }
     }
     // Each entry runs the one MCP server; Claude Code's, its five
     // essential tools unless --tools says otherwise.
@@ -1351,37 +1479,49 @@ pub fn render_setup(report: &Value) -> String {
             ));
         }
     }
-    let capture = &report["capture"];
-    match capture["state"].as_str() {
-        Some("on") => {
-            for (index, client) in capture["clients"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .enumerate()
-            {
-                let label = if index == 0 { "Capture" } else { "" };
-                line(format!(
-                    "  {label:<13} {:<15} {}: {}",
-                    client["name"].as_str().unwrap_or_default(),
-                    client["state"].as_str().unwrap_or_default(),
-                    show(&client["file"])
-                ));
-            }
-            line("                Finished turns become project sources; reviewed memory reaches the agent at session start (--no-capture skips this)".into());
-            if capture["clients"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .any(|client| client["client"] == "codex" && client["state"] == "added")
-            {
-                line("                Codex asks you to review and trust the new hooks before they run".into());
-            }
+    // A client's hooks: their state and file, and why a file that could not
+    // be written was skipped.
+    let hooks_detail = |hooks: &Value| -> String {
+        let detail = format!(
+            "{}: {}",
+            hooks["state"].as_str().unwrap_or_default(),
+            show(&hooks["file"])
+        );
+        match hooks["reason"].as_str() {
+            Some(reason) => format!("{detail}: {reason}"),
+            None => detail,
         }
-        _ => line(format!(
+    };
+    let capture = &report["capture"];
+    let hooked = capture["clients"].as_array().cloned().unwrap_or_default();
+    if hooked.is_empty() {
+        line(format!(
             "  Capture       off: {}",
             capture["reason"].as_str().unwrap_or_default()
-        )),
+        ));
+    }
+    for (index, client) in hooked.iter().enumerate() {
+        let label = if index == 0 { "Capture" } else { "" };
+        line(format!(
+            "  {label:<13} {:<15} {}",
+            client["name"].as_str().unwrap_or_default(),
+            hooks_detail(client)
+        ));
+        if let Some(by_hand) = client["by_hand"].as_str() {
+            line(format!("                {by_hand}"));
+        }
+    }
+    if capture["state"] == "on" {
+        line("                Finished turns become project sources; reviewed memory reaches the agent at session start (--no-capture skips this)".into());
+        if hooked
+            .iter()
+            .any(|client| client["client"] == "codex" && client["state"] == "added")
+        {
+            line(
+                "                Codex asks you to review and trust the new hooks before they run"
+                    .into(),
+            );
+        }
     }
     // Claude Code's guard hooks.
     let guarded: Vec<&Value> = clients
@@ -1391,16 +1531,23 @@ pub fn render_setup(report: &Value) -> String {
     for (index, client) in guarded.iter().enumerate() {
         let label = if index == 0 { "Graph guard" } else { "" };
         line(format!(
-            "  {label:<13} {:<15} {}: {}",
+            "  {label:<13} {:<15} {}",
             client["name"].as_str().unwrap_or_default(),
-            client["guard"]["state"].as_str().unwrap_or_default(),
-            show(&client["guard"]["file"])
+            hooks_detail(&client["guard"])
         ));
+        // The capture hooks' file and command are the same: given once.
+        if let Some(by_hand) = client["guard"]["by_hand"].as_str()
+            && client["capture"]["by_hand"].as_str() != Some(by_hand)
+        {
+            line(format!("                {by_hand}"));
+        }
     }
-    if guarded
-        .iter()
-        .any(|client| client["guard"]["state"] != "removed")
-    {
+    if guarded.iter().any(|client| {
+        !matches!(
+            client["guard"]["state"].as_str(),
+            Some("removed" | "skipped")
+        )
+    }) {
         line("                Before a search or a source read here, Claude Code is pointed to the graph tools".into());
     }
     if guarded
@@ -1470,20 +1617,32 @@ pub fn render_setup(report: &Value) -> String {
                 show(&git["directory"])
             ));
             for hook in hooks {
-                if let Some(text) = hook["reason"].as_str().or(hook["note"].as_str()) {
-                    line(format!("                {text}"));
+                if let Some(reason) = hook["reason"].as_str() {
+                    line(format!("                {}: {reason}", show(&hook["file"])));
+                } else if let Some(note) = hook["note"].as_str() {
+                    line(format!("                {note}"));
                 }
             }
         }
-        None => {
-            line(format!(
-                "  Git hooks     skipped: {}",
-                git["reason"].as_str().unwrap_or_default()
-            ));
-            if let Some(by_hand) = git["by_hand"].as_str() {
-                line(format!("                {by_hand}"));
-            }
-        }
+        None => line(format!(
+            "  Git hooks     skipped: {}",
+            git["reason"].as_str().unwrap_or_default()
+        )),
+    }
+    if let Some(by_hand) = git["by_hand"].as_str() {
+        line(format!("                {by_hand}"));
+    }
+    // An exclude file a read-only `.git` kept as it was.
+    for exclude in report["git_exclude"].as_array().into_iter().flatten() {
+        line(format!(
+            "  Git exclude   skipped: {}: {}",
+            show(&exclude["file"]),
+            exclude["reason"].as_str().unwrap_or_default()
+        ));
+        line(format!(
+            "                {}",
+            exclude["by_hand"].as_str().unwrap_or_default()
+        ));
     }
     let graphify = &report["graphify"];
     if !graphify.is_null() {
@@ -1493,6 +1652,11 @@ pub fn render_setup(report: &Value) -> String {
             line("  Graphify      found; left as it is".into());
             if let Some(next) = graphify["next"].as_str() {
                 line(format!("                {next}"));
+            }
+        }
+        for item in graphify["changed"].as_array().into_iter().flatten() {
+            if let Some(reason) = item["reason"].as_str() {
+                line(format!("                {}: {reason}", show(&item["file"])));
             }
         }
         for command in graphify["by_hand"].as_array().into_iter().flatten() {
@@ -1572,7 +1736,25 @@ pub fn render_setup(report: &Value) -> String {
         .as_array()
         .cloned()
         .unwrap_or_default();
-    if files.is_empty() {
+    // Not "already set" when a client failed or a file could not be written.
+    let not_writable = |list: &Value| {
+        list.as_array().into_iter().flatten().any(|item| {
+            item["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.starts_with("not writable"))
+        })
+    };
+    let undone = clients.iter().any(|client| {
+        client["state"] == "failed"
+            || client["capture"]["state"] == "skipped"
+            || client["guard"]["state"] == "skipped"
+    }) || git["by_hand"].is_string()
+        || report["git_exclude"].is_array()
+        || not_writable(&report["instructions"])
+        || not_writable(&report["graphify"]["changed"]);
+    if files.is_empty() && undone {
+        line("Nothing changed outside the data folder.".into());
+    } else if files.is_empty() {
         line("Nothing changed outside the data folder: everything was already set.".into());
     } else {
         line("Files changed outside the data folder (a file that existed is backed up once as <file>.graphicle-bak; graphicle disconnect undoes them):".into());
@@ -1652,6 +1834,7 @@ pub fn connect_found(store: &Store, options: &ConnectFound) -> Result<()> {
             agent_setup::Policy {
                 refresh_ours: true,
                 drop_guards: true,
+                ..Default::default()
             },
         ) {
             Ok(result) => connected.push(result),

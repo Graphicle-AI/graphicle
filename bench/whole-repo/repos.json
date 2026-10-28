@@ -1,0 +1,16 @@
+{
+  "snapshot_cutoff": "2026-09-14T00:00:00Z",
+  "merged_until": "2026-10-25T23:59:59Z",
+  "snapshot_rule": "S is the last commit on the default branch's first-parent line whose committer time is at or before snapshot_cutoff. Meta's model documentation (https://dev.meta.ai/docs/models, read 2026-10-26) states no knowledge cutoff for muse-spark-1.2, so the cutoff date applies unchanged.",
+  "selection_seed": 20261026,
+  "repos": [
+    {"name": "kubernetes", "slug": "kubernetes/kubernetes", "branch": "master", "role": "development", "target": 40},
+    {"name": "home-assistant", "slug": "home-assistant/core", "branch": "dev", "role": "development", "target": 40},
+    {"name": "pytorch", "slug": "pytorch/pytorch", "branch": "main", "role": "held-out", "target": 30},
+    {"name": "vscode", "slug": "microsoft/vscode", "branch": "main", "role": "held-out", "target": 30},
+    {"name": "elasticsearch", "slug": "elastic/elasticsearch", "branch": "main", "role": "held-out", "target": 30},
+    {"name": "angular", "slug": "angular/angular", "branch": "main", "role": "development", "target": 40},
+    {"name": "keycloak", "slug": "keycloak/keycloak", "branch": "main", "role": "development", "target": 40},
+    {"name": "godot", "slug": "godotengine/godot", "branch": "master", "role": "development", "target": 40}
+  ]
+}

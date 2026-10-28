@@ -66,6 +66,11 @@ pub struct Policy {
     /// when `--guards` is not asked for, so a second run leaves what the
     /// first one would have.
     pub drop_guards: bool,
+    /// Setup: a hooks file the file system refuses to write (Claude Code's
+    /// sandbox, a read-only folder) does not fail the connection. The
+    /// reply's hooks are `skipped`, with the reason and the `connect`
+    /// command that adds them later.
+    pub skip_unwritable_hooks: bool,
 }
 
 /// The connection `setup` and `connect` without a client make for `client`
@@ -88,7 +93,7 @@ pub fn default_connection<'a>(
         project: None,
         name: None,
         replace: false,
-        hooks: capture && has_hooks(client),
+        hooks: capture && setup_hooks(client),
         work_state: false,
         graph: true,
         allow_learning: false,
@@ -147,13 +152,26 @@ fn entry_tools(entry: &Value) -> ToolSet {
         .unwrap_or(ToolSet::All)
 }
 
-/// Whether `client` takes session-capture hooks.
+/// Whether `client` takes session-capture hooks: Muse Code's come in
+/// Graphicle's plugin ([`crate::muse_code`]).
 pub fn has_hooks(client: &str) -> bool {
+    matches!(client, "claude-code" | "codex" | "muse")
+}
+
+/// Whether setup gives `client` its capture hooks. Muse Code's plugin is
+/// opt-in (`connect muse --hooks`) until it has passed a live check with
+/// Muse Code: setup keeps Muse Code's settings entry as before.
+pub fn setup_hooks(client: &str) -> bool {
     matches!(client, "claude-code" | "codex")
 }
 
 /// Clients whose MCP file belongs to one folder (Claude Code's `.mcp.json`,
 /// VS Code's `.vscode/mcp.json`); the others hold one file per user.
+/// The object of Muse Code's settings that holds its MCP servers.
+pub const MUSE_GROUP: &str = "mcp_servers";
+/// The `schema_version` Muse Code's settings file must set.
+pub const MUSE_SCHEMA_VERSION: u64 = 1;
+
 fn project_scope(client: &str) -> bool {
     matches!(client, "claude-code" | "vscode")
 }
@@ -276,14 +294,14 @@ pub fn connect(store: &Store, options: &Connect<'_>) -> Result<Value> {
 /// when an existing entry of that name was replaced.
 pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Result<Value> {
     let client = options.client;
-    if !["claude", "claude-code", "cursor", "vscode", "codex"].contains(&client) {
+    if !["claude", "claude-code", "cursor", "vscode", "codex", "muse"].contains(&client) {
         return Err(Error::bad(
-            "Choose claude, claude-code, cursor, vscode or codex",
+            "Choose claude, claude-code, cursor, vscode, codex or muse",
         ));
     }
-    if options.hooks && !["claude-code", "codex"].contains(&client) {
+    if options.hooks && !has_hooks(client) {
         return Err(Error::bad(
-            "Session-capture hooks are available for claude-code and codex",
+            "Session-capture hooks are available for claude-code, codex and muse",
         ));
     }
     let session = local::session(store, false)?;
@@ -299,12 +317,37 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
     let program = stable_program()?;
     let directory = store.directory.canonical()?;
     let mut arguments: Vec<String> = Vec::new();
-    if local::default_data_dir().canonical().ok().as_deref() != Some(directory.as_path()) {
+    let custom_store =
+        local::default_data_dir().canonical().ok().as_deref() != Some(directory.as_path());
+    if custom_store {
         arguments.extend([
             "--data-dir".into(),
             directory.to_string_lossy().into_owned(),
         ]);
     }
+    // The `connect` command, run by hand in this folder, that adds the hooks
+    // (`guards`: with Claude Code's guard hooks) when setup could not write
+    // their file; none for a plan that only removed hooks.
+    let hooks_command = |guards: bool| -> Option<String> {
+        if !options.hooks && !guards {
+            return None;
+        }
+        let mut words = vec!["graphicle".to_string()];
+        if custom_store {
+            words.extend(["--data-dir".into(), quote(&directory.to_string_lossy())]);
+        }
+        words.extend(["connect".into(), client.to_string()]);
+        if options.hooks {
+            words.push("--hooks".into());
+        }
+        if guards {
+            words.push("--guards".into());
+        }
+        if let Some(tools) = options.tools {
+            words.extend(["--tools".into(), tools.name().into()]);
+        }
+        Some(words.join(" "))
+    };
     arguments.push("mcp".into());
     // A project-scope entry in this folder's own file follows the folder
     // when the folder decided: the project of the folder the client starts
@@ -475,7 +518,8 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
             result["unchanged"] = json!(true);
         } else {
             if let Some(config) = &config {
-                agent_files::backup_in(&directory, config)?;
+                agent_files::backup_in(&directory, config)
+                    .map_err(|error| agent_files::naming(config, error))?;
             }
             match crate::platform::command("codex")
                 .args(["mcp", "add", &entry, "--"])
@@ -498,7 +542,8 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
                     let Some(config) = &config else {
                         return Err(Error::bad("Home directory unavailable"));
                     };
-                    write_codex_table(config, &text, &entry, &command_text, &arguments)?;
+                    write_codex_table(config, &text, &entry, &command_text, &arguments)
+                        .map_err(|error| agent_files::naming(config, error))?;
                 }
                 Err(_) => {
                     return Err(Error::bad(
@@ -527,11 +572,78 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
             result["configuration"] = json!(config);
         }
         if let Some(plan) = hook_plan {
-            result["hooks"] =
-                write_hooks(plan, &directory, &folder, &project.id)?["capture"].take();
+            let file = plan.destination.clone();
+            result["hooks"] = match write_hooks(plan, &directory, &folder, &project.id)? {
+                Ok(mut written) => written["capture"].take(),
+                Err(reason) if policy.skip_unwritable_hooks => {
+                    hooks_skipped(&file, reason, hooks_command(false))
+                }
+                Err(reason) => return Err(unwritten(&file, &reason)),
+            };
         }
         if options.guards {
             result["graph"] = json!({"guard_hooks":"not available for codex: its hooks cannot add context before a tool call"});
+        }
+        return Ok(result);
+    }
+    // Muse Code with hooks: Graphicle's plugin carries the server, the skill
+    // and the hooks. Without the `muse` program, or when Muse Code refuses
+    // the plugin, the server's entry goes into its settings as before and
+    // the reply says why.
+    let mut plugin_skipped = None;
+    if client == "muse" && options.hooks && options.config_path.is_none() {
+        // The server's flags, as `connect` chose them (`--name` names a
+        // settings entry: the plugin's id is always `graphicle`).
+        let mut server: Vec<&str> = Vec::new();
+        if tools != ToolSet::All {
+            server.extend(["--tools", tools.name()]);
+        }
+        if learning {
+            server.push("--allow-learning");
+        }
+        if options.work_state {
+            server.push("--work-state");
+        }
+        match connect_muse_plugin(&directory, &program, &folder, &project.id, &server) {
+            Ok(mut plugin) => {
+                let next = format!(
+                    "Approve the plugin once with muse plugins approve {}, then start a new Muse Code session",
+                    crate::muse_code::PLUGIN_ID
+                );
+                let mut result = json!({"connected":true,"client":client,
+                    "configuration":plugin["package"].take(),"entry":crate::muse_code::PLUGIN_ID,
+                    "project":chosen,"access":access(learning),"tools":tools.name(),
+                    "plugin":plugin["state"].clone(),
+                    "hooks":{"configuration":plugin["manifest"].take(),"installed":plugin["hooks"].take(),"next":next},
+                    "next":next});
+                if plugin["state"] == "updated" {
+                    result["updated"] = json!(true);
+                }
+                if let Some(removed) = plugin.get_mut("replaced").map(Value::take) {
+                    result["replaced"] = removed;
+                }
+                return Ok(result);
+            }
+            Err(error) => plugin_skipped = Some(error.message),
+        }
+    }
+    // Muse Code with Graphicle's plugin installed: the plugin's server
+    // serves the project, so no settings entry is added beside it; the
+    // plugin's paths are kept current (after an upgrade moved the program).
+    if client == "muse"
+        && !options.hooks
+        && options.config_path.is_none()
+        && let Some(mut plugin) = refresh_muse_plugin(&directory, &program)?
+    {
+        let learned = plugin["learning"] == true;
+        let mut result = json!({"connected":true,"client":client,
+            "configuration":plugin["package"].take(),"entry":crate::muse_code::PLUGIN_ID,
+            "project":chosen,"access":access(learned),"tools":plugin["tools"].take(),
+            "plugin":plugin["state"].clone(),
+            "next":"Graphicle's Muse Code plugin serves this project; graphicle disconnect muse removes it"});
+        match plugin["state"].as_str() {
+            Some("current") => result["unchanged"] = json!(true),
+            _ => result["updated"] = json!(true),
         }
         return Ok(result);
     }
@@ -560,6 +672,7 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
                 }
             }
             "cursor" => user.join(".cursor/mcp.json"),
+            "muse" => user.join(".config/muse/settings.json"),
             "vscode" => options.cwd.join(".vscode/mcp.json"),
             _ => options.cwd.join(".mcp.json"),
         }
@@ -567,16 +680,24 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
     // The reply names the file as given; the record, absolutely.
     let recorded = std::path::absolute(&destination)?;
     let existed = destination.exists();
-    let group = if client == "vscode" {
-        "servers"
-    } else {
-        "mcpServers"
+    let group = match client {
+        "vscode" => "servers",
+        "muse" => MUSE_GROUP,
+        _ => "mcpServers",
     };
     let mut server = json!({"command":command,"args":arguments});
     let mut learned = json!({"command":command,"args":learned_arguments});
     if client == "vscode" {
         server["type"] = json!("stdio");
         learned["type"] = json!("stdio");
+    }
+    // Muse Code's servers name their transport; `optional` lets a session
+    // start, with a warning, while Graphicle is not installed.
+    if client == "muse" {
+        for entry in [&mut server, &mut learned] {
+            entry["transport"] = json!("stdio");
+            entry["mode"] = json!("optional");
+        }
     }
     // The entry to paste by hand when the file cannot be edited.
     let by_hand = |name: &str| -> String {
@@ -665,7 +786,8 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
         && !guards
         && read_config(&hook_file(client, options.cwd)?, "hook")
             .is_ok_and(|(document, _)| holds_guard_hooks(&document, client, &directory));
-    let hook_plan = if options.hooks || guards || drop_guards {
+    // Muse Code's hooks come only in its plugin (above).
+    let hook_plan = if (options.hooks && client != "muse") || guards || drop_guards {
         let mut plan = plan_hooks(
             client,
             &program,
@@ -691,16 +813,25 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
     } else {
         // Only Graphicle's entry changes in the file's text: its other
         // entries, formatting, comments and final newline stay.
-        let edited = original
+        let mut edited = original
             .as_deref()
             .and_then(|text| crate::json_edit::set(text, group, &entry, &server));
         document[group][&entry] = server.clone();
-        if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)?;
+        // Muse Code refuses a settings file without its schema version.
+        if client == "muse" && document.get("schema_version").is_none() {
+            document["schema_version"] = json!(MUSE_SCHEMA_VERSION);
+            edited = None;
         }
-        agent_files::backup_in(&directory, &destination)?;
-        agent_files::write_json(&destination, original.as_deref(), edited, &document)
-            .map_err(|error| Error::bad(format!("{}; {}", error.message, by_hand(&entry))))?;
+        // A file that cannot be written (in Claude Code's sandbox, or a
+        // read-only folder) gets the entry to paste, whichever write failed.
+        let written = (|| -> Result<()> {
+            if let Some(parent) = destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            agent_files::backup_in(&directory, &destination)?;
+            agent_files::write_json(&destination, original.as_deref(), edited, &document)
+        })();
+        written.map_err(|error| Error::bad(format!("{}; {}", error.message, by_hand(&entry))))?;
         if replacing {
             result["updated"] = json!(true);
         }
@@ -724,18 +855,175 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
             "An entry named graphicle from an earlier connect is still there; remove it if it serves the same project"
         );
     }
+    if let Some(reason) = plugin_skipped {
+        result["plugin"] = json!({"state":"skipped","reason":reason,
+            "next":"Install Muse Code's muse program, then run graphicle connect muse --hooks"});
+    } else if client == "muse" {
+        result["plugin"] = json!({"state":"off",
+            "reason":"preview, opt-in: graphicle connect muse --hooks --allow-learning installs Graphicle's plugin (hooks, skill, server)"});
+    }
     if let Some(plan) = hook_plan {
-        let mut written = write_hooks(plan, &directory, &folder, &project.id)?;
+        let file = plan.destination.clone();
+        let (capture, guard) = match write_hooks(plan, &directory, &folder, &project.id)? {
+            Ok(mut written) => (written["capture"].take(), written["guard"].take()),
+            // Setup: the entry stays written; the hooks say why they are not.
+            Err(reason) if policy.skip_unwritable_hooks => {
+                let skipped = hooks_skipped(&file, reason, hooks_command(guards));
+                (skipped.clone(), skipped)
+            }
+            Err(reason) => return Err(unwritten(&file, &reason)),
+        };
         if options.hooks {
-            result["hooks"] = written["capture"].take();
+            result["hooks"] = capture;
         }
         if guards || drop_guards {
-            result["graph"] = json!({"guard_hooks":written["guard"].take()});
+            result["graph"] = json!({"guard_hooks":guard});
         }
     } else if options.guards {
         result["graph"] = json!({"guard_hooks":format!("not available for {client}: only Claude Code's hooks can add context before a tool call")});
     }
     Ok(result)
+}
+
+/// Graphicle's Muse Code plugin of the data folder `directory`, when
+/// `connect muse --hooks` installed it: its package rewritten with
+/// `program`'s path and its server flags as they were, and Muse Code's copy
+/// refreshed (`muse plugins update`) when that changed it. `None` when the
+/// plugin is not installed.
+fn refresh_muse_plugin(directory: &Path, program: &Path) -> Result<Option<Value>> {
+    use crate::muse_code;
+    let package = directory.join(muse_code::PLUGIN_FOLDER);
+    let path = package.join(".muse-plugin/plugin.json");
+    let Some(old) = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
+        return Ok(None);
+    };
+    let command: Vec<&str> = old["capabilities"]["mcpServers"][0]["command"]
+        .as_array()
+        .map(|argv| argv.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let flags: Vec<&str> = command
+        .iter()
+        .position(|arg| *arg == "--or-workspace")
+        .map(|at| command[at + 1..].to_vec())
+        .unwrap_or_else(|| muse_code::PACKAGED_SERVER_FLAGS.to_vec());
+    let tokens = old["capabilities"]["hooks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|hook| hook["command"].as_array())
+        .find_map(|argv| {
+            let at = argv.iter().position(|arg| arg == "--pack-tokens")?;
+            argv.get(at + 1)?.as_str()?.parse::<u64>().ok()
+        })
+        .unwrap_or(muse_code::SESSION_PACK_TOKENS);
+    let manifest = muse_code::manifest(&program.to_string_lossy(), Some(directory), tokens, &flags);
+    let tools = flags
+        .iter()
+        .position(|arg| *arg == "--tools")
+        .and_then(|at| flags.get(at + 1))
+        .copied()
+        .unwrap_or("all");
+    let mut reply = json!({"package":package,"tools":tools,
+        "learning":flags.contains(&"--allow-learning")});
+    if !muse_code::write_package(&package, &manifest)? {
+        reply["state"] = json!("current");
+        return Ok(Some(reply));
+    }
+    reply["state"] = match muse_code::program() {
+        Some(muse) => match muse_code::update(&muse) {
+            Ok(_) => json!("updated"),
+            Err(error) => json!(format!("written; {}", error.message)),
+        },
+        None => json!("written; run muse plugins update graphicle"),
+    };
+    Ok(Some(reply))
+}
+
+/// Install Graphicle's Muse Code plugin for the data folder `directory`
+/// ([`crate::muse_code`]): write the package into the data folder with
+/// `program`'s path, back up Muse Code's plugin records, then
+/// `muse plugins install`. Muse Code's settings entries of this data folder
+/// for `project` (from an earlier `connect muse`) are removed, since the
+/// plugin's server replaces them; the settings file is backed up first.
+/// The session map of `project` starts building in the background.
+fn connect_muse_plugin(
+    directory: &Path,
+    program: &Path,
+    folder: &Path,
+    project: &str,
+    server: &[&str],
+) -> Result<Value> {
+    use crate::muse_code;
+    let muse = muse_code::program()
+        .ok_or_else(|| Error::bad("Muse Code's muse program was not found on PATH"))?;
+    let package = directory.join(muse_code::PLUGIN_FOLDER);
+    let manifest = muse_code::manifest(
+        &program.to_string_lossy(),
+        Some(directory),
+        muse_code::SESSION_PACK_TOKENS,
+        server,
+    );
+    let existed = package.join(".muse-plugin/plugin.json").is_file();
+    muse_code::write_package(&package, &manifest)?;
+    let env = crate::agent_detect::Environment::current();
+    // Muse Code's own record of plugins changes: backed up first.
+    if let Some(config) = env.muse_config().as_deref().and_then(Path::parent) {
+        for record in ["plugins/installed.json", "plugins/marketplaces.json"] {
+            let path = config.join(record);
+            if path.is_file() && !path.is_symlink() {
+                agent_files::backup_in(directory, &path)?;
+            }
+        }
+    }
+    let installed = muse_code::install(&muse, &package)?;
+    agent_files::record(
+        directory,
+        agent_files::Change {
+            path: std::path::absolute(package.join(".muse-plugin/plugin.json"))?,
+            kind: "muse-plugin".into(),
+            client: Some("muse".into()),
+            entry: Some(muse_code::PLUGIN_ID.into()),
+            created: !existed,
+            ..Default::default()
+        },
+    )?;
+    let mut reply = json!({"package":package,"state":installed["state"],
+        "manifest":package.join(".muse-plugin/plugin.json"),
+        "hooks":muse_code::HOOKS.iter().map(|hook| hook.event).collect::<Vec<_>>()});
+    // The settings entries the plugin's server replaces.
+    if let Some(settings) = env.muse_config().filter(|path| path.is_file()) {
+        let (mut document, original) = read_config(&settings, "Muse Code")?;
+        let names = graphicle_entries(&document, MUSE_GROUP, Some(project), directory);
+        if !names.is_empty() {
+            let mut edited = original.clone();
+            for name in &names {
+                remove_entry(&mut document, MUSE_GROUP, name, directory, Some(project));
+                edited = edited
+                    .as_deref()
+                    .and_then(|text| crate::json_edit::remove(text, MUSE_GROUP, name));
+            }
+            agent_files::backup_in(directory, &settings)?;
+            agent_files::write_json(&settings, original.as_deref(), edited, &document)?;
+            reply["replaced"] = json!({"file":settings,"entries":names});
+        }
+    }
+    // The first session's map: built now, in the background.
+    if let Ok(executable) = std::env::current_exe() {
+        let mut command = std::process::Command::new(executable);
+        command
+            .arg("--data-dir")
+            .arg(directory)
+            .args(["hook", "muse", "pack", "--project", project])
+            .current_dir(folder)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let _ = crate::platform::spawn_detached(&mut command);
+    }
+    Ok(reply)
 }
 
 /// Write Graphicle's table for `entry` into Codex's `config.toml` (`text`
@@ -1180,7 +1468,7 @@ pub fn refresh_hooks(store: &Store, client: &str, cwd: &Path) -> Result<Value> {
         specs.push(CLAUDE_CODE_PROMPT_CONTEXT);
     }
     let plan = plan_hooks(client, &stable_program()?, &directory, true, cwd, &specs)?;
-    let mut written = write_hooks(plan, &directory, &cwd.canonical()?, &project.id)?;
+    let mut written = write_hooks_or_fail(plan, &directory, &cwd.canonical()?, &project.id)?;
     let mut reply = written["capture"].take();
     if guards {
         reply["guard"] = written["guard"].take();
@@ -1214,26 +1502,70 @@ pub fn connect_prompt_context(store: &Store, cwd: &Path) -> Result<Value> {
         cwd,
         &[CLAUDE_CODE_PROMPT_CONTEXT],
     )?;
-    let mut written = write_hooks(plan, &directory, &cwd.canonical()?, &project.id)?;
+    let mut written = write_hooks_or_fail(plan, &directory, &cwd.canonical()?, &project.id)?;
     Ok(written["prompt_context"].take())
+}
+
+/// The error of a hooks file the file system refused to write: the file,
+/// then why (`not writable: <the OS error>`).
+fn unwritten(file: &Path, reason: &str) -> Error {
+    Error::bad(format!("{}: {reason}", file.display()))
+}
+
+/// Hooks setup could not write ([`Policy::skip_unwritable_hooks`]): the
+/// file, why, and the `connect` command that adds them later.
+fn hooks_skipped(file: &Path, reason: String, command: Option<String>) -> Value {
+    let mut skipped = json!({"configuration":file,"state":"skipped","reason":reason});
+    if let Some(command) = command {
+        skipped["by_hand"] = json!(format!(
+            "To add them later, run this in this folder from a normal terminal: {command}"
+        ));
+    }
+    skipped
+}
+
+/// [`write_hooks`] where a file that cannot be written is an error that
+/// names it.
+fn write_hooks_or_fail(
+    plan: HookPlan,
+    directory: &Path,
+    folder: &Path,
+    project: &str,
+) -> Result<Value> {
+    let file = plan.destination.clone();
+    write_hooks(plan, directory, folder, project)?.map_err(|reason| unwritten(&file, &reason))
 }
 
 /// Write a hook plan (backing the file up first) and record it in the data
 /// folder `directory`; `folder` is the folder `connect` ran in, for
-/// `project`.
-fn write_hooks(plan: HookPlan, directory: &Path, folder: &Path, project: &str) -> Result<Value> {
+/// `project`. `Err` inside is why the file system refused to write the
+/// file (`not writable: <the OS error>`); nothing is recorded then.
+fn write_hooks(
+    plan: HookPlan,
+    directory: &Path,
+    folder: &Path,
+    project: &str,
+) -> Result<std::result::Result<Value, String>> {
     let existed = plan.destination.exists();
     if plan.outcomes.iter().any(|(_, installed)| *installed) || !plan.removed.is_empty() {
-        if let Some(parent) = plan.destination.parent() {
-            std::fs::create_dir_all(parent)?;
+        let written = (|| -> Result<()> {
+            if let Some(parent) = plan.destination.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            agent_files::backup_in(directory, &plan.destination)?;
+            agent_files::write_json(
+                &plan.destination,
+                plan.original.as_deref(),
+                None,
+                &plan.document,
+            )
+        })();
+        if let Err(error) = written {
+            return match agent_files::write_failure(&error) {
+                Some(reason) => Ok(Err(reason)),
+                None => Err(error),
+            };
         }
-        agent_files::backup_in(directory, &plan.destination)?;
-        agent_files::write_json(
-            &plan.destination,
-            plan.original.as_deref(),
-            None,
-            &plan.document,
-        )?;
         // A personal settings file Graphicle created stays out of Git.
         if !existed && plan.client == "claude-code" {
             agent_files::exclude_created(directory, &plan.destination)?;
@@ -1272,7 +1604,7 @@ fn write_hooks(plan: HookPlan, directory: &Path, folder: &Path, project: &str) -
         "Keep .claude/settings.local.json out of version control; restart Claude Code"
     };
     // A capture hook is named by its event, a guard hook by its argument.
-    Ok(json!({
+    Ok(Ok(json!({
         "capture": {"configuration":plan.destination,"installed":listed(false, true),"unchanged":listed(false, false),
             "capture":"completed turns after each answer; reviewed memory at session start; private spans dropped, credentials redacted",
             "next":next},
@@ -1283,7 +1615,7 @@ fn write_hooks(plan: HookPlan, directory: &Path, folder: &Path, project: &str) -
         "prompt_context": {"configuration":plan.destination,"installed":prompt(true),"unchanged":prompt(false),
             "context":"before each prompt that is a code question, the packet of graphicle context (at most 8,400 characters); nothing for other prompts, short ones, or when it fails or takes over 10 seconds",
             "next":next},
-    }))
+    })))
 }
 
 /// The arguments of the capture hooks `connect --hooks` installs.
@@ -1527,7 +1859,7 @@ const NUDGE_CAP: u64 = 5;
 
 /// `GRAPHICLE_HOOK_NUDGE_CAP`, read as the graph engine's guard reads it:
 /// unset is [`NUDGE_CAP`]; 0, or anything but a number, lifts the cap.
-fn nudge_cap() -> u64 {
+pub(crate) fn nudge_cap() -> u64 {
     match std::env::var("GRAPHICLE_HOOK_NUDGE_CAP") {
         Err(std::env::VarError::NotPresent) => NUDGE_CAP,
         Ok(value) => value.trim().parse().unwrap_or(0),
@@ -1543,7 +1875,7 @@ fn nudge_cap() -> u64 {
 /// `hook-nudges` folder; markers older than a day are removed when a new one
 /// starts. A payload without a session id, or a marker that cannot be
 /// written, is not budgeted.
-fn nudge_allowed(directory: &Path, payload: &Value, cap: u64) -> bool {
+pub(crate) fn nudge_allowed(directory: &Path, payload: &Value, cap: u64) -> bool {
     use sha2::Digest;
     let session = payload["session_id"].as_str().unwrap_or("");
     // A marker file name: `[^A-Za-z0-9_-]` becomes `_`, at most 64 characters.
@@ -1606,7 +1938,7 @@ fn nudge_allowed(directory: &Path, payload: &Value, cap: u64) -> bool {
 /// Whether a shell command runs a text search (`grep`, `rg`, `find`, `fd`,
 /// `ack`, `ag`, `git grep`), behind wrappers such as `sudo` or `xargs`, in
 /// any of its pipeline or list segments; quoted text is not a command.
-fn runs_a_search(command: &str) -> bool {
+pub(crate) fn runs_a_search(command: &str) -> bool {
     const WRAPPERS: [&str; 12] = [
         "sudo", "command", "exec", "nohup", "time", "nice", "ionice", "env", "xargs", "timeout",
         "stdbuf", "doas",

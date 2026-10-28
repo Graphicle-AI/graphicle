@@ -316,6 +316,7 @@ are the ones `graphicle sync` or `graph_link` last recorded.
 |---|---|
 | `recall_project` | Finds original source evidence and current reviewed memory for a question, within a token budget; an identifier, or a question that only asks where one is defined or used, gets its definitions and references from the code graph |
 | `read_project_source` | Reads a source by ID or path, continuing exactly where an excerpt stopped |
+| `pack` | Packs the project's code for a question into one block of text within a token budget (`budget`, default 32,000, at most 200,000): architecture, focus code, call paths, tests, docs and a manifest ([packs](pack.md)) |
 | `list_projects` | Lists the workspace's projects you can read, with the ids `repo` takes (workspace connections only) |
 | `workspace_map` | Maps the projects you can read: their counts of files, documents, code symbols, memories and links, and the imports between them (workspace connections only) |
 | `repository_status` | Shows source coverage, revisions and memory state |

@@ -96,6 +96,29 @@ impl Machine {
         output(command)
     }
 
+    /// [`Machine::run`] in `cwd` with `input` on standard input.
+    fn run_with_input(&self, cwd: &Path, args: &[&str], input: &str) -> Output {
+        use std::io::Write;
+        let mut command = Command::new(env!("CARGO_BIN_EXE_graphicle"));
+        self.environment(&mut command);
+        command
+            .current_dir(cwd)
+            .arg("--data-dir")
+            .arg(&self.data)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    }
+
     /// [`Machine::run`] in the repository, which must succeed; its JSON.
     fn graphicle(&self, args: &[&str]) -> Value {
         self.graphicle_in(&self.repo, args)
@@ -1044,6 +1067,409 @@ fn connect_without_a_client_connects_what_is_installed() {
     assert!(!file.exists() && m.home.join(".cursor").is_dir());
 }
 
+/// Muse Code: `connect muse` adds the project's entry to the `mcp_servers`
+/// of `~/.config/muse/settings.json` with its transport, keeps the file's
+/// other keys and adds the `schema_version` a file without one lacks; a
+/// second connect changes nothing; `disconnect muse` removes only the entry.
+#[test]
+fn muse_code_gets_an_entry_in_its_settings() {
+    let m = Machine::new();
+    let settings = m.home.join(".config/muse/settings.json");
+    write(
+        &settings,
+        "{\n  \"tui\": {\"terminal_background\": \"dark\"},\n  \"mcp_servers\": {\"other\": {\"transport\": \"stdio\", \"command\": \"other-server\", \"args\": []}}\n}\n",
+    );
+    m.graphicle(&["sync", "."]);
+    let reply = m.graphicle(&["connect", "muse"]);
+    assert_eq!(reply["entry"], "graphicle-app", "{reply:#}");
+    let document = read_json(&settings);
+    let entry = &document["mcp_servers"]["graphicle-app"];
+    assert_eq!(entry["transport"], "stdio", "{document:#}");
+    assert_eq!(entry["mode"], "optional");
+    // The whole server, as for the other agents with one settings file.
+    let args = entry["args"].as_array().unwrap();
+    assert!(
+        args.iter().any(|a| a == "mcp") && !args.iter().any(|a| a == "--tools"),
+        "{entry}"
+    );
+    assert_eq!(document["schema_version"], 1);
+    assert_eq!(document["tui"]["terminal_background"], "dark");
+    assert_eq!(document["mcp_servers"]["other"]["command"], "other-server");
+    let again = m.graphicle(&["connect", "muse"]);
+    assert_eq!(again["unchanged"], true, "{again:#}");
+    let undone = m.graphicle(&["disconnect", "muse"]);
+    let after = read_json(&settings);
+    assert!(
+        after["mcp_servers"].get("graphicle-app").is_none(),
+        "{undone:#}"
+    );
+    assert_eq!(after["mcp_servers"]["other"]["command"], "other-server");
+    assert_eq!(after["tui"]["terminal_background"], "dark");
+}
+
+/// A fake `muse` program in the machine's `bin`: it records each call's
+/// arguments, one line per call, in `bin/muse.calls`, and answers
+/// `plugins … --json` with `{"ok":true}`.
+#[cfg(unix)]
+fn fake_muse(m: &Machine) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let program = m.bin.join("muse");
+    write(
+        &program,
+        &format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\necho '{{\"ok\":true}}'\n",
+            m.bin.join("muse.calls").display()
+        ),
+    );
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    m.bin.join("muse.calls")
+}
+
+/// Muse Code with hooks: `connect muse --hooks` writes Graphicle's plugin
+/// into the data folder (the optional server with the flags connect chose,
+/// the skill and six hooks, with this program's path and data folder),
+/// backs up and installs it with `muse plugins install`, and removes the
+/// settings entry an earlier `connect muse` wrote; a later `connect muse`
+/// (or setup) adds no entry beside it; the session start adds the kept map
+/// before the memory; `disconnect muse` runs `muse plugins remove
+/// graphicle` and deletes the package. Without the `muse` program the
+/// settings entry is written as before, with the reason.
+#[cfg(unix)]
+#[test]
+fn muse_code_gets_the_plugin_with_hooks() {
+    let m = Machine::new();
+    let settings = m.home.join(".config/muse/settings.json");
+    write(&settings, "{\"schema_version\": 1, \"mcp_servers\": {}}\n");
+    m.graphicle(&["sync", "."]);
+    // No muse program: the entry, and why there is no plugin.
+    let fallback = m.graphicle(&["connect", "muse", "--hooks"]);
+    assert_eq!(fallback["plugin"]["state"], "skipped", "{fallback:#}");
+    assert!(read_json(&settings)["mcp_servers"]["graphicle-app"].is_object());
+    let calls = fake_muse(&m);
+    let reply = m.graphicle(&["connect", "muse", "--hooks", "--allow-learning"]);
+    assert_eq!(reply["plugin"], "installed", "{reply:#}");
+    let project = reply["project"]["id"].as_str().unwrap().to_string();
+    let package = m.data.join("muse-code-plugin");
+    assert_eq!(
+        std::fs::read_to_string(&calls).unwrap().trim(),
+        format!("plugins install {} --scope user --json", package.display())
+    );
+    let manifest = read_json(&package.join(".muse-plugin/plugin.json"));
+    assert_eq!(manifest["name"], "graphicle");
+    let server = manifest["capabilities"]["mcpServers"][0]["command"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(server[1], "--data-dir");
+    assert_eq!(server[2], m.data.to_string_lossy().as_ref());
+    assert!(server.ends_with(&[json!("--or-workspace"), json!("--allow-learning")]));
+    assert_eq!(
+        manifest["capabilities"]["mcpServers"][0]["mode"],
+        "optional"
+    );
+    assert_eq!(
+        manifest["capabilities"]["hooks"].as_array().unwrap().len(),
+        6
+    );
+    assert!(package.join("skills/graphicle/SKILL.md").is_file());
+    // The plugin's server replaces the settings entry, backed up first.
+    let after = read_json(&settings);
+    assert!(
+        after["mcp_servers"].get("graphicle-app").is_none(),
+        "{after:#}"
+    );
+    assert!(
+        m.home
+            .join(".config/muse/settings.json.graphicle-bak")
+            .is_file()
+    );
+    // With the plugin installed, connect without --hooks keeps it and adds
+    // no settings entry beside it.
+    let again = m.graphicle(&["connect", "muse"]);
+    assert_eq!(again["plugin"], "current", "{again:#}");
+    assert_eq!(again["unchanged"], true);
+    assert!(
+        read_json(&settings)["mcp_servers"]
+            .get("graphicle-app")
+            .is_none()
+    );
+    assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+
+    // The session start: the kept map first, then the memory section.
+    let built = m.run(
+        &m.repo,
+        &[
+            "hook",
+            "muse",
+            "pack",
+            "--project",
+            &project,
+            "--pack-tokens",
+            "8000",
+        ],
+    );
+    assert!(built.status.success());
+    // Built here, or by the build connect started (which holds the lock).
+    let map = m.data.join(format!("muse-code-packs/{project}-8000.md"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    while !map.is_file() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    let map_text = std::fs::read_to_string(&map).unwrap();
+    assert!(map_text.contains("src/billing.py"), "{map_text}");
+    let mut start = Command::new(env!("CARGO_BIN_EXE_graphicle"));
+    m.environment(&mut start);
+    start
+        .current_dir(&m.repo)
+        .arg("--data-dir")
+        .arg(&m.data)
+        .args(["hook", "muse", "session-start"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped());
+    let mut child = start.spawn().unwrap();
+    {
+        use std::io::Write;
+        let payload = json!({"hook_event_name":"SessionStart","session_id":"s-1","source":"startup","cwd":m.repo});
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+    }
+    let started = child.wait_with_output().unwrap();
+    let output: Value = serde_json::from_slice(&started.stdout).unwrap();
+    let context = output["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert_eq!(
+        output["hookSpecificOutput"]["hookEventName"],
+        "SessionStart"
+    );
+    assert!(context.starts_with(map_text.trim_end()), "{context}");
+    assert!(
+        context.contains("Graphicle: use its MCP tools"),
+        "{context}"
+    );
+
+    let undone = m.graphicle(&["disconnect", "muse"]);
+    assert!(!package.exists(), "{undone:#}");
+    assert!(
+        std::fs::read_to_string(&calls)
+            .unwrap()
+            .lines()
+            .any(|line| line == "plugins remove graphicle --json"),
+        "{undone:#}"
+    );
+}
+
+/// Setup leaves Graphicle's Muse Code plugin to `connect muse --hooks`
+/// (a preview): with the `muse` program found it writes the settings entry
+/// as before, installs nothing, and says how to add the plugin.
+#[cfg(unix)]
+#[test]
+fn setup_keeps_the_muse_code_plugin_opt_in() {
+    let m = Machine::new();
+    let settings = m.home.join(".config/muse/settings.json");
+    write(&settings, "{\"schema_version\": 1, \"mcp_servers\": {}}\n");
+    let calls = fake_muse(&m);
+    let report = m.graphicle(&[
+        "setup",
+        "--yes",
+        "--clients",
+        "muse",
+        "--no-instructions",
+        "--no-hooks",
+        "--json",
+    ]);
+    let muse = &report["clients"][0];
+    assert_eq!(muse["client"], "muse", "{report:#}");
+    assert_eq!(muse["plugin"]["state"], "off", "{report:#}");
+    assert!(read_json(&settings)["mcp_servers"]["graphicle-app"].is_object());
+    assert!(!calls.exists(), "setup ran muse");
+    assert!(!m.data.join("muse-code-plugin").exists());
+}
+
+/// Muse Code's session logs become sources: `sessions import --client
+/// muse` reads Muse Code's session root (`$XDG_DATA_HOME/muse/sessions`),
+/// skips sub-agents' logs, and imports each finished turn into the project
+/// of the log's workspace.
+#[test]
+fn muse_code_sessions_are_captured() {
+    let m = Machine::new();
+    m.graphicle(&["sync", "."]);
+    let record = |sequence: u64, payload_type: &str, payload: Value| {
+        json!({"stream":{"kind":"session","id":"9f1c-2"},"sequence":sequence,
+            "recorded_at":1_793_000_000_000_000_u64 + sequence,"record_type":"event",
+            "payload_type":payload_type,"payload":payload})
+        .to_string()
+    };
+    let run = |event: Value| json!({"kind":"run","run_id":"r1","event":event});
+    let log = [
+        record(
+            1,
+            "runtime.session.metadata",
+            json!({"workspace_root":m.repo}),
+        ),
+        record(
+            2,
+            "agent.run",
+            run(json!({"kind":"started","prompt":"Decision: invoices settle monthly, never weekly."})),
+        ),
+        record(
+            3,
+            "agent.run",
+            run(json!({"kind":"assistant_message_committed","text":"Noted: monthly settlement (src/billing.py:4)."})),
+        ),
+        record(
+            4,
+            "agent.run",
+            run(json!({"kind":"terminal","terminal":"completed"})),
+        ),
+    ]
+    .join("\n");
+    let day = m.home.join(".local/share/muse/sessions/2026/10/27/9f1c-2");
+    write(&day.join("session.jsonl"), &format!("{log}\n"));
+    write(&day.join("subagent/a1/session.jsonl"), &format!("{log}\n"));
+    let reply = m.graphicle(&["sessions", "import", "--client", "muse"]);
+    assert_eq!(reply["transcripts"], 1, "{reply:#}");
+    assert_eq!(reply["turns_imported"], 1, "{reply:#}");
+    let again = m.graphicle(&["sessions", "import", "--client", "muse"]);
+    assert_eq!(again["turns_imported"], 0, "{again:#}");
+}
+
+/// The plugin's server starts in any folder: `mcp --project .
+/// --or-workspace` outside every synced project serves the workspace,
+/// where `--project .` alone fails.
+#[test]
+fn mcp_or_workspace_starts_outside_projects() {
+    let m = Machine::new();
+    m.graphicle(&["sync", "."]);
+    let outside = m.root.join("elsewhere");
+    std::fs::create_dir_all(&outside).unwrap();
+    let serve = |args: &[&str]| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_graphicle"));
+        m.environment(&mut command);
+        command
+            .current_dir(&outside)
+            .arg("--data-dir")
+            .arg(&m.data)
+            .args(args)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        {
+            use std::io::Write;
+            let mut input = child.stdin.take().unwrap();
+            input
+                .write_all(
+                    b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}\n",
+                )
+                .unwrap();
+        }
+        child.wait_with_output().unwrap()
+    };
+    let strict = serve(&["mcp", "--project", "."]);
+    assert!(!strict.status.success());
+    let served = serve(&[
+        "mcp",
+        "--project",
+        ".",
+        "--or-workspace",
+        "--allow-learning",
+    ]);
+    assert!(
+        served.status.success(),
+        "{}",
+        String::from_utf8_lossy(&served.stderr)
+    );
+    let reply: Value = serde_json::from_str(
+        String::from_utf8_lossy(&served.stdout)
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(reply["result"]["serverInfo"].is_object(), "{reply}");
+    assert!(String::from_utf8_lossy(&served.stderr).contains("serving the workspace"));
+}
+
+/// The Graphicle side of the two-session memory demo (memory_demo.py), with
+/// the agent's calls made by hand: the plugin's server takes a decision as a
+/// draft memory with a quote from the code; it is not in a session's start
+/// until a person approves it (`learning.review`, as the app does); then
+/// Muse Code's session start names it by title and id.
+#[test]
+fn muse_code_session_starts_with_an_approved_memory() {
+    let m = Machine::new();
+    m.graphicle(&["sync", "."]);
+    let proposal = json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"propose_memory",
+        "arguments":{"kind":"decision","title":"Invoices settle with their tax",
+            "body":"settle_invoice adds the tax before rounding to cents; keep it that way.",
+            "evidence":[{"source_id":"file:src/billing.py","quote":"    return cents(total + tax)"}],
+            "idempotency_key":"demo-1"}}});
+    let input = format!(
+        "{}\n{proposal}\n",
+        json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}})
+    );
+    let served = m.run_with_input(
+        &m.repo,
+        &[
+            "mcp",
+            "--project",
+            ".",
+            "--or-workspace",
+            "--allow-learning",
+        ],
+        &input,
+    );
+    let replies: Vec<Value> = String::from_utf8_lossy(&served.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let saved = &replies[1]["result"];
+    assert_eq!(saved["isError"], false, "{saved}");
+    let memory = saved["structuredContent"]["memory_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let start = |m: &Machine| -> String {
+        let payload = json!({"hook_event_name":"SessionStart","session_id":"s-2","source":"startup","cwd":m.repo});
+        let output = m.run_with_input(
+            &m.repo,
+            &["hook", "muse", "session-start", "--pack-tokens", "0"],
+            &payload.to_string(),
+        );
+        let reply: Value = serde_json::from_slice(&output.stdout).unwrap();
+        reply["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(!start(&m).contains(&memory), "a draft is never served");
+    let arguments = m.root.join("review.json");
+    write(
+        &arguments,
+        &json!({"memory_id":memory,"expected_revision":1,"decision":"approve","maintainer":"demo",
+            "reason":"Checked the quoted line."})
+        .to_string(),
+    );
+    m.graphicle(&[
+        "call",
+        "learning.review",
+        "--arguments",
+        arguments.to_str().unwrap(),
+    ]);
+    let context = start(&m);
+    assert!(
+        context.contains(&format!(
+            "- Invoices settle with their tax (memory {memory})"
+        )),
+        "{context}"
+    );
+}
+
 /// Setup outside a Git repository and without a terminal: the project is
 /// synced, no client is connected without --yes or --clients, no Git hook
 /// is written, AGENTS.md is not created, and nothing outside the data
@@ -1127,6 +1553,391 @@ fn git_hooks_run_in_the_background_and_respect_core_hooks_path() {
         "{report:#}"
     );
     assert!(!husky.join(".githooks/post-commit").exists());
+}
+
+/// A folder made read-only (0555) while the guard lives, as Claude Code's
+/// sandbox leaves `.git/hooks` and `.mcp.json`; `None` when it stays
+/// writable (a test run as root), so there is nothing to check.
+#[cfg(unix)]
+struct ReadOnly(PathBuf);
+
+#[cfg(unix)]
+impl ReadOnly {
+    fn new(folder: &Path) -> Option<Self> {
+        set_mode(folder, 0o555);
+        let guard = Self(folder.to_path_buf());
+        let probe = folder.join(".probe");
+        if std::fs::write(&probe, "").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            eprintln!("{} stays writable: nothing to check", folder.display());
+            return None;
+        }
+        Some(guard)
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ReadOnly {
+    fn drop(&mut self) {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+    }
+}
+
+/// The three hooks' entries: each skipped, with its file and a reason that
+/// names the OS error; the step's line to add by hand, which the summary
+/// prints after one line per hook.
+#[cfg(unix)]
+fn assert_hooks_skipped(m: &Machine, report: &Value) {
+    let git = &report["git_hooks"];
+    assert_eq!(git["state"], "skipped", "{report:#}");
+    let hooks = m.repo.join(".git/hooks");
+    let text = graphicle_runtime::setup::render_setup(report);
+    let names = ["post-commit", "post-merge", "post-checkout"];
+    let entries = git["hooks"].as_array().unwrap();
+    assert_eq!(entries.len(), names.len(), "{report:#}");
+    for (hook, name) in entries.iter().zip(names) {
+        assert_eq!(hook["hook"], name, "{report:#}");
+        assert_eq!(hook["file"], json!(hooks.join(name)), "{report:#}");
+        assert_eq!(hook["state"], "skipped", "{report:#}");
+        let reason = hook["reason"].as_str().unwrap();
+        assert!(
+            reason.starts_with("not writable: ") && reason.contains("(os error "),
+            "{reason}"
+        );
+        assert!(
+            text.contains(&format!(".git/hooks/{name}: {reason}\n")),
+            "{text}"
+        );
+        assert!(!hooks.join(name).exists());
+    }
+    let by_hand = git["by_hand"].as_str().unwrap();
+    assert!(
+        by_hand.starts_with(
+            "Add this line to post-commit, post-merge and post-checkout in that folder: "
+        ) && by_hand.contains(&format!("sync '{}' --quiet", m.repo.display())),
+        "{by_hand}"
+    );
+    assert!(
+        text.contains(&format!("                {by_hand}\n")),
+        "{text}"
+    );
+    assert!(text.contains("\nTry:\n"), "the whole summary: {text}");
+}
+
+/// Git hooks setup cannot write (Claude Code's sandbox; here a read-only
+/// `.git/hooks`) do not stop it: each hook is named with its reason, the
+/// summary gives the line to add by hand, and setup finishes.
+#[cfg(unix)]
+#[test]
+fn setup_finishes_when_it_cannot_write_the_git_hooks() {
+    let m = Machine::new();
+    let Some(_hooks) = ReadOnly::new(&m.repo.join(".git/hooks")) else {
+        return;
+    };
+    let report = m.graphicle(&["setup", "--yes", "--clients", "none"]);
+    assert_hooks_skipped(&m, &report);
+    // The steps after the hooks ran.
+    assert!(report["model"].is_object(), "{report:#}");
+    assert_eq!(
+        report["files_changed"],
+        json!([m.repo.join("AGENTS.md")]),
+        "{report:#}"
+    );
+}
+
+/// With `.mcp.json` not writable too (here in a read-only project folder),
+/// the summary has Claude Code's entry to paste into `.mcp.json`, AGENTS.md
+/// skipped with its reason and the hooks' line; setup then fails, naming
+/// Claude Code, and has changed no file.
+#[cfg(unix)]
+#[test]
+fn setup_prints_each_line_to_add_by_hand_when_mcp_json_is_read_only_too() {
+    let m = Machine::new();
+    std::fs::create_dir_all(m.home.join(".claude")).unwrap();
+    let mcp = m.repo.join(".mcp.json");
+    let servers = json!({"mcpServers":{"other":other()}}).to_string();
+    write(&mcp, &servers);
+    set_mode(&mcp, 0o444);
+    let Some(_hooks) = ReadOnly::new(&m.repo.join(".git/hooks")) else {
+        return;
+    };
+    let Some(_folder) = ReadOnly::new(&m.repo) else {
+        return;
+    };
+    let output = m.run(&m.repo, &["setup", "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("graphicle: Not connected: Claude Code: "),
+        "{stderr}"
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        states(&report, "clients", "client"),
+        [("claude-code".to_string(), "failed".to_string())],
+        "{report:#}"
+    );
+    let error = report["clients"][0]["error"].as_str().unwrap();
+    assert!(
+        error.contains(&format!(
+            "add this to the \"mcpServers\" object of {} yourself (docs/mcp.md#other-clients): \"graphicle\": {{",
+            mcp.display()
+        )),
+        "the entry to paste: {error}"
+    );
+    let agents = &report["instructions"][0];
+    assert_eq!(
+        agents["file"],
+        json!(m.repo.join("AGENTS.md")),
+        "{report:#}"
+    );
+    assert_eq!(agents["state"], "skipped", "{report:#}");
+    let reason = agents["reason"].as_str().unwrap();
+    assert!(reason.starts_with("not writable: "), "{reason}");
+    assert_hooks_skipped(&m, &report);
+    let text = graphicle_runtime::setup::render_setup(&report);
+    assert!(text.contains(&format!("failed: {error}\n")), "{text}");
+    assert!(
+        text.contains(&format!("AGENTS.md skipped: {reason}\n")),
+        "{text}"
+    );
+    assert!(
+        text.contains("\nNothing changed outside the data folder.\n"),
+        "not everything was already set: {text}"
+    );
+    assert_eq!(report["files_changed"], json!([]), "{report:#}");
+    assert_eq!(std::fs::read_to_string(&mcp).unwrap(), servers);
+    assert!(!m.repo.join("AGENTS.md").exists());
+    assert!(!m.repo.join(".mcp.json.graphicle-bak").exists());
+}
+
+/// A reason setup gives for a file the file system refused: it names the
+/// OS error.
+#[cfg(unix)]
+fn assert_not_writable(reason: &str) {
+    assert!(
+        reason.starts_with("not writable: ") && reason.contains("(os error "),
+        "{reason}"
+    );
+}
+
+/// Claude Code's hooks file that setup cannot write (its sandbox; here a
+/// read-only `.claude` folder) does not fail the connection: `.mcp.json`
+/// stays written and listed, the hooks are skipped with the file and the
+/// reason, the summary gives the `connect` command that adds them later,
+/// and setup exits 0. That command fails while the file stays read-only,
+/// naming it, and adds the hooks once it is writable.
+#[cfg(unix)]
+#[test]
+fn setup_keeps_claude_code_connected_when_its_hooks_file_is_read_only() {
+    let m = Machine::new();
+    std::fs::create_dir_all(m.home.join(".claude")).unwrap();
+    let claude = m.repo.join(".claude");
+    std::fs::create_dir_all(&claude).unwrap();
+    let settings = claude.join("settings.local.json");
+    let Some(read_only) = ReadOnly::new(&claude) else {
+        return;
+    };
+    let output = m.run(&m.repo, &["setup", "--yes"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(!stderr.contains("Local I/O failed"), "{stderr}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        states(&report, "clients", "client"),
+        [("claude-code".to_string(), "added".to_string())],
+        "{report:#}"
+    );
+    let capture = &report["clients"][0]["capture"];
+    assert_eq!(capture["state"], "skipped", "{report:#}");
+    assert_eq!(capture["file"], json!(settings), "{report:#}");
+    assert_eq!(report["capture"]["state"], "skipped", "{report:#}");
+    let reason = capture["reason"].as_str().unwrap();
+    assert_not_writable(reason);
+    let by_hand = capture["by_hand"].as_str().unwrap();
+    assert!(
+        by_hand.ends_with(&format!(
+            ": graphicle --data-dir '{}' connect claude-code --hooks",
+            m.data.display()
+        )),
+        "{by_hand}"
+    );
+    let mcp = m.repo.join(".mcp.json");
+    assert!(read_json(&mcp)["mcpServers"]["graphicle"].is_object());
+    let files = report["files_changed"].as_array().unwrap();
+    assert!(files.contains(&json!(mcp)), "{report:#}");
+    assert!(!files.contains(&json!(settings)), "{report:#}");
+    assert!(!settings.exists());
+    let text = graphicle_runtime::setup::render_setup(&report);
+    assert!(
+        text.contains(&format!(
+            "  {:<13} {:<15} skipped: .claude/settings.local.json: {reason}\n                {by_hand}\n",
+            "Capture", "Claude Code"
+        )),
+        "{text}"
+    );
+    assert!(text.contains("\n  .mcp.json\n"), "{text}");
+    assert!(!text.contains("Finished turns become"), "{text}");
+    // `connect --hooks` by hand still fails on the file, and names it.
+    let refused = m.run(&m.repo, &["connect", "claude-code", "--hooks"]);
+    assert!(!refused.status.success());
+    let error = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        error.contains(&format!("{}: not writable: ", settings.display()))
+            && error.contains("(os error ")
+            && !error.contains("Local I/O failed"),
+        "{error}"
+    );
+    // Writable again, the summary's command adds the hooks beside the entry
+    // setup wrote, which stays as it is.
+    drop(read_only);
+    let entry = std::fs::read(&mcp).unwrap();
+    let connected = m.graphicle(&["connect", "claude-code", "--hooks", "--json"]);
+    assert_eq!(connected["unchanged"], true, "{connected:#}");
+    assert!(
+        connected["hooks"]["installed"]
+            .as_array()
+            .is_some_and(|installed| !installed.is_empty()),
+        "{connected:#}"
+    );
+    assert!(read_json(&settings)["hooks"]["Stop"].is_array());
+    assert_eq!(std::fs::read(&mcp).unwrap(), entry);
+}
+
+/// Codex's hooks file goes the same way: with `~/.codex` read-only once its
+/// entry is there, setup keeps Codex connected, skips the hooks with the
+/// file and the reason, gives `connect codex --hooks`, and exits 0.
+#[cfg(unix)]
+#[test]
+fn setup_keeps_codex_connected_when_its_hooks_file_is_read_only() {
+    let m = Machine::new();
+    let codex = m.home.join(".codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    m.graphicle(&["setup", "--yes", "--clients", "codex"]);
+    // Its hooks taken out by hand, then its folder read-only.
+    let hooks = codex.join("hooks.json");
+    write(&hooks, "{\"hooks\":{}}\n");
+    let Some(_codex) = ReadOnly::new(&codex) else {
+        return;
+    };
+    let output = m.run(&m.repo, &["setup", "--yes", "--clients", "codex"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(!stderr.contains("Local I/O failed"), "{stderr}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        states(&report, "clients", "client"),
+        [("codex".to_string(), "already set".to_string())],
+        "{report:#}"
+    );
+    let capture = &report["clients"][0]["capture"];
+    assert_eq!(capture["state"], "skipped", "{report:#}");
+    assert_eq!(capture["file"], json!(hooks), "{report:#}");
+    let reason = capture["reason"].as_str().unwrap();
+    assert_not_writable(reason);
+    let by_hand = capture["by_hand"].as_str().unwrap();
+    assert!(
+        by_hand.ends_with(&format!(
+            ": graphicle --data-dir '{}' connect codex --hooks",
+            m.data.display()
+        )),
+        "{by_hand}"
+    );
+    assert_eq!(std::fs::read_to_string(&hooks).unwrap(), "{\"hooks\":{}}\n");
+    let text = graphicle_runtime::setup::render_setup(&report);
+    assert!(
+        text.contains(&format!("skipped: {}: {reason}\n", hooks.display())),
+        "{text}"
+    );
+    assert!(
+        text.contains("\nNothing changed outside the data folder.\n"),
+        "not everything was already set: {text}"
+    );
+}
+
+/// Codex's default sandbox keeps the whole `.git` folder read-only, not
+/// only its hooks. Setup still connects the agent and prints its summary:
+/// the Git hooks are skipped as above, and so is the exclude file, whose
+/// lines the summary gives to add by hand; every other file is written.
+#[cfg(unix)]
+#[test]
+fn setup_finishes_when_the_whole_git_folder_is_read_only() {
+    let m = Machine::new();
+    std::fs::create_dir_all(m.home.join(".claude")).unwrap();
+    // The project's own MCP file: its backup needs a line in the exclude
+    // file, and so does the settings file setup creates.
+    let mcp = m.repo.join(".mcp.json");
+    write(&mcp, &json!({"mcpServers":{"other":other()}}).to_string());
+    let git = m.repo.join(".git");
+    let exclude = git.join("info/exclude");
+    let before = std::fs::read(&exclude).unwrap();
+    let Some(_hooks) = ReadOnly::new(&git.join("hooks")) else {
+        return;
+    };
+    let Some(_info) = ReadOnly::new(&git.join("info")) else {
+        return;
+    };
+    let Some(_git) = ReadOnly::new(&git) else {
+        return;
+    };
+    let output = m.run(&m.repo, &["setup", "--yes"]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(!stderr.contains("Local I/O failed"), "{stderr}");
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        states(&report, "clients", "client"),
+        [("claude-code".to_string(), "added".to_string())],
+        "{report:#}"
+    );
+    assert_eq!(report["capture"]["state"], "on", "{report:#}");
+    assert_hooks_skipped(&m, &report);
+    let skipped = &report["git_exclude"][0];
+    assert_eq!(skipped["file"], json!(exclude), "{report:#}");
+    let reason = skipped["reason"].as_str().unwrap();
+    assert_not_writable(reason);
+    assert_eq!(
+        skipped["lines"],
+        json!(["*.graphicle-bak", "/.claude/settings.local.json"]),
+        "{report:#}"
+    );
+    assert_eq!(std::fs::read(&exclude).unwrap(), before);
+    let settings = m.repo.join(".claude/settings.local.json");
+    assert_eq!(
+        report["files_changed"],
+        json!([mcp, settings]),
+        "{report:#}"
+    );
+    assert!(read_json(&mcp)["mcpServers"]["graphicle"].is_object());
+    assert!(m.repo.join(".mcp.json.graphicle-bak").exists());
+    let text = graphicle_runtime::setup::render_setup(&report);
+    assert!(
+        text.contains(&format!(
+            "  Git exclude   skipped: .git/info/exclude: {reason}\n                To keep setup's files out of Git, add *.graphicle-bak and /.claude/settings.local.json to it, one per line\n"
+        )),
+        "{text}"
+    );
+}
+
+/// A data folder the file system refuses (a sandbox that keeps the home
+/// folder read-only) stops setup before it starts, naming the folder.
+#[cfg(unix)]
+#[test]
+fn setup_names_a_data_folder_it_cannot_create() {
+    let m = Machine::new();
+    let Some(_root) = ReadOnly::new(&m.root) else {
+        return;
+    };
+    let output = m.run(&m.repo, &["setup", "--yes"]);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("{}: not writable: ", m.data.display()))
+            && stderr.contains("(os error ")
+            && !stderr.contains("Local I/O failed"),
+        "{stderr}"
+    );
 }
 
 /// `uninstall --purge` disconnects everywhere, says how to remove the

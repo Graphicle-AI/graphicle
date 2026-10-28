@@ -1217,6 +1217,7 @@ pub const CORE_OPERATIONS: &[&str] = &[
     "oauth.status",
     "observer.context",
     "observer.status",
+    "pack",
     "project.delete",
     "project.list",
     "projection.retry",
@@ -1323,6 +1324,15 @@ pub(crate) fn dispatch(
             }
         },
         "note" => store.note(workspace, capability, args),
+        // A tokenizer is a local file: the command line names one, a call
+        // over HTTP or MCP counts by estimate.
+        "pack" => {
+            let mut args = args.clone();
+            if let Some(fields) = args.as_object_mut() {
+                fields.remove("tokenizer");
+            }
+            store.project_pack(workspace, capability, &args)
+        }
         "memory.search" => store.memory_search(workspace, capability, args),
         "learning.refresh.prepare" => store.refresh_context(workspace, capability, args),
         "learning.review" => store.review_memory(workspace, capability, args),
@@ -1783,6 +1793,23 @@ pub fn core_mcp_tools(learning: bool, work_state: bool) -> Vec<McpTool> {
         ), "work_state.read", false));
     }
     tools.extend(crate::graph_tools::tools(false));
+    // After the tools of 0.1.0's one server, which keep their order.
+    tools.push(
+        McpTool::new(
+            tool(
+                "pack",
+                PACK_DESCRIPTION,
+                json!({"question":{"type":"string","description":"the question or change request; leave it out for a whole-repository overview"},
+                "budget":{"type":"integer","default":crate::code_pack::MCP_DEFAULT_BUDGET,"minimum":crate::code_pack::MIN_BUDGET,"maximum":crate::code_pack::MCP_MAX_BUDGET,"description":"the pack's size in tokens, a hard limit"},
+                "repo":{"type":"string","description":REPO_DESCRIPTION}}),
+                &[],
+                false,
+            ),
+            "pack",
+            true,
+        )
+        .workspace_only(),
+    );
     tools
 }
 /// `identifier_route` when a call to `recall_project` leaves it out: on in
@@ -1860,6 +1887,8 @@ pub fn switch_refusal(field: &str, value: &Value) -> Option<String> {
 pub const RECALL_SCOPE: &str = "scope";
 /// The `repo` argument of `recall_project` and `read_project_source`, which
 /// workspace connections publish.
+/// The `pack` tool's description: when an agent should call it.
+const PACK_DESCRIPTION: &str = "Pack the project's code for a question into one block of text within a token budget (budget, default 32000): an architecture summary, the most relevant code (small files whole, large ones as excerpts with line numbers), callers and callees, tests, docs and a manifest of what is in and what was left out. Call it once before a repository-wide question or a change that spans files, instead of many searches and reads; cite code from it as path:line.";
 const REPO_DESCRIPTION: &str = "The project to read, by id or key (list_projects lists the ids). Without it, recall_project searches every project of the workspace you can read, and read_project_source needs it.";
 /// What one MCP connection has been given, for `recall_project`'s opt-in
 /// `skip_shown` (Mastra's navigable recall, a86dc4240): the source spans of
@@ -2451,6 +2480,9 @@ fn mcp_in(
                 if name == "recall_project" && !structured {
                     crate::query::cap_recall(&mut args);
                 }
+                if name == "pack" && args.get("budget").is_none_or(Value::is_null) {
+                    args["budget"] = json!(crate::code_pack::MCP_DEFAULT_BUDGET);
+                }
                 // 0.1.0's order: test files where the ranking puts them, and
                 // 0.1.0's excerpts: no dates or age marks (`source_age`).
                 if name == "recall_project" && !lean {
@@ -2616,12 +2648,14 @@ fn mcp_in(
                 } else {
                     Vec::new()
                 };
-                // The essentials' text, else the full reply.
+                // The essentials' text, else the full reply; a pack's
+                // markdown in every set.
                 let reply = match (!structured)
                     .then(|| crate::query::lean_reply(name, graph_tool, &packet))
                     .flatten()
                 {
                     Some(lean) => lean,
+                    None if name == "pack" => crate::code_pack::mcp_reply(packet),
                     None => tool_reply(graph_tool, packet),
                 };
                 if let Err(error) = admission.serve(&app.worker.store, served_text(&reply), shares)

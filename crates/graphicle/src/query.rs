@@ -71,6 +71,13 @@ pub const MORE_FILES_DEFAULT: usize = 10;
 /// after its excerpts.
 pub const MORE_FILES_FUSED: usize = 200;
 
+/// The internal `context` argument with which `graphicle pack` asks for the
+/// whole fused order of project-file passages (crate::pack); the packet then
+/// carries it under the same name.
+pub const PACK_RANKING: &str = "pack_ranking";
+/// Passages of the fused order `graphicle pack` reads.
+pub const PACK_FUSED: usize = 3000;
+
 /// Retrieval options that are on unless a call turns them off. An absent or
 /// `null` option takes its value here and is listed in the packet's
 /// `retrieval_defaults`; `false` turns it off. Porter-stemmed BM25 (Lucene's
@@ -1395,6 +1402,13 @@ fn context_impl(
     } else {
         fused_depth
     };
+    // `graphicle pack` reads a long fused order (crate::code_pack).
+    let fused_depth = if args[PACK_RANKING] == true {
+        rank_request["fused_cap"] = json!(PACK_FUSED);
+        PACK_FUSED
+    } else {
+        fused_depth
+    };
     if fused_depth > 0 {
         rank_request["debug_fused"] = json!(fused_depth);
     }
@@ -1890,6 +1904,26 @@ fn context_impl(
     }
     let mut packet = crate::phase::phase("assemble_pack", || native("pack", pack_request))?;
     packet["question"] = json!(question);
+    // The fused order's project-file passages, as `graphicle pack` ranks
+    // them: [path, first line, last line] each, best first.
+    if args[PACK_RANKING] == true {
+        let order: Vec<Value> = ranked["fused"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|id| by_id.get(id.as_str()?))
+            .filter(|row| s(&row["source"], "id").starts_with("file:"))
+            .filter(|row| !s(&row["source"], "path").is_empty())
+            .map(|row| {
+                json!([
+                    s(&row["source"], "path"),
+                    row["source"]["line"],
+                    row["source"]["end_line"]
+                ])
+            })
+            .collect();
+        packet[PACK_RANKING] = json!(order);
+    }
     if let Some(listed) = packet.as_object_mut().and_then(|p| p.remove("next_files")) {
         packet["more_files"] = listed;
     }

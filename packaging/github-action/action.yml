@@ -1,0 +1,130 @@
+# Graphicle review: one pull-request review from Muse Spark, with the
+# repository's context from Graphicle (docs/review.md).
+#
+# Security (docs/review.md#security):
+# - runs on the pull_request event only; refuses pull_request_target, and skips
+#   pull requests from forks, which get no secrets;
+# - checks out the pull request's head without keeping the token in .git;
+# - the model key comes from the input the workflow fills from the
+#   MODEL_API_KEY secret, and only the review step sees it; only the posting
+#   step sees the GitHub token;
+# - the actions it uses are pinned by full commit SHA, and the Graphicle
+#   release by version and SHA-256;
+# - one model call per run, refused before it is sent when its worst case
+#   costs more than max-cost-usd at the configured price;
+# - network: the release download, the model API and the GitHub API that
+#   posts the review.
+name: Graphicle review
+description: Review a pull request with Muse Spark, with the changed code's callers, callees, tests and architecture from Graphicle, and post one review.
+author: Graphicle
+branding:
+  icon: eye
+  color: blue
+
+inputs:
+  graphicle-version:
+    description: The Graphicle release to install, for example 0.1.9. Pin one; there is no "latest".
+    required: true
+  graphicle-sha256:
+    description: The SHA-256 of that release's archive for the runner (graphicle-VERSION-TARGET.tar.gz in the release's SHA256SUMS).
+    required: true
+  model-api-key:
+    description: The Meta Model API key. Pass secrets.MODEL_API_KEY; without it the review is skipped.
+    required: false
+    default: ""
+  model:
+    description: The Meta model, muse-spark-1.3 or muse-wonder-1.0.
+    required: false
+    default: muse-spark-1.3
+  price:
+    description: The model's price in US dollars per million tokens, as JSON; the cost cap needs it. The default is muse-spark-1.3's list price on 26 Oct 2026.
+    required: false
+    default: '{"input":1.25,"output":4.25,"cached_input":0.15}'
+  max-cost-usd:
+    description: The most one review may cost, in US dollars at that price. The call is refused before it is sent when its worst case (the whole input uncached plus the output limit) costs more.
+    required: false
+    default: "0.50"
+  budget:
+    description: The pack's budget in tokens.
+    required: false
+    default: "200000"
+  max-comments:
+    description: Inline comments at most, the most severe first.
+    required: false
+    default: "10"
+  post-without-comments:
+    description: Post the review's summary when it has no inline comments ("true" or "false").
+    required: false
+    default: "true"
+  github-token:
+    description: The token that posts the review; it needs pull-requests write.
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  comments:
+    description: The number of inline comments posted.
+    value: ${{ steps.review.outputs.comments }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the event
+      id: gate
+      shell: bash
+      env:
+        EVENT: ${{ github.event_name }}
+        HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        BASE_REPO: ${{ github.repository }}
+        HAS_KEY: ${{ inputs.model-api-key != '' }}
+      run: bash "$GITHUB_ACTION_PATH/gate.sh"
+
+    - name: Check out the pull request's head
+      if: steps.gate.outputs.run == 'true'
+      uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      with:
+        ref: ${{ github.event.pull_request.head.sha }}
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Install Graphicle ${{ inputs.graphicle-version }}
+      if: steps.gate.outputs.run == 'true'
+      shell: bash
+      env:
+        VERSION: ${{ inputs.graphicle-version }}
+        SHA256: ${{ inputs.graphicle-sha256 }}
+      run: bash "$GITHUB_ACTION_PATH/install.sh"
+
+    - name: Restore the index
+      if: steps.gate.outputs.run == 'true'
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/graphicle-data
+        key: graphicle-index-${{ runner.os }}-${{ inputs.graphicle-version }}-${{ github.event.pull_request.base.sha }}
+        restore-keys: |
+          graphicle-index-${{ runner.os }}-${{ inputs.graphicle-version }}-
+
+    - name: Review
+      id: review
+      if: steps.gate.outputs.run == 'true'
+      shell: bash
+      env:
+        MODEL_API_KEY: ${{ inputs.model-api-key }}
+        MODEL: ${{ inputs.model }}
+        PRICE: ${{ inputs.price }}
+        MAX_COST: ${{ inputs.max-cost-usd }}
+        BUDGET: ${{ inputs.budget }}
+        MAX_COMMENTS: ${{ inputs.max-comments }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      run: bash "$GITHUB_ACTION_PATH/review.sh"
+
+    - name: Post the review
+      if: steps.gate.outputs.run == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPOSITORY: ${{ github.repository }}
+        PULL: ${{ github.event.pull_request.number }}
+        POST_EMPTY: ${{ inputs.post-without-comments }}
+      run: bash "$GITHUB_ACTION_PATH/post.sh"

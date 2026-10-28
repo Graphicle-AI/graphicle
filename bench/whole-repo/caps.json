@@ -1,0 +1,5 @@
+{
+  "unit": "US dollars, at the prices in prices.json",
+  "note": "Global spend caps per provider for the benchmark's model answers, summed over every run in the global spend log. A run refuses to start when the logged total plus its own estimate would pass its provider's cap, and stops when a call's worst case would pass it.",
+  "usd": {"meta": 45.0, "baseten": 100.0}
+}

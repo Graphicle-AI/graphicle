@@ -1,0 +1,3264 @@
+{
+ "cost": {
+  "basis": "measured",
+  "label": "computed at list prices, not billed",
+  "models": {
+   "muse-spark-1.3": {
+    "cached_input": 0.15,
+    "input": 1.25,
+    "output": 4.25
+   },
+   "muse-wonder-1.0": {
+    "cached_input": 0.2,
+    "input": 4.0,
+    "output": 20.0
+   }
+  },
+  "pack_build": "pack 06818eb",
+  "prices_date": "2026-10-26",
+  "question_tokens_nominal": 811,
+  "repos": [
+   "kubernetes",
+   "home-assistant"
+  ],
+  "rows": [
+   {
+    "arm": "pack",
+    "budget": "128K",
+    "context": "Graphicle pack, standard layout",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.164061625,
+      "follow_up_usd": 0.164061625,
+      "follow_up_vs_first": 1.0,
+      "session_mean_usd": 0.164061625
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 0.5249971999999999,
+      "follow_up_usd": 0.5249971999999999,
+      "follow_up_vs_first": 1.0,
+      "session_mean_usd": 0.5249971999999999
+     }
+    },
+    "prefix_hashes_per_repository": null,
+    "prefix_tokens": 0,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9127083333333335,
+    "suffix_tokens": 130469
+   },
+   {
+    "arm": "pack-cache0.5",
+    "budget": "128K",
+    "context": "Graphicle pack, cache layout, 50% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.158323375,
+      "follow_up_usd": 0.086409775,
+      "follow_up_vs_first": 0.5457802740751326,
+      "session_mean_usd": 0.09000545499999998
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 0.5066347999999999,
+      "follow_up_usd": 0.258206,
+      "follow_up_vs_first": 0.5096491595129273,
+      "session_mean_usd": 0.27062744
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 65376,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.8960416666666667,
+    "suffix_tokens": 60502
+   },
+   {
+    "arm": "pack-cache0.7",
+    "budget": "128K",
+    "context": "Graphicle pack, cache layout, 70% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.161768140625,
+      "follow_up_usd": 0.061049390625,
+      "follow_up_vs_first": 0.37738821988762655,
+      "session_mean_usd": 0.066085328125
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 0.51765805,
+      "follow_up_usd": 0.16972055,
+      "follow_up_vs_first": 0.32786228283323327,
+      "session_mean_usd": 0.187117425
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 91562,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.8679166666666667,
+    "suffix_tokens": 37071
+   },
+   {
+    "arm": "pack-cache",
+    "budget": "128K",
+    "context": "Graphicle pack, cache layout, 90% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.1637119375,
+      "follow_up_usd": 0.03425733749999999,
+      "follow_up_vs_first": 0.20925375402145,
+      "session_mean_usd": 0.040730067499999995
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 0.5238782,
+      "follow_up_usd": 0.0766714,
+      "follow_up_vs_first": 0.14635348445497448,
+      "session_mean_usd": 0.09903174000000001
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 117686,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.8054166666666667,
+    "suffix_tokens": 12503
+   },
+   {
+    "arm": "pack-cache0.95",
+    "budget": "128K",
+    "context": "Graphicle pack, cache layout, 95% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.1640763125,
+      "follow_up_usd": 0.0274095625,
+      "follow_up_vs_first": 0.16705374518945265,
+      "session_mean_usd": 0.0342429
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 0.5250442,
+      "follow_up_usd": 0.052922699999999996,
+      "follow_up_vs_first": 0.10079665673861363,
+      "session_mean_usd": 0.076528775
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 124242,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.6570833333333335,
+    "suffix_tokens": 6238
+   },
+   {
+    "arm": "pack-stable",
+    "budget": "128K",
+    "context": "Graphicle pack, stable layout",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.1644659375,
+      "follow_up_usd": 0.020594737499999998,
+      "follow_up_vs_first": 0.12522190195158192,
+      "session_mean_usd": 0.027788297499999996
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 0.526291,
+      "follow_up_usd": 0.029281400000000003,
+      "follow_up_vs_first": 0.05563728051591231,
+      "session_mean_usd": 0.05413188
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 130792,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.06666666666666668,
+    "suffix_tokens": 0
+   },
+   {
+    "arm": "truncation",
+    "budget": "128K",
+    "context": "Truncation",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.1648084375,
+      "follow_up_usd": 0.020635837499999997,
+      "follow_up_vs_first": 0.12521104995003668,
+      "session_mean_usd": 0.027844467499999997
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 0.527387,
+      "follow_up_usd": 0.0293362,
+      "follow_up_vs_first": 0.05562556528697142,
+      "session_mean_usd": 0.054238739999999994
+     }
+    },
+    "prefix_hashes_per_repository": null,
+    "prefix_tokens": 131066,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.016666666666666666,
+    "suffix_tokens": 0
+   },
+   {
+    "arm": "pack",
+    "budget": "256K",
+    "context": "Graphicle pack, standard layout",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.327585671875,
+      "follow_up_usd": 0.327585671875,
+      "follow_up_vs_first": 1.0,
+      "session_mean_usd": 0.327585671875
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 1.0482741500000001,
+      "follow_up_usd": 1.0482741500000001,
+      "follow_up_vs_first": 1.0,
+      "session_mean_usd": 1.0482741500000001
+     }
+    },
+    "prefix_hashes_per_repository": null,
+    "prefix_tokens": 0,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9168750000000001,
+    "suffix_tokens": 261288
+   },
+   {
+    "arm": "pack-cache0.5",
+    "budget": "256K",
+    "context": "Graphicle pack, cache layout, 50% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.31070678125,
+      "follow_up_usd": 0.16686143125,
+      "follow_up_vs_first": 0.5370382666857226,
+      "session_mean_usd": 0.17405369874999999
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 0.9942616999999999,
+      "follow_up_usd": 0.49734140000000004,
+      "follow_up_vs_first": 0.5002117651720871,
+      "session_mean_usd": 0.522187415
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 130768,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9152083333333334,
+    "suffix_tokens": 117016
+   },
+   {
+    "arm": "pack-cache0.7",
+    "budget": "256K",
+    "context": "Graphicle pack, cache layout, 70% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.319785421875,
+      "follow_up_usd": 0.118375421875,
+      "follow_up_vs_first": 0.3701714142593762,
+      "session_mean_usd": 0.12844592187499998
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 1.02331335,
+      "follow_up_usd": 0.32753335,
+      "follow_up_vs_first": 0.32007141312091747,
+      "session_mean_usd": 0.36232235
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 183100,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9127083333333335,
+    "suffix_tokens": 71948
+   },
+   {
+    "arm": "pack-cache",
+    "budget": "256K",
+    "context": "Graphicle pack, cache layout, 90% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.326381359375,
+      "follow_up_usd": 0.06739240937499999,
+      "follow_up_vs_first": 0.20648363467831699,
+      "session_mean_usd": 0.08034185687499999
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 1.04442035,
+      "follow_up_usd": 0.14973125,
+      "follow_up_vs_first": 0.1433630147095468,
+      "session_mean_usd": 0.194465705
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 235444,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.8647916666666667,
+    "suffix_tokens": 24880
+   },
+   {
+    "arm": "pack-cache0.95",
+    "budget": "256K",
+    "context": "Graphicle pack, cache layout, 95% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.327203359375,
+      "follow_up_usd": 0.053840709375,
+      "follow_up_vs_first": 0.16454815585586466,
+      "session_mean_usd": 0.06750884187499999
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 1.04705075,
+      "follow_up_usd": 0.10270705000000001,
+      "follow_up_vs_first": 0.0980917591625812,
+      "session_mean_usd": 0.14992423500000002
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 248512,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.8147916666666667,
+    "suffix_tokens": 12470
+   },
+   {
+    "arm": "pack-stable",
+    "budget": "256K",
+    "context": "Graphicle pack, stable layout",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.3279734375,
+      "follow_up_usd": 0.0402156375,
+      "follow_up_vs_first": 0.12261858096358794,
+      "session_mean_usd": 0.054603527500000006
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 1.049515,
+      "follow_up_usd": 0.05544260000000001,
+      "follow_up_vs_first": 0.05282687717660063,
+      "session_mean_usd": 0.10514622
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 261598,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.07916666666666668,
+    "suffix_tokens": 0
+   },
+   {
+    "arm": "truncation",
+    "budget": "256K",
+    "context": "Truncation",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.3286453125,
+      "follow_up_usd": 0.0402962625,
+      "follow_up_vs_first": 0.12261322759624024,
+      "session_mean_usd": 0.054713714999999996
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 1.051665,
+      "follow_up_usd": 0.055550100000000005,
+      "follow_up_vs_first": 0.0528210979732139,
+      "session_mean_usd": 0.10535584500000002
+     }
+    },
+    "prefix_hashes_per_repository": null,
+    "prefix_tokens": 262136,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.029166666666666664,
+    "suffix_tokens": 0
+   },
+   {
+    "arm": "pack",
+    "budget": "512K",
+    "context": "Graphicle pack, standard layout",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.654500875,
+      "follow_up_usd": 0.654500875,
+      "follow_up_vs_first": 1.0,
+      "session_mean_usd": 0.654500875
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 2.0944028,
+      "follow_up_usd": 2.0944028,
+      "follow_up_vs_first": 1.0,
+      "session_mean_usd": 2.0944028
+     }
+    },
+    "prefix_hashes_per_repository": null,
+    "prefix_tokens": 0,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9589583333333334,
+    "suffix_tokens": 522820
+   },
+   {
+    "arm": "pack-cache0.5",
+    "budget": "512K",
+    "context": "Graphicle pack, cache layout, 50% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.610364203125,
+      "follow_up_usd": 0.322606953125,
+      "follow_up_vs_first": 0.5285482855535869,
+      "session_mean_usd": 0.336994815625
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 1.95316545,
+      "follow_up_usd": 0.95909495,
+      "follow_up_vs_first": 0.4910464446317131,
+      "session_mean_usd": 1.008798475
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 261598,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9127083333333335,
+    "suffix_tokens": 225913
+   },
+   {
+    "arm": "pack-cache0.7",
+    "budget": "512K",
+    "context": "Graphicle pack, cache layout, 70% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.63255221875,
+      "follow_up_usd": 0.22969921875,
+      "follow_up_vs_first": 0.3631308403342787,
+      "session_mean_usd": 0.24984186875
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 2.0241671,
+      "follow_up_usd": 0.6324931,
+      "follow_up_vs_first": 0.31247079354268725,
+      "session_mean_usd": 0.7020768000000001
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 366230,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9318750000000001,
+    "suffix_tokens": 139031
+   },
+   {
+    "arm": "pack-cache",
+    "budget": "512K",
+    "context": "Graphicle pack, cache layout, 90% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.65037228125,
+      "follow_up_usd": 0.13237293125,
+      "follow_up_vs_first": 0.20353409126782337,
+      "session_mean_usd": 0.15827289875
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 2.0811913,
+      "follow_up_usd": 0.291739,
+      "follow_up_vs_first": 0.1401788485277639,
+      "session_mean_usd": 0.38121161500000006
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 470908,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9002083333333335,
+    "suffix_tokens": 48609
+   },
+   {
+    "arm": "pack-cache0.95",
+    "budget": "512K",
+    "context": "Graphicle pack, cache layout, 95% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.6533516875,
+      "follow_up_usd": 0.10657963749999999,
+      "follow_up_vs_first": 0.16312751545468382,
+      "session_mean_usd": 0.13391824
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 2.0907253999999997,
+      "follow_up_usd": 0.2018765,
+      "follow_up_vs_first": 0.09655811327494276,
+      "session_mean_usd": 0.296318945
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 497066,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.8595833333333335,
+    "suffix_tokens": 24835
+   },
+   {
+    "arm": "pack-stable",
+    "budget": "512K",
+    "context": "Graphicle pack, stable layout",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.6550084375,
+      "follow_up_usd": 0.07945983749999999,
+      "follow_up_vs_first": 0.12131116631608274,
+      "session_mean_usd": 0.10823726749999998
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 2.096027,
+      "follow_up_usd": 0.10776820000000001,
+      "follow_up_vs_first": 0.05141546363668026,
+      "session_mean_usd": 0.20718114
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 523226,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.09166666666666667,
+    "suffix_tokens": 0
+   },
+   {
+    "arm": "truncation",
+    "budget": "512K",
+    "context": "Truncation",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 0.6563328125,
+      "follow_up_usd": 0.0796187625,
+      "follow_up_vs_first": 0.12130852059144917,
+      "session_mean_usd": 0.108454465
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 2.100265,
+      "follow_up_usd": 0.10798010000000001,
+      "follow_up_vs_first": 0.0514126074566781,
+      "session_mean_usd": 0.207594345
+     }
+    },
+    "prefix_hashes_per_repository": null,
+    "prefix_tokens": 524286,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.041666666666666664,
+    "suffix_tokens": 0
+   },
+   {
+    "arm": "pack",
+    "budget": "1M",
+    "context": "Graphicle pack, standard layout",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 1.267228546875,
+      "follow_up_usd": 1.267228546875,
+      "follow_up_vs_first": 1.0,
+      "session_mean_usd": 1.267228546875
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 4.05513135,
+      "follow_up_usd": 4.05513135,
+      "follow_up_vs_first": 1.0,
+      "session_mean_usd": 4.05513135
+     }
+    },
+    "prefix_hashes_per_repository": null,
+    "prefix_tokens": 0,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9620833333333334,
+    "suffix_tokens": 1013002
+   },
+   {
+    "arm": "pack-cache0.5",
+    "budget": "1M",
+    "context": "Graphicle pack, cache layout, 50% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 1.1678713125,
+      "follow_up_usd": 0.6103286125,
+      "follow_up_vs_first": 0.5225991990448863,
+      "session_mean_usd": 0.6382057475
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 3.7371882000000003,
+      "follow_up_usd": 1.8111316,
+      "follow_up_vs_first": 0.48462413533254756,
+      "session_mean_usd": 1.90743443
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 506857,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9589583333333334,
+    "suffix_tokens": 426659
+   },
+   {
+    "arm": "pack-cache0.7",
+    "budget": "1M",
+    "context": "Graphicle pack, cache layout, 70% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 1.214029125,
+      "follow_up_usd": 0.43344822499999996,
+      "follow_up_vs_first": 0.3570328059468919,
+      "session_mean_usd": 0.47247727
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 3.8848932,
+      "follow_up_usd": 1.188341,
+      "follow_up_vs_first": 0.30588768823812196,
+      "session_mean_usd": 1.3231686100000002
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 709619,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.929375,
+    "suffix_tokens": 260824
+   },
+   {
+    "arm": "pack-cache",
+    "budget": "1M",
+    "context": "Graphicle pack, cache layout, 90% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 1.25549175,
+      "follow_up_usd": 0.25188585,
+      "follow_up_vs_first": 0.20062724426504597,
+      "session_mean_usd": 0.30206614500000006
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 4.0175736,
+      "follow_up_usd": 0.5505714,
+      "follow_up_vs_first": 0.13704077505885642,
+      "session_mean_usd": 0.72392151
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 912369,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9443750000000002,
+    "suffix_tokens": 91244
+   },
+   {
+    "arm": "pack-cache0.95",
+    "budget": "1M",
+    "context": "Graphicle pack, cache layout, 95% prefix",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 1.263433609375,
+      "follow_up_usd": 0.20406155937499998,
+      "follow_up_vs_first": 0.16151348029750917,
+      "session_mean_usd": 0.257030161875
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 4.042987549999999,
+      "follow_up_usd": 0.38333865,
+      "follow_up_vs_first": 0.09481568895753836,
+      "session_mean_usd": 0.5663210949999999
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 963066,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.9214583333333334,
+    "suffix_tokens": 46901
+   },
+   {
+    "arm": "pack-stable",
+    "budget": "1M",
+    "context": "Graphicle pack, stable layout",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 1.2681784375,
+      "follow_up_usd": 0.15304023749999998,
+      "follow_up_vs_first": 0.12067721148270981,
+      "session_mean_usd": 0.20879714749999997
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 4.058171,
+      "follow_up_usd": 0.20587540000000001,
+      "follow_up_vs_first": 0.05073108057792538,
+      "session_mean_usd": 0.39849018
+     }
+    },
+    "prefix_hashes_per_repository": 1,
+    "prefix_tokens": 1013762,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.18208333333333335,
+    "suffix_tokens": 0
+   },
+   {
+    "arm": "truncation",
+    "budget": "1M",
+    "context": "Truncation",
+    "models": {
+     "muse-spark-1.3": {
+      "first_usd": 1.2707253125,
+      "follow_up_usd": 0.15334586249999999,
+      "follow_up_vs_first": 0.12067585416891582,
+      "session_mean_usd": 0.209214835
+     },
+     "muse-wonder-1.0": {
+      "first_usd": 4.066321,
+      "follow_up_usd": 0.20628290000000002,
+      "follow_up_vs_first": 0.050729615295988684,
+      "session_mean_usd": 0.399284805
+     }
+    },
+    "prefix_hashes_per_repository": null,
+    "prefix_tokens": 1015800,
+    "question_tokens": 781,
+    "questions": 80,
+    "recall": 0.06999999999999999,
+    "suffix_tokens": 0
+   }
+  ],
+  "session": 20,
+  "tokenizer": "tokenizer.json"
+ },
+ "counter": "exact:muse-tokenizer/tokenizer.json",
+ "counter_label": "counted with the Muse Spark Open tokenizer (Hugging Face revision 4239e4db)",
+ "estimate_counter": "estimate:utf8-bytes/4",
+ "generated": "2026-10-27",
+ "merged_until": "2026-10-25T23:59:59Z",
+ "paired": [],
+ "prices": {
+  "date": "2026-10-26",
+  "models": {
+   "meta-models/muse-spark-open": {
+    "cached_input": 0.15,
+    "input": 1.25,
+    "note": "Muse Spark Open on Baseten's Model APIs (https://www.baseten.co/pricing)",
+    "output": 4.25,
+    "provider": "baseten"
+   },
+   "mock": {
+    "cached_input": 0.15,
+    "input": 1.25,
+    "note": "the mock server, priced like muse-spark-1.3 to test the spend caps",
+    "output": 4.25,
+    "provider": "mock"
+   },
+   "muse-spark-1.2": {
+    "cached_input": 0.15,
+    "input": 1.25,
+    "output": 4.25,
+    "provider": "meta"
+   },
+   "muse-spark-1.3": {
+    "cached_input": 0.15,
+    "input": 1.25,
+    "output": 4.25,
+    "provider": "meta"
+   },
+   "muse-spark-1.3-contributor": {
+    "cached_input": 0.002,
+    "input": 0.1,
+    "note": "Contributor mode: Meta may use the prompts, context and responses to train future models; 150 requests and 3M tokens per minute (same page, read 2026-10-26)",
+    "output": 0.2,
+    "provider": "meta"
+   },
+   "muse-spark-open": {
+    "cached_input": 0.0,
+    "input": 0.0,
+    "note": "our own GPUs: no per-token price",
+    "output": 0.0,
+    "provider": "local"
+   },
+   "muse-wonder-1.0": {
+    "cached_input": 0.2,
+    "input": 4.0,
+    "output": 20.0,
+    "provider": "meta"
+   }
+  },
+  "source": "https://dev.meta.ai/docs/pricing-rate-limits (Standard mode; the page states no long-context surcharge) and https://www.baseten.co/pricing (Model APIs), both read 2026-10-26",
+  "unit": "US dollars per million tokens"
+ },
+ "recall": [
+  {
+   "errors": 0,
+   "label": "pack 2a46edb, built before the event: held-out repositories",
+   "pack_source": "pack",
+   "rows": [
+    {
+     "all": 0.3333333333333333,
+     "any": 0.5666666666666667,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 19,
+      "manifest-only": 8,
+      "ranked-cut": 8,
+      "unranked": 13
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1656.6,
+      "median": 1090.9,
+      "p90": 1396.2
+     },
+     "recall": 0.43833333333333335,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": {
+      "max": 53.606,
+      "median": 12.553,
+      "p90": 19.944
+     },
+     "source": "graphicle pack",
+     "tokens": 65211.0
+    },
+    {
+     "all": 0.32142857142857145,
+     "any": 0.5357142857142857,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 17,
+      "manifest-only": 8,
+      "ranked-cut": 7,
+      "unranked": 13
+     },
+     "n": 28,
+     "peak_mib": {
+      "max": 1656.6,
+      "median": 1110.15,
+      "p90": 1396.2
+     },
+     "recall": 0.4160714285714286,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 53.606,
+      "median": 12.553,
+      "p90": 19.944
+     },
+     "source": "graphicle pack",
+     "tokens": 65191.5
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65521.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 28,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65521.0
+    },
+    {
+     "all": 0.43333333333333335,
+     "any": 0.6666666666666666,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 25,
+      "manifest-only": 4,
+      "ranked-cut": 6,
+      "unranked": 13
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1664.3,
+      "median": 1086.35,
+      "p90": 1386.5
+     },
+     "recall": 0.5466666666666666,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": {
+      "max": 53.743,
+      "median": 12.6645,
+      "p90": 19.873
+     },
+     "source": "graphicle pack",
+     "tokens": 130832.46666666666
+    },
+    {
+     "all": 0.42857142857142855,
+     "any": 0.6428571428571429,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 23,
+      "manifest-only": 3,
+      "ranked-cut": 6,
+      "unranked": 13
+     },
+     "n": 28,
+     "peak_mib": {
+      "max": 1664.3,
+      "median": 1096.6,
+      "p90": 1386.5
+     },
+     "recall": 0.5321428571428571,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 53.743,
+      "median": 12.6645,
+      "p90": 19.873
+     },
+     "source": "graphicle pack",
+     "tokens": 130834.10714285714
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131069.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 28,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131069.0
+    },
+    {
+     "all": 0.43333333333333335,
+     "any": 0.6666666666666666,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 25,
+      "manifest-only": 4,
+      "ranked-cut": 6,
+      "unranked": 13
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1656.7,
+      "median": 1093.65,
+      "p90": 1384.3
+     },
+     "recall": 0.5466666666666666,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": {
+      "max": 54.341,
+      "median": 13.3205,
+      "p90": 21.168
+     },
+     "source": "graphicle pack",
+     "tokens": 261907.26666666666
+    },
+    {
+     "all": 0.42857142857142855,
+     "any": 0.6428571428571429,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 23,
+      "manifest-only": 3,
+      "ranked-cut": 6,
+      "unranked": 13
+     },
+     "n": 28,
+     "peak_mib": {
+      "max": 1656.7,
+      "median": 1096.55,
+      "p90": 1384.3
+     },
+     "recall": 0.5321428571428571,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 54.341,
+      "median": 13.3205,
+      "p90": 21.168
+     },
+     "source": "graphicle pack",
+     "tokens": 261897.7142857143
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262140.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 28,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262140.0
+    },
+    {
+     "all": 0.5,
+     "any": 0.7,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 29,
+      "manifest-only": 5,
+      "ranked-cut": 1,
+      "unranked": 13
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1656.0,
+      "median": 1083.65,
+      "p90": 1393.4
+     },
+     "recall": 0.6116666666666667,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": {
+      "max": 55.01,
+      "median": 13.594000000000001,
+      "p90": 21.277
+     },
+     "source": "graphicle pack",
+     "tokens": 523735.1
+    },
+    {
+     "all": 0.4642857142857143,
+     "any": 0.6785714285714286,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 26,
+      "manifest-only": 5,
+      "ranked-cut": 1,
+      "unranked": 13
+     },
+     "n": 28,
+     "peak_mib": {
+      "max": 1656.0,
+      "median": 1095.9,
+      "p90": 1393.4
+     },
+     "recall": 0.5839285714285715,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 55.01,
+      "median": 13.594000000000001,
+      "p90": 21.277
+     },
+     "source": "graphicle pack",
+     "tokens": 523741.4285714286
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524285.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 28,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524285.0
+    },
+    {
+     "all": 0.6666666666666666,
+     "any": 0.8333333333333334,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 34,
+      "manifest-only": 1,
+      "unranked": 13
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1656.3,
+      "median": 1184.0,
+      "p90": 1385.2
+     },
+     "recall": 0.7616666666666667,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": {
+      "max": 58.048,
+      "median": 14.907,
+      "p90": 22.819
+     },
+     "source": "graphicle pack",
+     "tokens": 1013897.9333333333
+    },
+    {
+     "all": 0.6428571428571429,
+     "any": 0.8214285714285714,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 31,
+      "manifest-only": 1,
+      "unranked": 13
+     },
+     "n": 28,
+     "peak_mib": {
+      "max": 1656.3,
+      "median": 1185.0,
+      "p90": 1385.2
+     },
+     "recall": 0.7446428571428572,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 58.048,
+      "median": 14.907,
+      "p90": 22.819
+     },
+     "source": "graphicle pack",
+     "tokens": 1013994.1428571428
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015796.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 28,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "elasticsearch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015796.0
+    },
+    {
+     "all": 0.5666666666666667,
+     "any": 0.6666666666666666,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 24,
+      "manifest-only": 7,
+      "ranked-cut": 6,
+      "unranked": 5
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 977.4,
+      "median": 829.85,
+      "p90": 930.5
+     },
+     "recall": 0.6027777777777777,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": {
+      "max": 31.364,
+      "median": 10.551,
+      "p90": 22.48
+     },
+     "source": "graphicle pack",
+     "tokens": 65129.96666666667
+    },
+    {
+     "all": 0.47619047619047616,
+     "any": 0.5238095238095238,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 13,
+      "manifest-only": 5,
+      "ranked-cut": 5,
+      "unranked": 5
+     },
+     "n": 21,
+     "peak_mib": {
+      "max": 977.4,
+      "median": 854.6,
+      "p90": 931.9
+     },
+     "recall": 0.4880952380952381,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 31.364,
+      "median": 8.304,
+      "p90": 22.723
+     },
+     "source": "graphicle pack",
+     "tokens": 65123.23809523809
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65526.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 21,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65526.0
+    },
+    {
+     "all": 0.6666666666666666,
+     "any": 0.7666666666666667,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 29,
+      "manifest-only": 3,
+      "ranked-cut": 5,
+      "unranked": 5
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 991.1,
+      "median": 842.7,
+      "p90": 937.5
+     },
+     "recall": 0.7194444444444444,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": {
+      "max": 31.608,
+      "median": 10.552,
+      "p90": 22.583
+     },
+     "source": "graphicle pack",
+     "tokens": 130504.66666666667
+    },
+    {
+     "all": 0.6190476190476191,
+     "any": 0.6666666666666666,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 18,
+      "manifest-only": 1,
+      "ranked-cut": 4,
+      "unranked": 5
+     },
+     "n": 21,
+     "peak_mib": {
+      "max": 991.1,
+      "median": 856.9,
+      "p90": 958.9
+     },
+     "recall": 0.6547619047619048,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 31.608,
+      "median": 8.222,
+      "p90": 22.673
+     },
+     "source": "graphicle pack",
+     "tokens": 130490.42857142857
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131067.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 21,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131067.0
+    },
+    {
+     "all": 0.6,
+     "any": 0.7,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 27,
+      "manifest-only": 7,
+      "ranked-cut": 3,
+      "unranked": 5
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 986.3,
+      "median": 837.95,
+      "p90": 935.0
+     },
+     "recall": 0.6527777777777778,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": {
+      "max": 33.387,
+      "median": 10.9205,
+      "p90": 23.711
+     },
+     "source": "graphicle pack",
+     "tokens": 261273.93333333332
+    },
+    {
+     "all": 0.5238095238095238,
+     "any": 0.5714285714285714,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 16,
+      "manifest-only": 5,
+      "ranked-cut": 2,
+      "unranked": 5
+     },
+     "n": 21,
+     "peak_mib": {
+      "max": 986.3,
+      "median": 856.7,
+      "p90": 950.1
+     },
+     "recall": 0.5595238095238095,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 33.387,
+      "median": 9.856,
+      "p90": 24.013
+     },
+     "source": "graphicle pack",
+     "tokens": 261256.04761904763
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262141.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 21,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262141.0
+    },
+    {
+     "all": 0.6666666666666666,
+     "any": 0.7666666666666667,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 29,
+      "manifest-only": 6,
+      "ranked-cut": 2,
+      "unranked": 5
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 981.6,
+      "median": 827.3,
+      "p90": 932.2
+     },
+     "recall": 0.7194444444444444,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": {
+      "max": 33.986,
+      "median": 11.504999999999999,
+      "p90": 23.789
+     },
+     "source": "graphicle pack",
+     "tokens": 522814.8
+    },
+    {
+     "all": 0.6190476190476191,
+     "any": 0.6666666666666666,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 18,
+      "manifest-only": 4,
+      "ranked-cut": 1,
+      "unranked": 5
+     },
+     "n": 21,
+     "peak_mib": {
+      "max": 981.6,
+      "median": 856.7,
+      "p90": 954.1
+     },
+     "recall": 0.6547619047619048,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 33.986,
+      "median": 10.204,
+      "p90": 24.8
+     },
+     "source": "graphicle pack",
+     "tokens": 522844.3333333333
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524283.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 21,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524283.0
+    },
+    {
+     "all": 0.7666666666666667,
+     "any": 0.8333333333333334,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 34,
+      "manifest-only": 3,
+      "unranked": 5
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1057.3,
+      "median": 935.9000000000001,
+      "p90": 971.7
+     },
+     "recall": 0.8,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": {
+      "max": 33.84,
+      "median": 12.947,
+      "p90": 25.129
+     },
+     "source": "graphicle pack",
+     "tokens": 1012924.2333333333
+    },
+    {
+     "all": 0.7142857142857143,
+     "any": 0.7619047619047619,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 21,
+      "manifest-only": 2,
+      "unranked": 5
+     },
+     "n": 21,
+     "peak_mib": {
+      "max": 979.5,
+      "median": 934.0,
+      "p90": 971.7
+     },
+     "recall": 0.7301587301587302,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": {
+      "max": 33.84,
+      "median": 10.601,
+      "p90": 25.153
+     },
+     "source": "graphicle pack",
+     "tokens": 1012978.0952380953
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015805.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 21,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "pytorch",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015805.0
+    },
+    {
+     "all": 0.6333333333333333,
+     "any": 0.6333333333333333,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 25,
+      "manifest-only": 4,
+      "ranked-cut": 2,
+      "unranked": 10
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1001.6,
+      "median": 685.25,
+      "p90": 913.1
+     },
+     "recall": 0.6333333333333333,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": {
+      "max": 25.022,
+      "median": 5.229,
+      "p90": 10.422
+     },
+     "source": "graphicle pack",
+     "tokens": 65272.666666666664
+    },
+    {
+     "all": 0.56,
+     "any": 0.56,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 18,
+      "manifest-only": 4,
+      "ranked-cut": 2,
+      "unranked": 10
+     },
+     "n": 25,
+     "peak_mib": {
+      "max": 941.3,
+      "median": 681.1,
+      "p90": 839.1
+     },
+     "recall": 0.56,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": {
+      "max": 14.206,
+      "median": 5.073,
+      "p90": 8.789
+     },
+     "source": "graphicle pack",
+     "tokens": 65264.44
+    },
+    {
+     "all": 0.03333333333333333,
+     "any": 0.03333333333333333,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.03333333333333333,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65533.0
+    },
+    {
+     "all": 0.04,
+     "any": 0.04,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 25,
+     "peak_mib": null,
+     "recall": 0.04,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65533.0
+    },
+    {
+     "all": 0.6333333333333333,
+     "any": 0.6666666666666666,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 26,
+      "manifest-only": 3,
+      "ranked-cut": 2,
+      "unranked": 10
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 987.6,
+      "median": 689.9000000000001,
+      "p90": 902.9
+     },
+     "recall": 0.6416666666666667,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": {
+      "max": 25.137,
+      "median": 5.390000000000001,
+      "p90": 10.693
+     },
+     "source": "graphicle pack",
+     "tokens": 130658.93333333333
+    },
+    {
+     "all": 0.56,
+     "any": 0.6,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 19,
+      "manifest-only": 3,
+      "ranked-cut": 2,
+      "unranked": 10
+     },
+     "n": 25,
+     "peak_mib": {
+      "max": 945.3,
+      "median": 685.0,
+      "p90": 809.8
+     },
+     "recall": 0.57,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": {
+      "max": 14.061,
+      "median": 4.978,
+      "p90": 9.0
+     },
+     "source": "graphicle pack",
+     "tokens": 130665.76
+    },
+    {
+     "all": 0.03333333333333333,
+     "any": 0.03333333333333333,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.03333333333333333,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131071.0
+    },
+    {
+     "all": 0.04,
+     "any": 0.04,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 25,
+     "peak_mib": null,
+     "recall": 0.04,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131071.0
+    },
+    {
+     "all": 0.6333333333333333,
+     "any": 0.6666666666666666,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 26,
+      "manifest-only": 3,
+      "ranked-cut": 2,
+      "unranked": 10
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1007.1,
+      "median": 694.9000000000001,
+      "p90": 923.6
+     },
+     "recall": 0.6416666666666667,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": {
+      "max": 25.949,
+      "median": 6.6065000000000005,
+      "p90": 11.207
+     },
+     "source": "graphicle pack",
+     "tokens": 261499.2
+    },
+    {
+     "all": 0.56,
+     "any": 0.6,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 19,
+      "manifest-only": 3,
+      "ranked-cut": 2,
+      "unranked": 10
+     },
+     "n": 25,
+     "peak_mib": {
+      "max": 943.2,
+      "median": 685.4,
+      "p90": 836.6
+     },
+     "recall": 0.57,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": {
+      "max": 15.164,
+      "median": 6.178,
+      "p90": 9.516
+     },
+     "source": "graphicle pack",
+     "tokens": 261507.76
+    },
+    {
+     "all": 0.03333333333333333,
+     "any": 0.03333333333333333,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.03333333333333333,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262127.0
+    },
+    {
+     "all": 0.04,
+     "any": 0.04,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 25,
+     "peak_mib": null,
+     "recall": 0.04,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262127.0
+    },
+    {
+     "all": 0.7,
+     "any": 0.7333333333333333,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 28,
+      "manifest-only": 1,
+      "ranked-cut": 2,
+      "unranked": 10
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1004.3,
+      "median": 735.2,
+      "p90": 916.9
+     },
+     "recall": 0.7083333333333334,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": {
+      "max": 26.807,
+      "median": 7.05,
+      "p90": 12.327
+     },
+     "source": "graphicle pack",
+     "tokens": 523154.86666666664
+    },
+    {
+     "all": 0.64,
+     "any": 0.68,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 21,
+      "manifest-only": 1,
+      "ranked-cut": 2,
+      "unranked": 10
+     },
+     "n": 25,
+     "peak_mib": {
+      "max": 949.2,
+      "median": 722.9,
+      "p90": 824.2
+     },
+     "recall": 0.65,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": {
+      "max": 15.336,
+      "median": 6.804,
+      "p90": 10.066
+     },
+     "source": "graphicle pack",
+     "tokens": 523160.84
+    },
+    {
+     "all": 0.03333333333333333,
+     "any": 0.03333333333333333,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.03333333333333333,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524288.0
+    },
+    {
+     "all": 0.04,
+     "any": 0.04,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 25,
+     "peak_mib": null,
+     "recall": 0.04,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524288.0
+    },
+    {
+     "all": 0.7333333333333333,
+     "any": 0.7666666666666667,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 29,
+      "manifest-only": 2,
+      "unranked": 10
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1041.1,
+      "median": 971.35,
+      "p90": 1023.3
+     },
+     "recall": 0.7416666666666667,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": {
+      "max": 27.793,
+      "median": 7.646,
+      "p90": 13.884
+     },
+     "source": "graphicle pack",
+     "tokens": 1013852.4666666667
+    },
+    {
+     "all": 0.68,
+     "any": 0.72,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 22,
+      "manifest-only": 2,
+      "unranked": 10
+     },
+     "n": 25,
+     "peak_mib": {
+      "max": 1041.1,
+      "median": 970.1,
+      "p90": 1019.2
+     },
+     "recall": 0.69,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": {
+      "max": 16.29,
+      "median": 7.433,
+      "p90": 11.423
+     },
+     "source": "graphicle pack",
+     "tokens": 1013844.48
+    },
+    {
+     "all": 0.06666666666666667,
+     "any": 0.06666666666666667,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.06666666666666667,
+     "repo": "vscode",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015797.0
+    },
+    {
+     "all": 0.08,
+     "any": 0.08,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 25,
+     "peak_mib": null,
+     "recall": 0.08,
+     "repo": "vscode",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015797.0
+    }
+   ],
+   "tokenizer": "tokenizer.json"
+  },
+  {
+   "errors": 0,
+   "label": "pack 2a46edb, built before the event: development repositories (used for tuning)",
+   "pack_source": "pack",
+   "rows": [
+    {
+     "all": 0.925,
+     "any": 0.95,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 61,
+      "manifest-only": 1,
+      "ranked-cut": 2
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1105.0,
+      "median": 667.7,
+      "p90": 883.0
+     },
+     "recall": 0.9416666666666668,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": {
+      "max": 13.558,
+      "median": 5.914,
+      "p90": 9.998
+     },
+     "source": "graphicle pack",
+     "tokens": 64823.5
+    },
+    {
+     "all": 0.9,
+     "any": 0.9333333333333333,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 46,
+      "manifest-only": 1,
+      "ranked-cut": 2
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1105.0,
+      "median": 666.85,
+      "p90": 861.0
+     },
+     "recall": 0.9222222222222223,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": {
+      "max": 13.558,
+      "median": 5.9785,
+      "p90": 9.998
+     },
+     "source": "graphicle pack",
+     "tokens": 64821.26666666667
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65534.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65534.0
+    },
+    {
+     "all": 0.925,
+     "any": 0.95,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 61,
+      "manifest-only": 2,
+      "ranked-cut": 1
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1082.0,
+      "median": 683.4000000000001,
+      "p90": 880.3
+     },
+     "recall": 0.9416666666666668,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": {
+      "max": 13.688,
+      "median": 6.132,
+      "p90": 9.976
+     },
+     "source": "graphicle pack",
+     "tokens": 130188.125
+    },
+    {
+     "all": 0.9,
+     "any": 0.9333333333333333,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 46,
+      "manifest-only": 2,
+      "ranked-cut": 1
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1082.0,
+      "median": 678.45,
+      "p90": 859.8
+     },
+     "recall": 0.9222222222222223,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": {
+      "max": 13.688,
+      "median": 6.276999999999999,
+      "p90": 9.976
+     },
+     "source": "graphicle pack",
+     "tokens": 130183.8
+    },
+    {
+     "all": 0.025,
+     "any": 0.05,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.03333333333333333,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131072.0
+    },
+    {
+     "all": 0.03333333333333333,
+     "any": 0.06666666666666667,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.04444444444444444,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131072.0
+    },
+    {
+     "all": 0.925,
+     "any": 0.95,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 61,
+      "manifest-only": 2,
+      "ranked-cut": 1
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1100.7,
+      "median": 665.2,
+      "p90": 894.3
+     },
+     "recall": 0.9416666666666668,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": {
+      "max": 14.47,
+      "median": 6.697,
+      "p90": 10.858
+     },
+     "source": "graphicle pack",
+     "tokens": 260994.7
+    },
+    {
+     "all": 0.9,
+     "any": 0.9333333333333333,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 46,
+      "manifest-only": 2,
+      "ranked-cut": 1
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1100.7,
+      "median": 665.2,
+      "p90": 864.8
+     },
+     "recall": 0.9222222222222223,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": {
+      "max": 14.47,
+      "median": 6.745,
+      "p90": 10.858
+     },
+     "source": "graphicle pack",
+     "tokens": 260989.5
+    },
+    {
+     "all": 0.05,
+     "any": 0.075,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.05833333333333333,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262127.0
+    },
+    {
+     "all": 0.03333333333333333,
+     "any": 0.06666666666666667,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.04444444444444444,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262127.0
+    },
+    {
+     "all": 1.0,
+     "any": 1.0,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 64
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1101.8,
+      "median": 667.75,
+      "p90": 884.3
+     },
+     "recall": 1.0,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": {
+      "max": 15.371,
+      "median": 7.083,
+      "p90": 11.418
+     },
+     "source": "graphicle pack",
+     "tokens": 522503.025
+    },
+    {
+     "all": 1.0,
+     "any": 1.0,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 49
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1101.8,
+      "median": 667.75,
+      "p90": 865.4
+     },
+     "recall": 1.0,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": {
+      "max": 15.371,
+      "median": 7.1965,
+      "p90": 11.418
+     },
+     "source": "graphicle pack",
+     "tokens": 522506.5333333333
+    },
+    {
+     "all": 0.075,
+     "any": 0.1,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.08333333333333333,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524284.0
+    },
+    {
+     "all": 0.06666666666666667,
+     "any": 0.1,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.07777777777777777,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524284.0
+    },
+    {
+     "all": 1.0,
+     "any": 1.0,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 64
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1112.7,
+      "median": 903.35,
+      "p90": 953.6
+     },
+     "recall": 1.0,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": {
+      "max": 16.929,
+      "median": 8.2985,
+      "p90": 12.043
+     },
+     "source": "graphicle pack",
+     "tokens": 1012449.55
+    },
+    {
+     "all": 1.0,
+     "any": 1.0,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 49
+     },
+     "n": 30,
+     "peak_mib": {
+      "max": 1112.7,
+      "median": 903.2,
+      "p90": 948.2
+     },
+     "recall": 1.0,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": {
+      "max": 16.929,
+      "median": 8.5445,
+      "p90": 12.043
+     },
+     "source": "graphicle pack",
+     "tokens": 1012470.2333333333
+    },
+    {
+     "all": 0.125,
+     "any": 0.125,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.125,
+     "repo": "home-assistant",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015808.0
+    },
+    {
+     "all": 0.1,
+     "any": 0.1,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 30,
+     "peak_mib": null,
+     "recall": 0.1,
+     "repo": "home-assistant",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015808.0
+    },
+    {
+     "all": 0.775,
+     "any": 0.9,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 47,
+      "manifest-only": 6,
+      "ranked-cut": 2,
+      "unranked": 8
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1861.7,
+      "median": 926.35,
+      "p90": 1198.8
+     },
+     "recall": 0.8504166666666666,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": {
+      "max": 18.036,
+      "median": 9.032,
+      "p90": 14.201
+     },
+     "source": "graphicle pack",
+     "tokens": 65322.175
+    },
+    {
+     "all": 0.6470588235294118,
+     "any": 0.8823529411764706,
+     "arm": "pack",
+     "budget": "64K",
+     "gold_status": {
+      "inside": 20,
+      "manifest-only": 2,
+      "ranked-cut": 2,
+      "unranked": 6
+     },
+     "n": 17,
+     "peak_mib": {
+      "max": 1284.8,
+      "median": 847.5,
+      "p90": 1071.9
+     },
+     "recall": 0.7852941176470588,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": {
+      "max": 15.219,
+      "median": 6.842,
+      "p90": 10.388
+     },
+     "source": "graphicle pack",
+     "tokens": 65325.64705882353
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65536.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "64K",
+     "gold_status": {},
+     "n": 17,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 65536.0
+    },
+    {
+     "all": 0.825,
+     "any": 0.925,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 50,
+      "manifest-only": 5,
+      "unranked": 8
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1865.1,
+      "median": 931.5,
+      "p90": 1198.6
+     },
+     "recall": 0.88375,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": {
+      "max": 18.467,
+      "median": 9.008,
+      "p90": 14.378
+     },
+     "source": "graphicle pack",
+     "tokens": 130748.975
+    },
+    {
+     "all": 0.7058823529411765,
+     "any": 0.8823529411764706,
+     "arm": "pack",
+     "budget": "128K",
+     "gold_status": {
+      "inside": 21,
+      "manifest-only": 3,
+      "unranked": 6
+     },
+     "n": 17,
+     "peak_mib": {
+      "max": 1286.8,
+      "median": 865.1,
+      "p90": 1056.4
+     },
+     "recall": 0.8147058823529412,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": {
+      "max": 15.162,
+      "median": 6.936,
+      "p90": 10.562
+     },
+     "source": "graphicle pack",
+     "tokens": 130758.41176470589
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131060.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "128K",
+     "gold_status": {},
+     "n": 17,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 131060.0
+    },
+    {
+     "all": 0.825,
+     "any": 0.95,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 51,
+      "manifest-only": 4,
+      "unranked": 8
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1863.9,
+      "median": 925.5,
+      "p90": 1199.1
+     },
+     "recall": 0.8920833333333335,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": {
+      "max": 18.872,
+      "median": 9.625499999999999,
+      "p90": 14.761
+     },
+     "source": "graphicle pack",
+     "tokens": 261580.875
+    },
+    {
+     "all": 0.7058823529411765,
+     "any": 0.8823529411764706,
+     "arm": "pack",
+     "budget": "256K",
+     "gold_status": {
+      "inside": 21,
+      "manifest-only": 3,
+      "unranked": 6
+     },
+     "n": 17,
+     "peak_mib": {
+      "max": 1286.8,
+      "median": 857.1,
+      "p90": 1071.3
+     },
+     "recall": 0.8147058823529412,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": {
+      "max": 16.191,
+      "median": 7.331,
+      "p90": 11.125
+     },
+     "source": "graphicle pack",
+     "tokens": 261611.23529411765
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262144.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "256K",
+     "gold_status": {},
+     "n": 17,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 262144.0
+    },
+    {
+     "all": 0.825,
+     "any": 0.975,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 54,
+      "manifest-only": 1,
+      "unranked": 8
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1861.0,
+      "median": 929.45,
+      "p90": 1199.7
+     },
+     "recall": 0.9179166666666667,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": {
+      "max": 19.234,
+      "median": 10.211500000000001,
+      "p90": 15.305
+     },
+     "source": "graphicle pack",
+     "tokens": 523136.875
+    },
+    {
+     "all": 0.7058823529411765,
+     "any": 0.9411764705882353,
+     "arm": "pack",
+     "budget": "512K",
+     "gold_status": {
+      "inside": 23,
+      "manifest-only": 1,
+      "unranked": 6
+     },
+     "n": 17,
+     "peak_mib": {
+      "max": 1287.6,
+      "median": 855.7,
+      "p90": 1060.8
+     },
+     "recall": 0.8558823529411765,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": {
+      "max": 16.064,
+      "median": 8.59,
+      "p90": 11.526
+     },
+     "source": "graphicle pack",
+     "tokens": 523124.29411764705
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524287.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.0,
+     "arm": "truncation",
+     "budget": "512K",
+     "gold_status": {},
+     "n": 17,
+     "peak_mib": null,
+     "recall": 0.0,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 524287.0
+    },
+    {
+     "all": 0.825,
+     "any": 0.975,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 55,
+      "unranked": 8
+     },
+     "n": 40,
+     "peak_mib": {
+      "max": 1862.6,
+      "median": 958.25,
+      "p90": 1199.1
+     },
+     "recall": 0.9241666666666667,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": {
+      "max": 20.412,
+      "median": 11.2385,
+      "p90": 16.218
+     },
+     "source": "graphicle pack",
+     "tokens": 1013554.625
+    },
+    {
+     "all": 0.7058823529411765,
+     "any": 0.9411764705882353,
+     "arm": "pack",
+     "budget": "1M",
+     "gold_status": {
+      "inside": 24,
+      "unranked": 6
+     },
+     "n": 17,
+     "peak_mib": {
+      "max": 1289.0,
+      "median": 946.3,
+      "p90": 1069.3
+     },
+     "recall": 0.8705882352941177,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": {
+      "max": 17.271,
+      "median": 9.66,
+      "p90": 12.399
+     },
+     "source": "graphicle pack",
+     "tokens": 1013551.2941176471
+    },
+    {
+     "all": 0.0,
+     "any": 0.025,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 40,
+     "peak_mib": null,
+     "recall": 0.015,
+     "repo": "kubernetes",
+     "scope": "all",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015791.0
+    },
+    {
+     "all": 0.0,
+     "any": 0.058823529411764705,
+     "arm": "truncation",
+     "budget": "1M",
+     "gold_status": {},
+     "n": 17,
+     "peak_mib": null,
+     "recall": 0.03529411764705882,
+     "repo": "kubernetes",
+     "scope": "without_named",
+     "seconds": null,
+     "source": "truncation (exact:muse-tokenizer/tokenizer.json)",
+     "tokens": 1015791.0
+    }
+   ],
+   "tokenizer": "tokenizer.json"
+  }
+ ],
+ "registered": [
+  {
+   "cap_usd": 45.0,
+   "description": "Meta, grid C: the 128K arms on the 90 held-out questions",
+   "estimate_cached_usd": 34.48,
+   "estimate_uncached_usd": 74.28,
+   "grid": "G1",
+   "items": [
+    {
+     "arm": "noctx",
+     "budget": null,
+     "first": null,
+     "questions": 90,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    },
+    {
+     "arm": "trunc",
+     "budget": "128K",
+     "first": null,
+     "questions": 90,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    },
+    {
+     "arm": "pack",
+     "budget": "128K",
+     "first": null,
+     "questions": 90,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    },
+    {
+     "arm": "agent",
+     "budget": null,
+     "first": null,
+     "questions": 90,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    }
+   ],
+   "model": "muse-spark-1.3",
+   "provider": "meta"
+  },
+  {
+   "cap_usd": 45.0,
+   "description": "Meta, the cache-aware pack at 1M on the first 10 held-out questions of each repository",
+   "estimate_cached_usd": 11.48,
+   "estimate_uncached_usd": 38.64,
+   "grid": "G2",
+   "items": [
+    {
+     "arm": "pack-cache",
+     "budget": "1M",
+     "first": 10,
+     "questions": 30,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    }
+   ],
+   "model": "muse-spark-1.3",
+   "provider": "meta"
+  },
+  {
+   "cap_usd": 100.0,
+   "description": "Baseten, Muse Spark Open: the 1M answer arms on the held-out questions",
+   "estimate_cached_usd": 87.39,
+   "estimate_uncached_usd": 272.09,
+   "grid": "G3",
+   "items": [
+    {
+     "arm": "noctx",
+     "budget": null,
+     "first": null,
+     "questions": 90,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    },
+    {
+     "arm": "trunc",
+     "budget": "1M",
+     "first": null,
+     "questions": 90,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    },
+    {
+     "arm": "pack-cache",
+     "budget": "1M",
+     "first": null,
+     "questions": 90,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    },
+    {
+     "arm": "pack",
+     "budget": "1M",
+     "first": 10,
+     "questions": 30,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    }
+   ],
+   "model": "meta-models/muse-spark-open",
+   "provider": "baseten"
+  },
+  {
+   "cap_usd": 45.0,
+   "description": "Meta, a Muse Wonder subset, only if money is left",
+   "estimate_cached_usd": 6.14,
+   "estimate_uncached_usd": 18.24,
+   "grid": "G4",
+   "items": [
+    {
+     "arm": "pack-cache",
+     "budget": "128K",
+     "first": 10,
+     "questions": 30,
+     "repos": [
+      "pytorch",
+      "vscode",
+      "elasticsearch"
+     ]
+    }
+   ],
+   "model": "muse-wonder-1.0",
+   "provider": "meta"
+  }
+ ],
+ "repos": [
+  {
+   "S": "d5cbb79be9160faa3a7d7323e3294c3781c16ae7",
+   "S_date": "2026-09-12T20:05:12Z",
+   "estimate": {
+    "tokens_all": 68353600,
+    "tokens_nontest_source": 12186977,
+    "tokens_without_vendored_generated": 39695631
+   },
+   "funnel": {
+    "dropped_applies": 4,
+    "dropped_diff": 0,
+    "dropped_duplicate": 0,
+    "dropped_files": 1,
+    "dropped_gold": 0,
+    "dropped_issue": 0,
+    "dropped_linked": 8,
+    "dropped_prefilter": 26,
+    "dropped_window": 0,
+    "fetched": 89,
+    "kept": 40,
+    "names_gold_path": 23,
+    "passed": 50,
+    "sampled": true
+   },
+   "graphicle": "graphicle 0.1.8 (core)",
+   "index_bytes": 6322956744,
+   "index_peak_rss_mib": 7418.1,
+   "index_seconds": 267.5,
+   "name": "kubernetes",
+   "role": "development",
+   "slug": "kubernetes/kubernetes",
+   "text_files": 30388,
+   "tokens_all": 74354864,
+   "tokens_nontest_source": 12015140,
+   "tokens_without_vendored_generated": 41397282
+  },
+  {
+   "S": "09e3474f91be03d4ac5a70a698474986fc759bcf",
+   "S_date": "2026-09-13T20:00:07Z",
+   "estimate": {
+    "tokens_all": 47984327,
+    "tokens_nontest_source": 15278132,
+    "tokens_without_vendored_generated": 47753016
+   },
+   "funnel": {
+    "dropped_applies": 114,
+    "dropped_diff": 0,
+    "dropped_duplicate": 4,
+    "dropped_files": 1,
+    "dropped_gold": 8,
+    "dropped_issue": 0,
+    "dropped_linked": 15,
+    "dropped_prefilter": 129,
+    "dropped_window": 0,
+    "fetched": 604,
+    "kept": 40,
+    "names_gold_path": 10,
+    "passed": 333,
+    "sampled": true
+   },
+   "graphicle": "graphicle 0.1.8 (core)",
+   "index_bytes": 4684810429,
+   "index_peak_rss_mib": 5606.0,
+   "index_seconds": 188.0,
+   "name": "home-assistant",
+   "role": "development",
+   "slug": "home-assistant/core",
+   "text_files": 27850,
+   "tokens_all": 47157282,
+   "tokens_nontest_source": 13476414,
+   "tokens_without_vendored_generated": 46898763
+  },
+  {
+   "S": "b8bd7cf750ea02a2390d8a5440261e2c6ed5ddc7",
+   "S_date": "2026-09-13T22:40:38Z",
+   "estimate": {
+    "tokens_all": 48127454,
+    "tokens_nontest_source": 27080172,
+    "tokens_without_vendored_generated": 44783726
+   },
+   "funnel": {
+    "dropped_applies": 17,
+    "dropped_diff": 0,
+    "dropped_duplicate": 0,
+    "dropped_files": 0,
+    "dropped_gold": 0,
+    "dropped_issue": 1,
+    "dropped_linked": 730,
+    "dropped_prefilter": 24,
+    "dropped_window": 0,
+    "fetched": 860,
+    "kept": 30,
+    "names_gold_path": 9,
+    "passed": 88,
+    "sampled": true
+   },
+   "graphicle": "graphicle 0.1.8 (core)",
+   "index_bytes": 4810039124,
+   "index_peak_rss_mib": 6252.0,
+   "index_seconds": 254.6,
+   "name": "pytorch",
+   "role": "held-out",
+   "slug": "pytorch/pytorch",
+   "text_files": 21685,
+   "tokens_all": 49758766,
+   "tokens_nontest_source": 28658617,
+   "tokens_without_vendored_generated": 46308068
+  },
+  {
+   "S": "3e8601c5f63f5b2358e0fbbfb825fbbfd72cbe2b",
+   "S_date": "2026-09-13T21:23:17Z",
+   "estimate": {
+    "tokens_all": 59812977,
+    "tokens_nontest_source": 29362605,
+    "tokens_without_vendored_generated": 56733266
+   },
+   "funnel": {
+    "dropped_applies": 234,
+    "dropped_diff": 0,
+    "dropped_duplicate": 2,
+    "dropped_files": 3,
+    "dropped_gold": 37,
+    "dropped_issue": 2,
+    "dropped_linked": 71,
+    "dropped_prefilter": 180,
+    "dropped_window": 0,
+    "fetched": 715,
+    "kept": 30,
+    "names_gold_path": 5,
+    "passed": 186,
+    "sampled": true
+   },
+   "graphicle": "graphicle 0.1.8 (core)",
+   "index_bytes": 5390816806,
+   "index_peak_rss_mib": 7509.7,
+   "index_seconds": 278.1,
+   "name": "vscode",
+   "role": "held-out",
+   "slug": "microsoft/vscode",
+   "text_files": 18541,
+   "tokens_all": 63201298,
+   "tokens_nontest_source": 30570400,
+   "tokens_without_vendored_generated": 59092253
+  },
+  {
+   "S": "d8a9ab59389dee57cc9e50f41f217ec49fda12f0",
+   "S_date": "2026-09-13T20:09:26Z",
+   "estimate": {
+    "tokens_all": 103027588,
+    "tokens_nontest_source": 36124961,
+    "tokens_without_vendored_generated": 98942914
+   },
+   "funnel": {
+    "dropped_applies": 231,
+    "dropped_diff": 0,
+    "dropped_duplicate": 3,
+    "dropped_files": 1,
+    "dropped_gold": 0,
+    "dropped_issue": 0,
+    "dropped_linked": 187,
+    "dropped_prefilter": 71,
+    "dropped_window": 0,
+    "fetched": 579,
+    "kept": 30,
+    "names_gold_path": 2,
+    "passed": 86,
+    "sampled": true
+   },
+   "graphicle": "graphicle 0.1.8 (core)",
+   "index_bytes": 15120342910,
+   "index_peak_rss_mib": 15764.2,
+   "index_seconds": 598.9,
+   "name": "elasticsearch",
+   "role": "held-out",
+   "slug": "elastic/elasticsearch",
+   "text_files": 47679,
+   "tokens_all": 103579228,
+   "tokens_nontest_source": 30714542,
+   "tokens_without_vendored_generated": 99583601
+  }
+ ],
+ "runs": {},
+ "selection_seed": 20261026,
+ "snapshot_cutoff": "2026-09-14T00:00:00Z",
+ "test_data": false
+}

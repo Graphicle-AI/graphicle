@@ -113,10 +113,11 @@ You can add a model in any of three ways:
 | `base_url` | HTTPS, or HTTP on loopback. A plain-HTTP host on your network must be listed in `GRAPHICLE_PROVIDER_HTTP_HOSTS` (exact host names or addresses, separated by commas). Such a profile cannot have a `key_env` |
 | `model` | The provider's model name |
 | `key_env` | The name of the environment variable that holds the API key. The key itself never goes in the file |
-| `input_limit`, `output_limit` | Token limits: 512 to 128,000 (default 16,000) and 64 to 16,000 (default 2,048) |
+| `input_limit`, `output_limit` | Token limits: 512 to 1,048,576 (default 16,000) and 64 to 131,072 (default 2,048). A reasoning model counts its reasoning in the output |
 | `temperature` | Optional, from 0 to 2 |
 | `structured_output` | `true` by default. Set it to `false` for servers without schema-constrained output; replies are still validated. With `anthropic`, `true` offers the result as a tool the model is asked to call (Claude Opus 5.5, Claude Sonnet 5.5 and Claude Fable 5.1 refuse a forced tool call); `graphicle config set model anthropic` writes `false`, which asks for the JSON in the prompt |
-| `extra_body` | `chat` and `azure_chat` only: up to 16 extra request fields, such as `chat_template_kwargs` |
+| `extra_body` | `chat` and `azure_chat` only: up to 16 extra request fields, such as `chat_template_kwargs` or `reasoning_effort` |
+| `price` | Optional: what the provider charges, in US dollars per million tokens: `{"input": N, "output": N, "cached_input": N}` (`cached_input` optional). `ask --pack` and `plan` show a call's cost from it; Graphicle has no prices built in |
 
 An OpenAI-compatible server, such as vLLM, llama.cpp or LM Studio, takes a
 `chat` profile. Two commands write one; the second makes it the answer model:
@@ -129,6 +130,161 @@ graphicle config set default_model local
 Add `"key_env":"VARIABLE"` when the server needs a key. A server that speaks
 OpenAI's Responses API, such as vLLM, also works with `graphicle config set
 model openai --url URL --model NAME`, which sends the key in `OPENAI_API_KEY`.
+
+### Muse Spark
+
+Muse Spark and Muse Wonder, Meta's models with a context window of
+1,048,576 tokens, are served by the Meta Model API. One command writes the
+profile and makes it the answer model; the key stays in `MODEL_API_KEY`:
+
+```sh
+export MODEL_API_KEY=...        # your Meta Model API key
+graphicle config set model meta                    # Muse Spark 1.3
+graphicle config set model meta:muse-wonder-1.0    # Muse Wonder
+graphicle config set model meta:muse-spark-1.2     # another Muse Spark model
+```
+
+The profile it writes, as `models.meta` in `models.json`:
+
+```json
+{
+  "protocol": "responses",
+  "base_url": "https://api.meta.ai/v1",
+  "model": "muse-spark-1.3",
+  "key_env": "MODEL_API_KEY",
+  "input_limit": 1016576,
+  "output_limit": 32000,
+  "reasoning_effort": "medium"
+}
+```
+
+- The profile speaks the Responses API, the one where a 24-hour prompt cache
+  retention can be asked for. Profiles written by earlier versions speak
+  Chat Completions and keep working.
+- The context window holds the input and the output together, so the input
+  limit is 1,048,576 less the output limit.
+- Muse Spark and Muse Wonder always reason, and the reasoning counts in the
+  output. `reasoning_effort` takes `minimal`, `low`, `medium`, `high`,
+  `xhigh` or `max`; the API refuses `none`, and so does Graphicle for this
+  API. Graphicle sends it as `reasoning.effort` on the Responses API and as
+  `reasoning_effort` on Chat Completions.
+- `muse-spark-1.3` is the model Meta recommends for new work;
+  `muse-spark-1.2` and `muse-spark-1.1` cost the same and stay available.
+  `muse-wonder-1.0` is Meta's model for complex software engineering, the
+  one to try first for `graphicle fix`.
+- The `-contributor` models cost less because Meta may train on what you
+  send. `config set model meta` refuses them; to choose one, write the model
+  name in the configuration file yourself.
+- `graphicle ask --pack`, `graphicle plan` and `graphicle fix` fill the input
+  limit with a pack of the project's code ([packs](pack.md)).
+
+**The prompt cache.** The Meta Model API caches the longest repeated start of
+a prompt by itself and bills those input tokens at the cached price. For
+calls to it, `ask --pack`, `plan` and `fix` send the same instructions first,
+then the pack, then the question, and add:
+
+- `prompt_cache_key`: `graphicle:<project>@<commit>:<prefix>`, from the
+  project's name, the first 12 characters of its commit and of the pack's
+  prefix hash, and nothing the question says;
+- `prompt_cache_retention: "24h"` (Responses API only).
+
+With the cache layout of a pack (`--layout cache`), the repository part of
+the pack is the same for every question at a commit, so most of a follow-up
+question's input can be billed at the cached price. The cache is the
+provider's: Meta's documentation calls the retention a hint, not a
+guarantee, and the usage line shows how many input tokens were cached.
+Other providers get the key only when their profile sets `"prompt_cache":
+true`; `"prompt_cache": false` turns it off for the Meta Model API.
+
+**Exact counts.** Before a request whose estimate comes to 80% of the input
+limit or more is sent, Graphicle counts it with the API's
+`POST /responses/input_tokens`, which generates nothing, and packs again
+smaller while it would not fit. Without a key, or if the count fails, the
+estimate stands. `"count_tokens": false` turns this off; `"count_tokens":
+true` turns it on for another Responses API server. For Muse Spark Open on
+your own server, set `"tokenizer"` to its `tokenizer.json`: packs for
+`ask --pack`, `plan` and `fix` are then counted with it exactly.
+
+### Prices, the spend log and caps
+
+Prices stay in your configuration, never in the program. A profile's `price`
+is in US dollars per million tokens. Meta's list prices for Standard mode on
+26 October 2026 (the Meta Model API's pricing page,
+https://dev.meta.ai/docs/pricing-rate-limits):
+
+| Model | Input | Cached input | Output |
+|---|---|---|---|
+| `muse-spark-1.3` (and 1.2, 1.1) | $1.25 | $0.15 | $4.25 |
+| `muse-wonder-1.0` | $4.00 | $0.20 | $20.00 |
+
+```sh
+graphicle config set models.meta.price '{"input":1.25,"output":4.25,"cached_input":0.15}'
+graphicle config set models.meta.price '{"input":4,"output":20,"cached_input":0.2}'   # for muse-wonder-1.0
+```
+
+Check the pricing page before you rely on these: prices change.
+
+**The spend log.** Every model call of `ask --pack`, `plan` and `fix` adds
+one line to `usage.jsonl` in Graphicle's data folder: the time, command,
+profile, provider, model, project, commit, prompt cache key, the input,
+cached, output and reasoning tokens from the provider's usage, the seconds,
+the cost at the profile's price (`null` without one) and the status. It never
+holds the prompt or the answer. After each answer, one line sums it up, for
+example:
+
+```text
+1,012,345 tokens in (936,000 cached, 92%), 2,345 out; $0.25 at the configured price; 41.3 s.
+```
+
+`graphicle usage` adds the log up by day and model: calls, tokens, the cached
+share and the cost, and lists the calls not logged yet (below) with their
+profile, start time, process and worst case. `--since 2026-10-26` (or a time
+such as `2026-10-26T12:00:00Z`) starts later, `--json` prints it for
+programs (the calls not logged yet as `pending`), and `--clear-pending`
+removes the reservations of calls not logged yet, for example after a crash.
+
+**Caps.** Two optional profile settings, in US dollars at the profile's
+price, refuse a call before it is sent:
+
+- `max_cost_per_call`: a call whose worst case costs more. The worst case is
+  the whole input at the uncached price plus the output limit at the output
+  price. The input is the provider's exact count where there is one, else
+  Graphicle's estimate times the profile's calibration (when the provider
+  counts more than the estimate) plus 10%.
+- `max_cost_per_day`: a call whose worst case, added to the day's cost of
+  the profile so far (UTC days), would pass it. The day's cost counts every
+  logged call at its cost, or at its worst case when the provider reported
+  no usage, and every call not logged yet at its worst case: from before it
+  is sent until it is logged, a call's worst case is held in
+  `usage-pending.json`, so calls made at the same time count against each
+  other. A held worst case counts whatever its day, so a call started before
+  midnight (UTC) and still running counts against the new day. It stops
+  counting when the call is logged, when its process is no longer running
+  (where that can be told: Linux and macOS), or 40 minutes after it was
+  made (the longest a model call may take, 30 minutes, and a margin);
+  `graphicle usage --clear-pending` removes them all at once.
+
+```sh
+graphicle config set models.meta.max_cost_per_call 2
+graphicle config set models.meta.max_cost_per_day 10
+```
+
+A cap needs the profile's `price`. A refusal names the cap and its setting,
+for example `models.meta.max_cost_per_call`. If the spend log cannot be
+read, calls of a profile with a day cap are refused; a line of it that is not
+a JSON object is skipped, and `graphicle usage` lists the lines it skipped.
+
+The same kind of profile works for Muse Spark Open, or any model, on your
+own vLLM or SGLang server, and for hosted OpenAI-compatible endpoints:
+
+```sh
+graphicle config set model compatible:MODEL --url http://127.0.0.1:8000/v1
+graphicle config set models.compatible.input_limit 1000000
+```
+
+Add `--key-env VARIABLE` when the endpoint needs a key, and set
+`input_limit` to the context length the server runs with, less the output
+limit.
 
 Graphicle sends `ollama` requests with thinking turned off (`think: false`),
 so a thinking model such as `qwen3:4b` writes its answer within

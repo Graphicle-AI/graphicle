@@ -1,0 +1,11 @@
+[
+  {"repo": "kubernetes", "question": "How does the scheduler pick a node for a pod, from the queue to the binding?"},
+  {"repo": "kubernetes", "question": "Where does the job controller count the pods it creates, and which metric records it?"},
+  {"repo": "kubernetes", "question": "How does the kubelet decide to evict pods when a node runs low on memory?"},
+  {"repo": "pytorch", "question": "How does autograd find and run the backward function of a tensor's operation?"},
+  {"repo": "pytorch", "question": "Where does torch.compile handle a graph break, and what happens to the code after it?"},
+  {"repo": "pytorch", "question": "How does the CUDA caching allocator reuse freed blocks?"},
+  {"repo": "vscode", "question": "How does the Welcome page decide which walkthroughs to show?"},
+  {"repo": "vscode", "question": "Where is the status bar's Ln and Col item updated when the cursor moves?"},
+  {"repo": "vscode", "question": "How does the Explorer show its message when no folder is open?"}
+]

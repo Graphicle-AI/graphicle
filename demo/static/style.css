@@ -1,0 +1,55 @@
+:root {
+  --bg: #fbfaf8; --fg: #1d1c1a; --dim: #6b6862; --line: #e3e0da; --card: #ffffff;
+  --accent: #2f5fd0; --accent-fg: #ffffff; --mark: rgba(47, 95, 208, 0.18); --code: #f2f0ec; --bad: #a3362a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --fg: #ecebe8; --dim: #a19e98; --line: #33322f; --card: #1e1e1c;
+    --accent: #7ea2f3; --accent-fg: #10131a; --mark: rgba(126, 162, 243, 0.22); --code: #262624; --bad: #f08a7c;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+header, main, footer { max-width: 980px; margin: 0 auto; padding: 0 16px; }
+header { padding-top: 32px; }
+h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+h3 { font-size: 15px; margin: 22px 0 8px; text-transform: none; color: var(--dim); font-weight: 600; }
+.dim { color: var(--dim); }
+.lede { margin: 0 0 20px; color: var(--dim); max-width: 60ch; }
+.bar { display: flex; flex-wrap: wrap; gap: 12px 16px; align-items: center; padding: 12px 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.bar label { display: flex; gap: 8px; align-items: center; font-weight: 600; }
+select, textarea, button { font: inherit; color: inherit; }
+select { background: var(--card); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; }
+nav { margin-left: auto; display: flex; gap: 4px; }
+nav button { background: none; border: 1px solid transparent; border-radius: 6px; padding: 6px 12px; cursor: pointer; color: var(--dim); }
+nav button[aria-selected="true"] { border-color: var(--line); background: var(--card); color: var(--fg); }
+.panel { padding: 20px 0 8px; }
+textarea { width: 100%; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; resize: vertical; }
+.row { display: flex; gap: 12px; align-items: center; margin-top: 10px; }
+button[type="submit"] { background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 8px; padding: 8px 18px; font-weight: 600; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: progress; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0 0; }
+.chips button { background: var(--card); border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font-size: 14px; cursor: pointer; text-align: left; }
+.result { margin-top: 20px; padding: 18px 20px; background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+.answer p { margin: 0 0 10px; }
+.answer code, .candidates code { background: var(--code); border-radius: 4px; padding: 1px 4px; font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.links { margin: 0; padding-left: 18px; font: 14px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+.facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; font-size: 14px; }
+.facts dt { color: var(--dim); }
+.facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.facts-line { font-size: 14px; font-variant-numeric: tabular-nums; margin: 0; }
+.drop { display: block; border: 1.5px dashed var(--line); border-radius: 10px; padding: 28px 16px; text-align: center; cursor: pointer; color: var(--dim); }
+.drop.over { border-color: var(--accent); color: var(--fg); }
+.drop input { display: block; margin: 0 auto 8px; }
+.stage { position: relative; margin-top: 16px; display: inline-block; max-width: 100%; }
+.stage img { display: block; max-width: 100%; height: auto; cursor: crosshair; border: 1px solid var(--line); border-radius: 6px; }
+.box { position: absolute; border: 2px solid var(--accent); background: var(--mark); border-radius: 3px; pointer-events: none; }
+.dot { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--card); pointer-events: none; }
+.read { margin: 0 0 12px; }
+.candidates { margin: 0; padding-left: 22px; }
+.candidates li { margin-bottom: 14px; }
+.candidates pre { margin: 6px 0 0; padding: 8px 10px; background: var(--code); border-radius: 6px; overflow-x: auto; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.error { color: var(--bad); }
+footer { padding: 28px 16px 40px; color: var(--dim); font-size: 14px; }
+@media (max-width: 640px) { nav { margin-left: 0; } h1 { font-size: 24px; } }

@@ -15,15 +15,6 @@
 </p>
 
 <p align="center">
-  <a href="https://www.producthunt.com/products/graphicle?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-graphicle">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1294027&amp;theme=dark">
-      <img alt="Graphicle on Product Hunt" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1294027&amp;theme=light" width="250" height="54">
-    </picture>
-  </a>
-</p>
-
-<p align="center">
   Graphicle maps your repository into a code graph, remembers your project's docs, decisions and past agent sessions,
   and gives your coding agent cited excerpts from both: the exact files and lines. It runs on your machine: no API key needed, no account, <a href="#privacy-and-local-first">no telemetry</a>.<br>
   <sub>Works with Claude Code · Cursor · Codex · VS Code · Claude Desktop · any MCP client</sub>
@@ -139,8 +130,11 @@ then run `graphicle setup --yes` in this repository and list every file it chang
   traces a path and exports an interactive HTML graph. After `graphicle graph extract . --code-only`, `graphicle graph affected "retry()"` lists what depends on a symbol.
 - **Project memory.** Docs (Markdown, PDF, Office, HTML), reviewed decisions and procedures, and past Claude Code and Codex sessions, searchable alongside the code.
 - **Cited context on a budget.** `graphicle context` and the MCP tools return excerpts with their sources, within a token budget, without calling a model.
+- **Packs for long-context models.** `graphicle pack` fills a token budget, up to 2,000,000 tokens, with the code a question needs: architecture, focus code with line numbers, call paths, tests and a manifest. `graphicle ask --pack` and `graphicle plan` send one to a model such as Muse Spark ([packs](docs/pack.md)). In the cache layout the repository part of a pack is the same for every question about a commit, so a provider's prompt cache can bill follow-up questions at its cached price. `graphicle fix` makes a change for an issue on a new branch and runs your tests on it ([fix](docs/fix.md)).
 - **One MCP server.** `graphicle mcp` serves the code-graph tools, under Graphify's tool names such as `query_graph`, `get_neighbors` and `shortest_path`, next to the memory tools. With `--pull-requests` it also serves the pull-request tools `list_prs`, `get_pr_impact` and `triage_prs`, which use the GitHub CLI ([MCP](docs/mcp.md)).
 - **Memory tied to your code.** Reviewed memories are tied to the functions they are about: a memory goes stale when that code changes, and edits elsewhere in the file usually leave it current ([the exact rule](crates/graphicle/README.md#memory-anchored-to-code-symbols)). Mentions of code in your docs are linked to the definitions they name (`graphicle call graph.doc_links` lists them).
+- **Reviews of a change.** `graphicle review` reviews what a branch adds with the code around it, the callers, callees and tests of what it changes, and keeps only comments on changed lines whose citations hold. A GitHub Action posts the review on pull requests ([review](docs/review.md)).
+- **From the screen to the code.** `graphicle see` lets a model reproduce a bug in a web app with computer use on the Meta Model API, `graphicle pixel` finds the code that draws what it points at, and `graphicle fix` patches it and runs your tests ([see it, find it, fix it, check it](docs/flow.md)).
 - **Across repositories.** Recall can span the repositories of a workspace: `graphicle context --workspace`, or [the workspace MCP endpoint](docs/mcp.md#several-projects-in-one-connection).
 - **Always current.** Before each answer Graphicle syncs the few files you changed; Git hooks sync after each commit, merge and checkout.
 - **Sessions carry over.** Session capture keeps each finished turn, and once you have reviewed memories, each new session starts with them and the latest turns.
@@ -157,6 +151,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 | Cursor | `~/.cursor/mcp.json` | |
 | VS Code | `.vscode/mcp.json` in the repository | |
 | Claude Desktop | `claude_desktop_config.json` in Claude's settings folder | |
+| Muse Code | `~/.config/muse/settings.json` ([Muse Code](docs/muse-code.md)) | hooks in the plugin, a preview: `graphicle connect muse --hooks` |
 | Any other MCP client | a short JSON entry ([MCP](docs/mcp.md)) | |
 
 ## How it works
@@ -279,12 +274,12 @@ More answers: [FAQ](docs/faq.md) · [Troubleshooting](docs/troubleshooting.md) �
 
 ## Documentation
 
-[Quick start](docs/quickstart.md) · [Agents](docs/agents.md) · [MCP](docs/mcp.md) · [Install](docs/install.md) · [Configuration](docs/configuration.md) ·
-[Team server](docs/team.md) · [Moving from Graphify](docs/migrate-from-graphify.md) · [Benchmarks](docs/benchmarks.md) · [FAQ](docs/faq.md) · [Changelog](CHANGELOG.md)
+[Quick start](docs/quickstart.md) · [Agents](docs/agents.md) · [Muse Code](docs/muse-code.md) · [MCP](docs/mcp.md) · [Packs](docs/pack.md) · [Fix](docs/fix.md) · [Flow](docs/flow.md) · [Review](docs/review.md) · [Install](docs/install.md) · [Configuration](docs/configuration.md) ·
+[Team server](docs/team.md) · [Moving from Graphify](docs/migrate-from-graphify.md) · [Benchmarks](docs/benchmarks.md) · [FAQ](docs/faq.md) · [Changelog](CHANGELOG.md) · [Built at Meta's hackathon](HACKATHON.md)
 
 The code: [`crates/graphicle/`](crates/graphicle/README.md) (the program: command line, app, HTTP and MCP server), [`crates/graphicle-graph/`](crates/graphicle-graph/README.md) (the code-graph engine),
 [`crates/graphicle-memory/`](crates/graphicle-memory/README.md) (the memory library), SDKs for [Python](sdk/python/README.md) and [TypeScript](sdk/typescript/README.md),
-and a team server recipe in [`deploy/`](deploy/README.md). Each crate builds on its own ([building from source](docs/install.md)).
+a team server recipe in [`deploy/`](deploy/README.md), the benchmark kits in [`bench/`](bench/), and the hosted demo in [`demo/`](demo/README.md). Each crate builds on its own ([building from source](docs/install.md)).
 
 ## Contributing
 

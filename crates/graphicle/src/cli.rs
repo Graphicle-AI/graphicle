@@ -130,9 +130,11 @@ enum Command {
         #[arg(long)]
         replace: bool,
         /// Also install session-capture hooks (claude-code: this folder's
-        /// .claude/settings.local.json; codex: the user's hooks.json). They
-        /// import completed turns after each answer and add reviewed memory
-        /// at session start; they never block the client.
+        /// .claude/settings.local.json; codex: the user's hooks.json; muse:
+        /// Graphicle's Muse Code plugin, a preview, with the server, a skill
+        /// and the hooks, through `muse plugins install`; setup leaves it to
+        /// this flag). They import completed turns after each answer and add
+        /// reviewed memory at session start; they never block the client.
         #[arg(long)]
         hooks: bool,
         /// Also give the client the work-state tools (`work_state_write`,
@@ -363,6 +365,59 @@ enum Command {
         #[arg(long, hide = true)]
         graph_only: bool,
     },
+    /// Pack the project's code for a question into one prompt, to a token
+    /// budget: architecture, focus code, call paths, tests, docs and more of
+    /// the repository, with a manifest. Without a question, an overview.
+    Pack {
+        /// The question; `-` reads it from standard input (at most 1 MiB).
+        question: Option<String>,
+        /// The project: an id, a key or a synced folder (default: this
+        /// folder's project, else the last synced one).
+        #[arg(long)]
+        project: Option<String>,
+        /// The pack's budget in tokens, a hard limit [default: 128000].
+        #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u64).range(512..=2_000_000))]
+        budget: Option<u64>,
+        /// markdown (the default), xml, or json (the pack's chunks, with
+        /// their markdown text, and the manifest).
+        #[arg(long, default_value = "markdown", value_parser = ["markdown", "xml", "json"])]
+        format: String,
+        /// Count tokens exactly with this Hugging Face tokenizer.json; without
+        /// it, an estimate with a margin.
+        #[arg(long, value_name = "PATH")]
+        tokenizer: Option<PathBuf>,
+        /// Estimate tokens as UTF-8 bytes divided by this number, for all
+        /// text alike and without a margin (to match another tool's sizing),
+        /// instead of the per-language estimate.
+        #[arg(long, value_name = "N", conflicts_with = "tokenizer")]
+        bytes_per_token: Option<f64>,
+        /// relevant-last puts the most relevant code at the end, next to the
+        /// question; relevant-first puts it first.
+        #[arg(long, default_value = "relevant-last", value_parser = ["relevant-last", "relevant-first"])]
+        order: String,
+        /// Which chunks start each line with its number.
+        #[arg(long, default_value = "focus", value_parser = ["focus", "all", "none"])]
+        line_numbers: String,
+        /// The sections, comma-separated: arch, map, focus, paths, tests,
+        /// docs, breadth, manifest [default: all; map is the cache layout's].
+        #[arg(long, value_name = "LIST")]
+        sections: Option<String>,
+        /// standard: one pack for the question. cache: a repository part
+        /// that is the same for every question at this commit, budget and
+        /// settings (a provider's prompt cache bills it at the cached price
+        /// on follow-up questions), then a question part [default: standard;
+        /// cache with --prefix-share].
+        #[arg(long, value_parser = ["standard", "cache"])]
+        layout: Option<String>,
+        /// With the cache layout: the share of the budget the repository part
+        /// takes at most, from 0.1 to 1; 1.0 is a stable pack, where only the
+        /// question after it changes [default: 0.9].
+        #[arg(long, value_name = "F")]
+        prefix_share: Option<f64>,
+        /// Write the pack to this file instead of standard output.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Answer from the project's original sources with the configured model.
     ///
     /// By default a `basic` job: one model call reads the retrieved excerpts
@@ -384,11 +439,164 @@ enum Command {
         /// Most model calls the job may make.
         #[arg(long, default_value_t = 4)]
         max_calls: usize,
+        /// Answer in one model call from a pack of the project's code
+        /// (`graphicle pack`) that fills the model's input limit, for a model
+        /// with a long context window; each cited path:line is checked
+        /// against the working tree.
+        #[arg(long, conflicts_with_all = ["retain", "workflow"])]
+        pack: bool,
+        /// With --pack: the pack's budget in tokens [default: the model's
+        /// input limit less room for the question].
+        #[arg(long, value_name = "TOKENS", requires = "pack")]
+        budget: Option<usize>,
+        /// With --pack: the configured model profile to ask [default: the
+        /// answer model].
+        #[arg(long, value_name = "NAME", requires = "pack")]
+        model: Option<String>,
+        /// With --pack: the pack's layout, standard or cache (a repository
+        /// part that a provider's prompt cache can bill at the cached price
+        /// on follow-up questions, then a question part) [default: standard;
+        /// cache with --prefix-share].
+        #[arg(long, value_parser = ["standard", "cache"], requires = "pack")]
+        layout: Option<String>,
+        /// With --pack and the cache layout: the share of the budget the
+        /// repository part takes at most, from 0.1 to 1 [default: 0.9].
+        #[arg(long, value_name = "F", requires = "pack")]
+        prefix_share: Option<f64>,
         /// Print the job as JSON (the default when the output is not a
         /// terminal).
         #[arg(long)]
         json: bool,
     },
+    /// Plan a change from a pack of the project's code: steps, files to edit
+    /// with line ranges, new files, tests and risks, checked against the
+    /// working tree. Nothing is changed.
+    Plan {
+        /// The change request; `-` reads it from standard input.
+        request: String,
+        /// The project: an id, a key or a synced folder (default: this
+        /// folder's project, else the last synced one).
+        #[arg(long)]
+        project: Option<String>,
+        /// The pack's budget in tokens [default: the model's input limit less
+        /// room for the request].
+        #[arg(long, value_name = "TOKENS")]
+        budget: Option<usize>,
+        /// The configured model profile to ask [default: the answer model].
+        #[arg(long, value_name = "NAME")]
+        model: Option<String>,
+        /// The pack's layout, standard or cache [default: standard; cache
+        /// with --prefix-share].
+        #[arg(long, value_parser = ["standard", "cache"])]
+        layout: Option<String>,
+        /// With the cache layout: the share of the budget the repository part
+        /// takes at most, from 0.1 to 1 [default: 0.9].
+        #[arg(long, value_name = "F")]
+        prefix_share: Option<f64>,
+        /// Print the plan as JSON (the default when the output is not a
+        /// terminal).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Review a change: what the head adds since its merge base with the
+    /// base, from a cache-aware pack whose change part holds the changed
+    /// code, its callers and callees and its tests. Comments must sit on
+    /// changed lines and cite evidence that holds in the working tree;
+    /// --format github prints a review for GitHub. Nothing is posted.
+    Review(crate::review::Args),
+    /// The spend log of `ask --pack`, `plan` and `fix`: calls, tokens, the
+    /// cached share and the cost at the configured price, by day and model.
+    /// The log is `usage.jsonl` in the data folder, one line per model call,
+    /// without prompts or answers.
+    Usage {
+        /// Only calls since this day (2026-10-26, UTC) or time
+        /// (2026-10-26T12:00:00Z).
+        #[arg(long, value_name = "WHEN")]
+        since: Option<String>,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+        /// Remove the reservations of calls not logged yet (each ends by
+        /// itself when its call is logged, its process ends, or 40 minutes
+        /// pass), for example after a crash; then print the report.
+        #[arg(long)]
+        clear_pending: bool,
+    },
+    /// Fix an issue on a new branch: a cache-aware pack focused on the issue,
+    /// a plan, then edits as search-and-replace blocks, applied in a new git
+    /// worktree from HEAD and tested with your test command; a failure goes
+    /// back to the model, for at most --rounds rounds. Your working tree and
+    /// branch are never touched, and nothing is pushed.
+    Fix {
+        /// The issue's text; `-` reads it from standard input.
+        #[arg(conflicts_with = "issue_file")]
+        issue: Option<String>,
+        /// Read the issue's text from this file (at most 1 MiB).
+        #[arg(long, value_name = "FILE")]
+        issue_file: Option<PathBuf>,
+        /// The test command, run with `sh -c` in the new worktree; never a
+        /// command the model suggests [default: the configuration's fix.test,
+        /// else none, and the change is untested].
+        #[arg(long, value_name = "CMD")]
+        test: Option<String>,
+        /// Rounds of edits and tests at most.
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u64).range(1..=10))]
+        rounds: u64,
+        /// The pack's budget in tokens [default: the model's input limit less
+        /// room for the issue].
+        #[arg(long, value_name = "TOKENS")]
+        budget: Option<usize>,
+        /// The new branch [default: graphicle/fix-<words of the issue>].
+        #[arg(long, value_name = "NAME")]
+        branch: Option<String>,
+        /// Commit the changes on the new branch (else they stay in its
+        /// worktree).
+        #[arg(long)]
+        commit: bool,
+        /// Seconds the test command may run, 1 to 86400 [default: the
+        /// configuration's fix.timeout_seconds, else 600].
+        #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(u64).range(1..=86_400))]
+        timeout: Option<u64>,
+        /// The project: an id, a key or a synced folder (default: this
+        /// folder's project, else the last synced one).
+        #[arg(long)]
+        project: Option<String>,
+        /// The configured model profile to ask [default: the answer model].
+        #[arg(long, value_name = "NAME")]
+        model: Option<String>,
+        /// The pack's layout, standard or cache [default: standard; cache
+        /// with --prefix-share].
+        #[arg(long, value_parser = ["standard", "cache"])]
+        layout: Option<String>,
+        /// With the cache layout: the share of the budget the repository part
+        /// takes at most, from 0.1 to 1 [default: 0.9].
+        #[arg(long, value_name = "F")]
+        prefix_share: Option<f64>,
+        /// A passage the pack takes first, whatever the issue's words rank:
+        /// PATH, PATH:LINE (the lines around it) or PATH:START-END, as the
+        /// project shows the path (`graphicle pixel`'s candidates, for one).
+        /// In the cache layout it leads the question part, which takes what
+        /// the repository part leaves of --budget. Repeatable, at most 50.
+        #[arg(long, value_name = "PATH[:LINES]")]
+        focus: Vec<String>,
+        /// Print the report as JSON (the default when the output is not a
+        /// terminal).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Point at a pixel of a screenshot and get the code that draws it:
+    /// SAM 3.1 finds the element under the point, the model reads its
+    /// strings, and Graphicle finds them in the project's code (string
+    /// literals, localization calls, then the code graph), ranked as
+    /// path:line. With --text, only the lookup runs: no model call.
+    Pixel(crate::pixel::Args),
+    /// Drive a web app with a model's computer use (Muse Wonder or Muse
+    /// Spark 1.3 on the Meta Model API): the model sees screenshots and
+    /// sends clicks and keys, which your driver runs in a browser, until the
+    /// issue's bug shows (or, with --look-for expected, the expected
+    /// behaviour). Saves each screenshot and a step log; every call goes in
+    /// the spend log, under the profile's caps and --max-cost.
+    See(crate::computer::Args),
     /// Build, update and query code graphs with the graph engine
     /// (`graphicle graph --help` lists its commands).
     ///
@@ -447,6 +655,12 @@ enum Command {
         /// and the other tools need `repo` (`list_projects` lists them).
         #[arg(long)]
         workspace: bool,
+        /// With --project, serve the workspace as --workspace does when the
+        /// project is not found, instead of failing: for a client that
+        /// starts one server in every folder, such as Muse Code's plugin
+        /// (`--project . --or-workspace`).
+        #[arg(long, conflicts_with_all = ["workspace", "pull_requests"])]
+        or_workspace: bool,
         #[arg(long)]
         allow_learning: bool,
         /// Publish `work_state_write` and `work_state_read`: the agent's own
@@ -497,7 +711,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Capture Claude Code or Codex sessions as project sources: completed
+    /// Capture Claude Code, Codex or Muse Code sessions as project sources: completed
     /// turns with `<private>` spans dropped, credentials redacted and large
     /// tool output replaced by its size and digest. No model is called.
     Sessions {
@@ -507,7 +721,17 @@ enum Command {
     /// Lifecycle-hook entry point (installed by `connect <client> --hooks`):
     /// reads the hook's JSON on stdin, never blocks the client, always exits 0.
     #[command(hide = true)]
-    Hook { client: String, event: String },
+    Hook {
+        client: String,
+        event: String,
+        /// Muse Code's session start: tokens of the repository map it adds
+        /// (0 leaves it out; at most 100,000).
+        #[arg(long)]
+        pack_tokens: Option<u64>,
+        /// The project of an internal step (`hook muse pack`).
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Call a project operation with arguments from a JSON file.
     Call {
         operation: String,
@@ -603,7 +827,7 @@ enum SessionsAction {
     /// goes to the synced project containing its working directory, and
     /// transcripts from other folders are skipped.
     Import {
-        /// claude-code or codex.
+        /// claude-code, codex or muse (Muse Code).
         #[arg(long)]
         client: String,
         /// A transcript (.jsonl) or a folder of them.
@@ -773,6 +997,46 @@ fn unread_environment(read: &[&str], set: impl Fn(&str) -> bool) -> Option<&'sta
         .copied()
         .find(|name| set(name) && !read.contains(name))
 }
+/// `-`: the text on standard input (at most 1 MiB); else the text itself.
+fn read_dash(text: String) -> Result<String> {
+    if text != "-" {
+        return Ok(text);
+    }
+    use std::io::Read;
+    let mut read = String::new();
+    std::io::stdin()
+        .take(1024 * 1024)
+        .read_to_string(&mut read)?;
+    Ok(read)
+}
+
+/// The session, project and working tree of a long-context command (`ask
+/// --pack`, `plan`), with the folder brought up to date first.
+fn long_context_target(
+    store: &crate::store::Store,
+    config: &crate::model::Config,
+    project: Option<String>,
+) -> Result<(local::Session, String, Option<PathBuf>)> {
+    let session = local::session(store, false)?;
+    let resolved = local::resolve(store, &session, project.as_deref())?;
+    let project = resolved.id.clone();
+    let fresh = crate::fresh::ensure(
+        store,
+        &session,
+        &project,
+        crate::fresh::Options::ask(config),
+    );
+    fresh.tell();
+    let folder = match resolved.folder.clone() {
+        Some(folder) => Some(folder),
+        None => {
+            store.authorized_read(&session.workspace, &session.capability, "read", |db, _| {
+                crate::folders::current_folder(db, &project)
+            })?
+        }
+    };
+    Ok((session, project, folder))
+}
 /// Whether the new-release notice ([`crate::update_notice`]) may follow
 /// `command` (`None`: `graphicle` alone): a command people run at a terminal
 /// that prints its readable view. Never the servers (`mcp`, `serve`, `open`),
@@ -793,12 +1057,17 @@ fn notice_allowed(command: Option<&Command>) -> bool {
             | Command::Doctor { json, .. }
             | Command::Context { json, .. }
             | Command::Ask { json, .. }
+            | Command::Plan { json, .. }
+            | Command::Fix { json, .. }
             | Command::WorkState { json, .. }
             | Command::Config {
                 action: Some(ConfigAction::Set { json, .. }),
             },
         ) => *json,
+        Some(Command::Review(args)) => args.machine(),
         Some(Command::Sync { json, quiet, .. }) => *json || *quiet,
+        Some(Command::Pixel(args)) => args.json,
+        Some(Command::See(args)) => args.json,
         _ => return false,
     };
     crate::terminal::human(json)
@@ -903,12 +1172,46 @@ where
         return print(&result);
     }
     let directory = cli.data_dir.unwrap_or_else(local::data_dir);
-    if let Command::Hook { client, event } = &command {
-        hook(&directory, client, event);
+    if let Command::Hook {
+        client,
+        event,
+        pack_tokens,
+        project,
+    } = &command
+    {
+        hook(&directory, client, event, *pack_tokens, project.as_deref());
         return Ok(());
     }
     if let Command::Restore { path } = command {
         return print(&local::restore(&path, &directory)?);
+    }
+    if let Command::Usage {
+        since,
+        json,
+        clear_pending,
+    } = &command
+    {
+        let log = crate::spend::log_path(&directory);
+        let cleared = if *clear_pending {
+            Some(crate::spend::clear_pending(&directory)?)
+        } else {
+            None
+        };
+        let mut report = crate::spend::report(&crate::spend::read(&directory)?, since.as_deref())?;
+        report["pending"] = json!(crate::spend::pending(&directory, chrono::Utc::now())?);
+        if let Some(cleared) = cleared {
+            report["cleared_pending"] = json!(cleared);
+        }
+        if crate::terminal::human(*json) {
+            if let Some(cleared) = cleared {
+                println!("Removed {cleared} reservation(s) of calls not logged yet.");
+            }
+            print!("{}", crate::spend::report_text(&report, &log));
+        } else {
+            report["log"] = json!(log);
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        return Ok(());
     }
     if let Command::Uninstall { purge, yes, json } = command {
         return crate::disconnect::uninstall(&directory, purge, yes, json);
@@ -966,7 +1269,10 @@ where
         }
         _ => {}
     }
-    let store = Store::open(directory)?;
+    // A data folder the file system refuses (a sandbox that keeps the home
+    // folder read-only) is named.
+    let store =
+        Store::open(&directory).map_err(|error| crate::agent_files::naming(&directory, error))?;
     if let Some(note) = crate::terminal::note_data_version(&store.directory)
         && std::io::stderr().is_terminal()
     {
@@ -1348,6 +1654,7 @@ where
         Command::Mcp {
             project,
             workspace,
+            or_workspace,
             allow_learning,
             work_state,
             tools,
@@ -1361,8 +1668,23 @@ where
             let project = if workspace {
                 None
             } else {
-                Some(local::project(&store, &session, project.as_deref())?)
+                match local::project(&store, &session, project.as_deref()) {
+                    Ok(found) => Some(found),
+                    // A folder outside every synced project: the workspace.
+                    Err(error) if or_workspace => {
+                        eprintln!(
+                            "graphicle mcp: {}; serving the workspace's projects",
+                            error.message.trim_end_matches('.')
+                        );
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
             };
+            // The flags of a project connection that a workspace has no
+            // project for.
+            let workspace = project.is_none();
+            let work_state = work_state && !workspace;
             let cwd = std::env::current_dir()?;
             // The pull-request tools run gh in this process's folder, so it
             // must be the project's own; a workspace
@@ -1702,6 +2024,247 @@ where
             );
             Ok(())
         }
+        Command::Pack {
+            question,
+            project,
+            budget,
+            format,
+            tokenizer,
+            bytes_per_token,
+            order,
+            line_numbers,
+            sections,
+            layout,
+            prefix_share,
+            out,
+        } => {
+            let question = match question.as_deref() {
+                Some("-") => {
+                    use std::io::Read;
+                    let mut read = String::new();
+                    std::io::stdin()
+                        .take(1024 * 1024)
+                        .read_to_string(&mut read)?;
+                    read
+                }
+                Some(question) => question.to_string(),
+                None => String::new(),
+            };
+            let session = local::session(&store, false)?;
+            let resolved = local::resolve(&store, &session, project.as_deref())?;
+            let project = resolved.id;
+            let fresh = crate::fresh::ensure(
+                &store,
+                &session,
+                &project,
+                crate::fresh::Options::answer(&config),
+            );
+            fresh.tell();
+            let mut args = json!({"repository_id":project,"question":question,
+                "budget":budget.unwrap_or(crate::code_pack::DEFAULT_BUDGET as u64),
+                "order":order,"line_numbers":line_numbers,
+                "style":if format == "xml" {"xml"} else {"markdown"}});
+            if let Some(sections) = sections {
+                args["sections"] = json!(sections);
+            }
+            if let Some(tokenizer) = &tokenizer {
+                args["tokenizer"] = json!(tokenizer.to_string_lossy());
+            }
+            if let Some(rate) = bytes_per_token {
+                args["bytes_per_token"] = json!(rate);
+            }
+            if let Some(layout) = &layout {
+                args["layout"] = json!(layout);
+            }
+            if let Some(share) = prefix_share {
+                args["prefix_share"] = json!(share);
+            }
+            let pack = store.project_pack(&session.workspace, &session.capability, &args)?;
+            let text = if format == "json" {
+                format!("{pack}\n")
+            } else {
+                crate::code_pack::text(&pack)
+            };
+            match &out {
+                Some(path) => {
+                    std::fs::write(path, &text)
+                        .map_err(|e| Error::bad(format!("Cannot write {}: {e}", path.display())))?;
+                    eprintln!(
+                        "graphicle: packed {} tokens of {} files into {} ({} s)",
+                        pack["tokens"],
+                        pack["included"].as_array().map_or(0, Vec::len),
+                        path.display(),
+                        pack["seconds"]
+                    );
+                }
+                None => {
+                    use std::io::Write;
+                    let mut stdout = std::io::stdout().lock();
+                    stdout.write_all(text.as_bytes())?;
+                    stdout.flush()?;
+                }
+            }
+            Ok(())
+        }
+        Command::Ask {
+            question,
+            project,
+            workflow,
+            retain,
+            max_calls,
+            pack: true,
+            budget,
+            model,
+            layout,
+            prefix_share,
+            json,
+        } => {
+            let _ = (workflow, retain, max_calls);
+            let question = read_dash(question)?;
+            let (session, project, folder) = long_context_target(&store, &config, project)?;
+            let run = crate::long_context::Run {
+                store: &store,
+                session: &session,
+                config: &config,
+                project,
+                folder,
+                model,
+                budget,
+                layout,
+                prefix_share,
+                json,
+            };
+            crate::long_context::ask(run, &question).await
+        }
+        Command::Fix {
+            issue,
+            issue_file,
+            test,
+            rounds,
+            budget,
+            branch,
+            commit,
+            timeout,
+            project,
+            model,
+            layout,
+            prefix_share,
+            focus,
+            json,
+        } => {
+            if focus.len() > crate::fix::MAX_FOCUS {
+                return Err(Error::bad(format!(
+                    "--focus takes at most {} passages",
+                    crate::fix::MAX_FOCUS
+                )));
+            }
+            let focus = focus
+                .iter()
+                .map(|spec| crate::fix::parse_focus(spec).map_err(Error::bad))
+                .collect::<Result<Vec<_>>>()?;
+            let issue = match (issue, issue_file) {
+                (Some(text), None) => read_dash(text)?,
+                (None, Some(path)) => {
+                    use std::io::Read;
+                    let mut text = String::new();
+                    std::fs::File::open(&path)
+                        .map_err(|e| Error::bad(format!("Cannot read {}: {e}", path.display())))?
+                        .take(1024 * 1024)
+                        .read_to_string(&mut text)?;
+                    text
+                }
+                _ => return Err(Error::bad("Give the issue's text, or --issue-file FILE")),
+            };
+            let (session, project, folder) = long_context_target(&store, &config, project)?;
+            let settings = config.fix.clone().unwrap_or_default();
+            let run = crate::long_context::Run {
+                store: &store,
+                session: &session,
+                config: &config,
+                project,
+                folder,
+                model,
+                budget,
+                layout,
+                prefix_share,
+                json,
+            };
+            crate::fix::fix(
+                run,
+                crate::fix::Options {
+                    issue,
+                    test: test.or(settings.test),
+                    rounds: rounds as usize,
+                    branch,
+                    commit,
+                    timeout: std::time::Duration::from_secs(
+                        timeout.or(settings.timeout_seconds).unwrap_or(600),
+                    ),
+                    focus,
+                },
+            )
+            .await
+        }
+        Command::Pixel(args) => {
+            let (session, project, folder) =
+                long_context_target(&store, &config, args.project.clone())?;
+            let run = crate::long_context::Run {
+                store: &store,
+                session: &session,
+                config: &config,
+                project,
+                folder,
+                model: args.model.clone(),
+                budget: Some(args.budget),
+                layout: Some("cache".into()),
+                prefix_share: None,
+                json: args.json,
+            };
+            crate::pixel::pixel(run, args).await
+        }
+        Command::See(args) => crate::computer::see(&store, &config, args).await,
+        Command::Plan {
+            request,
+            project,
+            budget,
+            model,
+            layout,
+            prefix_share,
+            json,
+        } => {
+            let request = read_dash(request)?;
+            let (session, project, folder) = long_context_target(&store, &config, project)?;
+            let run = crate::long_context::Run {
+                store: &store,
+                session: &session,
+                config: &config,
+                project,
+                folder,
+                model,
+                budget,
+                layout,
+                prefix_share,
+                json,
+            };
+            crate::long_context::plan(run, &request).await
+        }
+        Command::Review(args) => {
+            let (session, project, folder) =
+                long_context_target(&store, &config, args.project.clone())?;
+            let run = crate::long_context::Run {
+                store: &store,
+                session: &session,
+                config: &config,
+                project,
+                folder,
+                model: args.model.clone(),
+                budget: args.budget,
+                layout: args.layout.clone().or_else(|| Some("cache".into())),
+                prefix_share: args.prefix_share,
+                json: args.machine(),
+            };
+            crate::review::review(run, args).await
+        }
         Command::Ask {
             question,
             project,
@@ -1709,6 +2272,7 @@ where
             retain,
             max_calls,
             json,
+            ..
         } => {
             // `basic` with its default contract (grounded-v2) answers unless
             // the caller opts into `reflect`, the workflow that checks
@@ -1868,6 +2432,7 @@ where
         Command::ConfigExample
         | Command::Help { .. }
         | Command::Config { .. }
+        | Command::Usage { .. }
         | Command::Doctor { .. } => unreachable!(),
     }
 }
@@ -2019,7 +2584,12 @@ fn import_sessions(
     let files = if root.is_file() {
         vec![root]
     } else if root.is_dir() {
-        capture::transcripts(&root, since, limit.clamp(1, 100_000))
+        capture::transcripts(
+            &root,
+            since,
+            limit.clamp(1, 100_000),
+            capture::skipped_folders(client),
+        )
     } else {
         return Err(Error::bad("Transcript path not found"));
     };
@@ -2066,11 +2636,18 @@ fn import_sessions(
 /// Client lifecycle hook. It never blocks or fails the client: the session
 /// start context has 2.5 seconds, imports run in a detached process, every
 /// error is dropped and the exit code is 0.
-fn hook(directory: &std::path::Path, client: &str, event: &str) {
+fn hook(
+    directory: &std::path::Path,
+    client: &str,
+    event: &str,
+    pack_tokens: Option<u64>,
+    project: Option<&str>,
+) {
     use std::io::Read;
     let Ok(client) = crate::capture::Client::parse(client) else {
         return;
     };
+    let muse = client == crate::capture::Client::Muse;
     // A data folder that is gone stays gone: `graphicle setup` makes a new
     // one (doctor reports the hooks that point at it).
     if !directory.join("reviews.sqlite3").is_file() {
@@ -2091,11 +2668,24 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
         .filter(char::is_ascii_alphanumeric)
         .collect::<String>()
         .to_ascii_lowercase();
+    // Muse Code's session map: at most SESSION_PACK_MAX tokens.
+    let pack_tokens = pack_tokens
+        .unwrap_or(crate::muse_code::SESSION_PACK_TOKENS)
+        .min(crate::muse_code::SESSION_PACK_MAX);
     match event.as_str() {
+        // The detached build of a Muse Code session's map
+        // (`crate::muse_code::session_pack`).
+        "pack" if muse => {
+            if let (Some(project), Ok(store)) = (project, Store::open(directory)) {
+                let _ = crate::muse_code::build_pack(&store, project, pack_tokens);
+            }
+        }
         "sessionstart" => {
-            // A resumed Claude Code conversation still holds the context its
-            // own start added (claude-mem #4423).
-            if client == crate::capture::Client::ClaudeCode && payload["source"] == "resume" {
+            // A resumed Claude Code or Muse Code conversation still holds
+            // the context its own start added (claude-mem #4423).
+            if (client == crate::capture::Client::ClaudeCode || muse)
+                && payload["source"] == "resume"
+            {
                 return;
             }
             let Some(cwd) = payload["cwd"]
@@ -2116,7 +2706,7 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
             // A plain thread: returning from main does not wait for it.
             std::thread::spawn(move || {
                 let context = (|| -> Result<Option<(String, Store, crate::metering::Call)>> {
-                    let store = Store::open(directory)?;
+                    let store = Store::open(directory.clone())?;
                     let session = local::session(&store, false)?;
                     let Some(project) = crate::capture::project_for_cwd(&store, &session, &cwd)?
                     else {
@@ -2126,13 +2716,22 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
                     // Graphicle (crate::agent_instructions::SESSION_ROUTING),
                     // so every session in a project gets it; an empty one
                     // would print nothing.
-                    let context = store.session_start_context(
+                    let mut context = store.session_start_context(
                         &session.workspace,
                         &session.capability,
                         &project,
                     )?;
                     if context.is_empty() {
                         return Ok(None);
+                    }
+                    // Muse Code's session starts with the repository's map
+                    // first: the same bytes for every session at a commit,
+                    // so the prompt cache serves it across sessions too.
+                    if muse
+                        && let Some(map) =
+                            crate::muse_code::session_pack(&directory, &project, pack_tokens)
+                    {
+                        context = format!("{}\n\n{context}", map.trim_end());
                     }
                     let credential =
                         crate::metering::principal(&store, &session.workspace, &session.capability)
@@ -2162,7 +2761,13 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
             }
         }
         "stop" | "sessionend" | "precompact" => {
-            let Some(transcript) = payload["transcript_path"].as_str().map(PathBuf::from) else {
+            // Muse Code names its session log by the session's id.
+            let transcript = if muse {
+                crate::muse_code::session_log(&payload)
+            } else {
+                payload["transcript_path"].as_str().map(PathBuf::from)
+            };
+            let Some(transcript) = transcript else {
                 return;
             };
             if transcript.extension().is_none_or(|e| e != "jsonl") || !transcript.is_file() {
@@ -2184,8 +2789,16 @@ fn hook(directory: &std::path::Path, client: &str, event: &str) {
             // timeout does not stop the import.
             let _ = crate::platform::spawn_detached(&mut command);
         }
-        // The prompt hook of `setup --prompt-context` (crate::prompt_hook).
+        // The prompt hook of `setup --prompt-context` (crate::prompt_hook),
+        // and of Muse Code's plugin.
         "promptcontext" => crate::prompt_hook::run(directory, &payload),
+        // Muse Code's plugin, after a batch of tool calls.
+        "toolbatch" if muse => {
+            use std::io::Write;
+            if let Some(output) = crate::muse_code::tool_batch_output(directory, &payload) {
+                let _ = writeln!(std::io::stdout(), "{output}");
+            }
+        }
         // The guard hooks of `connect --graph`.
         "guardsearch" | "guardread" => {
             use std::io::Write;

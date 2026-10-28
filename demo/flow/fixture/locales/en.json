@@ -1,0 +1,11 @@
+{
+  "app": {
+    "title": "Sketch"
+  },
+  "menu": {
+    "open": "Open",
+    "saveTo": "Save to...",
+    "exportImage": "Export image...",
+    "reset": "Reset the canvas"
+  }
+}

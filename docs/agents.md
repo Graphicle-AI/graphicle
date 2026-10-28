@@ -22,8 +22,8 @@ graphicle disconnect --all       # the same for every project
 graphicle uninstall              # disconnect everywhere, then show how to remove the program
 ```
 
-The agent names are `claude-code`, `codex`, `cursor`, `vscode` and `claude`
-(Claude Desktop). `setup --clients` also takes the numbers setup shows on a
+The agent names are `claude-code`, `codex`, `cursor`, `vscode`, `claude`
+(Claude Desktop) and `muse` (Muse Code). `setup --clients` also takes the numbers setup shows on a
 terminal. Restart or reload an agent after you connect or disconnect
 it. `graphicle status` lists the connected agents and whether each entry still
 works.
@@ -140,7 +140,7 @@ for example `graphicle-my-app`. When another project already has that name
 for example `graphicle-api-1a2b3c4d`, and each keeps its own. Agents with a settings file per folder (Claude
 Code and VS Code) get one entry named `graphicle` that finds the project from
 the folder they start in. Agents with one settings file for your user account
-(Codex, Cursor and Claude Desktop) get one entry per project.
+(Codex, Cursor, Claude Desktop and Muse Code) get one entry per project.
 
 ## Claude Code
 
@@ -213,6 +213,98 @@ the folder they start in. Agents with one settings file for your user account
   own entry.
 - Undo: `graphicle disconnect claude`, or delete the entry by hand.
 
+## Muse Code
+
+| What | Where | Written by |
+|---|---|---|
+| MCP server `graphicle-<project>` | `~/.config/muse/settings.json`, in its `mcp_servers` object | setup, `connect muse` |
+| Graphicle's plugin (preview): MCP server, skill `graphicle`, six hooks | Graphicle's data folder, `muse-code-plugin/`, installed with `muse plugins install` | `connect muse --hooks` |
+
+- Setup finds Muse Code by its settings folder, `~/.config/muse`, or the
+  `muse` program, and writes the settings entry: a stdio server
+  (`"transport": "stdio"`) with `"mode": "optional"`, so a Muse Code session
+  still starts, with a warning, when Graphicle is not installed. Graphicle
+  changes only its own entry; the file's other settings stay. Muse Code
+  requires `"schema_version": 1` in the file, and Graphicle adds it when the
+  file has none.
+- Graphicle's plugin is a preview, tested against a stand-in `muse` program
+  and not yet with Meta's live API, so setup does not install it.
+  `graphicle connect muse --hooks --allow-learning` installs it; approve it
+  once with `muse plugins approve graphicle`. Its server replaces the
+  project's settings entry. Its hooks are built to add the project's map and
+  reviewed memory at session start and cited excerpts after a code question,
+  and capture each session as a source (below). They never block Muse Code.
+- Muse Code reads a project's `AGENTS.md` (else `CLAUDE.md`) once you trust
+  the workspace, so the Graphicle section setup writes there for Codex or
+  Claude Code reaches Muse Code too.
+- Undo: `graphicle disconnect muse` removes the settings entry and the
+  plugin (`muse plugins remove graphicle`).
+- [Graphicle with Muse Code](muse-code.md) has the details: what each hook
+  adds, how the context keeps the prompt cache, and session memory.
+
+## Claude Code and Codex on Meta's models
+
+Meta documents running Claude Code and Codex on its models
+(https://dev.meta.ai/docs/coding-agents.md). Graphicle connects to them the
+same way whatever model they use: `graphicle setup` adds its MCP server and
+capture hooks as above. Pointing them at Meta changes where they send their
+requests and who bills them, so Graphicle does not write that part for you:
+it would change every session of the agent, not only Graphicle's.
+
+**Claude Code**, through the Messages API, for one shell:
+
+```sh
+export ANTHROPIC_BASE_URL=https://api.meta.ai
+export ANTHROPIC_AUTH_TOKEN="$MODEL_API_KEY"
+export ANTHROPIC_MODEL=muse-wonder-1.0
+export ANTHROPIC_DEFAULT_OPUS_MODEL=muse-wonder-1.0
+export ANTHROPIC_DEFAULT_SONNET_MODEL=muse-spark-1.3
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=muse-spark-1.3
+export CLAUDE_CODE_SUBAGENT_MODEL=muse-spark-1.3
+export ENABLE_TOOL_SEARCH=true
+claude
+```
+
+- The base URL has no `/v1`: Claude Code adds `/v1/messages`.
+- `ANTHROPIC_AUTH_TOKEN`, not `ANTHROPIC_API_KEY`, which sends another
+  header.
+- Name every model: a background task, Plan Mode or a sub-agent otherwise
+  asks for a model the Meta Model API does not serve.
+- `ENABLE_TOOL_SEARCH=true` keeps tool search, which Claude Code turns off
+  for other hosts, so Graphicle's tools load when the agent needs them.
+
+**Codex**, through the Responses API: add a provider and a profile to
+`~/.codex/config.toml`, and your default provider stays as it is.
+
+```toml
+[model_providers.meta]
+name = "Meta Model API"
+base_url = "https://api.meta.ai/v1"
+env_key = "MODEL_API_KEY"
+wire_api = "responses"
+
+[profiles.meta]
+model = "muse-wonder-1.0"
+model_provider = "meta"
+model_reasoning_effort = "high"
+model_reasoning_summary = "auto"
+```
+
+```sh
+export MODEL_API_KEY=...
+codex --profile meta -c model_context_window=1048576 -c model_auto_compact_token_limit=900000
+```
+
+- Codex sends `MODEL_API_KEY` as a bearer token; the key never goes in the
+  file.
+- Meta's page sets these keys at the top level instead, which makes Meta
+  Codex's default, and asks you to `/logout` from OpenAI first. A
+  `CODEX_HOME` of its own keeps such a setup apart from your usual one.
+
+**Billing.** Both bill the Meta Model API key by usage. Their cost displays
+show $0 for a provider without prices; the Model API's usage page has the
+real figures.
+
 ## Other MCP clients
 
 Any client that starts an MCP server over stdio, such as Windsurf, can use
@@ -266,9 +358,11 @@ the new code.
 
 ## Session capture
 
-Session capture saves your Claude Code and Codex conversations in the project,
-so that you and your agents can search what was said and decided before.
-Setup turns it on; `--no-capture` leaves it off.
+Session capture saves your Claude Code, Codex and Muse Code conversations in
+the project, so that you and your agents can search what was said and
+decided before. Setup turns it on; `--no-capture` leaves it off. Muse Code's
+capture comes with Graphicle's plugin, a preview you add with `graphicle
+connect muse --hooks` ([Muse Code](muse-code.md#session-memory)).
 
 - After each answer, a background process stores the session's completed
   turns. The hooks never make the agent wait.

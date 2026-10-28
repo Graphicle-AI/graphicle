@@ -12,11 +12,16 @@ After you install, set up a repository with
 `cd your-repo && graphicle setup`. The [quick start](quickstart.md) shows each
 step.
 
+Claude Code's sandbox does not let setup write `.git/hooks`, `.mcp.json` or
+`.claude/settings.local.json`, and Codex's sandbox keeps `.git` read-only.
+There, setup prints the lines to add by hand and the command that adds the
+agent's hooks later. Or run `graphicle setup` in a normal terminal.
+
 ## Homebrew
 
 ```sh
 brew install graphicle-ai/tap/graphicle
-graphicle --version          # graphicle 0.1.8 (core)
+graphicle --version          # graphicle 0.1.9 (core)
 ```
 
 `brew upgrade graphicle` installs a new release. Afterwards, read
@@ -154,7 +159,7 @@ folder with both programs, `LICENSE`, `NOTICE`, `NOTICE.md`, `README.md`,
 | Windows, x86-64 (preview) | `x86_64-pc-windows-msvc`, a `.zip` |
 
 ```sh
-version=0.1.8
+version=0.1.9
 target=aarch64-apple-darwin
 base=https://github.com/graphicle-ai/graphicle/releases/download/v$version
 curl -fLO "$base/graphicle-$version-$target.tar.gz"
@@ -248,7 +253,7 @@ in them.
 ## Check the installation
 
 ```sh
-graphicle --version          # graphicle 0.1.8 (core)
+graphicle --version          # graphicle 0.1.9 (core)
 graphicle graph --help       # the code-graph engine's commands
 graphicle doctor             # checks the programs, the data folder and your agents
 ```

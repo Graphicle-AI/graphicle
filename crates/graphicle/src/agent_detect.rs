@@ -96,6 +96,12 @@ impl Environment {
         self.at_home(".cursor/mcp.json")
     }
 
+    /// Muse Code's user settings file, which holds its MCP servers
+    /// (`mcp_servers`).
+    pub fn muse_config(&self) -> Option<PathBuf> {
+        self.at_home(".config/muse/settings.json")
+    }
+
     /// Claude Desktop's folder (where `connect claude` writes).
     pub fn claude_desktop_dir(&self) -> Option<PathBuf> {
         #[cfg(target_os = "macos")]
@@ -159,12 +165,13 @@ fn executable(path: &Path) -> bool {
 }
 
 /// The clients `graphicle connect` supports, in the order setup lists them.
-pub const CLIENTS: [(&str, &str); 5] = [
+pub const CLIENTS: [(&str, &str); 6] = [
     ("claude-code", "Claude Code"),
     ("codex", "Codex"),
     ("cursor", "Cursor"),
     ("vscode", "VS Code"),
     ("claude", "Claude Desktop"),
+    ("muse", "Muse Code"),
 ];
 
 /// The display name of a client id.
@@ -189,6 +196,7 @@ pub fn parse(word: &str) -> Option<&'static str> {
         "cursor" => "cursor",
         "vscode" | "code" | "visualstudiocode" | "copilot" => "vscode",
         "claude" | "claudedesktop" | "desktop" => "claude",
+        "muse" | "musecode" => "muse",
         _ => return None,
     };
     Some(id)
@@ -217,6 +225,7 @@ pub fn detect(env: &Environment) -> Vec<Found> {
             "vscode" => folder(env.vscode_dir())
                 .or_else(|| folder(env.at_home(".vscode")))
                 .or_else(|| env.program("code")),
+            "muse" => folder(env.at_home(".config/muse")).or_else(|| env.program("muse")),
             _ => folder(env.claude_desktop_dir()),
         };
         if let Some(evidence) = evidence {

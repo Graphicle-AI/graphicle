@@ -29,7 +29,138 @@ pub struct Profile {
     /// owns (messages, budgets, output format, sampling temperature) are rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extra_body: Option<serde_json::Map<String, Value>>,
+    /// What the provider charges, from the configuration (never built in):
+    /// `ask --pack` and `plan` show a call's cost with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price: Option<Price>,
+    /// The reasoning effort each call asks for (`reasoning.effort` on the
+    /// Responses API, `reasoning_effort` on Chat Completions): `minimal`,
+    /// `low`, `medium`, `high`, `xhigh` or `max`, or `none` where the
+    /// provider takes it (the Meta Model API refuses it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    /// Whether `ask --pack` and `plan` send a prompt cache key (on the
+    /// Responses API with a 24-hour retention): on by default for the Meta
+    /// Model API, off for other providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache: Option<bool>,
+    /// Whether `ask --pack` and `plan` count a request that comes near the
+    /// input limit with the provider's `responses/input_tokens` endpoint
+    /// before sending it, and pack again smaller if it would not fit: on by
+    /// default for the Meta Model API's Responses profiles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub count_tokens: Option<bool>,
+    /// A Hugging Face `tokenizer.json` of the profile's model (Muse Spark
+    /// Open's, for one): `ask --pack` and `plan` count their packs with it
+    /// exactly instead of estimating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokenizer: Option<String>,
+    /// Refuse a long-context call whose worst case (its input, none of it
+    /// cached, and the output limit) would cost more than this, in US dollars
+    /// at the configured price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_per_call: Option<f64>,
+    /// Refuse long-context calls once the day's logged cost of this profile
+    /// (UTC) reaches this, in US dollars at the configured price.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_cost_per_day: Option<f64>,
 }
+/// Prices in US dollars per million tokens: input, output and, when the
+/// provider discounts them, cached input tokens.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Price {
+    pub input: f64,
+    pub output: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input: Option<f64>,
+    /// US dollars per image, for a model that bills images rather than
+    /// tokens (SAM 3.1's segmentation, which `graphicle pixel` calls).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_image: Option<f64>,
+}
+impl Price {
+    /// The cost in US dollars of `input` tokens (of which `cached` were
+    /// cached) and `output` tokens.
+    pub fn cost(&self, input: u64, cached: u64, output: u64) -> f64 {
+        let cached = cached.min(input);
+        let cached_rate = self.cached_input.unwrap_or(self.input);
+        ((input - cached) as f64 * self.input
+            + cached as f64 * cached_rate
+            + output as f64 * self.output)
+            / 1_000_000.0
+    }
+}
+/// The reasoning efforts a profile may ask for.
+pub const REASONING_EFFORTS: [&str; 7] =
+    ["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+/// The Meta Model API's host.
+pub const META_API_HOST: &str = "api.meta.ai";
+/// The prompt cache retention long-context calls ask for on the Responses
+/// API.
+pub const PROMPT_CACHE_RETENTION: &str = "24h";
+
+/// Whether a profile calls the Meta Model API.
+pub fn meta_api(p: &Profile) -> bool {
+    url::Url::parse(&p.base_url).is_ok_and(|url| {
+        url.host_str()
+            .is_some_and(|host| host.eq_ignore_ascii_case(META_API_HOST))
+    })
+}
+
+/// Whether a profile's long-context calls send a prompt cache key.
+pub fn prompt_cache_on(p: &Profile) -> bool {
+    p.prompt_cache.unwrap_or_else(|| meta_api(p))
+}
+
+/// Whether a profile's long-context calls count their requests with the
+/// provider before sending them (Responses profiles only).
+pub fn count_tokens_on(p: &Profile) -> bool {
+    matches!(p.protocol.as_str(), "responses" | "azure_responses")
+        && p.count_tokens.unwrap_or_else(|| meta_api(p))
+}
+
+/// How long a token count may take.
+const COUNT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// The provider's exact count of the input tokens of [`complete`]'s request
+/// for the same arguments (`POST responses/input_tokens`, which generates
+/// nothing). Only the request's model, instructions, input, output format
+/// and reasoning are sent.
+pub async fn count_input_tokens(
+    p: &Profile,
+    system: &str,
+    user: &str,
+    schema: Option<&Value>,
+) -> Result<u64> {
+    if !matches!(p.protocol.as_str(), "responses" | "azure_responses") {
+        return Err(Error::bad("Only a Responses API profile counts tokens"));
+    }
+    let (_, body) = completion_body(p, system, user, schema, p.output_limit, None)?;
+    let mut request = serde_json::Map::new();
+    for field in ["model", "instructions", "input", "text", "reasoning"] {
+        if let Some(value) = body.get(field) {
+            request.insert(field.into(), value.clone());
+        }
+    }
+    let credential = environment_credential(p)?;
+    let client = client_with_timeout(COUNT_TIMEOUT)?;
+    let response = authenticated(&client, p, "responses/input_tokens", credential.as_deref())?
+        .json(&Value::Object(request))
+        .send()
+        .await
+        .map_err(|error| Error::bad(request_failure("The token count request failed", &error)))?;
+    let value = provider_json(response, credential.as_deref()).await?;
+    value["input_tokens"]
+        .as_u64()
+        .ok_or_else(|| Error::bad("The provider's token count has no input_tokens"))
+}
+
+/// The largest input limit a profile may set: a context window of
+/// 1,048,576 tokens (Muse Spark's).
+pub const MAX_INPUT_LIMIT: usize = 1_048_576;
+/// The largest output limit: reasoning models count their reasoning in it.
+pub const MAX_OUTPUT_LIMIT: usize = 131_072;
 /// Chat request fields that carry the runtime's prompt, budget and output contract.
 const OWNED_CHAT_FIELDS: [&str; 13] = [
     "model",
@@ -96,6 +227,22 @@ pub struct Config {
     /// Claude Code's prompt-context hook's settings ([`PromptContextSettings`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_context: Option<PromptContextSettings>,
+    /// `graphicle fix`'s settings ([`FixSettings`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<FixSettings>,
+}
+
+/// `graphicle fix`'s settings (`fix.*` in the configuration file).
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FixSettings {
+    /// The test command `fix` runs in its worktree (with `sh -c`) when
+    /// `--test` gives none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test: Option<String>,
+    /// The seconds the test command may run [default: 600].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
 }
 
 /// The prompt-context hook's settings (`prompt_context.*` in the
@@ -141,6 +288,7 @@ impl Default for Config {
             update_notifier: None,
             sync: None,
             prompt_context: None,
+            fix: None,
         }
     }
 }
@@ -201,6 +349,19 @@ impl Config {
                 crate::prompt_hook::MAX_SECONDS
             )));
         }
+        if let Some(fix) = &self.fix
+            && (fix
+                .test
+                .as_ref()
+                .is_some_and(|t| t.trim().is_empty() || t.len() > 4096)
+                || fix
+                    .timeout_seconds
+                    .is_some_and(|s| !(1..=86_400).contains(&s)))
+        {
+            return Err(Error::bad(
+                "fix.test must be a command of at most 4096 characters, and fix.timeout_seconds 1 to 86400",
+            ));
+        }
         for (name, p) in &self.models {
             if name.is_empty()
                 || name.len() > 100
@@ -217,8 +378,19 @@ impl Config {
                     "local_onnx",
                 ]
                 .contains(&p.protocol.as_str())
-                || !(512..=128000).contains(&p.input_limit)
-                || !(64..=16000).contains(&p.output_limit)
+                || !(512..=MAX_INPUT_LIMIT).contains(&p.input_limit)
+                || !(64..=MAX_OUTPUT_LIMIT).contains(&p.output_limit)
+                || p.price.as_ref().is_some_and(|price| {
+                    [
+                        Some(price.input),
+                        Some(price.output),
+                        price.cached_input,
+                        price.per_image,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .any(|rate| !rate.is_finite() || !(0.0..=10_000.0).contains(&rate))
+                })
                 || p.temperature
                     .is_some_and(|t| !t.is_finite() || !(0.0..=2.0).contains(&t))
             {
@@ -235,6 +407,47 @@ impl Config {
                 return Err(Error::bad(
                     "Invalid extra_body: chat profiles only, at most 16 fields and 4 KiB, no runtime-owned fields",
                 ));
+            }
+            for (setting, cap) in [
+                ("max_cost_per_call", p.max_cost_per_call),
+                ("max_cost_per_day", p.max_cost_per_day),
+            ] {
+                let Some(cap) = cap else {
+                    continue;
+                };
+                if !cap.is_finite() || cap <= 0.0 || cap > 1_000_000.0 {
+                    return Err(Error::bad(format!(
+                        "models.{name}.{setting} must be a number of US dollars above 0"
+                    )));
+                }
+                if p.price.is_none() {
+                    return Err(Error::bad(format!(
+                        "models.{name}.{setting} is counted at the profile's price: set models.{name}.price too"
+                    )));
+                }
+            }
+            if p.tokenizer
+                .as_ref()
+                .is_some_and(|path| path.is_empty() || path.len() > 4096)
+            {
+                return Err(Error::bad("tokenizer must be the path of a tokenizer.json"));
+            }
+            if let Some(effort) = &p.reasoning_effort {
+                if effort == "none" && meta_api(p) {
+                    return Err(Error::bad(
+                        "The Meta Model API refuses reasoning_effort none: choose minimal, low, medium, high, xhigh or max",
+                    ));
+                }
+                if !REASONING_EFFORTS.contains(&effort.as_str())
+                    || !matches!(
+                        p.protocol.as_str(),
+                        "responses" | "azure_responses" | "chat" | "azure_chat"
+                    )
+                {
+                    return Err(Error::bad(
+                        "reasoning_effort is none, minimal, low, medium, high, xhigh or max, on responses and chat profiles",
+                    ));
+                }
             }
             if p.protocol == "local_onnx" {
                 crate::local_inference::validate(p)?;
@@ -752,6 +965,391 @@ pub async fn generate_with_credential(
     reply(p, &value, estimated, start)
 }
 
+/// How long a long-context call may take: a prompt of a million tokens is
+/// read before the first answer token.
+pub const LONG_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// One long-context completion's result: the text and the provider's usage
+/// counts (`None` where it reported none).
+#[derive(Clone, Debug, Default)]
+pub struct Completion {
+    pub text: String,
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cached_tokens: Option<u64>,
+    pub reasoning_tokens: Option<u64>,
+    pub elapsed_ms: u64,
+    pub model: String,
+}
+
+/// The request of [`complete`]: the endpoint and body, in the profile's
+/// protocol. `user` goes in as it is (a pack and a question, not JSON); with
+/// `schema`, the reply is a structured result where the profile has
+/// structured output, else the schema is in the instructions; chat profiles
+/// stream, with the usage in the last event. A profile with the prompt
+/// cache on ([`prompt_cache_on`]) sends `prompt_cache_key`, and on the
+/// Responses API a [`PROMPT_CACHE_RETENTION`] retention.
+pub fn completion_body(
+    p: &Profile,
+    system: &str,
+    user: &str,
+    schema: Option<&Value>,
+    output_limit: usize,
+    prompt_cache_key: Option<&str>,
+) -> Result<(String, Value)> {
+    let plain = json!({"type":"object","properties":{"answer":{"type":"string"}}});
+    let (suffix, mut body) = request_body(
+        p,
+        system,
+        &json!(""),
+        schema.unwrap_or(&plain),
+        output_limit,
+    )?;
+    match p.protocol.as_str() {
+        "responses" | "azure_responses" => body["input"] = json!(user),
+        "chat" | "azure_chat" | "ollama" => body["messages"][1]["content"] = json!(user),
+        "anthropic" => body["messages"][0]["content"] = json!(user),
+        "gemini" => body["contents"][0]["parts"][0]["text"] = json!(user),
+        _ => return Err(Error::bad("Unsupported inference protocol")),
+    }
+    if schema.is_none() {
+        let fields = body.as_object_mut().expect("request bodies are objects");
+        match p.protocol.as_str() {
+            "responses" | "azure_responses" => {
+                fields.remove("text");
+                fields.insert("instructions".into(), json!(system));
+            }
+            "chat" | "azure_chat" => {
+                fields.remove("response_format");
+                body["messages"][0]["content"] = json!(system);
+            }
+            "ollama" => {
+                fields.remove("format");
+                body["messages"][0]["content"] = json!(system);
+            }
+            "anthropic" => {
+                fields.remove("tools");
+                fields.remove("tool_choice");
+                fields.insert("system".into(), json!(system));
+            }
+            _ => {
+                if let Some(config) = body["generationConfig"].as_object_mut() {
+                    config.remove("responseMimeType");
+                    config.remove("responseJsonSchema");
+                }
+                body["systemInstruction"]["parts"][0]["text"] = json!(system);
+            }
+        }
+    }
+    if matches!(p.protocol.as_str(), "chat" | "azure_chat") {
+        body["stream"] = json!(true);
+        body["stream_options"] = json!({"include_usage":true});
+    }
+    if let Some(key) = prompt_cache_key.filter(|_| prompt_cache_on(p)) {
+        match p.protocol.as_str() {
+            "responses" | "azure_responses" => {
+                body["prompt_cache_key"] = json!(key);
+                body["prompt_cache_retention"] = json!(PROMPT_CACHE_RETENTION);
+            }
+            "chat" | "azure_chat" => body["prompt_cache_key"] = json!(key),
+            _ => {}
+        }
+    }
+    Ok((suffix, body))
+}
+
+/// One long-context completion (`ask --pack`, `plan`) with the profile's
+/// credential from its environment variable. A chat profile's reply streams:
+/// `on_text` gets the answer as it arrives, and a gateway's limit on waiting
+/// for a whole reply does not cut a long request.
+pub async fn complete(
+    p: &Profile,
+    system: &str,
+    user: &str,
+    schema: Option<&Value>,
+    output_limit: usize,
+    prompt_cache_key: Option<&str>,
+    on_text: &mut (dyn FnMut(&str) + Send),
+) -> Result<Completion> {
+    complete_with(
+        p,
+        system,
+        user,
+        None,
+        schema,
+        output_limit,
+        prompt_cache_key,
+        on_text,
+    )
+    .await
+}
+
+/// [`complete`] with the Responses API's `input` given whole: messages whose
+/// content holds parts, such as an `input_image` with a base64 data URL
+/// (`graphicle pixel`). Only a Responses API profile takes it.
+pub async fn complete_input(
+    p: &Profile,
+    system: &str,
+    input: &Value,
+    schema: Option<&Value>,
+    output_limit: usize,
+    on_text: &mut (dyn FnMut(&str) + Send),
+) -> Result<Completion> {
+    if !matches!(p.protocol.as_str(), "responses" | "azure_responses") {
+        return Err(Error::bad(
+            "Images go to a Responses API profile, such as the Meta Model API's (graphicle config set model meta)",
+        ));
+    }
+    complete_with(
+        p,
+        system,
+        "",
+        Some(input),
+        schema,
+        output_limit,
+        None,
+        on_text,
+    )
+    .await
+}
+
+/// POST `body` as it is to the profile's endpoint `suffix` with its
+/// credential, and the reply's JSON (a refusal keeps the provider's reason,
+/// without the credential). For a call that is not a completion, such as
+/// SAM 3.1's segmentation on the Responses API (`graphicle pixel`).
+pub async fn post_json(
+    p: &Profile,
+    suffix: &str,
+    body: &Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let credential = environment_credential(p)?;
+    let client = client_with_timeout(timeout)?;
+    let response = authenticated(&client, p, suffix, credential.as_deref())?
+        .json(body)
+        .send()
+        .await
+        .map_err(|error| {
+            Error::bad(request_failure(
+                "Provider request failed before a response",
+                &error,
+            ))
+        })?;
+    provider_json(response, credential.as_deref()).await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn complete_with(
+    p: &Profile,
+    system: &str,
+    user: &str,
+    input: Option<&Value>,
+    schema: Option<&Value>,
+    output_limit: usize,
+    prompt_cache_key: Option<&str>,
+    on_text: &mut (dyn FnMut(&str) + Send),
+) -> Result<Completion> {
+    if output_limit < 64 || output_limit > p.output_limit {
+        return Err(Error::bad(
+            "Inference request exceeds the configured model budget",
+        ));
+    }
+    let credential = environment_credential(p)?;
+    let client = client_with_timeout(LONG_TIMEOUT)?;
+    let (suffix, mut body) =
+        completion_body(p, system, user, schema, output_limit, prompt_cache_key)?;
+    if let Some(input) = input {
+        body["input"] = input.clone();
+    }
+    let start = Instant::now();
+    let send = |body: &Value| {
+        let request = authenticated(&client, p, &suffix, credential.as_deref());
+        let body = body.clone();
+        async move {
+            request?.json(&body).send().await.map_err(|error| {
+                let what = if error.is_timeout() {
+                    "Provider request timed out; usage may be unknown"
+                } else if error.is_connect() {
+                    "Could not establish the provider connection"
+                } else {
+                    "Provider request failed before a response; usage may be unknown"
+                };
+                Error::bad(request_failure(what, &error))
+            })
+        }
+    };
+    let mut response = send(&body).await?;
+    // A server that refuses `stream_options` (not every OpenAI-compatible
+    // server takes it): once more without it.
+    if body["stream"] == true && response.status() == reqwest::StatusCode::BAD_REQUEST {
+        let mut plain = body.clone();
+        if let Some(fields) = plain.as_object_mut() {
+            fields.remove("stream_options");
+        }
+        response = send(&plain).await?;
+    }
+    if body["stream"] == true && response.status().is_success() {
+        return stream_reply(p, response, start, on_text).await;
+    }
+    let value = provider_json(response, credential.as_deref()).await?;
+    let mut effective = p.clone();
+    effective.structured_output = schema.is_some() && p.structured_output;
+    let estimated = (system.len() + user.len()) / 4;
+    let reply = reply(&effective, &value, estimated, start)?;
+    on_text(&reply.text);
+    let usage = &value["usage"];
+    Ok(Completion {
+        text: reply.text,
+        input_tokens: reply.usage_reported.then_some(reply.input_tokens as u64),
+        output_tokens: reply.usage_reported.then_some(reply.output_tokens as u64),
+        cached_tokens: usage["input_tokens_details"]["cached_tokens"]
+            .as_u64()
+            .or(usage["prompt_tokens_details"]["cached_tokens"].as_u64())
+            .or(usage["cache_read_input_tokens"].as_u64()),
+        reasoning_tokens: usage["output_tokens_details"]["reasoning_tokens"]
+            .as_u64()
+            .or(usage["completion_tokens_details"]["reasoning_tokens"].as_u64()),
+        elapsed_ms: reply.elapsed_ms,
+        model: reply.model,
+    })
+}
+
+/// Bytes of a streamed reply read at most.
+const STREAM_BYTES: usize = 16 << 20;
+
+/// A chat completion's server-sent events as one [`Completion`]: the content
+/// deltas in order, the finish reason, and the usage of the last event. A
+/// server that answers without streaming is read as one reply.
+async fn stream_reply(
+    p: &Profile,
+    mut response: reqwest::Response,
+    start: Instant,
+    on_text: &mut (dyn FnMut(&str) + Send),
+) -> Result<Completion> {
+    let mut pending: Vec<u8> = Vec::new();
+    let mut whole: Vec<u8> = Vec::new();
+    let mut done = Completion {
+        model: p.model.clone(),
+        ..Completion::default()
+    };
+    let mut finish: Option<String> = None;
+    let mut refusal = String::new();
+    let mut events = 0usize;
+    let mut handle = |line: &[u8],
+                      done: &mut Completion,
+                      finish: &mut Option<String>,
+                      refusal: &mut String,
+                      events: &mut usize| {
+        let line = String::from_utf8_lossy(line);
+        let Some(data) = line.trim_end_matches('\r').strip_prefix("data:") else {
+            return;
+        };
+        let data = data.trim();
+        if data.is_empty() || data == "[DONE]" {
+            return;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(data) else {
+            return;
+        };
+        *events += 1;
+        if let Some(model) = event["model"].as_str() {
+            done.model = model.to_string();
+        }
+        let choice = &event["choices"][0];
+        if let Some(delta) = choice["delta"]["content"].as_str()
+            && !delta.is_empty()
+        {
+            done.text.push_str(delta);
+            on_text(delta);
+        }
+        if let Some(text) = choice["delta"]["refusal"].as_str() {
+            refusal.push_str(text);
+        }
+        if let Some(reason) = choice["finish_reason"].as_str() {
+            *finish = Some(reason.to_string());
+        }
+        let usage = &event["usage"];
+        if usage.is_object() {
+            done.input_tokens = usage["prompt_tokens"].as_u64();
+            done.output_tokens = usage["completion_tokens"].as_u64();
+            done.cached_tokens = usage["prompt_tokens_details"]["cached_tokens"].as_u64();
+            done.reasoning_tokens = usage["completion_tokens_details"]["reasoning_tokens"].as_u64();
+        }
+    };
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) => {
+                return Err(Error::bad(request_failure(
+                    "The provider's streamed reply broke off; usage may be unknown",
+                    &error,
+                )));
+            }
+        };
+        if whole.len() < STREAM_BYTES {
+            whole.extend_from_slice(&chunk);
+        }
+        pending.extend_from_slice(&chunk);
+        while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+            let line: Vec<u8> = pending.drain(..=end).collect();
+            handle(
+                &line[..line.len() - 1],
+                &mut done,
+                &mut finish,
+                &mut refusal,
+                &mut events,
+            );
+        }
+        if whole.len() >= STREAM_BYTES && events == 0 {
+            return Err(Error::bad("The provider's reply is too large"));
+        }
+    }
+    if !pending.is_empty() {
+        let line = std::mem::take(&mut pending);
+        handle(&line, &mut done, &mut finish, &mut refusal, &mut events);
+    }
+    if events == 0 {
+        // Not a stream: one JSON reply.
+        let value: Value = serde_json::from_slice(&whole)
+            .map_err(|_| Error::bad("The provider's reply was neither a stream nor JSON"))?;
+        let reply = reply(p, &value, 0, start)?;
+        on_text(&reply.text);
+        let usage = &value["usage"];
+        return Ok(Completion {
+            text: reply.text,
+            input_tokens: usage["prompt_tokens"].as_u64(),
+            output_tokens: usage["completion_tokens"].as_u64(),
+            cached_tokens: usage["prompt_tokens_details"]["cached_tokens"].as_u64(),
+            reasoning_tokens: usage["completion_tokens_details"]["reasoning_tokens"].as_u64(),
+            elapsed_ms: start.elapsed().as_millis() as u64,
+            model: reply.model,
+        });
+    }
+    done.elapsed_ms = start.elapsed().as_millis() as u64;
+    if !refusal.is_empty() {
+        return Err(Error::bad("Model declined the inference request"));
+    }
+    match finish.as_deref() {
+        Some("stop") => {}
+        Some("length") => {
+            return Err(Error::bad(
+                "Model did not complete the answer (max_output_tokens): raise the profile's output_limit",
+            ));
+        }
+        Some(other) => return Err(Error::bad(format!("Model answer ended early ({other})"))),
+        None => {
+            return Err(Error::bad(
+                "The provider's streamed reply ended without finishing",
+            ));
+        }
+    }
+    if done.text.trim().is_empty() {
+        return Err(Error::bad("Model returned no answer"));
+    }
+    Ok(done)
+}
+
 /// What the Anthropic transport's structured mode adds to the instructions:
 /// the tool is offered with `tool_choice: auto`, because current Claude
 /// models (Claude Opus 5.5, Claude Sonnet 5.5, Claude Fable 5.1) refuse a
@@ -891,6 +1489,15 @@ pub fn request_body(
             if !OWNED_CHAT_FIELDS.contains(&name.as_str()) {
                 body[name] = value.clone();
             }
+        }
+    }
+    // The profile's reasoning effort, in each API's own field (over one an
+    // extra_body sets).
+    if let Some(effort) = &p.reasoning_effort {
+        match p.protocol.as_str() {
+            "responses" | "azure_responses" => body["reasoning"] = json!({"effort":effort}),
+            "chat" | "azure_chat" => body["reasoning_effort"] = json!(effort),
+            _ => {}
         }
     }
     Ok((suffix, body))
@@ -1634,5 +2241,68 @@ mod tests {
                 refused.message
             );
         }
+    }
+    /// A long-context call to the Meta Model API asks for the profile's
+    /// reasoning effort and, on the Responses API, sends the prompt cache key
+    /// with a 24-hour retention; chat servers get the key only when the
+    /// profile opts in.
+    #[test]
+    fn long_context_calls_carry_the_cache_key_and_the_reasoning_effort() {
+        let meta: Profile = serde_json::from_value(json!({"protocol":"responses",
+            "base_url":"https://api.meta.ai/v1","model":"muse-spark-1.3","key_env":"MODEL_API_KEY",
+            "input_limit":1_016_576,"output_limit":32_000,"reasoning_effort":"low"}))
+        .unwrap();
+        assert!(super::meta_api(&meta) && super::prompt_cache_on(&meta));
+        let (path, body) = super::completion_body(
+            &meta,
+            "Stable rules",
+            "pack\nQuestion: q\n",
+            None,
+            1_000,
+            Some("graphicle:demo@0123456789ab:e3b0c44298fc"),
+        )
+        .unwrap();
+        assert_eq!(path, "responses");
+        assert_eq!(body["instructions"], "Stable rules");
+        assert_eq!(body["input"], "pack\nQuestion: q\n");
+        assert_eq!(body["max_output_tokens"], 1_000);
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(
+            body["prompt_cache_key"],
+            "graphicle:demo@0123456789ab:e3b0c44298fc"
+        );
+        assert_eq!(body["prompt_cache_retention"], "24h");
+        // The same profile on Chat Completions: the key, no retention.
+        let mut chat = meta.clone();
+        chat.protocol = "chat".into();
+        let (_, body) =
+            super::completion_body(&chat, "Stable rules", "u", None, 1_000, Some("k")).unwrap();
+        assert_eq!(body["reasoning_effort"], "low");
+        assert_eq!(body["prompt_cache_key"], "k");
+        assert!(body.get("prompt_cache_retention").is_none());
+        // A vLLM server: no key unless the profile opts in.
+        let mut vllm = profile("chat", true);
+        let (_, body) =
+            super::completion_body(&vllm, "Stable rules", "u", None, 500, Some("k")).unwrap();
+        assert!(body.get("prompt_cache_key").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+        vllm.prompt_cache = Some(true);
+        let (_, body) =
+            super::completion_body(&vllm, "Stable rules", "u", None, 500, Some("k")).unwrap();
+        assert_eq!(body["prompt_cache_key"], "k");
+        // The Meta Model API refuses reasoning effort none; other values are
+        // checked.
+        for (effort, valid) in [("none", false), ("max", true), ("fast", false)] {
+            let mut p = meta.clone();
+            p.reasoning_effort = Some(effort.into());
+            let config: Config =
+                serde_json::from_value(json!({"default_model":"m","models":{"m":p}})).unwrap();
+            assert_eq!(config.validate().is_ok(), valid, "{effort}");
+        }
+        let mut local = profile("chat", true);
+        local.reasoning_effort = Some("none".into());
+        let config: Config =
+            serde_json::from_value(json!({"default_model":"m","models":{"m":local}})).unwrap();
+        assert!(config.validate().is_ok());
     }
 }

@@ -29,6 +29,9 @@ pub const MAX_MISSING: usize = 2_000;
 pub const MAX_MISSING_BYTES: usize = 64 << 20;
 /// The lexical and speaker arms' list lengths in `rank`.
 const RANKED: usize = 200;
+/// Keys the lexical arm keeps for `graphicle pack`'s long ranking
+/// ([`crate::query::PACK_RANKING`]).
+const PACK_RANKED: usize = 2000;
 
 /// Why a call takes the full path instead of the index, or `None`: the
 /// index serves `context`'s defaults.
@@ -125,6 +128,7 @@ fn bm25(
     extra: &[Option<std::sync::Arc<cache::Features>>],
     bonus: Option<(&[bool], &[bool])>,
     identity: &dyn Fn(Key) -> String,
+    kept: usize,
 ) -> Result<Order> {
     // Rows: every index passage with a length (all of them for the words,
     // those with turns for a speaker side), and the extra rows with
@@ -209,10 +213,10 @@ fn bm25(
         }
     }
     let scored = positive.len() as u64;
-    // The first RANKED by score, ties by identity: everything above the
-    // RANKED-th score, and every tie at it.
-    if positive.len() > RANKED {
-        let cut = RANKED - 1;
+    // The first `kept` by score, ties by identity: everything above the
+    // `kept`-th score, and every tie at it.
+    if positive.len() > kept {
+        let cut = kept - 1;
         positive.select_nth_unstable_by(cut, |a, b| b.0.total_cmp(&a.0));
         let threshold = positive[cut].0;
         positive.retain(|(score, _)| *score >= threshold);
@@ -222,7 +226,7 @@ fn bm25(
         .map(|(score, key)| (score, identity(key), key))
         .collect();
     named.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-    named.truncate(RANKED);
+    named.truncate(kept);
     Ok(Order {
         ranked: named
             .into_iter()
@@ -555,6 +559,11 @@ pub fn packet(
             &features,
             Some((&file_bonus, &extra_bonus)),
             &identity,
+            if args[query::PACK_RANKING] == true {
+                PACK_RANKED
+            } else {
+                RANKED
+            },
         )
     })?;
     let side = speaker_keep(args, query);
@@ -580,7 +589,9 @@ pub fn packet(
             Some((
                 side,
                 crate::phase::phase("context_speaker", || {
-                    bm25(db, &index, &terms, prefix, length, &spoken, None, &identity)
+                    bm25(
+                        db, &index, &terms, prefix, length, &spoken, None, &identity, RANKED,
+                    )
                 })?,
             ))
         }

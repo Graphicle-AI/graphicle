@@ -1384,6 +1384,12 @@ impl QueryFile {
         Ok(None)
     }
 
+    /// The number of code symbols ([`QueryFile::symbol`] takes positions
+    /// below it).
+    pub fn symbol_count(&self) -> usize {
+        self.symbols
+    }
+
     /// Code symbol `position`: (node index, dotted name, file, start line).
     pub fn symbol(&self, position: usize) -> Result<(usize, &str, &str, Option<usize>), Corrupt> {
         if position >= self.symbols {

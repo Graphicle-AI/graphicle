@@ -1,5 +1,5 @@
-//! Agent-session capture: completed turns of Claude Code and Codex
-//! transcripts become documents of a per-project "agent sessions" JSONL
+//! Agent-session capture: completed turns of Claude Code, Codex and Muse
+//! Code transcripts become documents of a per-project "agent sessions" JSONL
 //! connector through the ordinary delta import — originals that can be
 //! searched, cited and forgotten like any other source, never summaries.
 //!
@@ -51,6 +51,7 @@ pub const START_CONTEXT_CHARS: usize = 8000;
 pub enum Client {
     ClaudeCode,
     Codex,
+    Muse,
 }
 
 impl Client {
@@ -58,19 +59,22 @@ impl Client {
         match value {
             "claude-code" | "claude_code" | "claude" => Ok(Self::ClaudeCode),
             "codex" => Ok(Self::Codex),
-            _ => Err(Error::bad("Choose the claude-code or codex client")),
+            "muse" | "muse-code" => Ok(Self::Muse),
+            _ => Err(Error::bad("Choose the claude-code, codex or muse client")),
         }
     }
     pub fn as_str(self) -> &'static str {
         match self {
             Self::ClaudeCode => "claude-code",
             Self::Codex => "codex",
+            Self::Muse => "muse",
         }
     }
     fn label(self) -> &'static str {
         match self {
             Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
+            Self::Muse => "Muse Code",
         }
     }
 }
@@ -672,10 +676,200 @@ pub fn parse_codex(text: &str) -> Result<Session> {
     Ok(session)
 }
 
+/// A Muse Code record's time (`recorded_at`, microseconds since 1970) as
+/// RFC 3339.
+fn muse_stamp(record: &Value) -> Option<String> {
+    let micros = record["recorded_at"].as_i64()?;
+    chrono::DateTime::from_timestamp_micros(micros)
+        .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Micros, true))
+}
+
+/// The record kinds that carry Muse Code tool outputs.
+const MUSE_TOOL_RESULTS: [&str; 4] = [
+    "tool_result",
+    "tool_result_batch_committed",
+    "tool_results_committed",
+    "tool_result_committed",
+];
+
+/// Parse a Muse Code session log
+/// (`~/.local/share/muse/sessions/YYYY/MM/DD/<session>/session.jsonl`).
+/// Every line is an envelope whose `stream` names the session
+/// (`{"kind":"session","id":…}`) and whose `payload` holds the record; a
+/// run's records carry their event in `payload.event` (`payload.kind` is
+/// `run`), the shape Muse Code's own session-evidence projection reads, and
+/// a run stream's records (an export's) carry it as the payload itself:
+/// * a run's `started` event holds the person's prompt and starts a turn;
+/// * `assistant_message_committed` holds an answer's text;
+/// * `assistant_tool_calls_committed` holds `tool_calls` (`name`, `args`,
+///   `call_id`) and the `tool_result…` events their outputs;
+/// * `terminal` ends the run, which completes the turn;
+/// * `runtime.session.metadata` names the session's `workspace_root`.
+///
+/// Sub-agents keep their own logs (`subagent/<id>/session.jsonl`), which
+/// are not turns of the person's session ([`transcripts`] skips them), and
+/// reasoning is never stored.
+pub fn parse_muse(text: &str) -> Result<Session> {
+    let mut session = Session::default();
+    let mut drafts: Vec<Draft> = Vec::new();
+    let mut names: BTreeMap<String, String> = BTreeMap::new();
+    for line in text.lines() {
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if session.session_id.is_empty()
+            && record["stream"]["kind"] == "session"
+            && let Some(id) = record["stream"]["id"].as_str()
+        {
+            session.session_id = id.to_string();
+        }
+        let payload = &record["payload"];
+        let payload_type = record["payload_type"].as_str().unwrap_or("");
+        if payload_type == "runtime.session.metadata" {
+            if let Some(root) = payload["workspace_root"]
+                .as_str()
+                .or(payload["record"]["workspace_root"].as_str())
+            {
+                session.cwd = Some(root.to_string());
+            }
+            if session.session_id.is_empty()
+                && let Some(id) = payload["session_id"].as_str()
+            {
+                session.session_id = id.to_string();
+            }
+            continue;
+        }
+        // A session log's run record nests its event; a run stream's
+        // record is the event.
+        let nested = payload["event"].is_object();
+        let event = if nested { &payload["event"] } else { payload };
+        let kind = event["kind"].as_str().unwrap_or("");
+        match kind {
+            "context_projection_checkpoint" => {
+                if session.cwd.is_none()
+                    && let Some(root) = event["session_metadata"]["workspace_root"].as_str()
+                {
+                    session.cwd = Some(root.to_string());
+                }
+            }
+            "started" => {
+                let run = if nested {
+                    payload["kind"] == "run"
+                } else {
+                    payload_type == "agent.run"
+                };
+                let Some(prompt) = event["prompt"].as_str().filter(|_| run) else {
+                    continue;
+                };
+                if prompt.trim().is_empty() || protocol_payload(prompt) {
+                    continue;
+                }
+                let mut draft = Draft {
+                    started_at: muse_stamp(&record),
+                    ..Draft::default()
+                };
+                let cleaned = clean(prompt, &mut draft.applied);
+                if cleaned.trim().is_empty() {
+                    continue;
+                }
+                draft.prompt = cleaned.trim().to_string();
+                draft.parts.push(format!("user: {}", cleaned.trim()));
+                drafts.push(draft);
+            }
+            "assistant_message_committed" => {
+                let Some(draft) = drafts.last_mut() else {
+                    continue;
+                };
+                let text = block_text(&event["text"]);
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let cleaned = clean(&text, &mut draft.applied);
+                draft.parts.push(format!("assistant: {}", cleaned.trim()));
+                draft.answered = true;
+            }
+            "assistant_tool_calls_committed" => {
+                let Some(draft) = drafts.last_mut() else {
+                    continue;
+                };
+                for call in event["tool_calls"].as_array().into_iter().flatten() {
+                    let name = call["name"].as_str().unwrap_or("tool").to_string();
+                    let input = call
+                        .get("args")
+                        .or(call.get("arguments"))
+                        .or(call.get("input"))
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    let parsed = input
+                        .as_str()
+                        .and_then(|t| serde_json::from_str::<Value>(t).ok())
+                        .unwrap_or_else(|| input.clone());
+                    paths_of(&parsed, &mut draft.files);
+                    let shown = tool_text("input", &compact(&input), &mut draft.applied);
+                    draft.parts.push(format!("tool {name}: {shown}"));
+                    if !draft.tools.contains(&name) {
+                        draft.tools.push(name.clone());
+                    }
+                    if let Some(id) = call["call_id"].as_str().or(call["id"].as_str()) {
+                        names.insert(id.to_string(), name);
+                        draft.open_calls.insert(id.to_string());
+                    }
+                    draft.answered = true;
+                }
+            }
+            kind if MUSE_TOOL_RESULTS.contains(&kind) => {
+                let Some(draft) = drafts.last_mut() else {
+                    continue;
+                };
+                let results: Vec<&Value> = match event["results"].as_array() {
+                    Some(results) => results.iter().collect(),
+                    None => vec![event],
+                };
+                for result in results {
+                    let id = result["tool_call_id"]
+                        .as_str()
+                        .or(result["call_id"].as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    draft.open_calls.remove(&id);
+                    let name = names.get(&id).cloned().unwrap_or_else(|| "tool".into());
+                    if let Some(code) = result["exit_code"]
+                        .as_i64()
+                        .or(result["metadata"]["exit_code"].as_i64())
+                    {
+                        draft.exit_codes.push(code);
+                    }
+                    let raw = ["text", "output", "result", "content"]
+                        .iter()
+                        .map(|key| &result[*key])
+                        .find(|value| !value.is_null())
+                        .unwrap_or(&Value::Null);
+                    let body = tool_text("output", &block_text(raw), &mut draft.applied);
+                    draft.parts.push(format!("tool {name} output: {body}"));
+                }
+            }
+            "terminal" => {
+                // The run ended: its turn is complete, answered or not.
+                if let Some(draft) = drafts.last_mut() {
+                    draft.answered = true;
+                    draft.open_calls.clear();
+                }
+            }
+            _ => {}
+        }
+    }
+    if !valid_session_id(&session.session_id) {
+        return Err(Error::bad("Session log names no valid session id"));
+    }
+    close(drafts, &mut session);
+    Ok(session)
+}
+
 pub fn parse(client: Client, text: &str) -> Result<Session> {
     match client {
         Client::ClaudeCode => parse_claude_code(text),
         Client::Codex => parse_codex(text),
+        Client::Muse => parse_muse(text),
     }
 }
 
@@ -1153,11 +1347,22 @@ pub fn project_for_cwd(
         .map(|found| found.id))
 }
 
-/// Transcript files under `root` (`*.jsonl`), newest first, at most `limit`.
+/// Folders under a client's transcript root that hold no session of a
+/// person's: Muse Code's sub-agent logs (`<session>/subagent/…`).
+pub fn skipped_folders(client: Client) -> &'static [&'static str] {
+    match client {
+        Client::Muse => &["subagent"],
+        Client::ClaudeCode | Client::Codex => &[],
+    }
+}
+
+/// Transcript files under `root` (`*.jsonl`), newest first, at most `limit`;
+/// folders named in `skip` are not entered.
 pub fn transcripts(
     root: &std::path::Path,
     since: Option<std::time::SystemTime>,
     limit: usize,
+    skip: &[&str],
 ) -> Vec<std::path::PathBuf> {
     let mut found: Vec<(std::time::SystemTime, std::path::PathBuf)> = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -1171,7 +1376,13 @@ pub fn transcripts(
                 continue;
             };
             if meta.is_dir() && !meta.file_type().is_symlink() {
-                stack.push(path);
+                if !path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| skip.contains(&name))
+                {
+                    stack.push(path);
+                }
             } else if meta.is_file()
                 && path.extension().is_some_and(|e| e == "jsonl")
                 && meta.len() <= crate::limits::current().transcript_bytes as u64
@@ -1198,6 +1409,13 @@ pub fn default_root(client: Client) -> Option<std::path::PathBuf> {
         Client::Codex => std::env::var_os("CODEX_HOME")
             .map(|d| std::path::PathBuf::from(d).join("sessions"))
             .or_else(|| home.map(|h| h.join(".codex/sessions"))),
+        // Muse Code keeps its data under the XDG data folder on every
+        // platform.
+        Client::Muse => std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|d| d.is_absolute())
+            .or_else(|| home.map(|h| h.join(".local/share")))
+            .map(|d| d.join("muse/sessions")),
     }
 }
 
@@ -1227,6 +1445,145 @@ mod tests {
             "{elided}"
         );
         assert_eq!(applied.elided, 1);
+    }
+
+    /// A Muse Code session log as its own session-evidence projection
+    /// reads it: run records nest their event; a metadata record names the
+    /// workspace.
+    pub(crate) fn muse_log(session: &str, workspace: &str, finished: bool) -> String {
+        let record = |sequence: u64, payload_type: &str, payload: Value| {
+            json!({"schema_version":1,"id":format!("r{sequence}"),
+                "stream":{"kind":"session","id":session},"sequence":sequence,
+                "recorded_at":1_793_000_000_000_000_u64 + sequence,"record_type":"event",
+                "durability":"durable","payload_type":payload_type,"payload":payload})
+            .to_string()
+        };
+        let run = |event: Value| json!({"kind":"run","run_id":"run-1","event":event});
+        let mut lines = vec![
+            record(
+                1,
+                "runtime.session.metadata",
+                json!({"workspace_root":workspace}),
+            ),
+            record(
+                2,
+                "agent.run",
+                run(json!({"kind":"started",
+                "prompt":"Why does the cache key include the tokenizer? <system-reminder>noise</system-reminder>"})),
+            ),
+            record(
+                3,
+                "agent.run",
+                run(json!({"kind":"reasoning_committed","text":"secret thoughts"})),
+            ),
+            record(
+                4,
+                "agent.run",
+                run(
+                    json!({"kind":"assistant_tool_calls_committed","tool_calls":[
+                {"name":"mcp__graphicle__pack","args":"{\"question\":\"cache key\",\"path\":\"src/pack.rs\"}","call_id":"c1"}]}),
+                ),
+            ),
+            record(
+                5,
+                "agent.run",
+                run(
+                    json!({"kind":"tool_result","call_id":"c1","text":"src/pack.rs:10 key = sha(tokenizer)"}),
+                ),
+            ),
+            record(
+                6,
+                "agent.run",
+                run(json!({"kind":"assistant_message_committed",
+                "text":"Because the tokenizer changes the token count (src/pack.rs:10)."})),
+            ),
+            record(
+                7,
+                "agent.run",
+                run(json!({"kind":"terminal","terminal":"completed"})),
+            ),
+            record(
+                8,
+                "agent.run",
+                run(json!({"kind":"started","prompt":"Now rename it"})),
+            ),
+            record(
+                9,
+                "agent.run",
+                run(
+                    json!({"kind":"assistant_tool_calls_committed","tool_calls":[
+                {"name":"exec_command","args":{"cmd":"sed -i s/a/b/ src/pack.rs"},"call_id":"c2"}]}),
+                ),
+            ),
+        ];
+        if finished {
+            lines.push(record(
+                10,
+                "agent.run",
+                run(json!({"kind":"tool_results_committed",
+                "results":[{"tool_call_id":"c2","output":"","exit_code":0}]})),
+            ));
+            lines.push(record(
+                11,
+                "agent.run",
+                run(json!({"kind":"assistant_message_committed","text":"Renamed."})),
+            ));
+            lines.push(record(
+                12,
+                "agent.run",
+                run(json!({"kind":"terminal","terminal":"completed"})),
+            ));
+        }
+        lines.join("\n") + "\n"
+    }
+
+    #[test]
+    fn parses_a_muse_code_session_log() {
+        let session = parse_muse(&muse_log("6a1f-77", "/w/repo", false)).unwrap();
+        assert_eq!(session.session_id, "6a1f-77");
+        assert_eq!(session.cwd.as_deref(), Some("/w/repo"));
+        // The second run has an open tool call: only the first is complete.
+        assert_eq!((session.seen, session.turns.len()), (2, 1));
+        let turn = &session.turns[0];
+        assert_eq!(turn.prompt, "Why does the cache key include the tokenizer?");
+        assert!(
+            turn.text.contains("tool mcp__graphicle__pack: "),
+            "{}",
+            turn.text
+        );
+        assert!(
+            turn.text
+                .contains("tool mcp__graphicle__pack output: src/pack.rs:10")
+        );
+        assert!(turn.text.contains("assistant: Because the tokenizer"));
+        assert!(!turn.text.contains("noise") && !turn.text.contains("secret thoughts"));
+        assert_eq!(turn.applied.private_spans, 1);
+        assert!(turn.files.contains("src/pack.rs"));
+        assert_eq!(
+            turn.started_at.as_deref(),
+            Some("2026-10-26T07:33:20.000002Z")
+        );
+        let finished = parse_muse(&muse_log("6a1f-77", "/w/repo", true)).unwrap();
+        assert_eq!(finished.turns.len(), 2);
+        assert_eq!(finished.turns[1].exit_codes, vec![0]);
+        assert_eq!(finished.turns[1].tools, vec!["exec_command".to_string()]);
+        assert!(parse_muse("{}\n").is_err());
+        // A run stream's records (an export's) carry the event as the payload.
+        let flat = [
+            json!({"stream":{"kind":"session","id":"s-2"},"payload_type":"agent.run",
+                "payload":{"kind":"started","prompt":"What prints the total?"}}),
+            json!({"stream":{"kind":"session","id":"s-2"},"payload_type":"agent.run",
+                "payload":{"kind":"assistant_message_committed","text":"tariff.py prints it."}}),
+            json!({"stream":{"kind":"session","id":"s-2"},"payload_type":"agent.run",
+                "payload":{"kind":"terminal","terminal":"completed"}}),
+        ]
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let flat = parse_muse(&flat).unwrap();
+        assert_eq!(flat.turns.len(), 1);
+        assert_eq!(flat.turns[0].prompt, "What prints the total?");
     }
 
     #[test]

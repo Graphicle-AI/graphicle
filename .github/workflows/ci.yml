@@ -208,6 +208,9 @@ jobs:
       - name: Adapted-file headers
         working-directory: crates/graphicle-graph
         run: python3 tools/mark_adapted_files.py --check
+      # The review action's scripts, with stand-ins for curl, graphicle and gh.
+      - name: Review action
+        run: python3 packaging/github-action/test_action.py
       # The committed pages the release archives ship (CONTRIBUTING.md,
       # Dependencies): regenerated from the locks, they must not change.
       - name: Third-party licence pages are current

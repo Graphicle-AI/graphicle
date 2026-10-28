@@ -1,0 +1,25 @@
+{
+  "listen": "0.0.0.0",
+  "port": 8080,
+  "binary": "/usr/local/bin/graphicle",
+  "models": "/etc/graphicle/models.json",
+  "key_env": "MODEL_API_KEY",
+  "daily_cap_usd": 10,
+  "max_concurrent": 2,
+  "per_minute": 3,
+  "per_day": 30,
+  "trust_proxy": false,
+  "timeout_seconds": 300,
+  "ask_profile": "spark",
+  "ask_budget": 400000,
+  "curated": "/app/curated.json",
+  "state_dir": "/var/lib/graphicle-demo",
+  "repos": [
+    {"id": "kubernetes", "github": "kubernetes/kubernetes", "commit": "d5cbb79be9160faa3a7d7323e3294c3781c16ae7",
+     "data_dir": "/data/graphicle", "project": "/src/kubernetes"},
+    {"id": "pytorch", "github": "pytorch/pytorch", "commit": "b8bd7cf750ea02a2390d8a5440261e2c6ed5ddc7",
+     "data_dir": "/data/graphicle", "project": "/src/pytorch"},
+    {"id": "vscode", "github": "microsoft/vscode", "commit": "3e8601c5f63f5b2358e0fbbfb825fbbfd72cbe2b",
+     "data_dir": "/data/graphicle", "project": "/src/vscode", "pixel": true}
+  ]
+}

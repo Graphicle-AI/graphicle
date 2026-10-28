@@ -1,0 +1,5 @@
+{
+  "unit": "US dollars, at the prices in ../whole-repo/prices.json",
+  "note": "This kit's spending limit for Muse Code runs (muse_bench.py, memory_demo.py, hook_probe.py), summed over every line of its spend log. Each run also has its own cap ($1 by default) and each day its own ($10 by default).",
+  "usd": {"meta": 15.0}
+}

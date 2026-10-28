@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Graphicle demo</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>Graphicle <span class="dim">on Muse Spark</span></h1>
+  <p class="lede">Ask a repository far larger than a 1M-token window, or point at a pixel of a screenshot and get the code that draws it.</p>
+</header>
+<main>
+  <div class="bar">
+    <label>Repository
+      <select id="repo"></select>
+    </label>
+    <span id="commit" class="dim"></span>
+    <nav role="tablist">
+      <button role="tab" id="tab-ask" aria-selected="true">Ask</button>
+      <button role="tab" id="tab-pixel" aria-selected="false">Point at a pixel</button>
+    </nav>
+  </div>
+
+  <section id="ask" class="panel">
+    <form id="ask-form">
+      <textarea id="question" rows="3" maxlength="600" placeholder="How does the scheduler pick a node for a pod?"></textarea>
+      <div class="row">
+        <button type="submit" id="ask-button">Ask</button>
+        <span id="ask-status" class="dim" aria-live="polite"></span>
+      </div>
+    </form>
+    <div id="curated" class="chips" aria-label="Questions with recorded answers"></div>
+    <div id="ask-result" class="result" hidden>
+      <div id="answer" class="answer"></div>
+      <h3>Sources</h3>
+      <ul id="citations" class="links"></ul>
+      <h3>The pack</h3>
+      <dl id="pack" class="facts"></dl>
+      <h3>Cost</h3>
+      <p id="ask-cost" class="facts-line"></p>
+    </div>
+  </section>
+
+  <section id="pixel" class="panel" hidden>
+    <p class="dim">Pixel to code runs on the vscode repository: drop a screenshot of VS Code, then click an element.</p>
+    <label id="drop" class="drop" tabindex="0">
+      <input id="file" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
+      <span>Drop a screenshot here, or choose a file (PNG, JPEG, WebP or GIF, at most 8 MB)</span>
+    </label>
+    <div id="stage" class="stage" hidden>
+      <img id="shot" alt="Your screenshot: click an element">
+      <div id="box" class="box" hidden></div>
+      <div id="dot" class="dot" hidden></div>
+    </div>
+    <p id="pixel-status" class="dim" aria-live="polite"></p>
+    <div id="pixel-result" class="result" hidden>
+      <p id="read" class="read"></p>
+      <ol id="candidates" class="candidates"></ol>
+      <p id="pixel-cost" class="facts-line"></p>
+    </div>
+  </section>
+</main>
+<footer>
+  <p>A read-only demo. Questions and screenshots are not stored: the spend log keeps the time, model, tokens and cost of each call. <span id="budget"></span></p>
+</footer>
+<script src="/app.js"></script>
+</body>
+</html>

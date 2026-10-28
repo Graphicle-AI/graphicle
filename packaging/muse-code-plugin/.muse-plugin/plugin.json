@@ -1,0 +1,105 @@
+{
+  "schemaVersion": 1,
+  "name": "graphicle",
+  "displayName": "Graphicle",
+  "version": "0.1.9",
+  "description": "Graphicle's code graph, whole-repository packs and reviewed project memory for Muse Code, with the context added at session start and per prompt.",
+  "compat": {
+    "source": "native",
+    "manifestDir": ".muse-plugin"
+  },
+  "capabilities": {
+    "skills": [
+      {
+        "id": "graphicle",
+        "path": "skills/graphicle/SKILL.md",
+        "enabledDefault": true
+      }
+    ],
+    "commands": [],
+    "hooks": [
+      {
+        "id": "session-start",
+        "event": "SessionStart",
+        "command": [
+          "graphicle",
+          "hook",
+          "muse",
+          "session-start"
+        ],
+        "timeoutMs": 10000
+      },
+      {
+        "id": "prompt-context",
+        "event": "UserPromptSubmit",
+        "command": [
+          "graphicle",
+          "hook",
+          "muse",
+          "prompt-context"
+        ],
+        "timeoutMs": 30000
+      },
+      {
+        "id": "tool-batch",
+        "event": "PostToolBatch",
+        "command": [
+          "graphicle",
+          "hook",
+          "muse",
+          "tool-batch"
+        ],
+        "timeoutMs": 5000
+      },
+      {
+        "id": "stop",
+        "event": "Stop",
+        "command": [
+          "graphicle",
+          "hook",
+          "muse",
+          "stop"
+        ],
+        "timeoutMs": 10000
+      },
+      {
+        "id": "pre-compact",
+        "event": "PreCompact",
+        "command": [
+          "graphicle",
+          "hook",
+          "muse",
+          "pre-compact"
+        ],
+        "timeoutMs": 10000
+      },
+      {
+        "id": "session-end",
+        "event": "SessionEnd",
+        "command": [
+          "graphicle",
+          "hook",
+          "muse",
+          "session-end"
+        ],
+        "timeoutMs": 10000
+      }
+    ],
+    "mcpServers": [
+      {
+        "id": "graphicle",
+        "transport": "stdio",
+        "command": [
+          "graphicle",
+          "mcp",
+          "--project",
+          ".",
+          "--or-workspace",
+          "--allow-learning"
+        ],
+        "mode": "optional"
+      }
+    ],
+    "reminders": []
+  }
+}

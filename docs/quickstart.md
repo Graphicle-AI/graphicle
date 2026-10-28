@@ -170,6 +170,14 @@ the model, and prints the command that fixes each problem.
 ## Next steps
 
 - [Agents](agents.md): what each agent gets, and how to disconnect it
+- [Muse Code](muse-code.md): connecting Muse Code, and the plugin preview with hooks
+  and session memory
+- [Packs](pack.md): one prompt of a repository's code for a long-context model, with
+  `graphicle ask --pack` and `graphicle plan`
+- [Fix](fix.md): a tested change for an issue, on a new branch
+- [Review](review.md): a review of a change, and the GitHub Action that posts it
+- [See it, find it, fix it, check it](flow.md): from a bug on the screen to the code
+  that draws it and a tested fix
 - [Moving from Graphify](migrate-from-graphify.md)
 - [A shared server for your team](team.md)
 - [MCP](mcp.md): every tool, and other MCP clients

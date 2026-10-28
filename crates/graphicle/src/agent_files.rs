@@ -163,10 +163,56 @@ pub fn exclude_created(data: &Path, file: &Path) -> Result<()> {
     exclude_in_block(data, &file, &pattern)
 }
 
+/// Why a write failed when the file system refused it (a read-only folder,
+/// Claude Code's or Codex's sandbox): `not writable: <the OS error>`; `None`
+/// for any other error.
+pub fn write_failure(error: &Error) -> Option<String> {
+    error
+        .message
+        .strip_prefix("Local I/O failed: ")
+        .map(|os| format!("not writable: {os}"))
+}
+
+/// `error`, from a write of `path`, naming the file when the file system
+/// refused the write: `<path>: not writable: <the OS error>`.
+pub fn naming(path: &Path, error: Error) -> Error {
+    match write_failure(&error) {
+        Some(reason) => Error::bad(format!("{}: {reason}", path.display())),
+        None => error,
+    }
+}
+
+/// A line Graphicle could not add to a repository's exclude file.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Unexcluded {
+    /// The exclude file.
+    pub file: PathBuf,
+    /// The line it lacks: `*.graphicle-bak`, or a created file's path.
+    pub pattern: String,
+    /// Why: `not writable: <the OS error>`.
+    pub reason: String,
+}
+
+thread_local! {
+    /// The lines this thread could not add to exclude files, until
+    /// [`take_unexcluded`] takes them.
+    static UNEXCLUDED: std::cell::RefCell<Vec<Unexcluded>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The lines this thread could not add to an exclude file since the last
+/// call, each once: setup's summary gives them to add by hand.
+pub fn take_unexcluded() -> Vec<Unexcluded> {
+    UNEXCLUDED.with(|list| std::mem::take(&mut *list.borrow_mut()))
+}
+
 /// Add `pattern` to the marked block of the exclude file of the working tree
 /// that holds `file` (the block is created, after a backup of the file, when
 /// it is missing; nothing is added when the file has the pattern outside the
-/// block), and record the change in `data`.
+/// block), and record the change in `data`. An exclude file that cannot be
+/// written (a read-only `.git`, as in Codex's sandbox) is left as it is:
+/// the line only keeps a file out of `git status`, so the change it goes
+/// with is still made, and [`take_unexcluded`] has the line.
 fn exclude_in_block(data: &Path, file: &Path, pattern: &str) -> Result<()> {
     let Some(folder) = file.parent() else {
         return Ok(());
@@ -180,23 +226,44 @@ fn exclude_in_block(data: &Path, file: &Path, pattern: &str) -> Result<()> {
     let existed = exclude.exists();
     let text = std::fs::read_to_string(&exclude).unwrap_or_default();
     let mut lines: Vec<&str> = text.split('\n').collect();
-    match exclude_block(&lines) {
+    let written = match exclude_block(&lines) {
         Some((start, end)) => {
-            if !lines[start..end].iter().any(|line| line.trim() == pattern) {
+            if lines[start..end].iter().any(|line| line.trim() == pattern) {
+                Ok(())
+            } else {
                 lines.insert(end - 1, pattern);
-                write(&exclude, lines.join("\n").as_bytes(), 0o644)?;
+                write(&exclude, lines.join("\n").as_bytes(), 0o644)
             }
         }
         None if lines.iter().any(|line| line.trim() == pattern) => return Ok(()),
         None => {
-            backup_once(&exclude)?;
             let mut updated = text.clone();
             if !updated.is_empty() && !updated.ends_with('\n') {
                 updated.push('\n');
             }
             updated.push_str(&format!("{EXCLUDE_START}\n{pattern}\n{EXCLUDE_END}\n"));
-            write(&exclude, updated.as_bytes(), 0o644)?;
+            backup_once(&exclude).and_then(|_| write(&exclude, updated.as_bytes(), 0o644))
         }
+    };
+    if let Err(error) = written {
+        let Some(reason) = write_failure(&error) else {
+            return Err(error);
+        };
+        let line = Unexcluded {
+            file: exclude,
+            pattern: pattern.to_string(),
+            reason,
+        };
+        UNEXCLUDED.with(|list| {
+            let mut list = list.borrow_mut();
+            if !list
+                .iter()
+                .any(|known| known.file == line.file && known.pattern == line.pattern)
+            {
+                list.push(line);
+            }
+        });
+        return Ok(());
     }
     record(
         data,
@@ -361,7 +428,9 @@ pub struct Change {
     /// - `removed-mcp`, `removed-codex`: a Graphify entry a switch removed,
     ///   put back on disconnect (`replaced` holds it);
     /// - `exclude`: the `*.graphicle-bak` block of a repository's
-    ///   `.git/info/exclude` (`folder` is the working tree).
+    ///   `.git/info/exclude` (`folder` is the working tree);
+    /// - `muse-plugin`: Graphicle's Muse Code plugin (`path` is its manifest
+    ///   in the data folder), installed for every project.
     pub kind: String,
     /// The agent client, for entries and capture hooks.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -28,6 +28,8 @@
 !*.mjs
 !*.ts
 !*.css
+# The whole-repository benchmark's question sets: issue URLs, gold files and text hashes, no issue text.
+!/whole-repo/questions/*.jsonl
 
 # Run folders. Each run under results/ and competitors/ keeps its scripts,
 # README or methodology, inputs record, summaries, the results the documents

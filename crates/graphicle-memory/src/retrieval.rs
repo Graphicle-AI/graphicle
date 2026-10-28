@@ -16,6 +16,9 @@ pub const MAX_RANK_LIMIT: usize = 60;
 /// Most candidates [`rank`] keeps after fusion and the relationship lift,
 /// best first, ties by identity: selection reads no others.
 pub const MAX_FUSED: usize = 400;
+/// Most candidates a call may ask [`rank`] to keep instead (`fused_cap`):
+/// a long ranking for a caller that fills a large context window.
+pub const MAX_FUSED_CAP: usize = 4000;
 
 /// Counting and listing questions need every instance, not the best one.
 fn aggregate_question(lowercase: &str) -> bool {
@@ -824,13 +827,19 @@ pub fn rank(request: &Value) -> Result<Value> {
     }
     let mut remaining: Vec<_> = scores.into_iter().collect();
     remaining.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    remaining.truncate(MAX_FUSED);
+    let fused_cap = request
+        .get("fused_cap")
+        .and_then(Value::as_u64)
+        .map_or(MAX_FUSED, |cap| {
+            (cap as usize).clamp(MAX_FUSED, MAX_FUSED_CAP)
+        });
+    remaining.truncate(fused_cap);
     // Diagnostics: the fused order before selection (for recall harnesses).
     let debug_fused = request
         .get("debug_fused")
         .and_then(Value::as_u64)
         .unwrap_or(0)
-        .min(MAX_FUSED as u64) as usize;
+        .min(fused_cap as u64) as usize;
     let fused: Vec<String> = remaining
         .iter()
         .filter(|(id, _)| rows[ids[id]]["kind"] != "memory")

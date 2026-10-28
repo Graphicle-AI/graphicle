@@ -1,0 +1,206 @@
+{
+  "name": "excalidraw #12053: the main menu stays open after a click on the canvas",
+  "about": "excalidraw (MIT, github.com/excalidraw/excalidraw) at f1a79b73, the commit before the fix of #12053, with that fix's regression test added. The issue text is written from the fix's description (a regression from #11974); the upstream fix 2b1c2a9f is the answer key. Building, serving and testing run excalidraw's own toolchain (excalidraw-build.sh, excalidraw-test.sh): run them only on a host allowed to run third-party code.",
+  "checkout": {
+    "url": "https://github.com/excalidraw/excalidraw.git",
+    "commit": "f1a79b73df5b9883f940417861a4f5fb879a3f02",
+    "add_from": {
+      "commit": "2b1c2a9fbf62417168cdae041d00f38cc403f0a5",
+      "paths": [
+        "packages/excalidraw/components/dropdownMenu/DropdownMenu.test.tsx"
+      ],
+      "message": "Add the regression test of excalidraw #12053 (from 2b1c2a9f), which fails before the fix"
+    }
+  },
+  "issue": "Clicking the canvas no longer closes the main menu.\n\nSteps to reproduce:\n1. Open the editor.\n2. Click the main menu button (the three lines at the top left).\n3. Click anywhere on the empty canvas.\n\nExpected: the menu closes, as it used to.\nActual: the menu stays open. The \"More tools\" dropdown in the toolbar does the same.",
+  "build": "bash {flow}/targets/excalidraw-build.sh",
+  "serve": "python3 -m http.server {port} --bind {host} --directory excalidraw-app/build",
+  "test": "bash {flow}/targets/excalidraw-test.sh",
+  "viewport": [
+    1280,
+    800
+  ],
+  "sandboxed": true,
+  "oracle": {
+    "steps": [
+      [
+        {
+          "type": "click",
+          "button": "left",
+          "selector": "[data-testid='main-menu-trigger']"
+        }
+      ],
+      [
+        {
+          "type": "click",
+          "button": "left",
+          "x": 1000,
+          "y": 420
+        }
+      ]
+    ],
+    "bug_selector": "[data-testid='dropdown-menu']"
+  },
+  "answer_key": {
+    "about": "The upstream fix 2b1c2a9f (#12053) changed DropdownMenuContent.tsx: the outside-click listeners attach once the menu's content is mounted.",
+    "files": [
+      "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx"
+    ]
+  },
+  "mock": {
+    "about": "For --mock runs: the computer-use clicks were measured on the built app at 1280x800, and the scripted edit is the upstream fix 2b1c2a9f's change to DropdownMenuContent.tsx, so a mock receipt shows the pipeline, not a model's fix.",
+    "strings": "Reset the canvas",
+    "nearby": "Export image...|Save to...|Command palette",
+    "computer": {
+      "runs": [
+        {
+          "match": "Reproduce this issue",
+          "steps": [
+            {
+              "actions": [
+                {
+                  "type": "click",
+                  "button": "left",
+                  "x": 34,
+                  "y": 34
+                }
+              ]
+            },
+            {
+              "actions": [
+                {
+                  "type": "click",
+                  "button": "left",
+                  "x": 1000,
+                  "y": 420
+                }
+              ],
+              "safety": [
+                {
+                  "id": "csc_mock_1",
+                  "code": "mock_check",
+                  "message": "A scripted check from the mock, to show the acknowledgement path."
+                }
+              ]
+            },
+            {
+              "answer": {
+                "shown": "bug",
+                "point": {
+                  "x": 118,
+                  "y": 315
+                },
+                "summary": "I opened the main menu and clicked the empty canvas; the menu is still open."
+              }
+            }
+          ]
+        },
+        {
+          "match": "The code was changed",
+          "steps": [
+            {
+              "actions": [
+                {
+                  "type": "click",
+                  "button": "left",
+                  "x": 34,
+                  "y": 34
+                }
+              ]
+            },
+            {
+              "actions": [
+                {
+                  "type": "click",
+                  "button": "left",
+                  "x": 1000,
+                  "y": 420
+                }
+              ]
+            },
+            {
+              "answer": {
+                "shown": "expected",
+                "point": null,
+                "summary": "I opened the main menu and clicked the empty canvas; the menu closed."
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "fix": {
+      "plan": {
+        "summary": "Attach the dropdown's outside-click and Escape listeners once Radix has mounted the menu content: track the content node with a callback ref, so the listeners resolve its owner document.",
+        "steps": [
+          "Track the mounted content node with useCallbackRefState",
+          "Build the menu ref from that node",
+          "Bind the Escape listener to the node's owner document once it exists"
+        ],
+        "edits": [
+          {
+            "path": "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx",
+            "start_line": 1,
+            "end_line": 95,
+            "reason": "The outside-click effect runs before Radix mounts the content"
+          }
+        ],
+        "new_files": [],
+        "tests": [
+          {
+            "action": "run",
+            "path": "packages/excalidraw/components/dropdownMenu/DropdownMenu.test.tsx",
+            "what": "the menus close on outside pointer and touch events"
+          }
+        ],
+        "risks": []
+      },
+      "rounds": [
+        {
+          "explanation": "MenuContent passes a plain ref to DropdownMenuPrimitive.Content, but Radix mounts the content after the outside-click effect has run, so useOutsideClick never finds its owner document. Tracking the node with a callback ref rebinds the listeners when it mounts.",
+          "edits": [
+            {
+              "path": "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx",
+              "search": "import React, { useCallback, useEffect, useRef } from \"react\";",
+              "replace": "import React, { useCallback, useEffect, useMemo } from \"react\";"
+            },
+            {
+              "path": "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx",
+              "search": "import { useOutsideClick } from \"../../hooks/useOutsideClick\";",
+              "replace": "import { useCallbackRefState } from \"../../hooks/useCallbackRefState\";\nimport { useOutsideClick } from \"../../hooks/useOutsideClick\";"
+            },
+            {
+              "path": "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx",
+              "search": "  const menuRef = useRef<HTMLDivElement>(null);",
+              "replace": "  const [menuNode, setMenuNode] = useCallbackRefState<HTMLDivElement>();\n  // Radix mounts the content lazily. Rebind outside-click listeners when the\n  // node becomes available so they attach to its owner document.\n  const menuRef = useMemo(() => ({ current: menuNode }), [menuNode]);"
+            },
+            {
+              "path": "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx",
+              "search": "      [callbacksRef],\n    ),\n  );",
+              "replace": "      [callbacksRef, menuRef],\n    ),\n  );"
+            },
+            {
+              "path": "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx",
+              "search": "    if (!open) {\n      return;\n    }\n    const onKeyDown",
+              "replace": "    if (!open || !menuNode) {\n      return;\n    }\n    const onKeyDown"
+            },
+            {
+              "path": "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx",
+              "search": "    document.addEventListener(EVENT.KEYDOWN, onKeyDown, option);\n    return () => {\n      document.removeEventListener(EVENT.KEYDOWN, onKeyDown, option);\n    };\n  }, [callbacksRef, open]);",
+              "replace": "    const ownerDocument = menuNode.ownerDocument;\n    ownerDocument.addEventListener(EVENT.KEYDOWN, onKeyDown, option);\n    return () => {\n      ownerDocument.removeEventListener(EVENT.KEYDOWN, onKeyDown, option);\n    };\n  }, [callbacksRef, open, menuNode]);"
+            },
+            {
+              "path": "packages/excalidraw/components/dropdownMenu/DropdownMenuContent.tsx",
+              "search": "        ref={menuRef}",
+              "replace": "        ref={setMenuNode}"
+            }
+          ],
+          "new_files": [],
+          "tests": [
+            "yarn vitest run packages/excalidraw/components/dropdownMenu"
+          ]
+        }
+      ]
+    }
+  }
+}

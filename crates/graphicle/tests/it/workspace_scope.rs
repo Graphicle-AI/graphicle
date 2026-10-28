@@ -1333,7 +1333,12 @@ fn a_workspace_connection_serves_the_graph_tools_of_the_project_repo_names() {
     assert_eq!(rest, memory);
     assert_eq!(
         memory,
-        ["recall_project", "read_project_source", "list_projects"],
+        [
+            "recall_project",
+            "read_project_source",
+            "list_projects",
+            "pack"
+        ],
         "{all:?}"
     );
     assert!(

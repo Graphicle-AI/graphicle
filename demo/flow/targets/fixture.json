@@ -1,0 +1,65 @@
+{
+  "name": "fixture: the main menu stays open after a click outside it",
+  "about": "The flow's own fixture app (demo/flow/fixture): a planted bug of the same kind as excalidraw #12053, for runs against the mock. No third-party code.",
+  "checkout": {"fixture": "fixture"},
+  "issue": "The main menu does not close when I click outside it.\n\nSteps to reproduce:\n1. Open the app.\n2. Click the menu button (the three lines at the top left).\n3. Click anywhere on the empty canvas.\n\nExpected: the menu closes.\nActual: the menu stays open until you press its button again.",
+  "build": "true",
+  "serve": "python3 -m http.server {port} --bind {host}",
+  "test": "node --test test/*.test.js",
+  "viewport": [1280, 800],
+  "sandboxed": true,
+  "oracle": {
+    "steps": [
+      [{"type": "click", "button": "left", "x": 36, "y": 36}],
+      [{"type": "click", "button": "left", "x": 640, "y": 450}]
+    ],
+    "bug_selector": "#menu:not([hidden])"
+  },
+  "answer_key": {
+    "about": "The planted bug: src/menu.js listens for presses outside the menu on the menu itself, so they never arrive.",
+    "files": ["src/menu.js"]
+  },
+  "mock": {
+    "strings": "Reset the canvas",
+    "nearby": "Open|Save to...|Export image...",
+    "computer": {
+      "runs": [
+        {
+          "match": "Reproduce this issue",
+          "steps": [
+            {"actions": [{"type": "click", "button": "left", "x": 36, "y": 36}]},
+            {"actions": [{"type": "click", "button": "left", "x": 640, "y": 450}],
+             "safety": [{"id": "csc_mock_1", "code": "mock_check", "message": "A scripted check from the mock, to show the acknowledgement path."}]},
+            {"answer": {"shown": "bug", "point": {"x": 90, "y": 196}, "summary": "I opened the main menu and clicked the empty canvas; the menu is still open."}}
+          ]
+        },
+        {
+          "match": "The code was changed",
+          "steps": [
+            {"actions": [{"type": "click", "button": "left", "x": 36, "y": 36}]},
+            {"actions": [{"type": "click", "button": "left", "x": 640, "y": 450}]},
+            {"answer": {"shown": "expected", "point": null, "summary": "I opened the main menu and clicked the empty canvas; the menu closed."}}
+          ]
+        }
+      ]
+    },
+    "fix": {
+      "plan": {
+        "summary": "Close the menu on a press anywhere outside it: the outside-press listener is attached to the menu itself, so presses outside never reach it.",
+        "steps": ["Attach the pointerdown listener to the document instead of the menu root"],
+        "edits": [{"path": "src/menu.js", "start_line": 16, "end_line": 21, "reason": "The outside-press listener is on the menu, not the document"}],
+        "new_files": [],
+        "tests": [{"action": "run", "path": "test/menu.test.js", "what": "a press outside the menu closes it"}],
+        "risks": []
+      },
+      "rounds": [
+        {
+          "explanation": "src/menu.js:17 attaches the outside-press listener to the menu root, so a press on the canvas never reaches it; listening on the document lets src/menu.js:18 see presses outside the menu and close it.",
+          "edits": [{"path": "src/menu.js", "search": "  root.addEventListener(\"pointerdown\", (event) => {", "replace": "  doc.addEventListener(\"pointerdown\", (event) => {"}],
+          "new_files": [],
+          "tests": ["node --test test/*.test.js"]
+        }
+      ]
+    }
+  }
+}

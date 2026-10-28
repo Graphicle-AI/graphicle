@@ -51,7 +51,7 @@ pub fn disconnect_report(
     let client = match options.client.as_deref() {
         Some(word) => Some(agent_detect::parse(word).ok_or_else(|| {
             Error::bad(format!(
-                "Unknown client {word}: choose claude-code, codex, cursor, vscode or claude (Claude Desktop)"
+                "Unknown client {word}: choose claude-code, codex, cursor, vscode, claude (Claude Desktop) or muse (Muse Code)"
             ))
         })?),
         None => None,
@@ -78,6 +78,7 @@ pub fn disconnect_report(
         |change: &Change| client.is_none_or(|client| change.client.as_deref() == Some(client));
     let mine = |change: &Change| {
         options.all
+            || (change.kind == "muse-plugin" && client == Some("muse"))
             || change.folder.as_deref() == Some(folder.as_path())
             || (project.is_some() && change.project == project)
             // The backups line of the repository this folder is in.
@@ -91,6 +92,9 @@ pub fn disconnect_report(
         .iter()
         .filter(|change| wanted(change) && mine(change))
         .filter(|change| change.kind != "hooks" || change.folder.is_some() || options.all)
+        // Muse Code's plugin serves every project: it goes with
+        // `disconnect muse` and `disconnect --all`.
+        .filter(|change| change.kind != "muse-plugin" || options.all || client == Some("muse"))
         .filter(|change| change.kind != "exclude" || client.is_none())
         .map(|change| Target {
             change: change.clone(),
@@ -296,9 +300,10 @@ fn scan_user(
 ) -> Vec<Change> {
     let mut found = Vec::new();
     let wanted = |name: &str| client.is_none_or(|client| client == name);
-    for (name, file) in [
-        ("cursor", env.cursor_config()),
-        ("claude", env.claude_desktop_config()),
+    for (name, file, group) in [
+        ("cursor", env.cursor_config(), "mcpServers"),
+        ("claude", env.claude_desktop_config(), "mcpServers"),
+        ("muse", env.muse_config(), agent_setup::MUSE_GROUP),
     ] {
         let (true, Some(file)) = (wanted(name), file) else {
             continue;
@@ -306,14 +311,14 @@ fn scan_user(
         let Some(document) = agent_detect::json_file(&file) else {
             continue;
         };
-        for entry in agent_setup::graphicle_entries(&document, "mcpServers", project, data) {
+        for entry in agent_setup::graphicle_entries(&document, group, project, data) {
             found.push(Change {
                 path: file.clone(),
                 kind: "mcp".into(),
                 client: Some(name.into()),
                 project: project.map(str::to_string),
                 entry: Some(entry),
-                group: Some("mcpServers".into()),
+                group: Some(group.into()),
                 ..Change::default()
             });
         }
@@ -358,9 +363,10 @@ fn scan_user(
 fn other_stores(env: &Environment, client: Option<&str>, data: &Path) -> Vec<Value> {
     let wanted = |name: &str| client.is_none_or(|client| client == name);
     let mut others = Vec::new();
-    for (name, file) in [
-        ("cursor", env.cursor_config()),
-        ("claude", env.claude_desktop_config()),
+    for (name, file, group) in [
+        ("cursor", env.cursor_config(), "mcpServers"),
+        ("claude", env.claude_desktop_config(), "mcpServers"),
+        ("muse", env.muse_config(), agent_setup::MUSE_GROUP),
     ] {
         let (true, Some(file)) = (wanted(name), file) else {
             continue;
@@ -368,7 +374,7 @@ fn other_stores(env: &Environment, client: Option<&str>, data: &Path) -> Vec<Val
         let Some(document) = agent_detect::json_file(&file) else {
             continue;
         };
-        for (entry, store) in agent_setup::other_stores(&document, "mcpServers", data) {
+        for (entry, store) in agent_setup::other_stores(&document, group, data) {
             others.push(json!({"file":file,"entry":entry,"data_dir":store}));
         }
     }
@@ -404,6 +410,10 @@ fn undo_file(path: &Path, targets: &[Target], all: bool, data: &Path) -> Result<
     }
     let created = targets.iter().any(|target| target.change.created);
     let kind = targets[0].change.kind.as_str();
+    // Muse Code's plugin: removed from Muse Code, then its package.
+    if kind == "muse-plugin" {
+        return crate::muse_code::undo(path, data).map(Some);
+    }
     let mut removed = Vec::new();
     let (bytes, same, empty): (Vec<u8>, SameAsBackup, bool) = match kind {
         "mcp" | "hooks" | "removed-mcp" => {
@@ -676,7 +686,7 @@ fn pruned(value: &Value) -> Value {
 }
 
 /// Phrases joined for a sentence: `a`, `a and b`, `a, b and c`.
-fn listed(items: &[&str]) -> String {
+pub(crate) fn listed(items: &[&str]) -> String {
     match items {
         [] => String::new(),
         [one] => (*one).to_string(),
