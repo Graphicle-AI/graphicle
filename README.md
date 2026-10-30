@@ -298,5 +298,5 @@ contributors, licensed under Apache-2.0, with portions that remain available und
 
 <p align="center"><br><b>If Graphicle is useful to you, star the repository so other developers find it.</b><br>
   <sub><a href="#quick-start">Try it</a> · <a href="https://github.com/graphicle-ai/graphicle/issues">Report a bug</a> · <a href="CONTRIBUTING.md">Contribute</a> · <a href="https://discord.com/invite/rWuU7cWU4E">Discord</a></sub><br>
-  <sub>Built by <a href="https://www.karlexai.com">KarLex AI</a></sub>
+  <sub>Built by <a href="https://www.karlex.ai"><img src="assets/karlex-ai-logo.png" width="16" height="16" align="absmiddle" alt="KarLex AI logo"></a> <a href="https://www.karlex.ai">KarLex AI, Inc.</a></sub>
 </p>

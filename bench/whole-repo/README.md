@@ -4,7 +4,8 @@ A benchmark of finding the files a real fix changed, in eight public repositorie
 than a 1M-token context window. It compares Graphicle's `graphicle pack` with truncation of the repository,
 with the same model searching the repository through tools (the search-only agent), and with no repository
 context. The method, the questions and the scorer were fixed before any model result was seen. The report is
-[docs/benchmarks/whole-repo.md](../../docs/benchmarks/whole-repo.md).
+[docs/benchmarks/whole-repo.md](../../docs/benchmarks/whole-repo.md). Line-level recall without a model (`lines.py`),
+0.1.9 against the 0.1.10 candidate build: [results-lines.md](results-lines.md).
 
 | Role | Repository |
 |---|---|
@@ -45,12 +46,14 @@ checks each against its hash. `questions/funnel.json` counts what each selection
 | `index.py` | `graphicle sync` of each checkout, with its time and size |
 | `tokens.py` | the token counter shared by every budgeted arm, repository sizes, truncation |
 | `pack_arm.py` | the pack arm's context (`graphicle pack`, in the standard or the cache layout) |
-| `agent_tools.py` | the search-only agent's tools: grep, find, list_dir, read |
+| `bm25.py` | file-level BM25, the SWE-bench paper's retrieval baseline: whole files in score order up to a budget |
+| `agent_tools.py` | the search-only agent's tools: grep, find, list_dir, read (also as one deferred namespace for Meta's tool search) |
 | `run.py` | runs one arm against an OpenAI-compatible API (Meta's Responses API or chat completions), with the cache key, a global spend log and hard spend caps |
 | `mock_server.py` | a mock OpenAI-compatible server (chat completions and responses, with prompt caching per cache key) for testing without a model |
 | `test_runner.py` | end-to-end tests of the runner, the caps, the spend log and the estimate on the mock |
 | `score.py` | hit@k, all-gold@5, MRR, context recall, tokens, cost; McNemar tests and bootstrap intervals |
 | `recall.py` | context recall without a model, for every question and budget |
+| `lines.py` | line-level recall without a model: each question's pull request diff placed on S, then the share of the changed lines each context holds (the pack, truncation, BM25), and two builds compared question by question |
 | `estimate.py` | a planned grid's tokens and cost with and without the prompt cache, before any run; the registered grids |
 | `report.py` | the report's data file and page; the chart is `docs/benchmarks/whole_repo_chart.py` |
 | `prices.json` | the model prices used for cost, with their date and source |
@@ -75,6 +78,10 @@ python3 run.py --arm pack --budget 128K --work WORK --questions questions --text
 python3 run.py --arm trunc --budget 128K ...   # and --arm agent, --arm noctx, --arm pack-cache
 python3 score.py --runs WORK/runs/* --out WORK/score.json
 python3 recall.py --work WORK --questions questions --texts WORK/texts --graphicle graphicle --out WORK/recall
+python3 lines.py gold --work WORK --questions questions --diffs WORK/diffs --out WORK/gold-lines.jsonl --fetch
+python3 lines.py run --work WORK --questions questions --texts WORK/texts --gold WORK/gold-lines.jsonl \
+    --graphicle graphicle --data WORK/data --out WORK/lines --tokenizer tokenizer.json --arms pack,trunc
+python3 lines.py report --rows WORK/lines/lines-rows.jsonl
 python3 report.py --sizes WORK/sizes.json --index-dir WORK/index --score WORK/score.json \
     --recall WORK/recall/recall-summary.json --json ../../docs/benchmarks/whole-repo.json \
     --md ../../docs/benchmarks/whole-repo.md

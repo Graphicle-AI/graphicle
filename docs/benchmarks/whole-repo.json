@@ -14,7 +14,7 @@
     "output": 20.0
    }
   },
-  "pack_build": "pack 06818eb",
+  "pack_build": "a pre-release build of 0.1.9",
   "prices_date": "2026-10-26",
   "question_tokens_nominal": 811,
   "repos": [
@@ -788,7 +788,7 @@
  "recall": [
   {
    "errors": 0,
-   "label": "pack 2a46edb, built before the event: held-out repositories",
+   "label": "A pre-release build of the pack (26 Oct, before the event): held-out repositories",
    "pack_source": "pack",
    "rows": [
     {
@@ -2080,7 +2080,7 @@
   },
   {
    "errors": 0,
-   "label": "pack 2a46edb, built before the event: development repositories (used for tuning)",
+   "label": "A pre-release build of the pack (26 Oct, before the event): development repositories (used for tuning)",
    "pack_source": "pack",
    "rows": [
     {

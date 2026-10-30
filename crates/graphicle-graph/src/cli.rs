@@ -322,13 +322,28 @@ pub fn force(args: &Args) -> bool {
 pub fn load(path: &Path, direction: Option<bool>) -> Result<crate::graph::Graph> {
     load_as(path, direction, None)
 }
+/// The error for a graph file `path` that does not exist. The default graph
+/// file, the one `extract .` writes in this folder, comes with that command,
+/// so a query run before any extract says what to run.
+fn graph_not_found(path: &Path) -> String {
+    let message = format!("graph file not found: {}", path.display());
+    let default = crate::cli_state::resolve(Path::new(&paths::default_graph_json()));
+    if crate::cli_state::resolve(path) == default {
+        format!(
+            "{message}\n(build it with `{} extract . --code-only` in this folder)",
+            program()
+        )
+    } else {
+        message
+    }
+}
 pub fn load_as(
     path: &Path,
     direction: Option<bool>,
     multigraph: Option<bool>,
 ) -> Result<crate::graph::Graph> {
     if !path.is_file() {
-        return Err(format!("graph file not found: {}", path.display()).into());
+        return Err(graph_not_found(path).into());
     }
     let mut raw = crate::cli_state::read_graph(path)?;
     if raw.get("links").is_none() {
@@ -375,7 +390,7 @@ pub fn load_indexed(
     variant: crate::snapshot::Variant,
 ) -> Result<(crate::graph::Graph, crate::serve_search::SearchIndex)> {
     if !path.is_file() {
-        return Err(format!("graph file not found: {}", path.display()).into());
+        return Err(graph_not_found(path).into());
     }
     crate::security::check_own_graph_size_cap(path)?;
     let build = || {

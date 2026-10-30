@@ -9,7 +9,7 @@ public release.
 
 A summary of the comparison checks of the graph engine against the pinned
 Graphify 0.9.88 reference, run on 13 October 2026 on a pre-release build
-(commit cce5fd4, 13 October 2026; release profile):
+of 0.1.0 (13 October 2026; release profile):
 
 - the binary, source set and build (profile, features, compiler) that were
   checked, and the version, commit and archive SHA-256 of the reference;

@@ -84,6 +84,7 @@ ignore = [
     { id = "RUSTSEC-2026-0391", reason = "zstd 0.13.3 via jieba-rs -> include-flate: affects the stream with_context constructors, which include-flate never calls (a new decoder per dictionary)" },
     { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7.3.0 via jieba-rs -> include-flate: affects Seekable::decompress, which needs the seekable feature; it is off" },
     { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7.3.0 via jieba-rs -> include-flate: affects stream::write::Decoder; include-flate reads with stream::read::Decoder, which the advisory lists as not affected" },
+    { id = "RUSTSEC-2026-0418", reason = "libz-sys 1.1.29 via flate2: its build script prints the whole build environment only when built with cc 1.6.0 or later; Cargo.lock pins cc 1.4.7. Remove when the lock moves to libz-sys 1.1.31 or later" },
     { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro, build time only) via neo4rs -> nav-types -> nalgebra -> simba" },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser via pdf-extract -> lopdf; font tables are parsed only from local PDFs" },
     { id = "RUSTSEC-2025-0075", reason = "unic-char-range via rustpython-parser (Python literal parsing); no vulnerability" },

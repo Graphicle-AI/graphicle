@@ -1327,7 +1327,7 @@ dependencies = [
 
 [[package]]
 name = "graphicle"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "base64 0.22.1",
  "calamine",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "graphicle-memory"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "chrono",
  "graphicle",
@@ -1439,7 +1439,7 @@ dependencies = [
 
 [[package]]
 name = "graphicle-runtime"
-version = "0.1.9"
+version = "0.1.10"
 dependencies = [
  "aes-gcm",
  "axum",

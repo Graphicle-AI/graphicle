@@ -8,7 +8,8 @@ usage: estimate.py --questions DIR [--texts DIR] [--grid GRID] [--model muse-spa
 
 GRID is a comma-separated list of ARM[@BUDGET]:REPOS[:N]:
   ARM    noctx, pack, pack-cache (prefix share 0.9), pack-cacheF (prefix share F, such as
-         pack-cache0.95), pack-stable (prefix share 1.0), trunc or agent
+         pack-cache0.95), pack-stable (prefix share 1.0), trunc, bm25, agent or agent-pack (the agent
+         with a pack of BUDGET in its first message)
   REPOS  a '+'-joined list of names, or held-out, development or all
   N      the first N questions of each repository, in file order (default: all of them)
 The default grid is the registered grid G1 (REGISTERED). --registered prints every registered grid,
@@ -28,8 +29,9 @@ prefix from the cache:
   pack-stable    the whole pack (only the question after it is new)
   pack-cache[F]  F x B, the pack's question-independent prefix
   pack           --standard-prefix tokens (the standard layout's question-independent head; 0 here)
-  noctx          nothing
+  noctx, bm25    nothing (BM25's files depend on the question)
   agent          within one question, each turn's earlier turns
+  agent-pack     the same, with the seed pack in every turn's earlier turns
 The "cached" columns bill the first question of a group at the input price and every later one at
 the cached-input price on the shared prefix; "uncached" is the worst case, with no cache hit at all.
 Whether a call is served from the cache is up to the API, so both are shown.
@@ -46,10 +48,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from run import BUDGETS, PROMPT  # noqa: E402
 
-# The pre-registered hosted grids (bench-results PREREG-2026-10-26.md), in their priority order.
+# The hosted grids, registered before any model run, in their priority order. On 27 Oct 2026, before any model
+# call, G1c replaced G1 (Standard: noctx, trunc@128K, pack@128K, agent): Contributor mode, and the cache layout
+# at 128K, BM25 at 128K and the agent seeded with a 32K pack added.
 REGISTERED = [
-    ("G1", "Meta, grid C: the 128K arms on the 90 held-out questions", "muse-spark-1.3",
-     "noctx:held-out,trunc@128K:held-out,pack@128K:held-out,agent:held-out"),
+    ("G1c", "Meta, Contributor mode: the 128K arms, BM25, the agent and the agent seeded with a 32K pack, on the "
+     "90 held-out questions", "muse-spark-1.3-contributor",
+     "noctx:held-out,trunc@128K:held-out,pack@128K:held-out,pack-cache@128K:held-out,bm25@128K:held-out,"
+     "agent:held-out,agent-pack@32K:held-out"),
     ("G2", "Meta, the cache-aware pack at 1M on the first 10 held-out questions of each repository",
      "muse-spark-1.3", "pack-cache@1M:held-out:10"),
     ("G3", "Baseten, Muse Spark Open: the 1M answer arms on the held-out questions",
@@ -68,7 +74,7 @@ def arm_parts(arm):
         return "pack", float(m.group("share")) if m.group("share") else 0.9
     if arm == "pack-stable":
         return "pack", 1.0
-    if arm in ("pack", "trunc", "noctx", "agent"):
+    if arm in ("pack", "trunc", "noctx", "agent", "bm25", "agent-pack"):
         return arm, None
     raise SystemExit(f"unknown arm {arm!r}")
 
@@ -95,13 +101,14 @@ def group_tokens(arm, budget, q, base, out_tokens, agent, standard_prefix=0):
     if q <= 0:
         return 0, 0, 0, 0
     kind, _share = arm_parts(arm)
-    if kind == "agent":
-        if agent.get("measured"):
+    if kind in ("agent", "agent-pack"):
+        seed = BUDGETS[budget] if kind == "agent-pack" else 0  # the pack in the first message, sent every turn
+        if agent.get("measured") and kind == "agent":
             m = agent["measured"]
             return q * m["turns"], q * m["tokens_in"], q * m["tokens_cached"], q * m["tokens_out"]
         t, tt = agent["turns"], agent["turn_tokens"]
-        qin = t * base + tt * t * (t + 1) / 2
-        return q * t, q * qin, q * (qin - base - tt * t), q * t * agent["out_per_turn"]
+        qin = t * (base + seed) + tt * t * (t + 1) / 2
+        return q * t, q * qin, q * (qin - base - seed - tt * t), q * t * agent["out_per_turn"]
     if kind == "noctx":
         return q, q * base, 0, q * out_tokens
     b = BUDGETS[budget]

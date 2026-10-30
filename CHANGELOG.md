@@ -3,6 +3,189 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.10 - 2026-10-30
+
+Every crate is at 0.1.10, and `graphicle --version` prints
+`graphicle 0.1.10 (core)`. The Python and TypeScript SDKs are at 0.1.10
+too.
+
+Everything new in 0.1.10 was written during Meta's Global AI Developer
+Hackathon.
+[HACKATHON.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.10/HACKATHON.md)
+lists it with when it was written.
+
+### After upgrading
+
+- Run `graphicle sync` once in each project, as after 0.1.9. The saved
+  graph and the query file are keyed to the program's build, so the first
+  sync writes both again. Until then a question reads the code graph from
+  the store, and on a project of 2,000 files or more the prompt hook gives
+  only the files that define the code names a prompt gives.
+- The first check of a folder that an earlier version synced finds its
+  HTML files changed, though nothing on disk changed, so the next command
+  that reads the project (such as `graphicle pack`, `ask`, `context` or
+  `status`, or an MCP tool call) syncs them again as they are (see the
+  first bullet of Fixes). A folder with more than 200 such files, or one
+  whose sync is slow, gets a note to run `graphicle sync` instead; with
+  `freshness` set to `off`, run `graphicle sync` yourself.
+- A reviewed project memory that cites a folder's HTML file goes stale
+  after that sync, because the page's stored text changes from its words
+  to its markup. Review those memories in the app (`graphicle open`,
+  under **Memory**).
+- In the GitHub Action of `graphicle review`, set `graphicle-version` to
+  0.1.10, and `graphicle-sha256` to the SHA-256 of 0.1.10's archive for
+  the runner (in the release's `SHA256SUMS`): the escaping under Fixes
+  comes from the program the Action installs.
+
+### Whole-repository packs
+
+- Packs in the standard layout hold their top-ranked files whole more
+  often. In a pack of 32,768 tokens or less, the first ranked file goes in
+  whole when its estimated size fits in half the budget; in a pack of
+  131,072 tokens or more, the first two go in whole when each one's
+  estimated size fits in a quarter of it. The estimate comes from a file's
+  size in bytes, not from the tokenizer. This changes `graphicle pack`, the
+  MCP server's `pack` tool (32,000 tokens by default), and the packs of
+  `ask --pack`, `plan` and `fix`, which use the standard layout by default.
+  The default budget of `graphicle pack`, 128,000 tokens, stays below the
+  second tier, and so do the packs for a model with a 128K window, unless
+  a calibration from earlier calls raises their budget past 131,071
+  tokens. A pack with pinned passages (`fix --focus`, `review`) keeps the
+  per-file caps for every file, so each pinned passage keeps its room.
+  This rule leaves packs of 32,769 to 131,071 tokens, and the cache
+  layout, as they were.
+- Measured without a model, as the share of questions (tasks, on
+  SWE-bench Pro) whose pack holds every line that the reference fix
+  changes, with tokens counted by the Muse Spark Open tokenizer: 0.1.9
+  against a candidate build of 0.1.10 with both changes (whole top files,
+  and a folder's HTML files kept as they are, under Fixes), made before
+  this release's last fixes, at budgets of 16K to 1M tokens (16,384 to
+  1,015,808; the 128K budget is 131,072 tokens, in the second tier). A
+  build with those fixes, run again on the development questions, matched
+  the candidate except for one question at 256K, whose pack left out one
+  file the fix changed.
+  - On the 90 held-out questions of the whole-repository benchmark
+    (pytorch, vscode and elasticsearch, never tuned on): 26.7% to 34.4% at
+    32K, 41.1% to 48.9% at 128K, 47.8% to 52.2% at 256K, 53.3% to 58.9% at
+    512K and 58.9% to 64.4% at 1M; unchanged at 16K (21.1%) and 64K
+    (33.3%). The mean share of the fix's files inside the pack (whole, or
+    as excerpts or outlines) moved by +1.7 points at 16K, -0.3 at 128K and
+    -1.1 at 512K, and not at the other budgets.
+  - On 633 tasks of SWE-bench Pro's public set (at 1M, the 505 whose files
+    hold more than 1M tokens): 10.3% to 15.0% at 16K, 16.7% to 20.4% at
+    32K, 29.1% to 29.2% at 64K, 40.8% to 42.3% at 128K, 51.5% to 52.8% at
+    256K and 66.5% to 68.3% at 1M, where file-level BM25 holds every
+    changed line in 14.2%, 19.0%, 25.9%, 32.7%, 41.5% and 58.0% of tasks.
+    The share of tasks with every file the fix changes inside the pack (any
+    of its text) moved by -0.8 points at 16K and at 128K, -0.3 at 32K and
+    -0.2 at 1M, and not at 64K and 256K. Counting only the files the pack
+    holds as text, not as an outline, it fell by 2.1 points at 16K (95%
+    interval -3.5 to -0.6) and by 0.3 points or less at the other budgets.
+    A diagnosis of 0.1.9 on these tasks chose the directions of this
+    change, though not its settings, so they are not an untouched test.
+  - On the 200 development questions it was tuned on (kubernetes,
+    home-assistant, angular, keycloak and godot): 32.0% to 36.0% at 16K,
+    48.0% to 51.0% at 32K, 70.0% to 72.0% at 128K, 76.0% to 77.5% at 256K,
+    79.5% to 81.0% at 512K and 81.0% to 82.5% at 1M; unchanged at 64K
+    (57.5%). The mean share of the fix's files inside moved by -1.0 point
+    at 32K and -0.5 at 1M, and by 0.2 points or less at the other budgets.
+
+  The tables are in
+  [bench/whole-repo/results-lines.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.10/bench/whole-repo/results-lines.md)
+  and
+  [bench/swe-bench-pro/results-e1l.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.10/bench/swe-bench-pro/results-e1l.md).
+
+### Fixes
+
+- A project folder's `.html` and `.htm` files are kept as they are on
+  disk. Earlier versions stored the text that html2text extracted from
+  them, so `graphicle pack` quoted that text under its own line numbers,
+  not the file's, and a `graphicle fix` edit copied from that text could
+  fail to match the file. Search and project memory read the same stored
+  text, so they now see a page's markup as well as its words, and a hit or
+  a quote points at the file's own line.
+  - Office files, spreadsheets, PDF, EPUB and images are converted as
+    before, and so is HTML that is uploaded or that the Confluence
+    connector brings in. The GitHub and Google Drive connectors already
+    kept `.html` files as they are.
+  - A folder's HTML file that is not UTF-8, such as a Latin-1 or Shift-JIS
+    page, or that is larger than `limits.file_bytes` (8 MiB by default), is
+    still read as its extracted text, as before, up to
+    `limits.document_bytes` (128 MiB by default).
+  - An HTML file read as it is counts its whole markup, not just its words,
+    toward `limits.project_bytes` (1 GiB by default), so a folder with many
+    large pages comes closer to that limit; raise the limit if a sync is
+    refused.
+  - The notes-first ranking, which is off by default, no longer counts
+    `.html` and `.htm` files as notes.
+- `graphicle review --format github` and the GitHub Action escape `&`, `<`
+  and `>` in the review's text outside code spans and code blocks, so
+  markup in a model's comment (an `<img>` tag, or a `<!--` that would hide
+  the rest of the review) shows as text in the posted review and in the job
+  summary.
+- `graphicle pack --format xml`: a file whose lines hold `</file` or
+  `</section` (an HTML page's own `</section>`, for example) goes inside a
+  CDATA section, so it no longer closes the pack's `<file>` or `<section>`
+  element. Other files are unchanged, and the element names stay the same.
+
+### Graph commands
+
+- A `graphicle graph` command that reads the graph file, such as `query` or
+  `affected`, now says how to build the file when it does not exist yet
+  (reported by Thomas Thomsen,
+  [#15](https://github.com/Graphicle-AI/graphicle/issues/15)). Before, it
+  stopped with `graph file not found: <folder>/.graphicle/graph.json` and
+  nothing more. Now, for the default graph file, the next line gives the
+  command to run in that folder, `graphicle-graph extract . --code-only`
+  (the same as `graphicle graph extract . --code-only`). The code graph
+  that `graphicle setup` builds is in Graphicle's data folder, for the MCP
+  server and `graphicle context`; `graphicle graph` reads its own file.
+
+### Model profiles
+
+- A model profile with an API key (`key_env`) can now use plain HTTP to a
+  model server on your own network, such as a vLLM host without TLS, when
+  you list that server's exact host in the new environment variable
+  `GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS` (the same format as
+  `GRAPHICLE_PROVIDER_HTTP_HOSTS`; a host listed there also counts as
+  listed in the older variable). The key then crosses the network in clear
+  text. The variable is unset by default, so such a profile is still
+  refused until you list its host; Graphicle prints a one-line warning
+  that names such a host when it accepts one, and connectors and sign-in
+  still need HTTPS or loopback (asked in discussion #16).
+
+### Benchmark kits
+
+- `bench/swe-bench-pro/` measures, without a model, how often a context
+  holds every file and every line that a fix changes, on 633 tasks of
+  SWE-bench Pro's public set: the pack, file-level BM25 and the repository
+  cut to the same budget (`e1.py`, `e1l.py`, their reports and
+  comparisons). It also holds the scripts of the model runs (`e2.py`,
+  answers on a sample of the tasks; `c4c.py`, a billed prompt-cache meter;
+  `live.sh`), whose results are not in this release. Results:
+  [results-e1.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.10/bench/swe-bench-pro/results-e1.md)
+  (files, 0.1.9) and
+  [results-e1l.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.10/bench/swe-bench-pro/results-e1l.md)
+  (lines, 0.1.9 and the 0.1.10 candidate build).
+- `bench/whole-repo/lines.py` counts the changed lines that each context
+  holds for the whole-repository questions, from each question's pull
+  request diff placed on its snapshot, and compares two builds question by
+  question:
+  [results-lines.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.10/bench/whole-repo/results-lines.md).
+- `bench/whole-repo/` gains two arms for its model runs (file-level BM25,
+  and the agent with a pack in its first message) and two settings for
+  the agent (a cap on the input tokens of all its turns, and Meta's
+  hosted tool search), and `score.py` reports the cost per correct answer
+  and McNemar's test on hit@1. The model runs have not been made yet.
+
+### Packaging
+
+- `server.json` at the repository's root is the MCP Registry entry of
+  0.1.9, the latest listed release (it named 0.1.8). A release's entry is
+  committed after its listing, as
+  [packaging/mcpb/README.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.10/packaging/mcpb/README.md#steps-at-release-time)
+  describes.
+
 ## 0.1.9 - 2026-10-28
 
 Every crate is at 0.1.9, and `graphicle --version` prints

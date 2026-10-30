@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "name": "graphicle",
   "displayName": "Graphicle",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Graphicle's code graph, whole-repository packs and reviewed project memory for Muse Code, with the context added at session start and per prompt.",
   "compat": {
     "source": "native",

@@ -39,6 +39,19 @@ def responses_tools():
     return [{"type": "function", "name": n, "description": d, "parameters": p} for n, d, p in SCHEMAS]
 
 
+NAMESPACE = "repo"
+
+
+def responses_tools_deferred():
+    """The same tools for Meta's hosted tool search (https://dev.meta.ai/docs/tool-search.md): one namespace
+    whose functions are deferred (their names and descriptions are visible, their schemas load on a search
+    and are appended at the end of the context, so the cached prefix of earlier turns stays the same)."""
+    return [{"type": "namespace", "name": NAMESPACE,
+             "description": "Read-only tools over the repository at the snapshot commit: search, list and read files.",
+             "tools": [dict(t, defer_loading=True) for t in responses_tools()]},
+            {"type": "tool_search"}]
+
+
 def cut(line):
     return line if len(line) <= MAX_LINE else line[:MAX_LINE] + " [cut]"
 

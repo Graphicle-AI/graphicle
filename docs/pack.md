@@ -48,7 +48,7 @@ tests. The sections, each with its share of the budget:
 | Header | The repository, commit, budget, tokens used, how the files were chosen and how tokens were counted | |
 | Manifest | Every file in the pack with its tokens, section and rank, then the top-ranked files left out | |
 | Architecture | One line per folder: files, tokens, main language, purpose (from a README or package comment), key symbols by connections in the code graph, entry points; then the dependencies between folders | about 4% (20% without a question) |
-| Focus | The ranked files: small ones whole, large ones as excerpts of the symbols around the ranked passages, with overlapping ranges merged | 50% or more |
+| Focus | The ranked files: small ones whole, large ones as excerpts of the symbols around the ranked passages, with overlapping ranges merged; in a standard pack of 32,768 tokens or less, the first ranked file whole when its estimated size (from its bytes) fits in half the budget, and in one of 131,072 tokens or more (so not at the default 128,000), the first two whole when each one's estimated size fits in a quarter of it; not in a pack with pinned passages (`fix --focus`, `review`), where every file keeps the caps | 50% or more |
 | Call paths | Callers and callees of the focus symbols, two steps along call edges, as `a (path:line) -> b (path:line)`, then the bodies of the key ones | up to 10% |
 | Tests | Tests that call or reference the focus symbols, from the code graph, else the test files that go with the top files by name | up to 10% |
 | Docs | Ranked documentation passages and the nearest README of the top files | up to 5% |
@@ -74,6 +74,20 @@ and in XML:
 ```xml
 <file path="pkg/store/cache.go" lines="40-95" why="focus: rank 1, defines Cache.Get, Cache.evict">
 ...
+</file>
+```
+
+A file's lines go in as they are, not escaped. When they hold `</file` or
+`</section` (an HTML page's own `</section>`), they go inside a CDATA section
+that starts on a line of its own, so that the page never closes the pack's
+`<file>` or `<section>`:
+
+```xml
+<file path="web/index.html" lines="1-40" why="focus: rank 1">
+<![CDATA[
+1	<!doctype html>
+...
+]]>
 </file>
 ```
 

@@ -2,7 +2,7 @@
 """Run one arm of the whole-repository benchmark against an OpenAI-compatible model API.
 
 usage:
-  run.py --arm noctx|pack|pack-cache|pack-stable|trunc|agent [--budget 128K] --work WORKDIR
+  run.py --arm noctx|pack|pack-cache|pack-stable|trunc|bm25|agent|agent-pack [--budget 128K] --work WORKDIR
          --questions DIR --texts DIR --out DIR [--profile meta|baseten|mock] [--base-url URL]
          [--model MODEL] [--api responses|chat] [--key-file FILE] [--spend-cap 20|auto]
          [--prices prices.json] [--caps caps.json] [--spend-log FILE] [--repos a,b] [--limit N]
@@ -26,10 +26,14 @@ Arms (one prompt template for all, see PROMPT: the context first, the question l
                suffix
   pack-stable  --layout cache --prefix-share 1.0: the whole pack is the same for every question
   trunc        the repository's files in a fixed order up to B (tokens.py build_truncation)
+  bm25         file-level BM25 of the issue over truncation's files, whole files in score order up to B
+               (bm25.py, the SWE-bench paper's retrieval baseline)
   agent        the same model with grep, find, list_dir and read (agent_tools.py), at most --max-turns
-               turns, then the same final answer (sooner when its context passes --agent-max-context);
+               turns, then the same final answer (sooner when its context passes --agent-max-context, or
+               when its turns' input tokens so far plus the next prompt would pass --agent-max-input);
                with --api responses the turns are chained with previous_response_id, so the model keeps
-               its reasoning between turns
+               its reasoning between turns; --tool-search defers the tools behind Meta's hosted tool search
+  agent-pack   the agent with a pack of B (the standard layout) in its first message
 
 Caching. Every call carries a cache key made of the repository, its snapshot, the arm, the budget
 and the first 12 hex digits of the sha256 of the arm's shared prefix (the pack's prefix_sha256; the
@@ -89,6 +93,7 @@ from pack_arm import PACK_ARMS, pack_context  # noqa: E402
 from score import normalize_answer, score_answer  # noqa: E402
 from redact import redact  # noqa: E402
 from tokens import Counter, build_truncation  # noqa: E402
+from bm25 import build_bm25  # noqa: E402
 
 PROMPT_VERSION = "whole-repo-v1"
 PROMPT = ("{context}Repository {repo} at commit {sha}. Issue: {issue}\n\n"
@@ -98,7 +103,9 @@ PROMPT = ("{context}Repository {repo} at commit {sha}. Issue: {issue}\n\n"
 AGENT_CONTEXT = ("You can explore the repository at that commit with the tools grep, find, list_dir and read, "
                  "in at most {turns} turns. Then give the answer.\n\n")
 LAST_TURN = "The turn limit is reached. Answer now, with the JSON only."
-BUDGETS = {"64K": 65536, "128K": 131072, "256K": 262144, "512K": 524288, "1M": 1015808}
+AGENT_ARMS = ("agent", "agent-pack")
+BUDGETS = {"16K": 16384, "32K": 32768, "64K": 65536, "128K": 131072, "256K": 262144, "512K": 524288,
+           "1M": 1015808}
 CACHE_RETENTION = "24h"
 PROFILES = {
     "meta": {"base_url": "https://api.meta.ai/v1", "api": "responses", "model": "muse-spark-1.3",
@@ -327,7 +334,8 @@ class Runner:
                 body = {"model": a.model, "input": items, "store": True, "reasoning": {"effort": a.reasoning_effort},
                         "max_output_tokens": a.max_output_tokens, **fields}
                 if not final_next:
-                    body["tools"] = agent_tools.responses_tools()
+                    body["tools"] = (agent_tools.responses_tools_deferred() if a.tool_search
+                                     else agent_tools.responses_tools())
                 if prev:
                     body["previous_response_id"] = prev
                 resp, u = self.call(body, last_in + sum(self.counter.count(str(i.get("output", i.get("content", ""))))
@@ -347,7 +355,10 @@ class Runner:
                         args = {}
                     items.append({"type": "function_call_output", "call_id": c["call_id"],
                                   "output": tools.call(c.get("name"), args)})
-                if turn == a.max_turns or last_in > a.agent_max_context:
+                # The next turn's prompt: this one's context plus the tool results.
+                next_in = last_in + sum(self.counter.count(i["output"]) for i in items)
+                if turn == a.max_turns or last_in > a.agent_max_context \
+                        or sum(x["in"] for x in usages) + next_in > a.agent_max_input:
                     items.append(user_message(LAST_TURN))
                     final_next = True
                 prev = resp["id"]
@@ -375,7 +386,8 @@ class Runner:
                         args = {}
                     msgs.append({"role": "tool", "tool_call_id": c["id"],
                                  "content": tools.call(c["function"].get("name"), args)})
-                if turn == a.max_turns or u["in"] + u["out"] > a.agent_max_context:
+                if turn == a.max_turns or u["in"] + u["out"] > a.agent_max_context \
+                        or sum(x["in"] for x in usages) + self.counter.count(json.dumps(msgs)) > a.agent_max_input:
                     msgs.append({"role": "user", "content": LAST_TURN})
                     final_next = True
         return "", usages, raws, a.max_turns + 1, ncalls
@@ -388,6 +400,16 @@ class Runner:
         if a.arm == "agent":
             ctx = AGENT_CONTEXT.format(turns=a.max_turns)
             return ctx, None, 0, hashlib.sha256(ctx.encode()).hexdigest(), {}
+        if a.arm == "bm25":
+            # BM25's files depend on the question, so nothing is shared but the instructions.
+            t, inc, ntok = build_bm25(a.work, name, text, a.budget_tokens, self.counter, reuse=True)
+            return t + "\n\n", inc, ntok, hashlib.sha256(PROMPT.encode()).hexdigest(), {}
+        if a.arm == "agent-pack":
+            # The hybrid: the agent, with a pack of the budget in its first message (the standard layout).
+            p = pack_context(a.graphicle, os.path.join(a.work, "src", name), os.path.join(a.work, "data", name),
+                             text, a.budget_tokens, a.tokenizer, a.pack_standin)
+            ctx = AGENT_CONTEXT.format(turns=a.max_turns)
+            return p["text"] + "\n\n" + ctx, p["included"], p["tokens"], hashlib.sha256(ctx.encode()).hexdigest(), {}
         if a.arm == "trunc":
             with self.lock:
                 if name not in self.trunc_cache:
@@ -432,14 +454,22 @@ class Runner:
             prompt = PROMPT.format(context=ctx, repo=q["repo"], sha=q["S"], issue=text)
             tools = self.tools_for(name)
             info = {"repo": name, "question": q["id"], "cache_key": key}
-            if a.arm == "agent":
+            if a.arm in AGENT_ARMS:
                 answer, usages, raws, turns, ncalls = self.agent(prompt, tools, key, info)
-                included = tools.read_paths
+                if a.arm == "agent-pack":
+                    # The hybrid's context: its seed pack's files and the files it read.
+                    seed = set(included or [])
+                    row["seed_recall"] = sum(1 for g in q["gold"] if g in seed) / len(q["gold"])
+                    included = list(dict.fromkeys(list(included or []) + tools.read_paths))
+                else:
+                    included = tools.read_paths
+                row["tool_search"] = bool(a.tool_search)
             else:
                 answer, usages, raws, turns, ncalls = self.single(prompt, key, info)
             files = parse_files(answer)
             norm = normalize_answer(files, tools.file_set) if files is not None else []
             row.update(score_answer(norm, q["gold"]))
+            row.update({"in_per_call": [u["in"] for u in usages]})
             row.update({"files": norm, "answer_parsed": files is not None, "context_tokens": ntok,
                         "context_files": len(included) if included is not None else None,
                         "context_recall": (sum(1 for g in q["gold"] if g in set(included)) / len(q["gold"])
@@ -449,7 +479,7 @@ class Runner:
                         "tokens_reasoning": sum(u["reasoning"] for u in usages),
                         "cached_per_call": [u["cached"] for u in usages],
                         "cost_usd": sum(u["cost"] for u in usages), "turns": turns, "tool_calls": ncalls,
-                        "prompt_tokens_counted": self.counter.count(prompt) if a.arm != "agent" else None})
+                        "prompt_tokens_counted": self.counter.count(prompt) if a.arm not in AGENT_ARMS else None})
             with open(os.path.join(a.out, "raw", q["id"] + ".json"), "w") as f:
                 json.dump({"responses": raws, "included": included, "answer": answer}, f)
         except CapReached:
@@ -482,7 +512,8 @@ def interleave(groups):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", required=True, choices=["noctx", "pack", "pack-cache", "pack-stable", "trunc", "agent"])
+    ap.add_argument("--arm", required=True, choices=["noctx", "pack", "pack-cache", "pack-stable", "trunc", "bm25",
+                                                     "agent", "agent-pack"])
     ap.add_argument("--budget", default=None, choices=list(BUDGETS))
     ap.add_argument("--work", required=True)
     ap.add_argument("--questions", required=True)
@@ -508,6 +539,11 @@ def main():
     ap.add_argument("--max-turns", type=int, default=30)
     ap.add_argument("--agent-max-context", type=int, default=900000,
                     help="the agent answers at once when a turn's context passes this many tokens")
+    ap.add_argument("--agent-max-input", type=int, default=2000000,
+                    help="the agent answers at once when its turns' input tokens so far plus the next prompt would "
+                         "pass this many")
+    ap.add_argument("--tool-search", action="store_true",
+                    help="the agent's tools as one deferred namespace with Meta's hosted tool search")
     ap.add_argument("--tokenizer")
     ap.add_argument("--graphicle", default="graphicle")
     ap.add_argument("--prefix-share", type=float, default=PACK_ARMS["pack-cache"][1],
@@ -517,15 +553,17 @@ def main():
     ap.add_argument("--redact", action="store_true",
                     help="strip email addresses and @handles from the issue text first (redact.py)")
     a = ap.parse_args()
-    if a.arm in ("pack", "pack-cache", "pack-stable", "trunc") and not a.budget:
-        raise SystemExit("--budget is needed for the pack and truncation arms")
+    if a.arm in ("pack", "pack-cache", "pack-stable", "trunc", "bm25", "agent-pack") and not a.budget:
+        raise SystemExit("--budget is needed for the pack, truncation, BM25 and agent-pack arms")
+    if a.tool_search and (a.arm not in AGENT_ARMS or (a.api or PROFILES[a.profile]["api"]) != "responses"):
+        raise SystemExit("--tool-search goes with the agent arms on the Responses API")
     if a.pack_standin and a.arm != "pack":
         raise SystemExit("--pack-standin goes with --arm pack only")
     prof = PROFILES[a.profile]
     a.base_url = a.base_url or prof["base_url"]
     a.model = a.model or prof["model"]
     a.api = a.api or prof["api"]
-    a.order = a.order or ("interleaved" if a.arm == "agent" else "grouped")
+    a.order = a.order or ("interleaved" if a.arm in AGENT_ARMS else "grouped")
     if not a.base_url:
         raise SystemExit(f"--base-url is needed with --profile {a.profile}")
     a.budget_tokens = BUDGETS[a.budget] if a.budget else None
@@ -608,12 +646,16 @@ def main():
 
     runner = Runner(a, key, prices, provider, global_cap)
     graphicle_version = ""
-    if a.arm.startswith("pack"):
+    if a.arm.startswith("pack") or a.arm == "agent-pack":
         graphicle_version = subprocess.run([a.graphicle, "--version"], capture_output=True, text=True).stdout.strip()
+    agentic = a.arm in AGENT_ARMS
     meta = {"label": a.label, "arm": a.arm, "budget": a.budget, "budget_tokens": a.budget_tokens, "model": a.model,
             "api": a.api, "profile": a.profile, "provider": provider, "base_url": a.base_url,
             "reasoning_effort": a.reasoning_effort, "max_output_tokens": a.max_output_tokens,
-            "max_turns": a.max_turns if a.arm == "agent" else None, "order": a.order, "jobs": a.jobs,
+            "max_turns": a.max_turns if agentic else None,
+            "agent_max_context": a.agent_max_context if agentic else None,
+            "agent_max_input": a.agent_max_input if agentic else None,
+            "tool_search": a.tool_search if agentic else None, "order": a.order, "jobs": a.jobs,
             "prefix_share": a.prefix_share if a.arm == "pack-cache" else PACK_ARMS.get(a.arm, (None, None))[1],
             "cache_key": "prompt_cache_key" if PROFILES[a.profile]["cache_key"] else None,
             "cache_retention": CACHE_RETENTION if PROFILES[a.profile]["cache_key"] and a.api == "responses" else None,

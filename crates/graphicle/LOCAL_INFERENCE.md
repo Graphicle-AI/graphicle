@@ -158,6 +158,15 @@ entry that is not exactly a host is an error. A profile with a credential
 (`key_env`) is refused on such a host, because the key would cross the network
 in clear text. Connectors, sign-in and release feeds ignore the variable.
 
+If you accept that risk for a server on your own network, list its host in
+`GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS` instead, in the same format: a profile
+with a credential may then use plain HTTP to that exact host, and the key
+crosses the network in clear text, readable by anyone who can watch it. A host
+listed there also counts as listed in `GRAPHICLE_PROVIDER_HTTP_HOSTS`. The
+variable is unset by default, Graphicle prints a one-line warning that names
+such a host when it accepts such a profile, and connectors, sign-in and release
+feeds still ignore it.
+
 ```sh
 GRAPHICLE_PROVIDER_HTTP_HOSTS=192.168.210.33 graphicle serve
 ```

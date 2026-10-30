@@ -664,6 +664,68 @@ fn connector_and_uploaded_documents_take_the_document_text_limit() {
     assert!(uploaded["source_id"].is_string(), "{uploaded}");
 }
 
+/// A folder's HTML is read as it is when it is UTF-8 text within
+/// `file_bytes`; one past `file_bytes` (up to `document_bytes`) or not UTF-8
+/// (a Latin-1 or Shift-JIS page, which earlier versions indexed) is
+/// converted to text, as every HTML file was before 0.1.10, and nothing is
+/// dropped.
+#[test]
+fn a_folders_html_past_the_file_limit_or_not_utf8_is_converted() {
+    let mut f = Fixture::new(small());
+    let page = "<html><body><p>The aurora marker lives here.</p></body></html>\n";
+    let big = format!(
+        "<html><body>\n{}</body></html>\n",
+        "<p>The meteor marker lives here.</p>\n".repeat(1_800)
+    );
+    assert!(big.len() > 64 * 1024);
+    f.write("page.html", page);
+    f.write("big.html", &big);
+    f.write(
+        "latin.htm",
+        b"<html><body><p>Caf\xe9 au lait: the zenith marker lives here.</p></body></html>\n",
+    );
+    f.write(
+        "sjis.html",
+        b"<html><body><p>\x82\xa0\x82\xa2: the nadir marker lives here.</p></body></html>\n",
+    );
+    let synced = f.sync().unwrap();
+    assert_eq!(synced["binary_documents"], 3, "{synced}");
+    assert_eq!(synced["excluded"], 0, "{synced}");
+    let repository = s(&synced, "repository_id").to_string();
+    let stored = |path: &str| -> (String, i64) {
+        f.store
+            .read(|db| {
+                Ok(db.query_row(
+                    "SELECT o.content,(SELECT count(*) FROM am_binary_heads b WHERE b.repository_id=h.repository_id AND b.path=h.path) FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 WHERE h.repository_id=? AND h.path=?",
+                    rusqlite::params![repository, path],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )?)
+            })
+            .unwrap()
+    };
+    assert_eq!(stored("page.html"), (page.to_string(), 0));
+    for (path, marker) in [
+        ("big.html", "meteor marker"),
+        ("latin.htm", "zenith marker"),
+        ("sjis.html", "nadir marker"),
+    ] {
+        let (text, converted) = stored(path);
+        assert!(
+            text.contains(marker) && !text.contains("<p>"),
+            "{path}: {text}"
+        );
+        assert_eq!(converted, 1, "{path}");
+    }
+    // Past document_bytes, an HTML file is left out and listed.
+    f.store = f.store.clone().with_limits(Limits {
+        document_bytes: 32 * 1024,
+        ..small()
+    });
+    let synced = f.sync().unwrap();
+    let skipped = paths(&synced["skipped"]);
+    assert!(skipped.contains(&"big.html"), "{synced}");
+}
+
 /// On a file system that ignores case (macOS, Windows), Git matches ignore
 /// patterns without case (`core.ignorecase`) while the sync's walk matches
 /// them with case: a tracked `src/Foo.js` that `.gitignore`'s `foo.js`

@@ -23,6 +23,13 @@ counts the stored history as cached. Tokens are estimated as UTF-8 bytes / 4.
 --record FILE appends one JSON line per request, without any prompt text: the path, model, cache
 key, retention, session affinity, output cap, reasoning effort and the usage returned.
 
+Tool search (https://dev.meta.ai/docs/tool-search.md, hosted mode): a {"type": "tool_search"} tool with
+functions marked defer_loading (inside a namespace) works as documented: before the first call of a
+deferred tool the output holds a tool_search_call and a tool_search_output that loads its namespace, and
+the function_call carries the namespace; more than one tool_search, defer_loading without tool_search,
+tool_search without a deferred tool, defer_loading on a namespace, a function named tool_search, or a
+json_schema text format with tool_search return HTTP 400.
+
 With tools, the mock explores: find, then grep, then two reads of paths it saw, then it answers.
 Without tools it answers at once. The answer is {"files": [...]}: paths seen in the prompt or in tool
 results, ranked by how often words of the issue appear near them. --fail-every N returns HTTP 500
@@ -136,7 +143,8 @@ class Handler(BaseHTTPRequestHandler):
                 "max_output_tokens": req.get("max_output_tokens"), "max_tokens": req.get("max_tokens"),
                 "reasoning_effort": (req.get("reasoning") or {}).get("effort") or req.get("reasoning_effort"),
                 "store": req.get("store"), "previous_response_id": bool(req.get("previous_response_id")),
-                "tools": len(req.get("tools") or []), "usage": usage}
+                "tools": len(req.get("tools") or []),
+                "tool_types": sorted({t.get("type") for t in req.get("tools") or []}), "usage": usage}
         with LOCK:
             with open(self.server.record, "a") as f:
                 f.write(json.dumps(line, sort_keys=True) + "\n")
@@ -212,8 +220,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_error(400, "max_output_tokens has a minimum of 16", "max_output_tokens")
         items = req.get("input")
         items = [{"type": "message", "role": "user", "content": items}] if isinstance(items, str) else list(items or [])
+        tools = req.get("tools") or []
+        searches = [t for t in tools if t.get("type") == "tool_search"]
+        fns = [(None, t) for t in tools if t.get("type") == "function"] + \
+              [(t.get("name"), f) for t in tools if t.get("type") == "namespace" for f in t.get("tools") or []
+               if f.get("type") == "function"]
+        deferred = [f for _ns, f in fns if f.get("defer_loading")]
+        if len(searches) > 1:
+            return self.api_error(400, "only one tool_search tool per request", "tools")
+        if any(t.get("type") == "namespace" and "defer_loading" in t for t in tools):
+            return self.api_error(400, "defer_loading goes on the functions inside a namespace", "tools")
+        if deferred and not searches:
+            return self.api_error(400, "defer_loading needs a tool_search tool", "tools")
+        if searches and not deferred and searches[0].get("execution") != "client":
+            return self.api_error(400, "hosted tool_search needs at least one defer_loading tool", "tools")
+        if any(f.get("name") == "tool_search" for _ns, f in fns):
+            return self.api_error(400, "tool_search is a reserved name", "tools")
+        if searches and ((req.get("text") or {}).get("format") or {}).get("type") == "json_schema":
+            return self.api_error(400, "tool_search cannot be combined with a json_schema format", "text.format")
         prev = req.get("previous_response_id")
-        history, pending = [], set()
+        history, pending, loaded = [], set(), set()
         if prev:
             with LOCK:
                 st = STATE["responses"].get(prev)
@@ -221,6 +247,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_error(400, "unknown previous_response_id", "previous_response_id")
             history = list(st["history"])
             pending = set(st["calls"])
+            loaded = set(st.get("loaded") or [])
         own_calls = {i.get("call_id") for i in items if i.get("type") == "function_call"}
         for i in items:
             if i.get("type") == "function_call_output":
@@ -233,17 +260,31 @@ class Handler(BaseHTTPRequestHandler):
         issue = next((flatten(i.get("content")) for i in history
                       if i.get("type", "message") == "message" and i.get("role") == "user"), "")
         n_tool = sum(1 for i in history if i.get("type") == "function_call_output")
-        tool_names = [t.get("name") for t in req.get("tools") or [] if t.get("type") == "function"]
+        tool_names = [f.get("name") for _ns, f in fns]
+        ns_of = {f.get("name"): ns for ns, f in fns}
         act = next_action(transcript, issue, n_tool, bool(tool_names), rng)
         rid = "resp_" + uuid.uuid4().hex[:20]
         reasoning = rng.randint(200, 1200)
         output = [{"type": "reasoning", "id": "rs_" + uuid.uuid4().hex[:12], "summary": []}]
         calls = []
         if act[0] == "tool" and act[1] in tool_names:
+            ns = ns_of.get(act[1])
+            fdef = next(f for _n, f in fns if f.get("name") == act[1])
+            if fdef.get("defer_loading") and ns not in loaded:
+                # Hosted search: the API finds and loads the namespace, then the model calls the tool.
+                spec = next(t for t in tools if t.get("type") == "namespace" and t.get("name") == ns)
+                output.append({"type": "tool_search_call", "id": "ts_" + uuid.uuid4().hex[:12], "call_id": None,
+                               "execution": "server", "status": "completed", "arguments": {"paths": [ns]}})
+                output.append({"type": "tool_search_output", "id": "tso_" + uuid.uuid4().hex[:12], "call_id": None,
+                               "execution": "server", "status": "completed", "tools": [spec]})
+                loaded.add(ns)
             cid = "call_" + uuid.uuid4().hex[:12]
             calls.append(cid)
-            output.append({"type": "function_call", "id": "fc_" + uuid.uuid4().hex[:12], "call_id": cid,
-                           "name": act[1], "arguments": json.dumps(act[2]), "status": "completed"})
+            fc = {"type": "function_call", "id": "fc_" + uuid.uuid4().hex[:12], "call_id": cid,
+                  "name": act[1], "arguments": json.dumps(act[2]), "status": "completed"}
+            if ns:
+                fc["namespace"] = ns
+            output.append(fc)
             out_text = json.dumps(act[2])
         else:
             text = act[1] if act[0] == "answer" else next_action(transcript, issue, 99, False, rng)[1]
@@ -254,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
         cached = est("\n".join(str(h) for h in history[:-len(items)])) if prev and items else 0
         cached = max(cached, key_cached(self.cache_key(req), transcript))
         with LOCK:
-            STATE["responses"][rid] = {"history": history + output, "calls": calls}
+            STATE["responses"][rid] = {"history": history + output, "calls": calls, "loaded": sorted(loaded)}
         usage = {"input_tokens": prompt, "output_tokens": est(out_text) + reasoning,
                  "total_tokens": prompt + est(out_text) + reasoning,
                  "input_tokens_details": {"cached_tokens": min(cached, prompt)},

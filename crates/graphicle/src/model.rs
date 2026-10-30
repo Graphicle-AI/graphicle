@@ -362,6 +362,7 @@ impl Config {
                 "fix.test must be a command of at most 4096 characters, and fix.timeout_seconds 1 to 86400",
             ));
         }
+        let mut clear_text_key = None;
         for (name, p) in &self.models {
             if name.is_empty()
                 || name.len() > 100
@@ -452,7 +453,10 @@ impl Config {
             if p.protocol == "local_onnx" {
                 crate::local_inference::validate(p)?;
             } else {
-                provider_url(&p.base_url, p.key_env.is_some())?;
+                let url = provider_url(&p.base_url, p.key_env.is_some())?;
+                if p.key_env.is_some() && url.scheme() == "http" && !loopback(&url) {
+                    clear_text_key = url.host_str().map(str::to_string);
+                }
             }
             if p.key_env.as_ref().is_some_and(|key| {
                 key.is_empty()
@@ -473,6 +477,9 @@ impl Config {
             if !self.models.contains_key(name) {
                 return Err(Error::bad("Default model is not configured"));
             }
+        }
+        if let Some(host) = clear_text_key {
+            warn_clear_text_key(&host);
         }
         Ok(())
     }
@@ -526,19 +533,36 @@ fn bare(url: &url::Url) -> bool {
         && url.fragment().is_none()
 }
 
-/// Opt-in plain-HTTP model hosts (EVAL_PLAN R5, P-URL): a model server on a
-/// private network, such as a vLLM host, that serves no TLS. The variable
-/// lists exact host names or IP addresses, separated by commas or spaces,
-/// without scheme, port or path (IPv6 in brackets, as in a URL). Only model
-/// profiles read it.
+/// Opt-in plain-HTTP model hosts: a model server on a private network, such
+/// as a vLLM host, that serves no TLS. The variable lists exact host names or
+/// IP addresses, separated by commas or spaces, without scheme, port or path
+/// (IPv6 in brackets, as in a URL). Only model profiles read it.
 pub const PROVIDER_HTTP_HOSTS: &str = "GRAPHICLE_PROVIDER_HTTP_HOSTS";
+
+/// Opt-in plain-HTTP model hosts that may also receive a profile's credential
+/// (`key_env`), which then crosses the network in clear text. The same syntax
+/// and exact matching as [`PROVIDER_HTTP_HOSTS`]; a host listed here counts as
+/// listed there too. Unset by default; only model profiles read it.
+pub const PROVIDER_HTTP_KEY_HOSTS: &str = "GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS";
 
 /// The hosts [`PROVIDER_HTTP_HOSTS`] lists; an entry that is not exactly a
 /// host is refused rather than ignored.
 pub fn provider_http_hosts() -> Result<Vec<String>> {
-    http_hosts(&std::env::var(PROVIDER_HTTP_HOSTS).unwrap_or_default())
+    http_hosts(
+        PROVIDER_HTTP_HOSTS,
+        &std::env::var(PROVIDER_HTTP_HOSTS).unwrap_or_default(),
+    )
 }
-fn http_hosts(value: &str) -> Result<Vec<String>> {
+/// The hosts [`PROVIDER_HTTP_KEY_HOSTS`] lists, read by the same rule.
+pub fn provider_http_key_hosts() -> Result<Vec<String>> {
+    http_hosts(
+        PROVIDER_HTTP_KEY_HOSTS,
+        &std::env::var(PROVIDER_HTTP_KEY_HOSTS).unwrap_or_default(),
+    )
+}
+/// The exact hosts that `value`, the value of the environment variable
+/// `variable`, lists.
+fn http_hosts(variable: &str, value: &str) -> Result<Vec<String>> {
     value
         .split(|c: char| c == ',' || c.is_whitespace())
         .filter(|entry| !entry.is_empty())
@@ -557,7 +581,7 @@ fn http_hosts(value: &str) -> Result<Vec<String>> {
                 .map(|_| entry.to_string())
                 .ok_or_else(|| {
                     Error::bad(format!(
-                        "{PROVIDER_HTTP_HOSTS} lists exact hosts (lowercase names or IP addresses, without scheme, port or path); {entry:?} is not one"
+                        "{variable} lists exact hosts (lowercase names or IP addresses, without scheme, port or path); {entry:?} is not one"
                     ))
                 })
         })
@@ -565,22 +589,33 @@ fn http_hosts(value: &str) -> Result<Vec<String>> {
 }
 
 /// A model profile's base URL: [`checked_url`]'s rule, or plain HTTP to a host
-/// [`PROVIDER_HTTP_HOSTS`] lists, matched exactly. A profile that sends a
-/// credential (`key_env`) never uses plain HTTP off loopback.
+/// that [`PROVIDER_HTTP_HOSTS`] or [`PROVIDER_HTTP_KEY_HOSTS`] lists, matched
+/// exactly. A profile that sends a credential (`key_env`) uses plain HTTP off
+/// loopback only to a host that [`PROVIDER_HTTP_KEY_HOSTS`] lists.
 pub fn provider_url(value: &str, credential: bool) -> Result<url::Url> {
-    provider_url_with(value, credential, &provider_http_hosts()?)
+    provider_url_with(
+        value,
+        credential,
+        &provider_http_hosts()?,
+        &provider_http_key_hosts()?,
+    )
 }
-pub fn provider_url_with(value: &str, credential: bool, hosts: &[String]) -> Result<url::Url> {
+pub fn provider_url_with(
+    value: &str,
+    credential: bool,
+    hosts: &[String],
+    key_hosts: &[String],
+) -> Result<url::Url> {
     let url = url::Url::parse(value).map_err(|_| Error::bad("Invalid provider URL"))?;
-    let listed = url.scheme() == "http"
-        && !loopback(&url)
-        && url
-            .host_str()
-            .is_some_and(|host| hosts.iter().any(|h| h == host));
+    let plain = url
+        .host_str()
+        .filter(|_| url.scheme() == "http" && !loopback(&url));
+    let keyed = plain.is_some_and(|host| key_hosts.iter().any(|h| h == host));
+    let listed = keyed || plain.is_some_and(|host| hosts.iter().any(|h| h == host));
     if !listed {
         return checked_url(value).map_err(|_| {
             Error::bad(format!(
-                "Use HTTPS, HTTP on loopback, or HTTP to a host listed in {PROVIDER_HTTP_HOSTS}, without credentials or a query in the URL"
+                "Use HTTPS, HTTP on loopback, or HTTP to a host listed in {PROVIDER_HTTP_HOSTS} ({PROVIDER_HTTP_KEY_HOSTS} for a profile with key_env), without credentials or a query in the URL"
             ))
         });
     }
@@ -589,12 +624,23 @@ pub fn provider_url_with(value: &str, credential: bool, hosts: &[String]) -> Res
             "A provider URL carries no credentials, query or fragment",
         ));
     }
-    if credential {
+    if credential && !keyed {
         return Err(Error::bad(format!(
-            "A provider credential (key_env) is never sent over plain HTTP: use HTTPS for this host, or remove key_env (hosts in {PROVIDER_HTTP_HOSTS} serve without one)"
+            "A provider credential (key_env) is sent over plain HTTP only to a host listed in {PROVIDER_HTTP_KEY_HOSTS}: use HTTPS, list the host there, or remove key_env"
         )));
     }
     Ok(url)
+}
+/// One line on stderr, at most once per process, when a model profile's
+/// credential goes to `host` over plain HTTP because
+/// [`PROVIDER_HTTP_KEY_HOSTS`] lists it.
+fn warn_clear_text_key(host: &str) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        eprintln!(
+            "graphicle: a model profile sends its key (key_env) to {host} over plain HTTP, in clear text, because {PROVIDER_HTTP_KEY_HOSTS} lists that host"
+        );
+    });
 }
 pub fn client() -> Result<reqwest::Client> {
     client_with_timeout(Duration::from_secs(180))
@@ -2141,22 +2187,26 @@ mod tests {
         assert_eq!(parsed.worker_concurrency, 1);
     }
 
-    /// P-URL (EVAL_PLAN R5): a model profile reaches a plain-HTTP host only
-    /// when `GRAPHICLE_PROVIDER_HTTP_HOSTS` lists that exact host, and never
-    /// with a credential; HTTPS, loopback and every other URL rule stay.
+    /// A model profile reaches a plain-HTTP host only when
+    /// `GRAPHICLE_PROVIDER_HTTP_HOSTS` lists that exact host, and sends no
+    /// credential there unless `GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS` lists it;
+    /// HTTPS, loopback and every other URL rule stay.
     #[test]
     fn plain_http_model_hosts_are_exact_opt_ins_without_credentials() {
-        let hosts = http_hosts("192.168.210.33, vllm.internal\n[fd00::7]").unwrap();
+        let list = "192.168.210.33, vllm.internal\n[fd00::7]";
+        let hosts = http_hosts(super::PROVIDER_HTTP_HOSTS, list).unwrap();
         assert_eq!(hosts, ["192.168.210.33", "vllm.internal", "[fd00::7]"]);
         for url in [
             "http://192.168.210.33:8000/v1",
             "http://vllm.internal/v1",
             "http://[fd00::7]:9000/v1",
         ] {
-            assert!(provider_url_with(url, false, &hosts).is_ok(), "{url}");
-            let refused = provider_url_with(url, true, &hosts).unwrap_err();
+            assert!(provider_url_with(url, false, &hosts, &[]).is_ok(), "{url}");
+            let refused = provider_url_with(url, true, &hosts, &[]).unwrap_err();
             assert!(
-                refused.message.contains("never sent over plain HTTP"),
+                refused
+                    .message
+                    .contains("GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS"),
                 "{url}: {}",
                 refused.message
             );
@@ -2170,28 +2220,77 @@ mod tests {
             "http://internal/v1",
             "http://[fd00::8]/v1",
         ] {
-            let refused = provider_url_with(url, false, &hosts).unwrap_err();
+            let refused = provider_url_with(url, false, &hosts, &[]).unwrap_err();
             assert!(
                 refused.message.contains("GRAPHICLE_PROVIDER_HTTP_HOSTS"),
                 "{url}: {}",
                 refused.message
             );
         }
-        // Without the list, plain HTTP off loopback is refused as before;
+        // Without the lists, plain HTTP off loopback is refused as before;
         // HTTPS and loopback HTTP keep working, with or without a credential.
-        assert!(provider_url_with("http://192.168.210.33/v1", false, &[]).is_err());
-        assert!(provider_url_with("https://api.example.com/v1", true, &[]).is_ok());
-        assert!(provider_url_with("http://127.0.0.1:11434", true, &[]).is_ok());
+        assert!(provider_url_with("http://192.168.210.33/v1", false, &[], &[]).is_err());
+        assert!(provider_url_with("https://api.example.com/v1", true, &[], &[]).is_ok());
+        assert!(provider_url_with("http://127.0.0.1:11434", true, &[], &[]).is_ok());
         // A listed host still takes no user, query or fragment in its URL.
         for url in [
             "http://user@vllm.internal/v1",
             "http://vllm.internal/v1?key=x",
             "http://vllm.internal/v1#part",
         ] {
-            assert!(provider_url_with(url, false, &hosts).is_err(), "{url}");
+            assert!(provider_url_with(url, false, &hosts, &[]).is_err(), "{url}");
+            assert!(provider_url_with(url, true, &[], &hosts).is_err(), "{url}");
         }
-        // Connectors and OAuth use the strict rule, whatever the list says.
+        // Connectors and OAuth use the strict rule, whatever the lists say.
         assert!(checked_url("http://192.168.210.33:8000/v1").is_err());
+    }
+
+    /// `GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS` lets a profile send its credential
+    /// over plain HTTP to an exact host it lists, which also serves profiles
+    /// without one. A host that only `GRAPHICLE_PROVIDER_HTTP_HOSTS` lists, or
+    /// that neither lists, still refuses a credential.
+    #[test]
+    fn plain_http_credentials_go_only_to_hosts_listed_for_them() {
+        let keyed = "192.168.210.33 [fd00::7] gpu.lan";
+        let key_hosts = http_hosts(super::PROVIDER_HTTP_KEY_HOSTS, keyed).unwrap();
+        let hosts = http_hosts(super::PROVIDER_HTTP_HOSTS, "vllm.internal").unwrap();
+        for url in [
+            "http://192.168.210.33:8000/v1",
+            "http://[fd00::7]:9000/v1",
+            "http://gpu.lan/v1",
+        ] {
+            for credential in [true, false] {
+                let accepted = provider_url_with(url, credential, &[], &key_hosts);
+                assert!(accepted.is_ok(), "{url} {credential}");
+                let accepted = provider_url_with(url, credential, &hosts, &key_hosts);
+                assert!(accepted.is_ok(), "{url} {credential}");
+            }
+        }
+        // Listed only for plain HTTP without a credential, or listed nowhere.
+        for url in [
+            "http://vllm.internal/v1",
+            "http://192.168.210.34:8000/v1",
+            "http://api.gpu.lan/v1",
+        ] {
+            let refused = provider_url_with(url, true, &hosts, &key_hosts).unwrap_err();
+            assert!(
+                refused
+                    .message
+                    .contains("GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS"),
+                "{url}: {}",
+                refused.message
+            );
+        }
+        // HTTPS and loopback HTTP are unchanged by the list.
+        for url in ["https://api.example.com/v1", "http://127.0.0.1:11434/v1"] {
+            assert!(
+                provider_url_with(url, true, &[], &key_hosts).is_ok(),
+                "{url}"
+            );
+        }
+        // Connectors and OAuth keep the strict rule for a host listed here.
+        assert!(checked_url("http://192.168.210.33:8000/v1").is_err());
+        assert!(checked_url("http://gpu.lan/v1").is_err());
     }
 
     #[test]
@@ -2205,7 +2304,7 @@ mod tests {
             "http://[::ffff:127.0.0.1]:8080/v1",
         ] {
             assert!(checked_url(url).is_ok(), "{url}");
-            assert!(provider_url_with(url, true, &[]).is_ok(), "{url}");
+            assert!(provider_url_with(url, true, &[], &[]).is_ok(), "{url}");
         }
         for url in [
             "http://128.0.0.1/v1",
@@ -2221,25 +2320,32 @@ mod tests {
     }
 
     #[test]
-    fn the_plain_http_host_list_takes_exact_hosts_only() {
-        assert!(http_hosts("").unwrap().is_empty());
-        assert!(http_hosts(" , ").unwrap().is_empty());
-        for entry in [
-            "vllm.internal:8000",
-            "http://vllm.internal",
-            "vllm.internal/v1",
-            "*.internal",
-            "user@vllm.internal",
-            "VLLM.internal",
-            "192.168.010.033",
-            "fd00::7",
+    fn the_plain_http_host_lists_take_exact_hosts_only() {
+        for variable in [
+            "GRAPHICLE_PROVIDER_HTTP_HOSTS",
+            "GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS",
         ] {
-            let refused = http_hosts(entry).unwrap_err();
-            assert!(
-                refused.message.contains("GRAPHICLE_PROVIDER_HTTP_HOSTS"),
-                "{entry}: {}",
-                refused.message
-            );
+            assert!(http_hosts(variable, "").unwrap().is_empty());
+            assert!(http_hosts(variable, " , ").unwrap().is_empty());
+            for entry in [
+                "vllm.internal:8000",
+                "http://vllm.internal",
+                "vllm.internal/v1",
+                "*.internal",
+                "user@vllm.internal",
+                "VLLM.internal",
+                "192.168.010.033",
+                "fd00::7",
+            ] {
+                let refused = http_hosts(variable, entry).unwrap_err();
+                assert!(
+                    refused
+                        .message
+                        .starts_with(&format!("{variable} lists exact hosts")),
+                    "{entry}: {}",
+                    refused.message
+                );
+            }
         }
     }
     /// A long-context call to the Meta Model API asks for the profile's

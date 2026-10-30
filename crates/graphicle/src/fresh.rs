@@ -79,6 +79,11 @@ const QUIET_WAIT: Duration = Duration::from_secs(120);
 const UNTIMED_FILES: usize = 2000;
 /// Changed paths kept as examples.
 const SAMPLE: usize = 10;
+/// How a folder sync reads the folder's files into text, kept in its record
+/// ([`Record::text`]). 1: a folder's `.html` and `.htm` files are kept as
+/// they are on disk (0.1.10); syncs before it stored html2text's text of
+/// them, which the first check after the upgrade finds changed.
+const FOLDER_TEXT: u32 = 1;
 
 /// `freshness` in the configuration: `auto` checks and refreshes before
 /// answers, `off` never checks.
@@ -146,6 +151,10 @@ struct Record {
     /// ([`local::converter`]); missing in records of earlier builds.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     converter: Option<String>,
+    /// The [`FOLDER_TEXT`] the sync read the folder's files with; 0 in
+    /// records of earlier builds.
+    #[serde(default)]
+    text: u32,
 }
 
 /// A sync's view of its folder before it reads it. See [`mark`].
@@ -196,6 +205,7 @@ pub(crate) fn record(
         // Every document of the snapshot was converted by this build, or
         // kept from a sync whose record named it ([`converted_here`]).
         converter: Some(local::converter()),
+        text: FOLDER_TEXT,
     };
     write_record(db, workspace, folder, &record)
 }
@@ -267,7 +277,9 @@ pub struct Check {
     /// Up to ten of those files, folder-relative.
     pub sample: Vec<String>,
     /// `git` when the git signature decided, `scan` when the folder was
-    /// scanned, empty without a folder.
+    /// scanned, `text` when the last sync read some of the synced files
+    /// otherwise than this build does (an earlier build's converted HTML),
+    /// empty without a folder.
     pub method: &'static str,
     /// When the folder's last sync completed (RFC 3339).
     pub last_sync: Option<String>,
@@ -404,6 +416,27 @@ fn check_at(
         check.elapsed = started.elapsed();
         return Ok(check);
     }
+    // A sync by an earlier build (no record, or one before FOLDER_TEXT)
+    // stored html2text's text of the folder's HTML: those files changed,
+    // whatever the folder's times or git state say.
+    if baseline
+        .record
+        .as_ref()
+        .is_none_or(|record| record.text < FOLDER_TEXT)
+    {
+        let (converted, files) =
+            store.authorized_read(&session.workspace, &session.capability, "read", |db, _| {
+                converted_html(db, project)
+            })?;
+        if !converted.is_empty() {
+            check.method = "text";
+            check.changed = Some(converted.len());
+            check.sample = converted.into_iter().take(SAMPLE).collect();
+            check.files = files;
+            check.elapsed = started.elapsed();
+            return Ok(check);
+        }
+    }
     let record = baseline
         .record
         .filter(|record| record.snapshot == baseline.snapshot);
@@ -451,6 +484,30 @@ fn check_at(
     }
     check.elapsed = started.elapsed();
     Ok(check)
+}
+
+/// The project's `.html` and `.htm` heads that hold converted text (an
+/// `am_binary_heads` row names their original), and, when there are some,
+/// how many heads it has.
+fn converted_html(db: &Connection, project: &str) -> Result<(Vec<String>, usize)> {
+    let mut statement = db.prepare(
+        "SELECT b.path FROM am_binary_heads b JOIN repo_heads h ON h.repository_id=b.repository_id AND h.path=b.path AND h.sha256=b.source_sha WHERE b.repository_id=? ORDER BY b.path",
+    )?;
+    let html: Vec<String> = statement
+        .query_map([project], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<String>>>()?
+        .into_iter()
+        .filter(|path| crate::documents::html(path))
+        .collect();
+    if html.is_empty() {
+        return Ok((html, 0));
+    }
+    let files: i64 = db.query_row(
+        "SELECT count(*) FROM repo_heads WHERE repository_id=?",
+        [project],
+        |row| row.get(0),
+    )?;
+    Ok((html, files as usize))
 }
 
 /// The files under `folder` (the sync's walk, [`local::folder_entries`]) whose inode changed after
@@ -530,7 +587,7 @@ fn scan(
 /// synced. A document (whose synced text is extracted), a file over the
 /// sync's limit and an unreadable file never do.
 fn same_content(folder: &Path, relative: &str, name: &str, head: Option<&String>) -> bool {
-    if crate::documents::supported(name) {
+    if crate::documents::converted_in_folder(name) {
         return false;
     }
     match (local::sync_view(folder, relative), head) {

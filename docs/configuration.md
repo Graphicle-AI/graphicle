@@ -110,7 +110,7 @@ You can add a model in any of three ways:
 | `embedding_model` | The profile that embeds passages for the dense arm of answers. `graphicle run embed --wait` builds the vectors. Each run makes at most `--max-calls` calls (default 4, at most 32), so a large project needs several runs |
 | `worker_concurrency` | Jobs run at once, from 1 to 64 (default 1) |
 | `models.NAME.protocol` | `ollama`; `chat` (Chat Completions, for OpenAI-compatible servers such as vLLM or llama.cpp); `responses`; `anthropic`; `gemini`; `azure_chat`; `azure_responses`. `local_onnx` needs a build with `local-inference` |
-| `base_url` | HTTPS, or HTTP on loopback. A plain-HTTP host on your network must be listed in `GRAPHICLE_PROVIDER_HTTP_HOSTS` (exact host names or addresses, separated by commas). Such a profile cannot have a `key_env` |
+| `base_url` | HTTPS, or HTTP on loopback. A plain-HTTP host on your network must be listed in `GRAPHICLE_PROVIDER_HTTP_HOSTS` (exact host names or addresses, separated by commas). Such a profile cannot have a `key_env`, unless its host is listed in `GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS` instead (the same format; it also counts as listed in the first). The key then crosses the network in clear text, so anyone who can watch that network can read it. This is off by default, and listing a host there is your choice; Graphicle then prints a one-line warning that names such a host |
 | `model` | The provider's model name |
 | `key_env` | The name of the environment variable that holds the API key. The key itself never goes in the file |
 | `input_limit`, `output_limit` | Token limits: 512 to 1,048,576 (default 16,000) and 64 to 131,072 (default 2,048). A reasoning model counts its reasoning in the output |
@@ -586,7 +586,7 @@ cannot raise them.
 | Calls collected from one file | 50,000 | 10,000,000 | `limits.file_calls` | `GRAPHICLE_MAX_FILE_CALLS` | The call list is cut at the limit. Listed under `limited` (`calls`) |
 | Syntax nodes read in one file | 2,000,000 | 1,000,000,000 | `limits.file_nodes` | `GRAPHICLE_MAX_FILE_NODES` | The analysis stops at the limit. Listed under `limited` (`nodes`) |
 | Declarations and links kept per file, and imports of Python, JavaScript, TypeScript, Rust and Markdown files | 16,000 each | 10,000,000 | `limits.file_symbols` | `GRAPHICLE_MAX_FILE_SYMBOLS` | The list is cut at the limit. Listed under `limited` (`symbols`) |
-| One document file (PDF, Office, EPUB, HTML, image) | 128 MiB | 4 GiB | `limits.document_bytes` | `GRAPHICLE_MAX_DOCUMENT_BYTES` | A folder sync lists it under `skipped`; an upload is refused |
+| One document file (PDF, Office, EPUB, image; HTML that is uploaded or that the Confluence connector brings in, and a folder's HTML file past the text-file size or not UTF-8) | 128 MiB | 4 GiB | `limits.document_bytes` | `GRAPHICLE_MAX_DOCUMENT_BYTES` | A folder sync lists it under `skipped`; an upload is refused |
 | Text of one document: extracted from a file, or one connector or uploaded document | 8 MiB | 512 MiB | `limits.document_text_bytes` | `GRAPHICLE_MAX_DOCUMENT_TEXT_BYTES` | A folder sync lists it under `skipped`; a connector sync lists it under `skipped` and goes on; an import or upload is refused with the document's name |
 | An Office or EPUB archive, expanded | 512 MiB | 16 GiB | `limits.archive_bytes` | `GRAPHICLE_MAX_ARCHIVE_BYTES` | The document is not converted |
 | Entries of an Office or EPUB archive | 40,000 | 10,000,000 | `limits.archive_entries` | `GRAPHICLE_MAX_ARCHIVE_ENTRIES` | The same |
@@ -684,7 +684,12 @@ environment variable `GRAPHICLE_SYNC_TRACKED_IGNORED` (`0` or `1`) overrides
 the setting. It skips
 `.git`, `node_modules`, `target`, build output, `.env` files, keys and
 credential files, symbolic links and binary files other than documents. It
-reads PDF, DOCX, PPTX, XLSX, ODF and EPUB documents, HTML and UTF-8 text. It
+reads PDF, DOCX, PPTX, XLSX, ODF and EPUB documents as their extracted text,
+and HTML and other UTF-8 text files as they are on disk, with their own line
+numbers (an HTML file past `limits.file_bytes`, or one that is not UTF-8, such
+as a Latin-1 or Shift-JIS page, is read as its extracted text, as earlier
+versions read every HTML file; an HTML file read as it is counts its markup
+toward `limits.project_bytes`). It
 also skips Graphicle's own writes: the `<file>.graphicle-bak` backups, Claude
 Code's personal `.claude/settings.local.json`, a `.mcp.json` or
 `.vscode/mcp.json` holding only Graphicle's entries, and the Graphicle section

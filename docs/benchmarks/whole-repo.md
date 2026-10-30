@@ -10,7 +10,7 @@ Not run yet. The questions, arms, prompts and scorer are fixed and committed; th
 
 For every question and budget, with no model involved: the share of the question's gold files that are inside the context, for the pack and for truncation filled to the same budget, with tokens counted with the Muse Spark Open tokenizer (Hugging Face revision 4239e4db). The pack holds small files whole and large ones as excerpts and as outlines of their symbols, and a gold file counts as inside when any of its text is in the pack; truncation holds whole files only. "Some inside" is the share of questions with at least one gold file inside. Each table is one run, named by the pack build it used.
 
-### pack 2a46edb, built before the event: held-out repositories
+### A pre-release build of the pack (26 Oct, before the event): held-out repositories
 
 | Repository | Role | Budget | Questions | Pack: gold files inside | Truncation: gold files inside | Pack: some inside | Truncation: some inside |
 |---|---|---|---|---|---|---|---|
@@ -35,7 +35,7 @@ For every question and budget, with no model involved: the share of the question
 | **all held-out** | held-out | 512K | 90 | 68.0% | 1.1% | 73.3% | 1.1% |
 | **all held-out** | held-out | 1M | 90 | 76.8% | 2.2% | 81.1% | 2.2% |
 
-### pack 2a46edb, built before the event: development repositories (used for tuning)
+### A pre-release build of the pack (26 Oct, before the event): development repositories (used for tuning)
 
 | Repository | Role | Budget | Questions | Pack: gold files inside | Truncation: gold files inside | Pack: some inside | Truncation: some inside |
 |---|---|---|---|---|---|---|---|
@@ -61,7 +61,7 @@ For every question and budget, with no model involved: the share of the question
 
 Meta's API serves the longest prefix a prompt shares with an earlier prompt from its cache, and bills it at the cached-input price (Muse Spark 1.3 $1.25 per million input tokens, $0.15 cached; Muse Wonder $4.00 per million input tokens, $0.20 cached; prices of 2026-10-26). A context whose first part is the same for every question about a repository pays the full input price once; every follow-up question pays the cached price on that part and the full price only on the rest. Truncation's dump is the same for every question, so it is cached the same way. These are input costs; output is billed on top ($4.25 per million on Muse Spark 1.3), ($20.00 per million on Muse Wonder).
 
-The shared prefix and the question-specific tokens are the means over the questions of the development repositories (kubernetes, home-assistant) for each context and budget (pack 06818eb), counted with the Muse Spark Open tokenizer. A first question pays for both, plus the question and the prompt template after the context.
+The shared prefix and the question-specific tokens are the means over the questions of the development repositories (kubernetes, home-assistant) for each context and budget (a pre-release build of 0.1.9), counted with the Muse Spark Open tokenizer. A first question pays for both, plus the question and the prompt template after the context.
 
 <p align="center">
   <picture>

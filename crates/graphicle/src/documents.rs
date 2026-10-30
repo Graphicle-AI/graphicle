@@ -80,6 +80,39 @@ pub fn supported(name: &str) -> bool {
             | "webp"
     )
 }
+
+/// Whether a project folder's sync converts the file `name` to text: the
+/// [`supported`] formats except HTML. A folder's `.html` and `.htm` files are
+/// read as they are, like its other text files: they are templates and pages
+/// that a change edits, so a pack, a search hit or an edit's search text
+/// needs their own lines, which converted text does not keep. An upload's
+/// HTML, and a page that the Confluence connector brings in, is still
+/// converted ([`extract`]): it is a page to read, with no lines on disk to
+/// point at. The GitHub and Google Drive connectors keep `.html` files as
+/// they are. A folder's HTML file past the text-file limit, or one that is
+/// not UTF-8 text (a Latin-1 or Shift-JIS page), is still converted, as
+/// every one was before 0.1.10 ([`folder_html_converted`]).
+pub fn converted_in_folder(name: &str) -> bool {
+    supported(name) && !html(name)
+}
+
+/// Whether `name` is an HTML page by its extension (`.html`, `.htm`).
+pub fn html(name: &str) -> bool {
+    matches!(extension(name).as_str(), "html" | "htm")
+}
+
+/// Whether a project folder's HTML file of `size` bytes goes in as
+/// converted text ([`extract`]) instead of as it is: past the text-file
+/// limit `file_bytes`, or, once read, when its `contents` are not UTF-8
+/// text.
+pub fn folder_html_converted(size: u64, contents: Option<&[u8]>, file_bytes: usize) -> bool {
+    size > file_bytes as u64 || contents.is_some_and(|bytes| !utf8_text(bytes))
+}
+
+/// Whether `bytes` read as a text file: UTF-8 without a NUL.
+pub fn utf8_text(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|text| !text.contains('\0'))
+}
 fn extension(name: &str) -> String {
     Path::new(name)
         .extension()
@@ -720,6 +753,36 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_folder_reads_html_as_it_is_and_converts_other_documents() {
+        for name in ["index.html", "page.HTM", "templates/view.htm"] {
+            assert!(supported(name), "{name}");
+            assert!(!converted_in_folder(name), "{name}");
+        }
+        for name in [
+            "plan.docx",
+            "sheet.xlsx",
+            "report.pdf",
+            "book.epub",
+            "scan.png",
+        ] {
+            assert!(converted_in_folder(name), "{name}");
+        }
+        for name in ["main.rs", "README.md", "index.html.tmpl"] {
+            assert!(!converted_in_folder(name), "{name}");
+        }
+        // HTML past the text-file limit or not UTF-8 is converted, as before.
+        let utf8 = "<p>Caf\u{e9}</p>\n".as_bytes();
+        let latin1 = b"<p>Caf\xe9</p>\n";
+        let shift_jis = b"<p>\x82\xa0</p>\n";
+        assert!(!folder_html_converted(100, None, 100));
+        assert!(!folder_html_converted(100, Some(utf8), 100));
+        assert!(folder_html_converted(101, None, 100));
+        assert!(folder_html_converted(16, Some(latin1), 100));
+        assert!(folder_html_converted(9, Some(shift_jis), 100));
+        assert!(folder_html_converted(5, Some(b"<p>\0</p>"), 100));
+    }
 
     #[test]
     fn extracted_text_with_a_nul_is_refused() {

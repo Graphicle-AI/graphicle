@@ -453,6 +453,11 @@ pub struct Options {
     /// when the budget itself moves between calls (a calibrated budget): the
     /// part then stays the same bytes ([`prefix_basis`]).
     pub prefix_budget: Option<usize>,
+    /// The call pins `focus` passages ahead of the question's ranking
+    /// ([`pinned`]): every ranked file then keeps the per-file caps (no
+    /// first rank whole at small budgets, no first two at large ones), so
+    /// that each pinned passage keeps its room.
+    pub pinned: bool,
 }
 
 impl Options {
@@ -598,6 +603,10 @@ impl Options {
             layout,
             prefix_share: prefix_share.unwrap_or(DEFAULT_PREFIX_SHARE),
             prefix_budget,
+            pinned: args
+                .get("focus")
+                .and_then(Value::as_array)
+                .is_some_and(|list| !list.is_empty()),
         })
     }
 
@@ -925,6 +934,20 @@ fn short(name: &str) -> &str {
     }
 }
 
+/// A file's lines (or the header) inside the XML style's elements: as they
+/// are, or, when they hold a closing tag of the pack's own elements
+/// (`</file` or `</section`, in any case: an HTML5 page's `</section>`), in a
+/// CDATA section that starts on a line of its own (a `]]>` in them split
+/// across two sections), so that a page never closes the pack's elements.
+/// Element and attribute names stay as they are.
+fn xml_body(body: &str) -> String {
+    let lower = body.to_ascii_lowercase();
+    if !lower.contains("</file") && !lower.contains("</section") {
+        return body.to_string();
+    }
+    format!("<![CDATA[\n{}]]>\n", body.replace("]]>", "]]]]><![CDATA[>"))
+}
+
 fn attr(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for c in text.chars() {
@@ -1067,9 +1090,10 @@ fn render_file(
             )
         }
         Style::Xml => format!(
-            "<file path=\"{}\" lines=\"{range}\" why=\"{}\">\n{body}</file>\n",
+            "<file path=\"{}\" lines=\"{range}\" why=\"{}\">\n{}</file>\n",
             attr(piece.path),
-            attr(why)
+            attr(why),
+            xml_body(&body)
         ),
     };
     let tokens = counter.count(
@@ -2519,6 +2543,23 @@ const FULL_RANKS: usize = 15;
 const QUESTION_FULL_TOKENS: usize = 8_000;
 /// A compactly excerpted file goes in whole at most this size.
 const COMPACT_WHOLE: usize = 1_500;
+/// In a standard pack of at most [`TOP_WHOLE_BUDGET`] tokens the first rank
+/// goes in whole when it fits in [`TOP_WHOLE_SHARE`] of the budget, whatever
+/// the per-file caps: a fix's changed lines in the top-ranked file are as
+/// often outside its ranked passages as in them, and at these budgets its
+/// excerpts are small. (Measured on the development questions: past 32K the
+/// room it takes costs other files more than its lines are worth.)
+const TOP_WHOLE_BUDGET: usize = 32_768;
+const TOP_WHOLE_SHARE: f64 = 0.5;
+/// In a standard pack of [`TOP_WHOLE_LARGE_BUDGET`] tokens or more, the first
+/// [`TOP_WHOLE_LARGE_RANKS`] ranks go in whole when each fits in
+/// [`TOP_WHOLE_LARGE_SHARE`] of the budget, whatever the per-file caps. (At
+/// 64K, and from 120,000 to 128,000, the room they take pushed other ranked
+/// files out on the development questions; from 131,072 it did not.) Both
+/// rules compare a file's estimated size ([`est_file`], from its bytes).
+const TOP_WHOLE_LARGE_BUDGET: usize = 131_072;
+const TOP_WHOLE_LARGE_RANKS: usize = 2;
+const TOP_WHOLE_LARGE_SHARE: f64 = 0.25;
 /// Lines around a passage in a compact excerpt.
 const COMPACT_CONTEXT: usize = 3;
 /// Top-ranked files left out that the manifest lists at most.
@@ -3319,9 +3360,24 @@ fn fill_focus(
         let est = est_file(&file.path, text.len());
         let compact = small && rank > full_ranks;
         let note = file.added.map_or(String::new(), |why| format!(" ({why})"));
-        let whole_cap = if compact { COMPACT_WHOLE } else { whole_limit };
+        let top_share = if in_prefix.is_some() || fill.options.pinned {
+            None
+        } else if rank == 1 && sizing.budget <= TOP_WHOLE_BUDGET {
+            Some(TOP_WHOLE_SHARE)
+        } else if rank <= TOP_WHOLE_LARGE_RANKS && sizing.budget >= TOP_WHOLE_LARGE_BUDGET {
+            Some(TOP_WHOLE_LARGE_SHARE)
+        } else {
+            None
+        };
+        let (whole_cap, file_cap) = if compact {
+            (COMPACT_WHOLE, per_file)
+        } else if let Some(share) = top_share {
+            (whole_limit.max(sizing.share(share)), usize::MAX)
+        } else {
+            (whole_limit, per_file)
+        };
         let mut added = 0;
-        if est <= whole_cap.min(per_file) {
+        if est <= whole_cap.min(file_cap) {
             let names = names_in(&symbols, 1, total);
             let note = note.clone();
             let why =
@@ -4102,7 +4158,7 @@ fn cache_header_text(corpus: &Corpus<'_>, options: &Options, counter: &Counter) 
     );
     match options.style {
         Style::Markdown => format!("# Code pack: {}\n\n{body}\n", corpus.project),
-        Style::Xml => body,
+        Style::Xml => xml_body(&body),
     }
 }
 
@@ -4522,9 +4578,10 @@ fn outline(
             )
         }
         Style::Xml => format!(
-            "<file path=\"{}\" lines=\"{range}\" why=\"{}\">\n{body}</file>\n",
+            "<file path=\"{}\" lines=\"{range}\" why=\"{}\">\n{}</file>\n",
             attr(path),
-            attr(why)
+            attr(why),
+            xml_body(&body)
         ),
     };
     let tokens = fill.counter.count(
@@ -4704,7 +4761,7 @@ fn header_text(
     );
     match options.style {
         Style::Markdown => format!("# Code pack: {}\n\n{body}\n", corpus.project),
-        Style::Xml => body,
+        Style::Xml => xml_body(&body),
     }
 }
 
@@ -5390,7 +5447,8 @@ mod tests {
 
     #[test]
     fn small_files_go_in_whole_and_large_ones_as_excerpts() {
-        let pack = pack("how does F4x3 compute widgets", 30_000, json!({}));
+        // Past TOP_WHOLE_BUDGET, so the first rank is cut like any large file.
+        let pack = pack("how does F4x3 compute widgets", 40_000, json!({}));
         let focus = pack["sections"]
             .as_array()
             .unwrap()
@@ -5428,6 +5486,405 @@ mod tests {
         assert!(first.contains("\tfunc F4x"), "{first}");
         let why = large[0]["why"].as_str().unwrap();
         assert!(why.starts_with("focus: rank 1, defines x.F4x"), "{why}");
+    }
+
+    #[test]
+    fn the_first_rank_goes_in_whole_at_small_budgets() {
+        let focus = |budget: usize| -> Vec<Value> {
+            let pack = pack("how does F4x3 compute widgets", budget, json!({}));
+            pack["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|s| s["name"] == "focus")
+                .flat_map(|s| s["chunks"].as_array().unwrap().clone())
+                .filter(|c| c["path"] == "pkg/a/file4.go")
+                .collect()
+        };
+        // file4.go, the first rank, is larger than the whole-file caps of a
+        // 30,000 or 40,000 token pack: whole at 30,000 (it fits in half of
+        // it), cut into excerpts at 40,000 (past TOP_WHOLE_BUDGET).
+        let small = focus(30_000);
+        assert_eq!(small.len(), 1, "{small:?}");
+        assert_eq!(small[0]["whole"], true);
+        assert_eq!(small[0]["start_line"], 1);
+        let larger = focus(40_000);
+        assert!(!larger.is_empty());
+        assert!(larger.iter().all(|c| c["whole"] == false), "{larger:?}");
+        // The second rank keeps the caps: file1.go is small and whole either way.
+        let pack = pack("how does F4x3 compute widgets", 30_000, json!({}));
+        let second = pack["included"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["path"] == "pkg/b/file1.go")
+            .unwrap();
+        assert_eq!(second["rank"], 2);
+    }
+
+    #[test]
+    fn the_first_two_ranks_go_in_whole_at_large_budgets() {
+        // Two large ranked files (3,000 lines, well past the whole-file caps
+        // of a 100,000 or 200,000 token pack) with a symbol every 20 lines,
+        // and a small third.
+        let mut files = BTreeMap::new();
+        let mut symbols = Vec::new();
+        for (i, path) in ["big/a.rs", "big/b.rs"].iter().enumerate() {
+            let mut text = String::new();
+            for line in 1..=3_000 {
+                if line % 20 == 1 {
+                    text.push_str(&format!("fn part{i}_{line}() {{\n"));
+                    symbols.push(Symbol {
+                        node: symbols.len(),
+                        name: format!("big.part{i}_{line}"),
+                        path: path.to_string(),
+                        line,
+                        degree: 1,
+                    });
+                } else {
+                    text.push_str(&format!(
+                        "    let value_{line} = compute(\"widget {i}\");\n"
+                    ));
+                }
+            }
+            files.insert(path.to_string(), text);
+        }
+        files.insert("small/c.rs".to_string(), "fn small() {}\n".to_string());
+        let ranking: Vec<(String, usize, usize)> = vec![
+            ("big/a.rs".into(), 1_001, 1_010),
+            ("big/b.rs".into(), 2_001, 2_010),
+            ("small/c.rs".into(), 1, 1),
+        ];
+        let calls: Vec<(usize, usize)> = Vec::new();
+        let whole = |budget: usize| -> Vec<(String, bool)> {
+            let options =
+                Options::parse(&json!({"question":"how is the widget computed","budget":budget}))
+                    .unwrap();
+            let counter = Counter::open(None, None).unwrap();
+            let mut corpus = corpus(&files, &symbols, &calls, ranking.clone());
+            let pack = build(&mut corpus, &options, &counter).unwrap();
+            let mut out = Vec::new();
+            for path in ["big/a.rs", "big/b.rs"] {
+                let held = pack["sections"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|s| s["name"] == "focus")
+                    .flat_map(|s| s["chunks"].as_array().unwrap())
+                    .any(|c| c["path"] == path && c["whole"] == true);
+                out.push((path.to_string(), held));
+            }
+            out
+        };
+        // From TOP_WHOLE_LARGE_BUDGET, each fits in a quarter of the budget:
+        // whole. Below it, past the per-file caps: excerpts.
+        assert!(
+            whole(200_000).iter().all(|(_, held)| *held),
+            "{:?}",
+            whole(200_000)
+        );
+        assert!(
+            whole(100_000).iter().all(|(_, held)| !*held),
+            "{:?}",
+            whole(100_000)
+        );
+    }
+
+    /// A Rust file of exactly `tokens` estimated tokens ([`est_file`]), with
+    /// a symbol every 20 lines (added to `symbols`).
+    fn sized_file(path: &str, tokens: usize, tag: usize, symbols: &mut Vec<Symbol>) -> String {
+        let mut text = String::new();
+        let mut line = 0;
+        loop {
+            let next = if (line + 1) % 20 == 1 {
+                format!("fn part{tag}_{}() {{\n", line + 1)
+            } else {
+                format!("    let value_{} = compute(\"widget {tag}\");\n", line + 1)
+            };
+            if est_file(path, text.len() + next.len() + 4) > tokens {
+                break;
+            }
+            line += 1;
+            if line % 20 == 1 {
+                symbols.push(Symbol {
+                    node: symbols.len(),
+                    name: format!("big.part{tag}_{line}"),
+                    path: path.to_string(),
+                    line,
+                    degree: 1,
+                });
+            }
+            text.push_str(&next);
+        }
+        text.push_str("//");
+        while est_file(path, text.len() + 1) < tokens {
+            text.push('x');
+        }
+        text.push('\n');
+        assert_eq!(est_file(path, text.len()), tokens);
+        text
+    }
+
+    /// Whether `big/a.rs` and `big/b.rs` (ranks 1 and 2, `tokens` estimated
+    /// tokens each; `small/c.rs` third) go in whole, in a pack of `budget`
+    /// with `extra` arguments; only chunks of the `part` given count.
+    fn whole_top_two(budget: usize, tokens: usize, extra: Value, part: Option<&str>) -> [bool; 2] {
+        let mut symbols = Vec::new();
+        let mut files = BTreeMap::new();
+        for (i, path) in ["big/a.rs", "big/b.rs"].iter().enumerate() {
+            files.insert(path.to_string(), sized_file(path, tokens, i, &mut symbols));
+        }
+        files.insert("small/c.rs".to_string(), "fn small() {}\n".to_string());
+        let ranking: Vec<(String, usize, usize)> = vec![
+            ("big/a.rs".into(), 201, 210),
+            ("big/b.rs".into(), 401, 410),
+            ("small/c.rs".into(), 1, 1),
+        ];
+        let calls: Vec<(usize, usize)> = Vec::new();
+        let mut args = json!({"question":"how is the widget computed","budget":budget});
+        for (k, v) in extra.as_object().unwrap() {
+            args[k] = v.clone();
+        }
+        let options = Options::parse(&args).unwrap();
+        let counter = Counter::open(None, None).unwrap();
+        let mut corpus = corpus(&files, &symbols, &calls, ranking);
+        let pack = build(&mut corpus, &options, &counter).unwrap();
+        let chunks: Vec<&Value> = pack["sections"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|s| part.is_none_or(|part| s["part"] == part))
+            .flat_map(|s| s["chunks"].as_array().unwrap())
+            .collect();
+        ["big/a.rs", "big/b.rs"].map(|path| {
+            assert!(
+                chunks.iter().any(|c| c["path"] == path),
+                "{path} missing at {budget}"
+            );
+            chunks
+                .iter()
+                .any(|c| c["path"] == path && c["whole"] == true)
+        })
+    }
+
+    /// The two whole-file rules at their edges: the last budget of the first
+    /// (32,768) and the one past it, the first budget of the second and the
+    /// token below it, and a file at its share and one token over it.
+    /// (Estimated sizes, from the bytes, as the rules compare.)
+    #[test]
+    fn the_whole_file_rules_hold_at_their_edges() {
+        let cases: [(&str, usize, usize, [bool; 2]); 8] = [
+            ("rank 1 at 32,768", TOP_WHOLE_BUDGET, 6_000, [true, false]),
+            (
+                "rank 1 at 32,769",
+                TOP_WHOLE_BUDGET + 1,
+                6_000,
+                [false, false],
+            ),
+            ("rank 1 at half the budget", 32_768, 16_384, [true, false]),
+            ("rank 1 one token over half", 32_768, 16_385, [false, false]),
+            (
+                "ranks 1-2 at the large tier's first budget",
+                TOP_WHOLE_LARGE_BUDGET,
+                20_000,
+                [true, true],
+            ),
+            (
+                "ranks 1-2 one token below it",
+                TOP_WHOLE_LARGE_BUDGET - 1,
+                20_000,
+                [false, false],
+            ),
+            (
+                "ranks 1-2 at a quarter of the budget",
+                200_000,
+                50_000,
+                [true, true],
+            ),
+            (
+                "ranks 1-2 one token over a quarter",
+                200_000,
+                50_001,
+                [false, false],
+            ),
+        ];
+        for (name, budget, tokens, expected) in cases {
+            // Past the per-file caps either way, so only the rules hold a file whole.
+            let sizing = Sizing::new(budget, false);
+            assert!(
+                tokens > sizing.whole_limit && tokens > sizing.per_file,
+                "{name}"
+            );
+            assert_eq!(
+                whole_top_two(budget, tokens, json!({}), None),
+                expected,
+                "{name}"
+            );
+        }
+    }
+
+    /// The cache layout's question part keeps the per-file caps at any
+    /// budget: the top ranks that a standard pack holds whole at 30,000 (the
+    /// first rank) and 200,000 (the first two) are excerpts there, as before
+    /// the whole-file rules.
+    #[test]
+    fn the_cache_layouts_question_part_keeps_excerpts() {
+        for (budget, tokens, standard) in [
+            (30_000, 10_000, [true, false]),
+            (200_000, 40_000, [true, true]),
+        ] {
+            assert_eq!(
+                whole_top_two(budget, tokens, json!({}), None),
+                standard,
+                "{budget}"
+            );
+            let cache = json!({"layout":"cache","prefix_share":MIN_PREFIX_SHARE});
+            assert_eq!(
+                whole_top_two(budget, tokens, cache, Some("suffix")),
+                [false, false],
+                "{budget}"
+            );
+        }
+    }
+
+    /// `fix --budget 16384 --focus big.rs --focus b.rs:120`: with pinned
+    /// passages the first rank keeps the per-file caps, so b.rs's passage
+    /// keeps its room and its lines 100-140 are inside. (Taking a big.rs of
+    /// under half the budget whole could leave b.rs a sliver of the room.)
+    #[test]
+    fn pinned_passages_keep_their_room() {
+        let b: String = (1..=300)
+            .map(|i| format!("    let b_{i:03} = widget_value({i:03});\n"))
+            .collect();
+        let focus = json!([
+            {"path":"big.rs","start_line":1,"end_line":1_000_000},
+            {"path":"b.rs","start_line":80,"end_line":160}
+        ]);
+        let ranking: Vec<(String, usize, usize)> =
+            vec![("big.rs".into(), 1, 1_000_000), ("b.rs".into(), 80, 160)];
+        // (big.rs whole, b.rs's lines 100-140 all inside)
+        let held = |big_tokens: usize, pinned: bool| -> (bool, bool) {
+            let mut big = String::new();
+            let mut n = 0;
+            while est_file("big.rs", big.len()) < big_tokens {
+                n += 1;
+                big.push_str(&format!("    w{n}();\n"));
+            }
+            let mut files = BTreeMap::new();
+            files.insert("big.rs".to_string(), big);
+            files.insert("b.rs".to_string(), b.clone());
+            let symbols: Vec<Symbol> = Vec::new();
+            let calls: Vec<(usize, usize)> = Vec::new();
+            let mut options = Options::parse(&json!({"question":"why is the widget value wrong",
+                "budget":16_384,"focus":focus}))
+            .unwrap();
+            assert!(options.pinned);
+            options.pinned = pinned;
+            let counter = Counter::open(None, None).unwrap();
+            let mut corpus = corpus(&files, &symbols, &calls, ranking.clone());
+            let pack = build(&mut corpus, &options, &counter).unwrap();
+            let chunks: Vec<&Value> = pack["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|s| s["name"] == "focus")
+                .flat_map(|s| s["chunks"].as_array().unwrap())
+                .collect();
+            let big_whole = chunks
+                .iter()
+                .any(|c| c["path"] == "big.rs" && c["whole"] == true);
+            let inside = (100..=140).all(|line: u64| {
+                chunks.iter().any(|c| {
+                    c["path"] == "b.rs"
+                        && c["start_line"].as_u64().unwrap() <= line
+                        && c["end_line"].as_u64().unwrap() >= line
+                })
+            });
+            (big_whole, inside)
+        };
+        let sizes: Vec<usize> = (5_000..=8_192).step_by(32).collect();
+        for &tokens in &sizes {
+            assert_eq!(
+                held(tokens, true),
+                (false, true),
+                "big.rs of {tokens} tokens"
+            );
+        }
+        // Without the exception the first rank went in whole and b.rs lost lines.
+        assert!(
+            sizes
+                .iter()
+                .any(|&tokens| held(tokens, false) == (true, false)),
+            "no squeeze found"
+        );
+    }
+
+    /// `--format xml`: an HTML page's own `</section>` (and `</file>`) goes
+    /// in a CDATA section, so it never closes the pack's elements; a `]]>`
+    /// in the page is split across two sections; other files are as before.
+    #[test]
+    fn an_html_page_never_closes_the_xml_packs_elements() {
+        let mut files = BTreeMap::new();
+        let page = "<!doctype html>\n<section id=\"shelf\">\n  <p>Shelf ]]> list</p>\n</section>\n</file>\n";
+        files.insert("web/page.html".to_string(), page.to_string());
+        let code = "fn shelf() -> Vec<u8> {\n    Vec::new()\n}\n";
+        files.insert("src/shelf.rs".to_string(), code.to_string());
+        let symbols: Vec<Symbol> = Vec::new();
+        let calls: Vec<(usize, usize)> = Vec::new();
+        let ranking: Vec<(String, usize, usize)> = vec![
+            ("web/page.html".into(), 2, 4),
+            ("src/shelf.rs".into(), 1, 3),
+        ];
+        let options = Options::parse(
+            &json!({"question":"where is the shelf list","budget":4_000,"style":"xml"}),
+        )
+        .unwrap();
+        let counter = Counter::open(None, None).unwrap();
+        let mut corpus = corpus(&files, &symbols, &calls, ranking);
+        let pack = build(&mut corpus, &options, &counter).unwrap();
+        let chunk = |path: &str| -> (String, String) {
+            let chunk = pack["sections"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|s| s["chunks"].as_array().unwrap())
+                .find(|c| c["path"] == path)
+                .unwrap();
+            (
+                chunk["why"].as_str().unwrap().to_string(),
+                chunk["text"].as_str().unwrap().to_string(),
+            )
+        };
+        let (why, text) = chunk("web/page.html");
+        assert_eq!(
+            text,
+            format!(
+                "<file path=\"web/page.html\" lines=\"1-5\" why=\"{why}\">\n<![CDATA[\n\
+                 1\t<!doctype html>\n2\t<section id=\"shelf\">\n3\t  <p>Shelf ]]]]><![CDATA[> list</p>\n\
+                 4\t</section>\n5\t</file>\n]]>\n</file>\n"
+            )
+        );
+        let (why, text) = chunk("src/shelf.rs");
+        assert_eq!(
+            text,
+            format!("<file path=\"src/shelf.rs\" lines=\"1-3\" why=\"{why}\">\n")
+                + "1\tfn shelf() -> Vec<u8> {\n2\t    Vec::new()\n3\t}\n</file>\n"
+        );
+        // Outside the CDATA sections, every element the pack opens it closes.
+        let mut rest = super::text(&pack);
+        while let Some(start) = rest.find("<![CDATA[") {
+            let end = start + rest[start..].find("]]>").unwrap() + 3;
+            rest.replace_range(start..end, "");
+        }
+        assert_eq!(
+            rest.matches("<section ").count(),
+            rest.matches("</section>").count()
+        );
+        assert_eq!(
+            rest.matches("<file ").count(),
+            rest.matches("</file>").count()
+        );
+        assert!(rest.matches("</section>").count() >= 2, "{rest}");
     }
 
     #[test]
@@ -6278,7 +6735,9 @@ mod tests {
     }
 
     /// The standard layout gives the bytes and JSON it gave before the
-    /// layouts (hashes taken at 50ebde1), plus the new fields.
+    /// layouts (hashes taken at 50ebde1), plus the new fields; the
+    /// 20,000-token pack's hashes are those of the first rank whole
+    /// ([`TOP_WHOLE_BUDGET`]).
     #[test]
     fn the_standard_layout_is_unchanged_but_for_the_new_fields() {
         let goldens: [(&str, usize, Value, &str, &str); 6] = [
@@ -6286,8 +6745,8 @@ mod tests {
                 "how does F4x3 compute widgets",
                 20_000,
                 json!({}),
-                "a3fe4f1b8a832d51ebdbd3c82a6f5688bc4abdc9120931ff2f6bdb50decbd6de",
-                "ec0fcd4c739a584a137d16819673adc52b8213c7e7a392702e9a345cbcee6bd7",
+                "5bf7af4c7acc2df6e8b141b66035b7721ec00032a53bc975ad9abce377369e8d",
+                "ae55131b46d1cc9ee8522d6fb3676b18dacdb2c0a969335acb0430d18c4cf1b2",
             ),
             (
                 "how does F4x3 compute widgets",

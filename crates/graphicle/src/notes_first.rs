@@ -90,7 +90,9 @@ pub fn names_code(question: &str) -> bool {
 }
 
 /// A note or document by its file name: Markdown, plain text,
-/// reStructuredText, AsciiDoc, Org, PDF, Word or HTML.
+/// reStructuredText, AsciiDoc, Org, PDF or Word. Not HTML: a folder's
+/// `.html` and `.htm` files are kept as markup (no `#` headings), and are
+/// pages and templates rather than notes.
 pub fn note_path(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     let Some((_, extension)) = name.rsplit_once('.') else {
@@ -98,17 +100,7 @@ pub fn note_path(path: &str) -> bool {
     };
     matches!(
         extension.to_ascii_lowercase().as_str(),
-        "md" | "markdown"
-            | "mdx"
-            | "txt"
-            | "text"
-            | "rst"
-            | "adoc"
-            | "org"
-            | "pdf"
-            | "docx"
-            | "html"
-            | "htm"
+        "md" | "markdown" | "mdx" | "txt" | "text" | "rst" | "adoc" | "org" | "pdf" | "docx"
     )
 }
 
@@ -393,6 +385,7 @@ mod tests {
     fn notes_are_named_by_file_folder_and_headings() {
         assert!(note_path("notes/build-checklist.md") && note_path("docs/a.rst"));
         assert!(!note_path("src/query.rs") && !note_path("Makefile"));
+        assert!(!note_path("templates/index.html") && !note_path("docs/OLD.HTM"));
         assert_eq!(
             stems(&name_text("docs/guides/install-step3/GUIDE.md")),
             stems("GUIDE install-step3")

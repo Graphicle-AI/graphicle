@@ -794,7 +794,7 @@
         "src/error.rs",
         "tests/public_api.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420565+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333307+00:00"
     },
     {
       "path": "graphify/__main__.py",
@@ -924,7 +924,7 @@
         "src/watch_paths.rs",
         "src/watch_reconcile.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420638+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333393+00:00"
     },
     {
       "path": "graphify/_minhash.py",
@@ -995,7 +995,7 @@
       "rust_files": [
         "src/minhash.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420682+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333446+00:00"
     },
     {
       "path": "graphify/affected.py",
@@ -1090,7 +1090,7 @@
         "src/session.rs",
         "src/graph_node_link.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420753+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333522+00:00"
     },
     {
       "path": "graphify/always_on/agents-md.md",
@@ -1272,7 +1272,7 @@
         "src/graph_algorithms.rs",
         "src/python_compat.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420793+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333564+00:00"
     },
     {
       "path": "graphify/benchmark.py",
@@ -1327,7 +1327,7 @@
         "src/assets/query/stopwords.json",
         "src/assets/query/jieba-py-0.46.12.hmm"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420827+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333605+00:00"
     },
     {
       "path": "graphify/build.py",
@@ -1658,7 +1658,7 @@
         "src/build_labels.rs",
         "src/hyperedge_members.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420863+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333677+00:00"
     },
     {
       "path": "graphify/cache.py",
@@ -1965,7 +1965,7 @@
         "src/cache_paths.rs",
         "src/cache_api.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420898+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333720+00:00"
     },
     {
       "path": "graphify/callflow_html.py",
@@ -2357,7 +2357,7 @@
         "src/callflow_html.rs",
         "src/assets/callflow/templates.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420930+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333761+00:00"
     },
     {
       "path": "graphify/cargo_introspect.py",
@@ -2401,7 +2401,7 @@
       "rust_files": [
         "src/cargo_introspect.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420963+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333800+00:00"
     },
     {
       "path": "graphify/cli.py",
@@ -2722,7 +2722,7 @@
         "src/assets/cli/constants.json",
         "src/assets/cli/help.txt"
       ],
-      "checked_utc": "2026-10-25T13:32:37.420997+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333840+00:00"
     },
     {
       "path": "graphify/cluster.py",
@@ -2805,7 +2805,7 @@
       "rust_files": [
         "src/cluster.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421031+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333880+00:00"
     },
     {
       "path": "graphify/command-kilo.md",
@@ -2888,7 +2888,7 @@
       "rust_files": [
         "src/cross_repo_calls.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421064+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333919+00:00"
     },
     {
       "path": "graphify/cross_repo_types.py",
@@ -2914,7 +2914,7 @@
       "rust_files": [
         "src/cross_repo_types.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421097+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333956+00:00"
     },
     {
       "path": "graphify/csharp_dispatch.py",
@@ -2938,7 +2938,7 @@
       "rust_files": [
         "src/csharp_dispatch.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421129+00:00"
+      "checked_utc": "2026-10-28T09:07:45.333994+00:00"
     },
     {
       "path": "graphify/dedup.py",
@@ -3204,7 +3204,7 @@
         "src/dedup_strings.rs",
         "src/dedup_api.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421161+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334032+00:00"
     },
     {
       "path": "graphify/detect.py",
@@ -3687,7 +3687,7 @@
         "src/detect_manifest.rs",
         "src/assets/detect/constants.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421193+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334073+00:00"
     },
     {
       "path": "graphify/diagnostics.py",
@@ -3786,7 +3786,7 @@
         "src/diagnostics_report.rs",
         "build.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421227+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334112+00:00"
     },
     {
       "path": "graphify/export.py",
@@ -3984,7 +3984,7 @@
         "src/export_api.rs",
         "src/assets/export/digit_ranges.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421260+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334151+00:00"
     },
     {
       "path": "graphify/exporters/__init__.py",
@@ -3999,7 +3999,7 @@
       "rust_files": [
         "src/exporters/mod.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421292+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334191+00:00"
     },
     {
       "path": "graphify/exporters/base.py",
@@ -4016,7 +4016,7 @@
       "rust_files": [
         "src/exporters/base.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421323+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334231+00:00"
     },
     {
       "path": "graphify/exporters/graphdb.py",
@@ -4076,7 +4076,7 @@
         "src/exporters/graphdb.rs",
         "src/exporters/common.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421353+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334269+00:00"
     },
     {
       "path": "graphify/exporters/html.py",
@@ -4145,7 +4145,7 @@
         "src/assets/export_html/hyperedges.html.template",
         "src/assets/export_html/document.html.template"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421389+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334308+00:00"
     },
     {
       "path": "graphify/extract.py",
@@ -5344,7 +5344,7 @@
         "src/extractors/resolution.rs",
         "src/extractors/parse_cache.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421454+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334383+00:00"
     },
     {
       "path": "graphify/extractors/MIGRATION.md",
@@ -5402,7 +5402,7 @@
         "src/extractors/registry.rs",
         "src/extractors/mod.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421489+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334423+00:00"
     },
     {
       "path": "graphify/extractors/apex.py",
@@ -5438,7 +5438,7 @@
       "rust_files": [
         "src/extractors/apex.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421524+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334460+00:00"
     },
     {
       "path": "graphify/extractors/base.py",
@@ -5496,7 +5496,7 @@
         "src/extractors/builtins_data.rs",
         "src/path_syntax.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421557+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334500+00:00"
     },
     {
       "path": "graphify/extractors/bash.py",
@@ -5592,7 +5592,7 @@
       "rust_files": [
         "src/extractors/bash.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421591+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334536+00:00"
     },
     {
       "path": "graphify/extractors/blade.py",
@@ -5619,7 +5619,7 @@
         "src/extractors/blade.rs",
         "src/regex_compat.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421624+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334571+00:00"
     },
     {
       "path": "graphify/extractors/cobol.py",
@@ -5671,7 +5671,7 @@
       "rust_files": [
         "src/extractors/cobol.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421657+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334606+00:00"
     },
     {
       "path": "graphify/extractors/commonlisp.py",
@@ -5789,7 +5789,7 @@
       "rust_files": [
         "src/extractors/commonlisp.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421689+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334641+00:00"
     },
     {
       "path": "graphify/extractors/csharp.py",
@@ -5943,7 +5943,7 @@
         "src/html_compat.rs",
         "src/html_entities.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421722+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334676+00:00"
     },
     {
       "path": "graphify/extractors/dart.py",
@@ -5999,7 +5999,7 @@
       "rust_files": [
         "src/extractors/dart.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421755+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334713+00:00"
     },
     {
       "path": "graphify/extractors/dm.py",
@@ -6105,7 +6105,7 @@
       "rust_files": [
         "src/extractors/dm.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421789+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334748+00:00"
     },
     {
       "path": "graphify/extractors/elixir.py",
@@ -6199,7 +6199,7 @@
       "rust_files": [
         "src/extractors/elixir.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421820+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334784+00:00"
     },
     {
       "path": "graphify/extractors/engine.py",
@@ -7324,7 +7324,7 @@
         "src/assets/engine/sets.json",
         "src/assets/engine/configs.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421855+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334823+00:00"
     },
     {
       "path": "graphify/extractors/erlang.py",
@@ -7378,7 +7378,7 @@
         "src/extractors/erlang.rs",
         "vendor/tree-sitter-erlang/SOURCE.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421891+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334861+00:00"
     },
     {
       "path": "graphify/extractors/fortran.py",
@@ -7459,7 +7459,7 @@
         "src/extractors/fortran.rs",
         "src/process.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421926+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334898+00:00"
     },
     {
       "path": "graphify/extractors/go.py",
@@ -7577,7 +7577,7 @@
       "rust_files": [
         "src/extractors/go.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421960+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334934+00:00"
     },
     {
       "path": "graphify/extractors/json_config.py",
@@ -7635,7 +7635,7 @@
       "rust_files": [
         "src/extractors/json_config.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.421995+00:00"
+      "checked_utc": "2026-10-28T09:07:45.334970+00:00"
     },
     {
       "path": "graphify/extractors/julia.py",
@@ -7739,7 +7739,7 @@
         "src/extractors/julia.rs",
         "src/extractors/engine_semantics.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422030+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335007+00:00"
     },
     {
       "path": "graphify/extractors/markdown.py",
@@ -7843,7 +7843,7 @@
         "src/extractors/markdown_data.rs",
         "src/extractors/yaml_frontmatter.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422065+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335046+00:00"
     },
     {
       "path": "graphify/extractors/models.py",
@@ -7909,7 +7909,7 @@
       "rust_files": [
         "src/extractors/models.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422098+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335081+00:00"
     },
     {
       "path": "graphify/extractors/objc.py",
@@ -8033,7 +8033,7 @@
         "src/extractors/engine_declarator.rs",
         "src/extractors/resolution_paths.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422132+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335117+00:00"
     },
     {
       "path": "graphify/extractors/ocaml.py",
@@ -8116,7 +8116,7 @@
       "rust_files": [
         "src/extractors/ocaml.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422166+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335152+00:00"
     },
     {
       "path": "graphify/extractors/pascal.py",
@@ -8242,7 +8242,7 @@
         "src/extractors/pascal.rs",
         "src/extractors/pascal_paths.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422200+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335187+00:00"
     },
     {
       "path": "graphify/extractors/pascal_forms.py",
@@ -8295,7 +8295,7 @@
         "src/extractors/pascal_forms.rs",
         "src/io_compat.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422235+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335224+00:00"
     },
     {
       "path": "graphify/extractors/powershell.py",
@@ -8404,7 +8404,7 @@
       "rust_files": [
         "src/extractors/powershell.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422272+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335260+00:00"
     },
     {
       "path": "graphify/extractors/r.py",
@@ -8513,7 +8513,7 @@
         "src/extractors/r.rs",
         "vendor/tree-sitter-r/SOURCE.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422309+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335297+00:00"
     },
     {
       "path": "graphify/extractors/razor.py",
@@ -8545,7 +8545,7 @@
       "rust_files": [
         "src/extractors/razor.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422343+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335331+00:00"
     },
     {
       "path": "graphify/extractors/resolution.py",
@@ -9136,7 +9136,7 @@
         "src/extractors/resolution_types.rs",
         "src/extractors/pascal_paths.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422380+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335367+00:00"
     },
     {
       "path": "graphify/extractors/robot.py",
@@ -9277,7 +9277,7 @@
         "src/extractors/robot.rs",
         "src/assets/robot/languages.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422413+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335404+00:00"
     },
     {
       "path": "graphify/extractors/rust.py",
@@ -9396,7 +9396,7 @@
       "rust_files": [
         "src/extractors/rust.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422446+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335439+00:00"
     },
     {
       "path": "graphify/extractors/sln.py",
@@ -9423,7 +9423,7 @@
         "src/extractors/sln.rs",
         "src/fsutil.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422483+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335477+00:00"
     },
     {
       "path": "graphify/extractors/solidity.py",
@@ -9517,7 +9517,7 @@
         "src/extractors/solidity.rs",
         "vendor/tree-sitter-solidity/SOURCE.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422517+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335512+00:00"
     },
     {
       "path": "graphify/extractors/sql.py",
@@ -9642,7 +9642,7 @@
         "vendor/tree-sitter-sql/grammar/tree_sitter/parser.h",
         "vendor/tree-sitter-sql/SOURCE.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422554+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335549+00:00"
     },
     {
       "path": "graphify/extractors/terraform.py",
@@ -9759,7 +9759,7 @@
         "vendor/tree-sitter-hcl/grammar/scanner.c",
         "vendor/tree-sitter-hcl/SOURCE.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422613+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335586+00:00"
     },
     {
       "path": "graphify/extractors/vbnet.py",
@@ -9823,7 +9823,7 @@
         "src/extractors/vbnet.rs",
         "vendor/tree-sitter-vb-dotnet/SOURCE.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422652+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335623+00:00"
     },
     {
       "path": "graphify/extractors/verilog.py",
@@ -9921,7 +9921,7 @@
       "rust_files": [
         "src/extractors/verilog.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422689+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335657+00:00"
     },
     {
       "path": "graphify/extractors/yaml_config.py",
@@ -9975,7 +9975,7 @@
         "src/extractors/yaml_config.rs",
         "src/extractors/yaml_frontmatter.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422724+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335691+00:00"
     },
     {
       "path": "graphify/extractors/zig.py",
@@ -10033,7 +10033,7 @@
       "rust_files": [
         "src/extractors/zig.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422760+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335726+00:00"
     },
     {
       "path": "graphify/file_slice.py",
@@ -10105,7 +10105,7 @@
       "rust_files": [
         "src/file_slice.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422796+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335763+00:00"
     },
     {
       "path": "graphify/global_graph.py",
@@ -10181,7 +10181,7 @@
         "src/build_global.rs",
         "src/graph.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422833+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335801+00:00"
     },
     {
       "path": "graphify/google_workspace.py",
@@ -10255,7 +10255,7 @@
       "rust_files": [
         "src/google_workspace.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422870+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335840+00:00"
     },
     {
       "path": "graphify/hooks.py",
@@ -10406,7 +10406,7 @@
         "src/hooks.rs",
         "src/hooks_runtime.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422907+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335877+00:00"
     },
     {
       "path": "graphify/ids.py",
@@ -10437,7 +10437,7 @@
         "src/ids.rs",
         "src/unicode15.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422942+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335914+00:00"
     },
     {
       "path": "graphify/ingest.py",
@@ -10532,7 +10532,7 @@
         "src/ingest.rs",
         "src/ingest_api.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.422977+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335949+00:00"
     },
     {
       "path": "graphify/install.py",
@@ -11025,7 +11025,7 @@
         "src/assets/install/pi/package.json",
         "src/assets/install/workflows.md"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423013+00:00"
+      "checked_utc": "2026-10-28T09:07:45.335986+00:00"
     },
     {
       "path": "graphify/interface_dispatch.py",
@@ -11074,7 +11074,7 @@
       "rust_files": [
         "src/interface_dispatch.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423050+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336023+00:00"
     },
     {
       "path": "graphify/llm.py",
@@ -11659,7 +11659,7 @@
         "src/assets/llm/extraction_system.txt",
         "src/assets/llm/label_prompt.txt"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423087+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336063+00:00"
     },
     {
       "path": "graphify/manifest.py",
@@ -11676,7 +11676,7 @@
       "rust_files": [
         "src/manifest.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423122+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336099+00:00"
     },
     {
       "path": "graphify/manifest_ingest.py",
@@ -11767,7 +11767,7 @@
       "rust_files": [
         "src/manifest_ingest.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423157+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336133+00:00"
     },
     {
       "path": "graphify/markdown_resolution.py",
@@ -11844,7 +11844,7 @@
       "rust_files": [
         "src/markdown_resolution.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423192+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336170+00:00"
     },
     {
       "path": "graphify/mcp_ingest.py",
@@ -11910,7 +11910,7 @@
       "rust_files": [
         "src/mcp_ingest.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423228+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336213+00:00"
     },
     {
       "path": "graphify/multigraph_compat.py",
@@ -12011,7 +12011,7 @@
         "src/multigraph_compat.rs",
         "src/graph.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423261+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336253+00:00"
     },
     {
       "path": "graphify/pascal_resolution.py",
@@ -12044,7 +12044,7 @@
       "rust_files": [
         "src/pascal_resolution.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423295+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336291+00:00"
     },
     {
       "path": "graphify/paths.py",
@@ -12172,7 +12172,7 @@
         "src/python_json.rs",
         "src/security.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423331+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336327+00:00"
     },
     {
       "path": "graphify/pg_introspect.py",
@@ -12208,7 +12208,7 @@
         "src/assets/postgres/routines.sql",
         "src/assets/postgres/foreign_keys.sql"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423368+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336367+00:00"
     },
     {
       "path": "graphify/pi/index.ts",
@@ -12460,7 +12460,7 @@
         "src/prs_api.rs",
         "src/assets/prs/help.txt"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423403+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336406+00:00"
     },
     {
       "path": "graphify/querylog.py",
@@ -12505,7 +12505,7 @@
       "rust_files": [
         "src/querylog.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423438+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336442+00:00"
     },
     {
       "path": "graphify/rcfile.py",
@@ -12573,7 +12573,7 @@
         "src/rcfile.rs",
         "src/par.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423474+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336478+00:00"
     },
     {
       "path": "graphify/reflect.py",
@@ -12746,7 +12746,7 @@
         "src/reflect.rs",
         "src/python_datetime.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423507+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336511+00:00"
     },
     {
       "path": "graphify/report.py",
@@ -12806,7 +12806,7 @@
       "rust_files": [
         "src/report.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423542+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336545+00:00"
     },
     {
       "path": "graphify/resolver_registry.py",
@@ -12850,7 +12850,7 @@
       "rust_files": [
         "src/resolver_registry.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423577+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336580+00:00"
     },
     {
       "path": "graphify/ruby_resolution.py",
@@ -12942,7 +12942,7 @@
         "src/ruby_resolution.rs",
         "src/build_labels.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423613+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336615+00:00"
     },
     {
       "path": "graphify/scip_ingest.py",
@@ -13019,7 +13019,7 @@
       "rust_files": [
         "src/scip_ingest.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423650+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336652+00:00"
     },
     {
       "path": "graphify/security.py",
@@ -13172,7 +13172,7 @@
         "src/ip_policy_data.rs",
         "src/decimal_data.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423684+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336689+00:00"
     },
     {
       "path": "graphify/semantic_cleanup.py",
@@ -13225,7 +13225,7 @@
         "src/semantic_cleanup.rs",
         "src/hyperedge_members.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423720+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336727+00:00"
     },
     {
       "path": "graphify/serve.py",
@@ -13819,7 +13819,7 @@
         "src/serve_text.rs",
         "src/assets/serve/constants.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423758+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336764+00:00"
     },
     {
       "path": "graphify/skill-agents.md",
@@ -15123,7 +15123,7 @@
       "rust_files": [
         "src/swift_dispatch.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423804+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336812+00:00"
     },
     {
       "path": "graphify/symbol_resolution.py",
@@ -15233,7 +15233,7 @@
       "rust_files": [
         "src/symbol_resolution.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423840+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336849+00:00"
     },
     {
       "path": "graphify/transcribe.py",
@@ -15301,7 +15301,7 @@
         "src/transcribe_api.rs",
         "src/assets/transcribe/models.json"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423876+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336886+00:00"
     },
     {
       "path": "graphify/tree_html.py",
@@ -15372,7 +15372,7 @@
         "src/tree_html.rs",
         "src/assets/tree.html.template"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423912+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336921+00:00"
     },
     {
       "path": "graphify/validate.py",
@@ -15402,7 +15402,7 @@
         "src/python_compat.rs",
         "src/python_repr_data.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423950+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336956+00:00"
     },
     {
       "path": "graphify/watch.py",
@@ -15762,7 +15762,7 @@
         "src/watch_paths.rs",
         "src/watch_reconcile.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.423984+00:00"
+      "checked_utc": "2026-10-28T09:07:45.336991+00:00"
     },
     {
       "path": "graphify/wiki.py",
@@ -15832,7 +15832,7 @@
       "rust_files": [
         "src/wiki.rs"
       ],
-      "checked_utc": "2026-10-25T13:32:37.424019+00:00"
+      "checked_utc": "2026-10-28T09:07:45.337026+00:00"
     },
     {
       "path": "pyproject.toml",

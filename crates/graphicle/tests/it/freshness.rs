@@ -689,6 +689,23 @@ async fn http_mcp_tool_calls_sync_changed_files_before_answering() {
     assert_ne!(h.state(&project).0, before);
 }
 
+/// A Word document of one paragraph, `text`.
+fn docx(text: &str) -> Vec<u8> {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    zip.start_file(
+        "word/document.xml",
+        zip::write::SimpleFileOptions::default(),
+    )
+    .unwrap();
+    write!(
+        zip,
+        "<w:document xmlns:w='w'><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"
+    )
+    .unwrap();
+    zip.finish().unwrap().into_inner()
+}
+
 /// A sync of an unchanged folder converts no document again: an unchanged
 /// original keeps the text this build extracted from it, and the result is
 /// the same. A changed document and a record of an earlier build convert
@@ -700,11 +717,7 @@ fn an_unchanged_sync_converts_no_document_again() {
     let root = dir.path().canonical().unwrap().join("docs");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::write(root.join("a.py"), A_V1).unwrap();
-    std::fs::write(
-        root.join("guide.html"),
-        "<html><body><h1>Guide</h1><p>Alpha runs first.</p></body></html>",
-    )
-    .unwrap();
+    std::fs::write(root.join("guide.docx"), docx("Alpha runs first.")).unwrap();
     std::fs::write(root.join("diagram.png"), b"\x89PNG\r\n\x1a\nnot an image").unwrap();
     let store = Store::open(dir.path().join("data")).unwrap();
     let mut session = graphicle_runtime::local::session(&store, true).unwrap();
@@ -715,7 +728,7 @@ fn an_unchanged_sync_converts_no_document_again() {
         store
             .transaction(|db| {
                 db.execute(
-                    "UPDATE am_binary_heads SET parser=? WHERE path='guide.html'",
+                    "UPDATE am_binary_heads SET parser=? WHERE path='guide.docx'",
                     [parser],
                 )?;
                 Ok(())
@@ -726,7 +739,7 @@ fn an_unchanged_sync_converts_no_document_again() {
         store
             .read(|db| {
                 Ok(db.query_row(
-                    "SELECT parser FROM am_binary_heads WHERE path='guide.html'",
+                    "SELECT parser FROM am_binary_heads WHERE path='guide.docx'",
                     [],
                     |row| row.get(0),
                 )?)
@@ -749,14 +762,14 @@ fn an_unchanged_sync_converts_no_document_again() {
     let first = sync(&mut session);
     assert_eq!(first["binary_documents"], 1, "{first:#}");
     assert_eq!(first["skipped"][0]["path"], "diagram.png", "{first:#}");
-    assert_eq!(parser(), "html2text");
-    // Unchanged: the page's head is kept as it is, and nothing differs.
+    assert_eq!(parser(), "rust-office-xml");
+    // Unchanged: the document's head is kept as it is, and nothing differs.
     mark("kept");
     let second = sync(&mut session);
     assert_eq!(second["replayed"], true, "{second:#}");
     same(&first, &second);
     assert_eq!(parser(), "kept");
-    // A record of an earlier build: the page is converted again.
+    // A record of an earlier build: the document is converted again.
     let project = s(&first, "repository_id").to_string();
     store
         .transaction(|db| {
@@ -769,27 +782,182 @@ fn an_unchanged_sync_converts_no_document_again() {
         .unwrap();
     let third = sync(&mut session);
     same(&first, &third);
-    assert_eq!(parser(), "html2text");
-    // A changed page is converted again, and its new text is synced.
+    assert_eq!(parser(), "rust-office-xml");
+    // A changed document is converted again, and its new text is synced.
     mark("kept");
-    std::fs::write(
-        root.join("guide.html"),
-        "<html><body><h1>Guide</h1><p>Beta runs first.</p></body></html>",
-    )
-    .unwrap();
+    std::fs::write(root.join("guide.docx"), docx("Beta runs first.")).unwrap();
     let fourth = sync(&mut session);
     assert_ne!(fourth["snapshot"], first["snapshot"]);
-    assert_eq!(parser(), "html2text");
+    assert_eq!(parser(), "rust-office-xml");
     let text: String = store
         .read(|db| {
             Ok(db.query_row(
-                "SELECT o.content FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 WHERE h.repository_id=? AND h.path='guide.html'",
+                "SELECT o.content FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 WHERE h.repository_id=? AND h.path='guide.docx'",
                 [&project],
                 |row| row.get(0),
             )?)
         })
         .unwrap();
     assert!(text.contains("Beta runs first."), "{text}");
+}
+
+/// A folder's HTML files are text files: the sync keeps each one as it is on
+/// disk (no conversion, no original kept apart), and a pack quotes its lines
+/// with their own numbers, so an edit of the template can match them.
+#[test]
+fn a_folders_html_is_synced_and_packed_as_it_is() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonical().unwrap().join("site");
+    std::fs::create_dir_all(root.join("templates")).unwrap();
+    std::fs::write(root.join("a.py"), A_V1).unwrap();
+    let page = "<!doctype html>\n<html>\n<body>\n  <h1>Library</h1>\n  <ul class=\"shelf-list\">\n    {% for book in shelf %}\n      <li data-isbn=\"{{ book.isbn }}\">{{ book.title }}</li>\n    {% endfor %}\n  </ul>\n</body>\n</html>\n";
+    std::fs::write(root.join("templates/shelf.html"), page).unwrap();
+    std::fs::write(root.join("old.HTM"), "<p>Old page</p>\n").unwrap();
+    std::fs::write(root.join("guide.docx"), docx("Shelves list books.")).unwrap();
+    let store = Store::open(dir.path().join("data")).unwrap();
+    let mut session = graphicle_runtime::local::session(&store, true).unwrap();
+    let synced = graphicle_runtime::local::sync(&store, &mut session, &root, None).unwrap();
+    // Only the Word document is a converted document.
+    assert_eq!(synced["binary_documents"], 1, "{synced:#}");
+    let project = s(&synced, "repository_id").to_string();
+    let stored = |path: &str| -> (String, i64) {
+        store
+            .read(|db| {
+                Ok(db.query_row(
+                    "SELECT o.content,(SELECT count(*) FROM am_binary_heads b WHERE b.repository_id=h.repository_id AND b.path=h.path) FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 WHERE h.repository_id=? AND h.path=?",
+                    rusqlite::params![project, path],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+                )?)
+            })
+            .unwrap()
+    };
+    assert_eq!(stored("templates/shelf.html"), (page.to_string(), 0));
+    assert_eq!(stored("old.HTM"), ("<p>Old page</p>\n".to_string(), 0));
+    let (text, heads) = stored("guide.docx");
+    assert!(text.contains("Shelves list books."), "{text}");
+    assert_eq!(heads, 1);
+    // The pack holds the template with the file's own lines.
+    let pack = store
+        .project_pack(
+            &session.workspace,
+            &session.capability,
+            &json!({"repository_id": project, "question": "The shelf-list template shows the wrong book.isbn",
+                "budget": 8000}),
+        )
+        .unwrap();
+    let lines: Vec<&str> = page.lines().collect();
+    let chunks: Vec<&Value> = pack["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|section| section["chunks"].as_array().unwrap().iter())
+        .filter(|chunk| chunk["path"] == "templates/shelf.html")
+        .collect();
+    assert!(!chunks.is_empty(), "{pack:#}");
+    for chunk in chunks {
+        let (a, b) = (
+            chunk["start_line"].as_u64().unwrap() as usize,
+            chunk["end_line"].as_u64().unwrap() as usize,
+        );
+        for (n, line) in lines.iter().enumerate().take(b).skip(a - 1) {
+            assert!(
+                chunk["text"].as_str().unwrap().contains(line),
+                "line {} ({line}) missing: {chunk:#}",
+                n + 1
+            );
+        }
+    }
+}
+
+/// A store synced by 0.1.9 or earlier holds a folder's HTML as html2text's
+/// text: the first check after the upgrade finds those pages changed, though
+/// nothing on disk did, and the refresh before an answer reads them as they
+/// are, so a pack quotes the page's own lines.
+#[test]
+fn html_an_earlier_build_converted_is_synced_again() {
+    use graphicle_runtime::fresh::{self, GraphPolicy, Mode, Options, State};
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().canonical().unwrap().join("site");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("a.py"), A_V1).unwrap();
+    let page = "<!doctype html>\n<html>\n<body>\n  <section class=\"shelf\">\n    <h1>Library</h1>\n    <ul class=\"shelf-list\">\n      <li data-isbn=\"{{ book.isbn }}\">{{ book.title }}</li>\n    </ul>\n  </section>\n</body>\n</html>\n";
+    std::fs::write(root.join("t.html"), page).unwrap();
+    let store = Store::open(dir.path().join("data")).unwrap();
+    let mut session = graphicle_runtime::local::session(&store, true).unwrap();
+    let synced = graphicle_runtime::local::sync(&store, &mut session, &root, None).unwrap();
+    let project = s(&synced, "repository_id").to_string();
+    let state = || fresh::check(&store, &session, &project).unwrap();
+    assert_eq!(state().state, State::Fresh);
+    // As 0.1.9 left it: the page's head holds html2text's text, an
+    // am_binary_heads row names the original, and the folder's record has
+    // no folder-text policy.
+    let converted = graphicle_runtime::documents::extract("t.html", page.as_bytes()).unwrap();
+    let text = s(&converted, "text").to_string();
+    assert!(!text.contains("<li"), "{text}");
+    store
+        .transaction(|db| {
+            db.execute(
+                "INSERT OR IGNORE INTO repo_objects VALUES(?,?,?,?)",
+                rusqlite::params![project, s(&converted, "text_sha256"), text, text.len() as i64],
+            )?;
+            db.execute(
+                "UPDATE repo_heads SET sha256=? WHERE repository_id=? AND path='t.html'",
+                rusqlite::params![s(&converted, "text_sha256"), project],
+            )?;
+            db.execute(
+                "INSERT INTO am_binary_heads VALUES(?,?,?,?,?)",
+                rusqlite::params![
+                    project,
+                    "t.html",
+                    s(&converted, "text_sha256"),
+                    s(&converted, "original_sha256"),
+                    s(&converted, "parser")
+                ],
+            )?;
+            db.execute(
+                "UPDATE repo_folders SET freshness=json_remove(freshness,'$.text') WHERE repository_id=?",
+                [&project],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let check = state();
+    assert_eq!(check.state, State::Changed);
+    assert_eq!(check.changed, Some(1));
+    assert_eq!(check.sample, ["t.html"]);
+    assert_eq!(check.method, "text");
+    let outcome = fresh::ensure(
+        &store,
+        &session,
+        &project,
+        Options {
+            mode: Mode::Auto,
+            graph: GraphPolicy::Skip,
+        },
+    );
+    let report = outcome.report().cloned().unwrap_or_default();
+    assert_eq!(report["status"], "refreshed", "{report:#}");
+    assert_eq!(report["changed"], 1, "{report:#}");
+    assert_eq!(state().state, State::Fresh);
+    let pack = store
+        .project_pack(
+            &session.workspace,
+            &session.capability,
+            &json!({"repository_id": project, "question": "The shelf-list template shows the wrong book.isbn",
+                "budget": 8000}),
+        )
+        .unwrap();
+    let quoted: String = pack["sections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|section| section["chunks"].as_array().unwrap().iter())
+        .filter(|chunk| chunk["path"] == "t.html")
+        .map(|chunk| chunk["text"].as_str().unwrap().to_string())
+        .collect();
+    for line in page.lines() {
+        assert!(quoted.contains(line), "{line} missing: {quoted}");
+    }
 }
 
 /// Two processes that find the same change sync it once: the second waits

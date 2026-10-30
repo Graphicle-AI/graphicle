@@ -453,15 +453,26 @@ pub(crate) fn sync_view(root: &Path, relative: &str) -> Option<Option<String>> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some(None),
         Err(_) => return None,
     };
-    if meta.file_type().is_symlink() || crate::documents::supported(name) {
+    if meta.file_type().is_symlink() || crate::documents::converted_in_folder(name) {
         return None;
     }
-    if !meta.is_file() || meta.len() > crate::limits::current().file_bytes as u64 {
+    // An HTML file the sync converts (past the text-file limit, or not
+    // UTF-8) is a document: its synced text is extracted.
+    let html = crate::documents::html(name);
+    let file_bytes = crate::limits::current().file_bytes;
+    if meta.is_file()
+        && html
+        && crate::documents::folder_html_converted(meta.len(), None, file_bytes)
+    {
+        return None;
+    }
+    if !meta.is_file() || meta.len() > file_bytes as u64 {
         return Some(None);
     }
     let bytes = std::fs::read(&path).ok()?;
     match String::from_utf8(bytes) {
         Ok(text) if !text.contains('\0') => Some(without_graphicle(relative, text)),
+        _ if html => None,
         _ => Some(None),
     }
 }
@@ -716,7 +727,13 @@ fn sync_folder_with(
         if meta.is_file() && !read_files.insert(file_key(path, &meta)) {
             continue;
         }
-        let is_document = crate::documents::supported(name);
+        // A folder's HTML is read as it is, like its other text files, but
+        // converted as a document when it is past the text-file limit (up to
+        // the document limit) or, once read, not UTF-8 text.
+        let html = crate::documents::html(name);
+        let mut is_document = crate::documents::converted_in_folder(name)
+            || (html
+                && crate::documents::folder_html_converted(meta.len(), None, limits.file_bytes));
         let limit = if is_document {
             limits.document_bytes
         } else {
@@ -762,6 +779,13 @@ fn sync_folder_with(
                 "A source grew during scanning; retry the sync",
             ));
         }
+        if html && !is_document {
+            is_document = crate::documents::folder_html_converted(
+                contents.len() as u64,
+                Some(&contents),
+                limits.file_bytes,
+            );
+        }
         let content = if is_document {
             // An unchanged original keeps the text this build extracted
             // from it (still within the text limit); others are converted.
@@ -804,7 +828,7 @@ fn sync_folder_with(
             binary_bytes += contents.len();
             if binary_bytes > limits.folder_document_bytes {
                 return Err(Error::bad(format!(
-                    "This folder's documents exceed {} (PDF, Office, EPUB, HTML and image files together). Raise the limit with {}, or leave untracked ones out with .gitignore or .git/info/exclude (they cover only files Git does not track; graphicle config set sync.tracked_ignored false, or GRAPHICLE_SYNC_TRACKED_IGNORED=0, leaves out the tracked files they match too), or set up a subfolder: graphicle setup path/to/subfolder",
+                    "This folder's documents exceed {} (PDF, Office, EPUB and image files, and HTML files converted to text, together). Raise the limit with {}, or leave untracked ones out with .gitignore or .git/info/exclude (they cover only files Git does not track; graphicle config set sync.tracked_ignored false, or GRAPHICLE_SYNC_TRACKED_IGNORED=0, leaves out the tracked files they match too), or set up a subfolder: graphicle setup path/to/subfolder",
                     crate::limits::size(limits.folder_document_bytes),
                     crate::limits::raise("folder_document_bytes")
                 )));

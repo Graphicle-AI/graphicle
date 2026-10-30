@@ -89,6 +89,11 @@ def summarize(rows, rng, nboot):
             out[m + "_ci"] = boot_ci(xs, rng, nboot)
     out["errors"] = sum(1 for r in rows if r.get("error"))
     out["cost_usd_total"] = sum(r.get("cost_usd") or 0 for r in rows)
+    # Cost per correct answer: the billed dollars over the answers with a gold file in the top 5
+    # (and in first place); None when there is none.
+    for k in ("hit5", "hit1"):
+        n = sum(1 for r in rows if not r.get("error") and r.get(k))
+        out[f"cost_per_{k}"] = out["cost_usd_total"] / n if n else None
     return out
 
 
@@ -140,10 +145,13 @@ def main():
                 ks = [k for k in common if scope == "pooled" or ia[k]["repo"] == scope]
                 b = sum(1 for k in ks if ia[k]["hit5"] and not ib[k]["hit5"])
                 c = sum(1 for k in ks if ib[k]["hit5"] and not ia[k]["hit5"])
+                b1 = sum(1 for k in ks if ia[k]["hit1"] and not ib[k]["hit1"])
+                c1 = sum(1 for k in ks if ib[k]["hit1"] and not ia[k]["hit1"])
                 result["paired"].append({"a": la, "b": lb, "scope": scope, "n": len(ks), "a_only": b, "b_only": c,
                                          "hit5_a": mean([ia[k]["hit5"] for k in ks]),
                                          "hit5_b": mean([ib[k]["hit5"] for k in ks]),
-                                         "mcnemar_p": mcnemar_exact(b, c)})
+                                         "mcnemar_p": mcnemar_exact(b, c),
+                                         "hit1_a_only": b1, "hit1_b_only": c1, "hit1_mcnemar_p": mcnemar_exact(b1, c1)})
     with open(a.out, "w") as f:
         json.dump(result, f, indent=1, sort_keys=True)
     for label in result["runs"]:

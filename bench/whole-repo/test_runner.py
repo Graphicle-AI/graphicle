@@ -419,6 +419,56 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(rows and all(r["redacted"] == {"emails": 0, "handles": 0} for r in rows))
         self.assertTrue(read_json(os.path.join(self.tmp, "redacted", "run.json"))["redact"])
 
+    def test_g1_bm25_arm_fills_its_budget_with_ranked_files(self):
+        self.run_py("bm25", "--arm", "bm25", "--budget", "16K", "--repos", "kubernetes")
+        rows = {r["id"]: r for r in self.rows("bm25")}
+        self.assertEqual(len(rows), 4)
+        self.assertFalse(any(r["error"] for r in rows.values()))
+        for r in rows.values():
+            self.assertLessEqual(r["context_tokens"], BUDGETS["16K"])
+            self.assertEqual(r["context_recall"], 1.0, r["id"])  # the issue names its handler's words
+        keys = {x["cache_key"] for x in self.log_lines("bm25")}
+        self.assertTrue(all(":bm25@16K:" in k for k in keys), keys)
+
+    def test_g2_agent_pack_hybrid_seeds_the_first_message(self):
+        self.run_py("agent-pack", "--arm", "agent-pack", "--budget", "32K", "--repos", "kubernetes", "--max-turns", "3",
+                    "--graphicle", self.fake)
+        rows = self.rows("agent-pack")
+        self.assertEqual(len(rows), 4)
+        self.assertFalse(any(r["error"] for r in rows), [r["error"] for r in rows])
+        for r in rows:
+            self.assertIsNotNone(r["seed_recall"])
+            self.assertGreaterEqual(r["context_recall"], r["seed_recall"])
+            self.assertGreater(r["context_tokens"], 0)
+            self.assertLessEqual(r["turns"], 4)
+            self.assertEqual(len(r["in_per_call"]), len(r["cached_per_call"]))
+        meta = read_json(os.path.join(self.tmp, "agent-pack", "run.json"))
+        self.assertEqual((meta["max_turns"], meta["agent_max_input"], meta["tool_search"]), (3, 2000000, False))
+
+    def test_g3_tool_search_loads_the_deferred_tools(self):
+        before = len(self.requests())
+        self.run_py("tool-search", "--arm", "agent", "--repos", "pytorch", "--max-turns", "4", "--tool-search")
+        rows = self.rows("tool-search")
+        self.assertEqual(len(rows), 3)
+        self.assertFalse(any(r["error"] for r in rows), [r["error"] for r in rows])
+        self.assertTrue(all(r["tool_search"] and r["tool_calls"] > 0 for r in rows))
+        reqs = [r for r in self.requests()[before:] if r["tools"]]
+        self.assertTrue(reqs and all(r["tool_types"] == ["namespace", "tool_search"] for r in reqs))
+        raw = read_json(os.path.join(self.tmp, "tool-search", "raw", "pytorch-1.json"))
+        types = [o["type"] for resp in raw["responses"] for o in resp["output"]]
+        self.assertEqual(types.count("tool_search_call"), 1, "the namespace loads once per question")
+        self.assertTrue(all(o.get("namespace") == "repo" for resp in raw["responses"] for o in resp["output"]
+                            if o["type"] == "function_call"))
+
+    def test_g4_agent_input_cap_ends_the_question(self):
+        self.run_py("agent-capped", "--arm", "agent", "--repos", "pytorch", "--max-turns", "30",
+                    "--agent-max-input", "600")
+        rows = self.rows("agent-capped")
+        self.assertFalse(any(r["error"] for r in rows))
+        # The first turn's input plus the next prompt (its context, its output and the tool result) pass 600.
+        self.assertTrue(all(r["turns"] == 2 for r in rows),
+                        [(r["turns"], r["in_per_call"], r["tokens_out"]) for r in rows])
+
     def test_estimate_caches_the_shared_prefix(self):
         agent = {"turns": 15, "turn_tokens": 2500, "out_per_turn": 800}
         b = BUDGETS["64K"]

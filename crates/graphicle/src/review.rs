@@ -725,6 +725,110 @@ fn quiet_mentions(text: &str) -> String {
     out
 }
 
+/// `text` with `&`, `<` and `>` as HTML entities outside Markdown code, which
+/// stays as it is: fenced code blocks (``` or ~~~) and code spans (a run of
+/// backticks up to the next run of the same length in its paragraph).
+/// GitHub renders raw HTML in a comment (an `<img>`, a `<!--` that hides the
+/// rest), so the model's text shows as it was written.
+fn escape_markup(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while let Some(c) = text[i..].chars().next() {
+        if (i == 0 || text.as_bytes()[i - 1] == b'\n')
+            && let Some(end) = fence_end(text, i)
+        {
+            out.push_str(&text[i..end]);
+            i = end;
+            continue;
+        }
+        if c == '`' {
+            let run = backticks(&text[i..]);
+            let block = paragraph_end(text, i);
+            // A run with no closing run of its length is literal backticks.
+            let mut end = i + run;
+            let mut from = i + run;
+            while let Some(at) = text[from..block].find('`').map(|at| from + at) {
+                let len = backticks(&text[at..]);
+                if len == run {
+                    end = at + len;
+                    break;
+                }
+                from = at + len;
+            }
+            out.push_str(&text[i..end]);
+            i = end;
+            continue;
+        }
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            c => out.push(c),
+        }
+        i += c.len_utf8();
+    }
+    out
+}
+
+fn backticks(text: &str) -> usize {
+    text.bytes().take_while(|&b| b == b'`').count()
+}
+
+/// Where the paragraph that holds `from` ends: at the line break before the
+/// next blank line, else at the end of `text`.
+fn paragraph_end(text: &str, from: usize) -> usize {
+    let mut at = from;
+    while let Some(n) = text[at..].find('\n').map(|n| at + n) {
+        let next = &text[n + 1..];
+        if next[..next.find('\n').unwrap_or(next.len())]
+            .trim()
+            .is_empty()
+        {
+            return n;
+        }
+        at = n + 1;
+    }
+    text.len()
+}
+
+/// The end of the fenced code block that opens on the line at `start` (up to
+/// three spaces, then three or more backticks or tildes): after its closing
+/// fence, else the end of `text`. `None` when no fence opens there.
+fn fence_end(text: &str, start: usize) -> Option<usize> {
+    let line_end = |from: usize| text[from..].find('\n').map_or(text.len(), |n| from + n + 1);
+    // The run of `mark` that a line opens with, and where it ends.
+    let fence = |line: &str, mark: char| -> Option<(usize, usize)> {
+        let line = line.trim_end_matches(['\n', '\r']);
+        let indent = line.len() - line.trim_start_matches(' ').len();
+        let rest = &line[indent..];
+        let run = rest.len() - rest.trim_start_matches(mark).len();
+        (indent <= 3 && run >= 3).then_some((run, indent + run))
+    };
+    let first = &text[start..line_end(start)];
+    let mark = first.trim_start_matches(' ').chars().next()?;
+    if mark != '`' && mark != '~' {
+        return None;
+    }
+    let (run, info) = fence(first, mark)?;
+    // A backtick fence's info string holds no backtick (that is a code span).
+    if mark == '`' && first[info..].contains('`') {
+        return None;
+    }
+    let mut at = line_end(start);
+    while at < text.len() {
+        let end = line_end(at);
+        let line = &text[at..end];
+        if let Some((close, after)) = fence(line, mark)
+            && close >= run
+            && line[after..].trim().is_empty()
+        {
+            return Some(end);
+        }
+        at = end;
+    }
+    Some(text.len())
+}
+
 fn cite_list(comment: &Value, valid: bool) -> Vec<String> {
     comment["evidence"]
         .as_array()
@@ -742,12 +846,12 @@ fn github_comment_body(comment: &Value) -> String {
         .into_iter()
         .map(|c| format!("`{c}`"))
         .collect();
-    quiet_mentions(&format!(
+    quiet_mentions(&escape_markup(&format!(
         "**{}**: {}\n\nEvidence: {}",
         comment["severity"].as_str().unwrap_or("minor"),
         comment["body"].as_str().unwrap_or(""),
         cites.join(", ")
-    ))
+    )))
 }
 
 /// The body of GitHub's create-a-review call: a `COMMENT` review at the
@@ -788,7 +892,7 @@ pub fn github_review(report: &Value, prefix: &str) -> Value {
         body.push_str(&format!("\n\nUsage: {line}"));
     }
     json!({"commit_id":report["head"],"event":"COMMENT",
-        "body":clip(&quiet_mentions(&body), 60_000),"comments":comments})
+        "body":clip(&quiet_mentions(&escape_markup(&body)), 60_000),"comments":comments})
 }
 
 /// The report for a terminal.
@@ -1283,6 +1387,44 @@ index 9999999..aaaaaaa 100644
         let summary = review["body"].as_str().unwrap();
         assert!(summary.contains("@\u{2060}octocat") && !summary.contains("@octocat"));
         assert!(summary.contains("1 inline comment(s); 1 withheld"));
+    }
+
+    /// The review's body, its comments and so the step summary (the body)
+    /// show the model's markup as text: `&`, `<` and `>` are escaped outside
+    /// code spans, which stay as they are.
+    #[test]
+    fn the_github_review_escapes_markup_outside_code_spans() {
+        let report = json!({"result":"reviewed","merge_base":"0123456789abcdef","head":"fedcba9876543210ffff",
+            "summary":"<img src=x><!--h--> and `a < b && c > d`.",
+            "comments":[{"path":"web/page.html","line":6,"severity":"major",
+                "body":"<img src=x><!--h--> R&D: keep ``Vec<u8> & `x` `` and `if a<b {}`; a lone ` <b>",
+                "evidence":[{"cite":"web/page.html:3","valid":true}]}],
+            "flagged":[],"dropped":[]});
+        let review = github_review(&report, "");
+        assert_eq!(
+            review["comments"][0]["body"],
+            "**major**: &lt;img src=x&gt;&lt;!--h--&gt; R&amp;D: keep ``Vec<u8> & `x` `` and `if a<b {}`; a lone ` &lt;b&gt;\n\nEvidence: `web/page.html:3`"
+        );
+        let summary = review["body"].as_str().unwrap();
+        assert!(
+            summary.contains(".\n\n&lt;img src=x&gt;&lt;!--h--&gt; and `a < b && c > d`."),
+            "{summary}"
+        );
+        assert_eq!(
+            escape_markup("<img src=x><!--h-->"),
+            "&lt;img src=x&gt;&lt;!--h--&gt;"
+        );
+        assert_eq!(escape_markup("`<b>` & ```<i>```"), "`<b>` &amp; ```<i>```");
+        // A code span ends with its paragraph; a fenced block may hold blank lines.
+        assert_eq!(
+            escape_markup("a ` b <i>\n\n`c` <u>"),
+            "a ` b &lt;i&gt;\n\n`c` &lt;u&gt;"
+        );
+        assert_eq!(
+            escape_markup("```suggestion\nif a < b {\n\n    c >> 1;\n}\n```\n<b>"),
+            "```suggestion\nif a < b {\n\n    c >> 1;\n}\n```\n&lt;b&gt;"
+        );
+        assert_eq!(escape_markup("~~~\n<x>\n"), "~~~\n<x>\n");
     }
 
     #[test]

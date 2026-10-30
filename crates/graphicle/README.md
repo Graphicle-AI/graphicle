@@ -55,7 +55,7 @@ operations through the extension registry (`src/extension.rs`).
   provider permission mode ("is not part of Graphicle Core"), while it still enforces
   the provider permissions an existing store holds.
 - `build.info` reports the edition and its capabilities, and
-  `graphicle --version` prints it (`graphicle 0.1.9 (core)`).
+  `graphicle --version` prints it (`graphicle 0.1.10 (core)`).
 - A store keeps every table when either edition opens it, and Core keeps the
   other edition's guarantees on a store it has used (`src/store_compat.rs`).
 
@@ -396,7 +396,8 @@ endpoint and optional API credential; ordinary users do not need environment
 variables. An endpoint uses HTTPS, or HTTP on loopback. A model server on a
 private network that serves no TLS, such as a vLLM host, needs whoever runs the
 service to list its exact host in `GRAPHICLE_PROVIDER_HTTP_HOSTS`, and such a
-profile takes no credential
+profile takes no credential, unless the host is listed in
+`GRAPHICLE_PROVIDER_HTTP_KEY_HOSTS` instead, which sends the key in clear text
 ([LOCAL_INFERENCE.md](LOCAL_INFERENCE.md#local-openai-compatible-servers)).
 Supported protocols are Ollama, OpenAI-compatible Chat Completions and
 Responses, Anthropic, Gemini, Azure Chat and Azure Responses. Azure profiles
