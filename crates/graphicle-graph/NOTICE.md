@@ -196,8 +196,9 @@ adapted files, by upstream file, are listed in `migration/ADAPTED.json`.
 
 Graph adjacency stores single-edge groups inline with `smallvec` (MIT or
 Apache-2.0) and uses randomized `foldhash` (Zlib) for internal lookup tables.
-The standalone executable uses `mimalloc` and `libmimalloc-sys` (MIT) as its
-Rust allocator; library consumers retain their own allocator choice. These
+The standalone executable links `mimalloc` and `libmimalloc-sys` (MIT) and, on
+Linux, uses them as its Rust allocator (macOS and Windows use the system
+allocator); library consumers retain their own allocator choice. These
 dependency notices are retained under `licenses/`, with versions in Cargo.lock.
 
 

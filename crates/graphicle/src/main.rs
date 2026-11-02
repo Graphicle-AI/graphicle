@@ -4,8 +4,10 @@
 
 // Projection creates many short-lived metadata records. Use the same allocator
 // as the standalone graph engine; library callers retain control of their own.
-// Not on macOS: mimalloc 3.3.2 can crash there on Apple silicon (microsoft/mimalloc#1306).
-#[cfg(not(target_os = "macos"))]
+// Not on macOS or Windows: mimalloc 3.3.2 can crash there when memory that
+// worker threads allocated is freed after they exit (microsoft/mimalloc#1306;
+// on Windows, issue #18).
+#[cfg(not(any(target_os = "macos", windows)))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
