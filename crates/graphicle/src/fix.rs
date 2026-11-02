@@ -1208,6 +1208,22 @@ struct Worktree {
     base: String,
 }
 
+/// A folder in `parent` that nothing uses yet: `stem`, else `stem-2`, `stem-3`
+/// and so on, as for the branch. The stem's time stamp is in seconds, and two
+/// runs on one issue can start within the same second.
+fn free_folder(parent: &Path, stem: &str) -> Result<PathBuf> {
+    (1..100)
+        .map(|n| {
+            if n == 1 {
+                parent.join(stem)
+            } else {
+                parent.join(format!("{stem}-{n}"))
+            }
+        })
+        .find(|folder| folder.symlink_metadata().is_err())
+        .ok_or_else(|| Error::bad("No free worktree folder for this issue"))
+}
+
 /// Make the branch and its worktree from HEAD, under the data folder.
 fn new_worktree(
     git: &Git,
@@ -1264,10 +1280,11 @@ fn new_worktree(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "repository".into());
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-    let root = data
-        .join("fix")
-        .join(format!("{}-{}-{stamp}", slug(&name), slug(issue)));
     std::fs::create_dir_all(data.join("fix"))?;
+    let root = free_folder(
+        &data.join("fix"),
+        &format!("{}-{}-{stamp}", slug(&name), slug(issue)),
+    )?;
     let path = root.to_string_lossy().into_owned();
     git.run(
         top,
@@ -2571,6 +2588,18 @@ mod tests {
             Ok(("src/a:b.ts".into(), 1, WHOLE_FILE))
         );
         assert_eq!(focus_json(&[]), Value::Null);
+    }
+
+    #[test]
+    fn a_second_run_in_the_same_second_takes_the_next_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let stem = "project-make-it-42-20261102-063833";
+        let free = || free_folder(dir.path(), stem).unwrap();
+        assert_eq!(free(), dir.path().join(stem));
+        std::fs::create_dir(dir.path().join(stem)).unwrap();
+        assert_eq!(free(), dir.path().join(format!("{stem}-2")));
+        std::fs::write(dir.path().join(format!("{stem}-2")), "").unwrap();
+        assert_eq!(free(), dir.path().join(format!("{stem}-3")));
     }
 
     #[test]
