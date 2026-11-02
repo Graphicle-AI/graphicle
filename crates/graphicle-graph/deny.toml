@@ -62,11 +62,11 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
 # Every vulnerability and unsoundness advisory is fixed (legacy AWS TLS client
-# removed, lru >= 0.18.2), except three in zip 8's extraction to disk, which
+# removed, lru >= 0.18.2), except four in zip 8's extraction to disk, which
 # nothing here calls: the engine, the program and calamine open an archive and
-# read its members in memory. zip 9 fixes them, but calamine 0.36.1, the latest
-# release, requires zip ^8.6 (its main branch already uses zip 9.0, unreleased).
-# Remove these three ignores, and move to zip 9, when calamine releases with it.
+# read its members in memory. zip 9 fixes them; calamine 0.36.1, the version in
+# use, requires zip ^8.6, and calamine 0.37.0 and later use zip 9. Remove these
+# four ignores on the move to calamine 0.37 or later and zip 9.
 # Also ignored: three advisories in zstd 0.13.3 and zstd-safe 7.3.0, which only
 # jieba-rs 0.11.0 (Chinese word splitting) brings in, through include-flate 0.3.4
 # (zstd ^0.13.3). Both are their latest releases; the fixes are in zstd 0.14.3
@@ -79,6 +79,7 @@ ignore = [
     { id = "RUSTSEC-2026-0367", reason = "zip 8.6.0 (engine, program, calamine): SUID/SGID bits kept by ZipArchive::extract; archives are only read in memory, never extracted" },
     { id = "RUSTSEC-2026-0368", reason = "zip 8.6.0 (engine, program, calamine): symbolic links created by ZipArchive::extract; archives are only read in memory, never extracted" },
     { id = "RUSTSEC-2026-0369", reason = "zip 8.6.0 (engine, program, calamine): permissions applied through symbolic links by extract(); archives are only read in memory, never extracted" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 8.6.0 (engine, program, calamine): process abort in ZipArchive::extract on a symbolic link entry with a huge declared size; archives are only read in memory, never extracted" },
     { id = "RUSTSEC-2026-0391", reason = "zstd 0.13.3 via jieba-rs -> include-flate: affects the stream with_context constructors, which include-flate never calls (a new decoder per dictionary)" },
     { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7.3.0 via jieba-rs -> include-flate: affects Seekable::decompress, which needs the seekable feature; it is off" },
     { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7.3.0 via jieba-rs -> include-flate: affects stream::write::Decoder; include-flate reads with stream::read::Decoder, which the advisory lists as not affected" },
