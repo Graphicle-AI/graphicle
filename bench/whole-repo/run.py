@@ -14,6 +14,8 @@ Profiles (--base-url, --model and --api override them):
   meta     https://api.meta.ai/v1, the Responses API, muse-spark-1.3; key from MODEL_API_KEY
   baseten  https://inference.baseten.co/v1, chat completions, meta-models/muse-spark-open (Muse Spark
            Open); key from BASETEN_API_KEY
+  fireworks https://api.fireworks.ai/inference/v1, chat completions, accounts/fireworks/models/muse-spark-open
+           (Muse Spark Open on Fireworks serverless); key from FIREWORKS_API_KEY
   mock     mock_server.py at --base-url, the Responses API, model "mock"; key from MODEL_API_KEY
 
 Arms (one prompt template for all, see PROMPT: the context first, the question last):
@@ -39,7 +41,11 @@ Caching. Every call carries a cache key made of the repository, its snapshot, th
 and the first 12 hex digits of the sha256 of the arm's shared prefix (the pack's prefix_sha256; the
 whole truncation dump; the fixed instructions for noctx and the agent); no question text is in it.
 The meta and mock profiles send it as prompt_cache_key, plus prompt_cache_retention "24h" on the
-Responses API; the baseten and mock profiles send its sha256 as the x-session-affinity header. With
+Responses API; the baseten, fireworks and mock profiles send its sha256 as the x-session-affinity header,
+and the fireworks profile also as the user field (Fireworks caches prompt prefixes per replica and routes
+on either; https://docs.fireworks.ai/guides/prompt-caching, read 2026-10-30). On chat completions the
+cached tokens come from usage.prompt_tokens_details.cached_tokens, or, when a response has no such field,
+from its fireworks-cached-prompt-tokens header (the fireworks-* headers are kept in the raw response). With
 --order grouped (the default, except for the agent) the questions of one repository run back to back
 in the question file's order, the first one alone, so the others can read its prefix from the cache;
 with --order interleaved (the agent's default) the repositories take turns, one question each, so a
@@ -112,6 +118,11 @@ PROFILES = {
              "key_env": "MODEL_API_KEY", "cache_key": True, "affinity": False},
     "baseten": {"base_url": "https://inference.baseten.co/v1", "api": "chat", "model": "meta-models/muse-spark-open",
                 "key_env": "BASETEN_API_KEY", "cache_key": False, "affinity": True},
+    # Fireworks serverless (OpenAI-compatible): the session id goes in the x-session-affinity header and the user
+    # field; prompt_cache_key is not a Fireworks parameter.
+    "fireworks": {"base_url": "https://api.fireworks.ai/inference/v1", "api": "chat",
+                  "model": "accounts/fireworks/models/muse-spark-open", "key_env": "FIREWORKS_API_KEY",
+                  "cache_key": False, "affinity": True, "affinity_user": True},
     "mock": {"base_url": None, "api": "responses", "model": "mock", "key_env": "MODEL_API_KEY",
              "cache_key": True, "affinity": True},
 }
@@ -196,7 +207,12 @@ class Client:
                 "Content-Type": "application/json", "Authorization": "Bearer " + self.key, **(headers or {})})
             try:
                 with urllib.request.urlopen(req, timeout=timeout) as r:
-                    return json.loads(r.read())
+                    out = json.loads(r.read())
+                    # Fireworks also reports prompt and cached prompt tokens as fireworks-* response headers.
+                    fw = {k.lower(): v for k, v in r.headers.items() if k.lower().startswith("fireworks-")}
+                    if fw and isinstance(out, dict):
+                        out["_headers"] = fw
+                    return out
             except urllib.error.HTTPError as e:
                 msg = e.read()[:500].decode("utf-8", "replace")
                 if e.code in (429, 500, 502, 503, 504) and attempt < 5:
@@ -217,7 +233,10 @@ def usage_of(resp, api):
     if api == "responses":
         return (u.get("input_tokens", 0), (u.get("input_tokens_details") or {}).get("cached_tokens", 0) or 0,
                 u.get("output_tokens", 0), (u.get("output_tokens_details") or {}).get("reasoning_tokens", 0) or 0)
-    return (u.get("prompt_tokens", 0), (u.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0,
+    cached = (u.get("prompt_tokens_details") or {}).get("cached_tokens")
+    if cached is None:  # no usage field: Fireworks' fireworks-cached-prompt-tokens header, if the response had one
+        cached = int((resp.get("_headers") or {}).get("fireworks-cached-prompt-tokens") or 0)
+    return (u.get("prompt_tokens", 0), cached or 0,
             u.get("completion_tokens", 0), (u.get("completion_tokens_details") or {}).get("reasoning_tokens", 0) or 0)
 
 
@@ -284,6 +303,8 @@ class Runner:
                 body["prompt_cache_retention"] = CACHE_RETENTION
         if self.prof["affinity"]:
             headers["x-session-affinity"] = hashlib.sha256(key.encode()).hexdigest()[:32]
+            if self.prof.get("affinity_user"):
+                body["user"] = headers["x-session-affinity"]
         return body, headers
 
     def call(self, body, prompt_tokens, headers, info):
@@ -660,6 +681,7 @@ def main():
             "cache_key": "prompt_cache_key" if PROFILES[a.profile]["cache_key"] else None,
             "cache_retention": CACHE_RETENTION if PROFILES[a.profile]["cache_key"] and a.api == "responses" else None,
             "session_affinity": PROFILES[a.profile]["affinity"],
+            "session_affinity_user": bool(PROFILES[a.profile].get("affinity_user")),
             "counter": runner.counter.name, "prompt_version": PROMPT_VERSION, "graphicle": graphicle_version,
             "context_source": ("graphicle context (stand-in, not a result)" if a.pack_standin else
                                "graphicle pack" if a.arm.startswith("pack") else a.arm),

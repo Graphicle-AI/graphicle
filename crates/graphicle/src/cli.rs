@@ -725,7 +725,7 @@ enum Command {
         client: String,
         event: String,
         /// Muse Code's session start: tokens of the repository map it adds
-        /// (0 leaves it out; at most 100,000).
+        /// (0 leaves it out; at most 3,500).
         #[arg(long)]
         pack_tokens: Option<u64>,
         /// The project of an internal step (`hook muse pack`).
@@ -2727,11 +2727,14 @@ fn hook(
                     // Muse Code's session starts with the repository's map
                     // first: the same bytes for every session at a commit,
                     // so the prompt cache serves it across sessions too.
-                    if muse
-                        && let Some(map) =
-                            crate::muse_code::session_pack(&directory, &project, pack_tokens)
-                    {
-                        context = format!("{}\n\n{context}", map.trim_end());
+                    // Muse Code reads none of a hook's output past its
+                    // limit, so the map and the memory are kept within it.
+                    if muse {
+                        let map = crate::muse_code::session_pack(&directory, &project, pack_tokens);
+                        context = crate::muse_code::session_start(map.as_deref(), &context);
+                        if context.is_empty() {
+                            return Ok(None);
+                        }
                     }
                     let credential =
                         crate::metering::principal(&store, &session.workspace, &session.capability)
@@ -2753,7 +2756,7 @@ fn hook(
                 receiver.recv_timeout(std::time::Duration::from_millis(2500))
             {
                 use std::io::Write;
-                let output = json!({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":context}});
+                let output = crate::muse_code::start_output(&context);
                 if writeln!(std::io::stdout(), "{output}").is_ok() && !call.credential.is_empty() {
                     // Served: written when the program ends (`main_with`).
                     crate::metering::record(&store, &call, crate::metering::tokens(&context));

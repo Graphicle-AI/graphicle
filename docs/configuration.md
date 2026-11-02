@@ -67,7 +67,8 @@ You can add a model in any of three ways:
   one of these keys or a local Ollama.
 - **In the app:** open **Connections → Answering models → Configure model**.
   The app saves the profile in the workspace, and it saves the API key in the
-  encrypted vault.
+  encrypted vault. `ask`, `ask --pack`, `plan`, `fix` and `review` read the
+  key from the vault.
 - **In a file:** write `models.json` in the data folder, which Graphicle reads
   automatically, or pass `--config PATH`. `graphicle config example` prints a
   starting point:
@@ -306,6 +307,14 @@ excerpts and answers with exact quotes (the default `basic` workflow). To let
 the model search and read further before it answers, and check its answer, run
 `graphicle ask "question" --workflow reflect`. With `--retain`, that answer is
 saved as a memory draft for review.
+
+An answer keeps at most 12 citations and 20 unanswered parts. When the
+model's reply has more, its first ones are kept, and the job's result gives
+under `trimmed_to_cap` how many the model returned and how many were kept.
+With `--workflow reflect`, a source the model asks to read that the answer
+does not have (a path it guessed, or a file that `sync` leaves out) is
+skipped: the job's trace records the read with `"unavailable": true`, and
+the next step is told.
 
 ## Retrieval
 

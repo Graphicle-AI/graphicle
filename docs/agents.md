@@ -228,7 +228,11 @@ the folder they start in. Agents with one settings file for your user account
   requires `"schema_version": 1` in the file, and Graphicle adds it when the
   file has none.
 - Graphicle's plugin is a preview, tested against a stand-in `muse` program
-  and not yet with Meta's live API, so setup does not install it.
+  and in one live Muse Code session, so setup does not install it. In that
+  session Muse Code ran four of its six hooks and called its `pack` tool,
+  but stopped the session-start hook, whose output passed the 16,384 bytes
+  Muse Code takes from a hook; 0.1.11 keeps that output under 14,000 bytes,
+  tested against the stand-in program only.
   `graphicle connect muse --hooks --allow-learning` installs it; approve it
   once with `muse plugins approve graphicle`. Its server replaces the
   project's settings entry. Its hooks are built to add the project's map and

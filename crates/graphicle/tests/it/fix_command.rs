@@ -5,7 +5,8 @@
 //! even ones the model edited; git ignores variables that point it
 //! elsewhere; the test command gets no model key; nothing is made before
 //! the plan; each round fits the window; a provider's error is reported as
-//! one. The person's working tree and branch never change.
+//! one; the files a failed round's output and explanation name come into
+//! the next round. The person's working tree and branch never change.
 use axum::{
     Json, Router,
     extract::State,
@@ -613,6 +614,376 @@ async fn focus_puts_the_located_passages_in_the_pack() {
     server.abort();
 }
 
+/// A failed round's test output and explanation name files the pack left
+/// out: one by its path in the output, one by a symbol that the code graph
+/// says it defines. The next round's request holds both, with the pack's
+/// line numbers, and the round's JSON says which and why; the first round's
+/// request holds neither. A credentials file the output names is never
+/// read: the sync leaves it out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_next_round_reads_the_files_the_failure_and_the_model_name() {
+    let mock = Mock::default();
+    mock.script.lock().unwrap().extend([
+        json!({"explanation":"The answer is read through `ZebraStripes`; returning 40 first.",
+            "edits":[{"path":"src/answer.go","search":"\treturn 41\n","replace":"\treturn 40\n"}],
+            "new_files":[],"tests":[]}),
+        edit("src/answer.go", "\treturn 40\n", "\treturn 42\n"),
+    ]);
+    let (base, server) = serve(mock.clone()).await;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    models(root, &base);
+    let project = repository(root);
+    std::fs::write(
+        project.join("src/zebra.go"),
+        "package answer\n\n// ZebraStripes paints the stripes.\nfunc ZebraStripes() string {\n\treturn \"stripes\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("src/yak.go"),
+        "package answer\n\n// Yak shaves the yak.\nfunc Yak() string {\n\treturn \"shaved\"\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.join("credentials.json"),
+        "{\"token\":\"hunter2-fixture\"}\n",
+    )
+    .unwrap();
+    git(&project, &["add", "-A"]);
+    git(
+        &project,
+        &["commit", "-q", "-m", "Stripes, a yak and a key"],
+    );
+    assert!(
+        run(root, &["sync", project.to_str().unwrap()])
+            .await
+            .status
+            .success()
+    );
+    let fixed = run(
+        root,
+        &[
+            "fix",
+            "Make it 42",
+            "--budget",
+            "600",
+            "--layout",
+            "standard",
+            "--test",
+            "sh check.sh || { echo 'FAIL src/yak.go:4: the yak disagrees (see credentials.json)'; exit 1; }",
+            "--rounds",
+            "2",
+            "--json",
+        ],
+    )
+    .await;
+    let report = printed(&fixed);
+    assert!(fixed.status.success(), "{report}");
+    assert_eq!(report["result"], "passed");
+    let rounds = report["rounds"].as_array().unwrap();
+    assert_eq!(rounds.len(), 2, "{report}");
+    assert!(rounds[0].get("context").is_none(), "{report}");
+    let context = &rounds[1]["context"];
+    let added = context["files"].as_array().unwrap();
+    let file = |path: &str| {
+        added
+            .iter()
+            .find(|f| f["path"] == path)
+            .unwrap_or_else(|| panic!("{path} is not added: {context}"))
+    };
+    let yak = file("src/yak.go");
+    assert!(
+        yak["why"]
+            .as_str()
+            .unwrap()
+            .contains("the test output names it"),
+        "{yak}"
+    );
+    assert_eq!(
+        (&yak["start_line"], &yak["end_line"], &yak["whole"]),
+        (&json!(1), &json!(6), &json!(true))
+    );
+    let zebra = file("src/zebra.go");
+    assert!(
+        zebra["why"]
+            .as_str()
+            .unwrap()
+            .contains("it defines `ZebraStripes`, which round 1's explanation names"),
+        "{zebra}"
+    );
+    assert!(context["tokens"].as_u64().unwrap() > 0, "{context}");
+    assert!(added.iter().all(|f| f["path"] != "credentials.json"));
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3, "a plan and two rounds");
+    let (one, two) = (
+        requests[1]["input"].as_str().unwrap(),
+        requests[2]["input"].as_str().unwrap(),
+    );
+    for text in ["ZebraStripes paints the stripes", "Yak shaves the yak"] {
+        assert!(!one.contains(text), "round 1 holds {text}");
+    }
+    assert!(
+        two.contains(
+            "### src/zebra.go lines 1-6 (whole file)\nwhy: it defines `ZebraStripes`, which round 1's explanation names\n"
+        ),
+        "{two}"
+    );
+    assert!(
+        two.contains("3\t// ZebraStripes paints the stripes.\n"),
+        "{two}"
+    );
+    assert!(
+        two.contains("### src/yak.go lines 1-6 (whole file)\n"),
+        "{two}"
+    );
+    assert!(two.contains("3\t// Yak shaves the yak.\n"), "{two}");
+    assert!(!two.contains("hunter2-fixture"));
+    drop(requests);
+    server.abort();
+}
+
+/// Added files that would take a round's request over the model's input
+/// limit, even with a smaller pack, are dropped: the round goes without
+/// them, and its JSON says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_round_goes_without_added_files_that_do_not_fit() {
+    let mock = Mock::default();
+    mock.script.lock().unwrap().extend([
+        edit("src/answer.go", "\treturn 41\n", "\treturn 40\n"),
+        edit("src/answer.go", "\treturn 40\n", "\treturn 42\n"),
+    ]);
+    let (base, server) = serve(mock.clone()).await;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    models_with(root, &base, json!({"input_limit":6_000}));
+    let project = repository(root);
+    std::fs::write(
+        project.join("src/big.go"),
+        format!(
+            "package answer\n\n// Big is long.\nfunc Big() {{\n{}}}\n",
+            "\tvalue := compute(\"a word of the file\")\n".repeat(600)
+        ),
+    )
+    .unwrap();
+    git(&project, &["add", "-A"]);
+    git(&project, &["commit", "-q", "-m", "Big"]);
+    assert!(
+        run(root, &["sync", project.to_str().unwrap()])
+            .await
+            .status
+            .success()
+    );
+    let fixed = run(
+        root,
+        &[
+            "fix",
+            "Make it 42",
+            "--budget",
+            "600",
+            "--layout",
+            "standard",
+            "--test",
+            "sh check.sh || { echo 'FAIL src/big.go:3: too big'; exit 1; }",
+            "--rounds",
+            "2",
+            "--json",
+        ],
+    )
+    .await;
+    let report = printed(&fixed);
+    assert!(fixed.status.success(), "{report}");
+    assert_eq!(report["result"], "passed");
+    let context = &report["rounds"][1]["context"];
+    assert_eq!(context["files"][0]["path"], "src/big.go", "{context}");
+    assert!(
+        context["dropped"]
+            .as_str()
+            .unwrap_or("")
+            .contains("does not fit"),
+        "{context}"
+    );
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3, "a plan and two rounds");
+    let two = requests[2]["input"].as_str().unwrap();
+    assert!(!two.contains("### src/big.go"), "{two}");
+    assert!(two.contains("FAIL src/big.go:3: too big"), "{two}");
+    drop(requests);
+    server.abort();
+}
+
+/// A round that went without its added files does not hand them on as
+/// files it had added: the next round adds such a file only because its own
+/// failure names it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_round_that_went_without_its_files_does_not_hand_them_on() {
+    let mock = Mock::default();
+    mock.script.lock().unwrap().extend([
+        edit("src/answer.go", "\treturn 41\n", "\treturn 40\n"),
+        edit("src/answer.go", "\treturn 40\n", "\treturn 39\n"),
+        edit("src/answer.go", "\treturn 39\n", "\treturn 42\n"),
+    ]);
+    let (base, server) = serve(mock.clone()).await;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    models_with(root, &base, json!({"input_limit":6_000}));
+    let project = repository(root);
+    std::fs::write(
+        project.join("src/big.go"),
+        format!(
+            "package answer\n\n// Big is long.\nfunc Big() {{\n{}}}\n",
+            "\tvalue := compute(\"a word of the file\")\n".repeat(600)
+        ),
+    )
+    .unwrap();
+    git(&project, &["add", "-A"]);
+    git(&project, &["commit", "-q", "-m", "Big"]);
+    assert!(
+        run(root, &["sync", project.to_str().unwrap()])
+            .await
+            .status
+            .success()
+    );
+    let fixed = run(
+        root,
+        &[
+            "fix",
+            "Make it 42",
+            "--budget",
+            "600",
+            "--layout",
+            "standard",
+            "--test",
+            "sh check.sh || { echo 'FAIL src/big.go:3: too big'; exit 1; }",
+            "--rounds",
+            "3",
+            "--json",
+        ],
+    )
+    .await;
+    let report = printed(&fixed);
+    assert!(fixed.status.success(), "{report}");
+    assert_eq!(report["result"], "passed");
+    let rounds = report["rounds"].as_array().unwrap();
+    assert_eq!(rounds.len(), 3, "{report}");
+    for round in &rounds[1..] {
+        let context = &round["context"];
+        assert_eq!(context["files"][0]["path"], "src/big.go", "{context}");
+        assert!(context["dropped"].is_string(), "{context}");
+    }
+    // Round 3 has the file because round 2's output names it, not because
+    // round 2, which went without it, had added it.
+    assert_eq!(
+        rounds[2]["context"]["files"][0]["why"], "the test output names it",
+        "{report}"
+    );
+    server.abort();
+}
+
+/// Without `--budget`, the files a failed round adds take only the room the
+/// next round's request has left after the pack: that round is sent with
+/// the same pack, so its start can still be in the provider's prompt cache.
+/// Before, files that did not fit (here about 20,000 tokens of them) had the
+/// round sent with a smaller pack.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn added_files_take_only_the_room_the_request_has_left() {
+    let mock = Mock::default();
+    mock.script.lock().unwrap().extend([
+        edit("src/answer.go", "\treturn 41\n", "\treturn 40\n"),
+        edit("src/answer.go", "\treturn 40\n", "\treturn 42\n"),
+    ]);
+    let (base, server) = serve(mock.clone()).await;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    models_with(root, &base, json!({"input_limit":44_000}));
+    let project = repository(root);
+    // More code than a pack of this model holds, and, apart from it, two
+    // files of about 10,000 tokens each that the failure names.
+    for i in 0..120 {
+        std::fs::write(
+            project.join(format!("src/more{i}.go")),
+            format!(
+                "package answer\n\n// More{i} adds to the answer.\nfunc More{i}() int {{\n{}\treturn {i}\n}}\n",
+                "\t_ = Answer()\n".repeat(90)
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::create_dir_all(project.join("other")).unwrap();
+    for name in ["First", "Second"] {
+        let body: String = (0..200)
+            .map(|n| {
+                format!(
+                    "\t// {name} line {n:03} of a long file that the failure names{}\n",
+                    ".".repeat(120)
+                )
+            })
+            .collect();
+        std::fs::write(
+            project.join(format!("other/{}.go", name.to_lowercase())),
+            format!("package other\n\n// {name} is long.\nfunc {name}() {{\n{body}}}\n"),
+        )
+        .unwrap();
+    }
+    git(&project, &["add", "-A"]);
+    git(
+        &project,
+        &["commit", "-q", "-m", "More, and two long files"],
+    );
+    assert!(
+        run(root, &["sync", project.to_str().unwrap()])
+            .await
+            .status
+            .success()
+    );
+    let fixed = run(
+        root,
+        &[
+            "fix",
+            "Make it 42",
+            "--layout",
+            "standard",
+            "--test",
+            "sh check.sh || { echo 'FAIL other/first.go:3: no'; echo 'FAIL other/second.go:3: no'; exit 1; }",
+            "--rounds",
+            "2",
+            "--json",
+        ],
+    )
+    .await;
+    let report = printed(&fixed);
+    assert!(fixed.status.success(), "{report}");
+    assert_eq!(report["result"], "passed");
+    let context = &report["rounds"][1]["context"];
+    let files = context["files"].as_array().unwrap();
+    assert_eq!(files[0]["path"], "other/first.go", "{context}");
+    assert_eq!(files[0]["whole"], true, "{context}");
+    // The second file goes in as the lines around the line named, or is
+    // left out, as the room left allows.
+    let second_added = files
+        .iter()
+        .any(|file| file["path"] == "other/second.go" && file["whole"] == false);
+    let second_left = context["left_out"].as_array().unwrap().contains(
+        &json!({"path":"other/second.go","why":"over the room the round's request has left"}),
+    );
+    assert!(second_added != second_left, "{context}");
+    assert!(context.get("dropped").is_none(), "{context}");
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3, "a plan and two rounds");
+    let pack = |request: &Value| {
+        let input = request["input"].as_str().unwrap();
+        input[..input.find("\nIssue: ").unwrap()].to_string()
+    };
+    let (one, two) = (pack(&requests[1]), pack(&requests[2]));
+    assert!(
+        one == two,
+        "the second round's pack was made again: {} bytes, then {}",
+        one.len(),
+        two.len()
+    );
+    drop(requests);
+    server.abort();
+}
+
 /// `--commit` runs no hook: not the person's own (post-checkout, as the
 /// worktree is made), and not the ones the model edited in the round.
 #[cfg(unix)]
@@ -879,6 +1250,81 @@ async fn the_key_of_a_profile_stored_in_the_workspace_is_removed_too() {
     assert!(tail.contains("stored=[]"), "{tail}");
     assert!(!String::from_utf8_lossy(&fixed.stdout).contains(secret));
     let requests = mock.requests.lock().unwrap();
+    assert!(requests.iter().all(|r| !r.to_string().contains(secret)));
+    drop(requests);
+    server.abort();
+}
+
+/// A profile whose key is saved in the app (in the workspace's vault, with
+/// `key_env` `secret:ID`) plans and runs its rounds, as it answers `ask`;
+/// a test that prints that key has it hidden in the output, as a key in a
+/// variable is. Before, `fix` read keys only from variables (GitHub issue
+/// #17).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_saved_in_the_app_is_used_and_hidden_from_the_test_output() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let secret = "sk-saved-in-the-app-fedcba987654";
+    let mock = Mock::default();
+    mock.script
+        .lock()
+        .unwrap()
+        .push(edit("src/answer.go", "\treturn 41\n", "\treturn 40\n"));
+    let (base, server) = serve(mock.clone()).await;
+    models(root, &base);
+    let project = repository(root);
+    assert!(
+        run(root, &["sync", project.to_str().unwrap()])
+            .await
+            .status
+            .success()
+    );
+    {
+        let store = graphicle_runtime::store::Store::open(root.join("data")).unwrap();
+        let session = graphicle_runtime::local::session(&store, false).unwrap();
+        let id = store
+            .save_secret(&session.workspace, "Answering model", secret)
+            .unwrap();
+        let profile = json!({"protocol":"responses","base_url":base,"model":"muse-wonder-1.0",
+            "key_env":format!("secret:{id}"),"input_limit":60_000,"output_limit":4_000});
+        store
+            .connect()
+            .unwrap()
+            .execute(
+                "INSERT INTO am_model_profiles VALUES(?,?,?,0,0)",
+                rusqlite::params![session.workspace, "saved", profile.to_string()],
+            )
+            .unwrap();
+    }
+    // A test that reads the key from a file outside the repository.
+    let stash = root.join("stash.txt");
+    std::fs::write(&stash, secret).unwrap();
+    let test = format!("echo leaked $(cat '{}'); exit 1", stash.display());
+    let fixed = run(
+        root,
+        &[
+            "fix",
+            "Make it 42",
+            "--model",
+            "saved",
+            "--test",
+            &test,
+            "--rounds",
+            "1",
+            "--json",
+        ],
+    )
+    .await;
+    let report = printed(&fixed);
+    assert_eq!(report["result"], "failed", "{report}");
+    let tail = report["rounds"][0]["test"]["output_tail"].as_str().unwrap();
+    assert!(tail.contains("leaked [redacted]"), "{tail}");
+    assert!(!String::from_utf8_lossy(&fixed.stdout).contains(secret));
+    assert!(!String::from_utf8_lossy(&fixed.stderr).contains(secret));
+    // The plan and the round's edits were sent: a profile with a key sends
+    // nothing without it.
+    let requests = mock.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
     assert!(requests.iter().all(|r| !r.to_string().contains(secret)));
     drop(requests);
     server.abort();

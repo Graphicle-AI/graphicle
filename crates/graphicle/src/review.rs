@@ -1132,8 +1132,10 @@ pub async fn review(run: Run<'_>, args: Args) -> Result<()> {
             .project_pack(&run.session.workspace, &run.session.capability, &args)
     };
     let pack = repack(budget)?;
-    let (pack, _, counted) =
-        long_context::fit_with(&profile, &request, pack, budget, ratio, human, &repack).await?;
+    let (pack, _, counted) = long_context::fit_with(
+        &run, &profile, &request, pack, budget, ratio, human, &repack,
+    )
+    .await?;
     if human {
         long_context::tell_packed(&pack, &name, &profile);
     }

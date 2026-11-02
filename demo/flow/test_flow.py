@@ -163,6 +163,24 @@ class RunProfiles(unittest.TestCase):
         self.assertLessEqual(sum(caps.values()), 3.0 + 1e-9)
         self.assertAlmostEqual(caps[run.profiles["fix"]], 2.7 * (1 - flow.SEE_SHARE), places=3)
 
+    def test_fix_on_its_own_profile_leaves_the_check_its_budget(self):
+        price = {"input": 4.0, "cached_input": 0.2, "output": 20.0}
+        models = {name: {"protocol": "responses", "base_url": "https://api.meta.ai/v1", "model": model,
+                         "price": price}
+                  for name, model in (("wonder", "muse-wonder-1.0"), ("spark", "muse-spark-1.3"),
+                                      ("sam", "sam-3.1"))}
+        with tempfile.TemporaryDirectory() as folder:
+            run = self.flow_for(folder, models)
+            run.args.see_model = "spark"
+            run.prepare_models()
+            see, fix = run.profiles["see"], run.profiles["fix"]
+            run.data.mkdir(parents=True, exist_ok=True)
+            rows = [{"profile": see, "cost_usd": 0.1}, {"profile": fix, "cost_usd": 1.6}]
+            (run.data / "usage.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+            # The run has spent more than see's cap, but fix spent it from its own.
+            self.assertGreater(run.run_cost(), run.caps[see])
+            self.assertAlmostEqual(run.see_budget(), run.caps[see] - 0.1, places=6)
+
     def test_an_unpriced_profile_is_refused(self):
         models = {name: {"protocol": "responses", "base_url": "https://api.meta.ai/v1", "model": name}
                   for name in ("wonder", "spark", "sam")}

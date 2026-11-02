@@ -107,8 +107,8 @@ def session(a, env, name, prompt, price):
         "model": a.model, "arm": f"memory-demo-{name}", "run": os.path.abspath(a.out),
         "status": "ok" if code == 0 and not reason else "stopped" if reason else "error",
         "input_tokens": tin, "cached_tokens": cached, "output_tokens": tout, "reasoning_tokens": treason,
-        "model_calls": len(meter.calls), "seconds": round(time.time() - t0, 3), "cost_usd": round(cost, 6)})
-    return {"answer": "\n".join(meter.texts), "exit_code": code, "stopped": reason, "model_calls": len(meter.calls),
+        "model_calls": meter.call_count(), "seconds": round(time.time() - t0, 3), "cost_usd": round(cost, 6)})
+    return {"answer": "\n".join(meter.texts), "exit_code": code, "stopped": reason, "model_calls": meter.call_count(),
             "tokens_in": tin, "tokens_cached": cached, "tokens_out": tout, "cost_usd": round(cost, 6)}
 
 

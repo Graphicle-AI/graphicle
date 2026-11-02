@@ -1295,6 +1295,119 @@ fn expired_connector_snapshot_is_withheld_and_only_one_scan_can_own_a_cursor() {
     assert_eq!(second["replayed"], true);
 }
 
+/// Fourteen lines a broad question's answer can cite, and the citations of
+/// all of them.
+fn many_rules() -> (String, Vec<Value>) {
+    let lines: Vec<String> = (1..=14)
+        .map(|n| format!("Sign-in rule {n} checks the session token."))
+        .collect();
+    let cited = lines
+        .iter()
+        .map(|line| json!({"id":"file:auth.txt","quote":line}))
+        .collect();
+    (lines.join("\n"), cited)
+}
+
+/// A reply that cites more passages than an answer keeps (12) and lists more
+/// unanswered parts than it keeps (20) is cut to its first items, and the
+/// record says so; the job no longer fails on the contract (GitHub issue
+/// #17). The answer's text names no citation by number, so none is left
+/// pointing at a citation that was cut.
+#[tokio::test]
+async fn a_basic_answer_keeps_the_first_citations_up_to_the_cap() {
+    let f = Fixture::new();
+    let (text, cited) = many_rules();
+    f.sync(&[("auth.txt", text.as_str())]);
+    let unresolved: Vec<String> = (1..=21).map(|n| format!("Part {n}")).collect();
+    let reply = json!({"answer":"Every sign-in rule checks the session token.","abstain":false,
+        "evidence":cited,"unresolved":unresolved});
+    let remote = mock(vec![reply], None).await;
+    let job = run(
+        &f,
+        &remote,
+        json!({"kind":"basic","question":"How does each sign-in rule check the session token?","max_calls":1}),
+    )
+    .await;
+    assert_eq!(job["state"], "complete", "{job}");
+    let result = &job["result"];
+    assert_eq!(result["evidence"], json!(cited[..12]));
+    assert_eq!(result["unresolved"], json!(unresolved[..20]));
+    assert_eq!(
+        result["trimmed_to_cap"],
+        json!({"evidence":{"returned":14,"kept":12},"unresolved":{"returned":21,"kept":20}})
+    );
+    assert_eq!(remote.state.count.load(Ordering::SeqCst), 1);
+}
+
+/// A reflection's final reply is cut the same way.
+#[tokio::test]
+async fn a_reflection_keeps_the_first_citations_up_to_the_cap() {
+    let f = Fixture::new();
+    let (text, cited) = many_rules();
+    f.sync(&[("auth.txt", text.as_str())]);
+    let reply = json!({"action":"answer","queries":[],"reads":[],"query":null,"source_id":null,"start_byte":null,
+        "answer":"Every sign-in rule checks the session token.","evidence":cited,"unresolved":[]});
+    let remote = mock(vec![reply], None).await;
+    let job = run(
+        &f,
+        &remote,
+        json!({"kind":"reflect","question":"How does each sign-in rule check the session token?","max_calls":1,"verify_answer":false}),
+    )
+    .await;
+    assert_eq!(job["state"], "complete", "{job}");
+    assert_eq!(job["result"]["evidence"], json!(cited[..12]));
+    assert_eq!(
+        job["result"]["trimmed_to_cap"],
+        json!({"evidence":{"returned":14,"kept":12}})
+    );
+}
+
+/// A read of a source the reflection cannot have (a path it guessed, which
+/// this project does not hold) is skipped: the trace says so, the next step
+/// reads it in `prior_actions`, and the job answers from what it could read
+/// (GitHub issue #17).
+#[tokio::test]
+async fn a_reflection_skips_a_read_of_a_source_it_cannot_have() {
+    let f = Fixture::new();
+    f.sync(&[
+        ("notes.txt", "Mira prefers quiet rooms."),
+        ("decision.txt", "The event has moved to Friday."),
+    ]);
+    let guessed = "file:config/initializers/devise.rb";
+    let gather = json!({"action":"gather","queries":[],"reads":[{"source_id":guessed,"start_byte":0},{"source_id":"file:decision.txt","start_byte":0}],
+        "query":null,"source_id":null,"start_byte":null,"answer":"","evidence":[],"unresolved":[]});
+    let answer = json!({"action":"answer","queries":[],"reads":[],"query":null,"source_id":null,"start_byte":null,"answer":"The event is on Friday.",
+        "evidence":[{"id":"file:decision.txt","quote":"The event has moved to Friday."}],"unresolved":[]});
+    let remote = mock(vec![gather, answer], None).await;
+    let job = run(
+        &f,
+        &remote,
+        json!({"kind":"reflect","question":"When is the event?","max_calls":2,"verify_answer":false}),
+    )
+    .await;
+    assert_eq!(job["state"], "complete", "{job}");
+    let trace = job["result"]["trace"].as_array().unwrap();
+    let skipped: Vec<&Value> = trace.iter().filter(|t| t["unavailable"] == true).collect();
+    assert_eq!(skipped.len(), 1, "{trace:?}");
+    assert_eq!(skipped[0]["action"], "read");
+    assert_eq!(skipped[0]["source_id"], guessed);
+    assert!(
+        trace
+            .iter()
+            .any(|t| t["action"] == "read" && t["source_id"] == "file:decision.txt"),
+        "{trace:?}"
+    );
+    let requests = remote.state.requests.lock().unwrap();
+    let input: Value = serde_json::from_str(s(&requests[1], "input")).unwrap();
+    assert!(
+        input["prior_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t["source_id"] == guessed && t["unavailable"] == true)
+    );
+}
+
 #[tokio::test]
 async fn empty_abstention_is_usable_without_inventing_an_answer() {
     let f = Fixture::new();

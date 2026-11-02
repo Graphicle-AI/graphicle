@@ -119,6 +119,29 @@ pub(crate) fn profile(run: &Run<'_>) -> Result<(String, model::Profile)> {
     Ok((name.to_string(), profile.clone()))
 }
 
+/// Whether the key of `profile` is saved in the app: in the workspace's
+/// vault, with `key_env` `secret:ID` (or `oauth:ID` for a connected
+/// account), rather than in the environment variable `key_env` names.
+pub(crate) fn saved_in_app(profile: &model::Profile) -> bool {
+    profile.key_env.as_deref().is_some_and(|reference| {
+        reference.starts_with("secret:") || reference.starts_with("oauth:")
+    })
+}
+
+/// The key of `profile`, found where `ask` and `doctor` find it: a key saved
+/// in the app ([`saved_in_app`]) from the workspace's vault, any other from
+/// the environment variable `key_env` names. `None` for a profile without a
+/// key. The key is only sent to the provider, never printed or written.
+pub(crate) fn credential(run: &Run<'_>, profile: &model::Profile) -> Result<Option<String>> {
+    match profile.key_env.as_deref() {
+        Some(reference) if saved_in_app(profile) => run
+            .store
+            .resolve_credential(&run.session.workspace, reference)
+            .map(Some),
+        _ => model::environment_credential(profile),
+    }
+}
+
 /// The pack's budget: `asked`, else the profile's input limit less
 /// [`RESERVE`]; never more than the profile takes.
 pub fn budget_for(profile: &model::Profile, asked: Option<usize>) -> Result<usize> {
@@ -366,8 +389,9 @@ pub(crate) struct Request<'a> {
 /// ([`crate::spend::reserve`]: the provider's count, else the estimate
 /// with the calibration `ratio` and a margin), the spend log records it, and
 /// the profile's calibration takes the provider's count of an estimated
-/// pack. The call's result, and its log entry; an error only when a cap
-/// refuses the call.
+/// pack. The call goes with the profile's key from [`credential`]. The
+/// call's result, and its log entry; an error only when a cap refuses the
+/// call.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn send(
     run: &Run<'_>,
@@ -390,16 +414,22 @@ pub(crate) async fn send(
         chrono::Utc::now(),
     )?;
     let user = (request.user_of)(pack);
-    let result = model::complete(
-        profile,
-        request.instructions,
-        &user,
-        request.schema,
-        profile.output_limit,
-        Some(&key),
-        on_text,
-    )
-    .await;
+    let result = match credential(run, profile) {
+        Ok(secret) => {
+            model::complete(
+                profile,
+                secret.as_deref(),
+                request.instructions,
+                &user,
+                request.schema,
+                profile.output_limit,
+                Some(&key),
+                on_text,
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
     let entry = log_call(run, command, name, profile, pack, &key, &result, &held);
     if let Ok(done) = &result
         && let Some(prompt) = done.input_tokens
@@ -493,11 +523,14 @@ pub(crate) async fn fit(
     human: bool,
 ) -> Result<(Value, usize, Option<u64>)> {
     let repack = |budget: usize| pack_for(run, profile, request.question, budget, nominal);
-    fit_with(profile, request, pack, budget, ratio, human, &repack).await
+    fit_with(run, profile, request, pack, budget, ratio, human, &repack).await
 }
 
 /// [`fit`], packing again with `repack` (a pack at the budget it is given).
+/// A count goes with the profile's key from [`credential`], as the call does.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn fit_with(
+    run: &Run<'_>,
     profile: &model::Profile,
     request: &Request<'_>,
     mut pack: Value,
@@ -513,14 +546,20 @@ pub(crate) async fn fit_with(
         let estimate = request_estimate(&pack, request.instructions, request.rest) as f64;
         let predicted = (estimate * ratio).ceil() as usize;
         let (over, by) = if counts && (refit > 0 || predicted as f64 >= COUNT_FROM * limit as f64) {
-            match model::count_input_tokens(
-                profile,
-                request.instructions,
-                &(request.user_of)(&pack),
-                request.schema,
-            )
-            .await
-            {
+            let counted = match credential(run, profile) {
+                Ok(secret) => {
+                    model::count_input_tokens(
+                        profile,
+                        secret.as_deref(),
+                        request.instructions,
+                        &(request.user_of)(&pack),
+                        request.schema,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            match counted {
                 Ok(counted) if counted as usize <= limit => {
                     return Ok((pack, budget, Some(counted)));
                 }

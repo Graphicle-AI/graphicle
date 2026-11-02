@@ -54,11 +54,11 @@ no model): ask, pixel, the rate limit, the cap with a stored answer, and a reque
 ## The flow: see it, find it, fix it, check it
 
 `flow/flow.py` runs one bug from the screen to a tested fix, with a receipt
-([docs/flow.md](../docs/flow.md)): `graphicle see` is built for Muse Wonder's computer use to reproduce the bug in
-a browser we run (`browser_driver.py`, headless Chromium locked to the app's origin), `graphicle pixel` finds the
+([docs/flow.md](../docs/flow.md)): `graphicle see` uses computer use on the Meta Model API (Muse Spark by default) to
+reproduce the bug in a browser we run (`browser_driver.py`, headless Chromium locked to the app's origin), `graphicle pixel` finds the
 code that draws what it points at, `graphicle fix` patches it on a new branch and runs the app's tests, and
-`graphicle see --look-for expected` checks the patched app. So far the flow is built and tested against
-`mock_meta.py` only; it has not yet run against Meta's live API. `flow/targets/` holds the apps: `fixture.json` (a small app of our own
+`graphicle see --look-for expected` checks the patched app. It is tested against `mock_meta.py`, and it ran
+live on Meta's Model API on 30 October 2026, on excalidraw #12053 ([docs/flow.md](../docs/flow.md)). `flow/targets/` holds the apps: `fixture.json` (a small app of our own
 with a planted bug, for runs against `mock_meta.py`) and `excalidraw-12053.json`.
 
 `mock_meta.py` also stands in for computer use (scripted actions, refusing requests that break the replay Meta's

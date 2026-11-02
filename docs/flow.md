@@ -1,8 +1,10 @@
 # See it, find it, fix it, check it
 
-**Status:** built and tested against `demo/mock_meta.py`, a stand-in for the Meta Model API, on our own fixture app
-and on excalidraw (#12053). It has not yet run against Meta's live API: the model calls below are what the commands
-send, and no live model has answered them yet.
+**Status:** run live on Meta's Model API on 30 October 2026, on excalidraw (#12053), with computer use on Muse Spark
+1.3, the reading on SAM 3.1 and Muse Spark, and `fix` on Muse Wonder 1.0. In three runs with this release's `fix`, the
+patch passed the regression test from the project's own fix for that issue; in the last two the check then saw the
+menu close, and in the first the check was refused by a budget split that this release fixes. The flow is also tested against
+`demo/mock_meta.py`, a stand-in for the Meta Model API, on our own fixture app and on excalidraw.
 
 From a bug on the screen to a tested fix, with a receipt:
 
@@ -29,8 +31,8 @@ From a bug on the screen to a tested fix, with a receipt:
 ```sh
 graphicle see --task-file issue.md \
   --driver "python3 demo/browser_driver.py --url http://10.0.0.5:3101/" \
-  --model wonder --out runs/see --acknowledge-safety-checks
-graphicle see --task-file issue.md --look-for expected --driver "..." --model wonder --out runs/check
+  --model spark --out runs/see --acknowledge-safety-checks
+graphicle see --task-file issue.md --look-for expected --driver "..." --model spark --out runs/check
 ```
 
 The model sees a screenshot, answers with a batch of actions (click, double click, drag, keys, move, scroll,
@@ -40,8 +42,10 @@ element that shows it, and a sentence on what it did. `--look-for bug` (the defa
 `--look-for expected` when the expected behaviour shows; the exit status says which. The point feeds
 `graphicle pixel SCREENSHOT --at X,Y`.
 
-**Models.** Computer use is a tool of the Responses API: Muse Wonder (`muse-wonder-1.0`, recommended) or Muse
-Spark 1.3, on a profile with a price (see Money).
+**Models.** Computer use is a tool of the Responses API. Muse Spark 1.3 (`muse-spark-1.3`) ran it live on 30 October
+2026; Muse Wonder (`muse-wonder-1.0`) answered the same requests with HTTP 400 "Unsupported tool type" on the key we
+tested, so use Spark unless your account has computer use on Wonder. Either goes on a profile with a price (see
+Money).
 
 **State.** Each request replays the whole run so far with `store: false`: every `computer_call` exactly as the
 model returned it (so its `meta_safety_replay_receipt` goes back unchanged), after the reasoning items that came
@@ -122,8 +126,9 @@ answer its call with a screenshot, or a pending safety check not acknowledged. A
 its token counts are made up and its costs are those counts at Meta's prices. The scripted screen checks show
 what the screen really did.
 
-**Live.** `--models FILE` names profiles for Muse Wonder (`--see-model`, `--fix-model`), Muse Spark
-(`--read-model`) and SAM 3.1 (`--sam-model`), each with its price. The key file must be readable by its owner
+**Live.** `--models FILE` names the profiles for computer use (`--see-model`, `spark` by default), the fix
+(`--fix-model`, `wonder` by default), the reading (`--read-model`, `spark`) and SAM 3.1 (`--sam-model`), each with
+its price. The key file must be readable by its owner
 only; its key goes to Graphicle's processes alone. The script copies the profiles under names of their own for the
 run, with caps that hold the run to `--max-run-cost` (3 US dollars by default; the binary checks them before each
 call) and output limits of `--max-output` tokens (16,384 by default, since a call's worst case counts all of it),

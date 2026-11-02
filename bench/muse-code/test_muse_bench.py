@@ -44,6 +44,20 @@ if mode == "answer":
           "cached_input_tokens": 19000, "output_tokens": 500, "reasoning_tokens": 0}],
           "total": {"input_tokens": 50000, "cached_input_tokens": 19000, "output_tokens": 500,
                     "reasoning_tokens": 0}})
+elif mode == "envelope":
+    # The shape Muse Code 1.4.14 prints (seen 30 Oct 2026): the name in "payload_type", the fields in
+    # "payload"; usage once, in run.usage at the end; the answer in run.terminal.completed.
+    def envelope(n, name, payload):
+        return {"schema_version": 1, "id": f"e{n}", "stream": {"kind": "session", "id": "s1"}, "sequence": n,
+                "record_type": "event", "durability": "durable", "payload_type": name, "payload": payload}
+    emit(envelope(1, "run.lifecycle.started", {"kind": "run_started"}))
+    emit(envelope(2, "run.output.delta", {"kind": "run_output_delta", "text": "{\"files\": ["}))
+    emit(envelope(3, "tool.result", {"kind": "tool_result", "tool_name": "mcp__plugin_graphicle_graphicle__pack"}))
+    emit(envelope(4, "run.usage", {"kind": "run_usage", "completed_calls": 4, "failed_calls": 0,
+          "models": [{"model": "muse-spark-1.3", "calls": 4, "input_tokens": 129256, "cached_tokens": 62562,
+                      "output_tokens": 1403, "reasoning_tokens": 1026}]}))
+    emit(envelope(5, "run.terminal.completed", {"kind": "run_terminal", "terminal": "completed",
+          "text": "{\"files\": [\"pkg/b.go\"]}"}))
 elif mode == "spend":
     for i in range(1000):
         emit({"type": "agent.event", "payload": {"kind": "run", "event": {"kind": "model_completed",
@@ -167,6 +181,21 @@ class MuseBenchTest(unittest.TestCase):
         # Resumed: questions in rows.jsonl are skipped.
         again, rows = self.run_bench("plain")
         self.assertEqual(len(rows), 2)
+
+    def test_reads_muse_code_1_4_14_events(self):
+        self.mode("envelope")
+        done, rows = self.run_bench("plain", "--first", "1")
+        self.assertEqual(done.returncode, 0, done.stderr)
+        row = rows[0]
+        # The answer comes from run.terminal.completed alone, not from the output deltas.
+        self.assertEqual(row["files"], ["pkg/b.go"])
+        self.assertEqual((row["tokens_in"], row["tokens_cached"], row["tokens_out"]), (129256, 62562, 1403))
+        self.assertEqual(row["model_calls"], 4)
+        expected = ((129256 - 62562) * 1.25 + 62562 * 0.15 + 1403 * 4.25) / 1e6
+        self.assertAlmostEqual(row["cost_usd"], expected, places=6)
+        with open(self.log) as f:
+            logged = [json.loads(l) for l in f if l.strip()]
+        self.assertAlmostEqual(logged[0]["cost_usd"], expected, places=6)
 
     def test_plugin_home_drops_capture_hooks(self):
         self.mode("answer")

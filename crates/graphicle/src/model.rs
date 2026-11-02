@@ -125,10 +125,12 @@ const COUNT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// The provider's exact count of the input tokens of [`complete`]'s request
 /// for the same arguments (`POST responses/input_tokens`, which generates
-/// nothing). Only the request's model, instructions, input, output format
-/// and reasoning are sent.
+/// nothing), sent with the profile's key `credential` as [`complete`] sends
+/// it. Only the request's model, instructions, input, output format and
+/// reasoning are sent.
 pub async fn count_input_tokens(
     p: &Profile,
+    credential: Option<&str>,
     system: &str,
     user: &str,
     schema: Option<&Value>,
@@ -143,14 +145,13 @@ pub async fn count_input_tokens(
             request.insert(field.into(), value.clone());
         }
     }
-    let credential = environment_credential(p)?;
     let client = client_with_timeout(COUNT_TIMEOUT)?;
-    let response = authenticated(&client, p, "responses/input_tokens", credential.as_deref())?
+    let response = authenticated(&client, p, "responses/input_tokens", credential)?
         .json(&Value::Object(request))
         .send()
         .await
         .map_err(|error| Error::bad(request_failure("The token count request failed", &error)))?;
-    let value = provider_json(response, credential.as_deref()).await?;
+    let value = provider_json(response, credential).await?;
     value["input_tokens"]
         .as_u64()
         .ok_or_else(|| Error::bad("The provider's token count has no input_tokens"))
@@ -940,7 +941,10 @@ pub fn strict_schema(schema: &Value) -> Value {
     }
     out
 }
-fn environment_credential(p: &Profile) -> Result<Option<String>> {
+/// The key of `p` from the environment variable its `key_env` names. A key
+/// saved in the app (`secret:ID`) is in the workspace's vault instead, which
+/// [`crate::store::Store::resolve_credential`] reads.
+pub(crate) fn environment_credential(p: &Profile) -> Result<Option<String>> {
     p.key_env.as_deref().map(|name|std::env::var(name).ok().filter(|v|!v.is_empty()).ok_or_else(||Error::bad("Provider credential unavailable; workspace credentials require the service worker"))).transpose()
 }
 pub async fn generate(
@@ -1104,12 +1108,16 @@ pub fn completion_body(
     Ok((suffix, body))
 }
 
-/// One long-context completion (`ask --pack`, `plan`) with the profile's
-/// credential from its environment variable. A chat profile's reply streams:
-/// `on_text` gets the answer as it arrives, and a gateway's limit on waiting
-/// for a whole reply does not cut a long request.
+/// One long-context completion (`ask --pack`, `plan`) with the profile's key
+/// `credential`, which the caller finds where `ask` finds it: the profile's
+/// environment variable, or the key saved in the app (the workspace's
+/// vault). A chat profile's reply streams: `on_text` gets the answer as it
+/// arrives, and a gateway's limit on waiting for a whole reply does not cut
+/// a long request.
+#[allow(clippy::too_many_arguments)]
 pub async fn complete(
     p: &Profile,
+    credential: Option<&str>,
     system: &str,
     user: &str,
     schema: Option<&Value>,
@@ -1119,6 +1127,7 @@ pub async fn complete(
 ) -> Result<Completion> {
     complete_with(
         p,
+        credential,
         system,
         user,
         None,
@@ -1148,6 +1157,7 @@ pub async fn complete_input(
     }
     complete_with(
         p,
+        environment_credential(p)?.as_deref(),
         system,
         "",
         Some(input),
@@ -1187,6 +1197,7 @@ pub async fn post_json(
 #[allow(clippy::too_many_arguments)]
 async fn complete_with(
     p: &Profile,
+    credential: Option<&str>,
     system: &str,
     user: &str,
     input: Option<&Value>,
@@ -1200,7 +1211,6 @@ async fn complete_with(
             "Inference request exceeds the configured model budget",
         ));
     }
-    let credential = environment_credential(p)?;
     let client = client_with_timeout(LONG_TIMEOUT)?;
     let (suffix, mut body) =
         completion_body(p, system, user, schema, output_limit, prompt_cache_key)?;
@@ -1209,7 +1219,7 @@ async fn complete_with(
     }
     let start = Instant::now();
     let send = |body: &Value| {
-        let request = authenticated(&client, p, &suffix, credential.as_deref());
+        let request = authenticated(&client, p, &suffix, credential);
         let body = body.clone();
         async move {
             request?.json(&body).send().await.map_err(|error| {
@@ -1237,7 +1247,7 @@ async fn complete_with(
     if body["stream"] == true && response.status().is_success() {
         return stream_reply(p, response, start, on_text).await;
     }
-    let value = provider_json(response, credential.as_deref()).await?;
+    let value = provider_json(response, credential).await?;
     let mut effective = p.clone();
     effective.structured_output = schema.is_some() && p.structured_output;
     let estimated = (system.len() + user.len()) / 4;

@@ -1492,6 +1492,104 @@ fn hooks_add_context_at_start_and_import_after_stop_without_blocking() {
     );
 }
 
+/// Muse Code reads none of a hook's output past 16,384 bytes: on 30
+/// October 2026 Muse Code 1.4.14 stopped 0.1.10's session start for it,
+/// and the session started without Graphicle's context. With many memories
+/// (titles in quotes, with a backslash and non-ASCII text) and a kept map
+/// far over the limit, the session start prints at most 14,000 bytes of
+/// JSON that parses: the map's first chunks, the memory whole, and a last
+/// line on what was left out. Claude Code's output is unchanged.
+#[test]
+fn muse_code_session_start_stays_within_its_hook_output_limit() {
+    use graphicle_runtime::{agent_instructions::SESSION_ROUTING, muse_code};
+    let f = Fixture::new();
+    for i in 0..150 {
+        f.store
+            .note(
+                f.ws(),
+                f.key(),
+                &f.args(json!({"kind":"decision",
+                    "title":format!("Décision {i}: the \"assets\" bucket stays in us-east-1 \\ next to the CDN, 東京 apart"),
+                    "body":"The assets bucket stays in us-east-1, next to the CDN.",
+                    "evidence":[{"id":"file:deploy/bucket.tf","quote":"resource \"bucket\" \"assets\""}]})),
+            )
+            .unwrap();
+    }
+    let memory = f
+        .store
+        .session_start_context(f.ws(), f.key(), &f.repo)
+        .unwrap();
+    assert!(memory.contains("more in project_memory"), "{memory}");
+    // The kept session map, as the background build leaves it: 300 whole
+    // files, the most connected first.
+    let mut map =
+        String::from("# Code pack: project\n\nRepository: project at commit abc\n\n## Breadth\n\n");
+    for file in 0..300 {
+        map.push_str(&format!(
+            "### src/f{file}.rs lines 1-20 (whole file)\nwhy: breadth: centrality {}\n```rust\n",
+            300 - file
+        ));
+        for line in 1..=20 {
+            map.push_str(&format!("{line}\tlet v = \"{file}:{line}\"; // 東京\n"));
+        }
+        map.push_str("```\n\n");
+    }
+    let safe: String = f
+        .repo
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(80)
+        .collect();
+    let packs = f.store.directory.join(muse_code::PACK_FOLDER);
+    std::fs::create_dir_all(&packs).unwrap();
+    std::fs::write(
+        packs.join(format!("{safe}-{}.md", muse_code::SESSION_PACK_TOKENS)),
+        &map,
+    )
+    .unwrap();
+
+    let start = json!({"session_id":"m-1","cwd":f.root,"hook_event_name":"SessionStart","source":"startup"});
+    let mut command = binary(&f);
+    command.args(["hook", "muse", "session-start"]);
+    let output = run_with_input(command, &start.to_string());
+    assert!(output.status.success());
+    assert!(
+        output.stdout.len() <= muse_code::HOOK_OUTPUT_BYTES,
+        "{} bytes",
+        output.stdout.len()
+    );
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        printed["hookSpecificOutput"]["hookEventName"],
+        "SessionStart"
+    );
+    let context = s(&printed["hookSpecificOutput"], "additionalContext");
+    let (kept, _) = context
+        .split_once(&format!("\n\n{SESSION_ROUTING}"))
+        .unwrap();
+    assert!(kept.starts_with("# Code pack: project"), "{kept}");
+    assert!(
+        kept.contains("### src/f0.rs") && kept.ends_with("```"),
+        "{kept}"
+    );
+    assert!(!kept.contains("### src/f299.rs"));
+    assert!(context.contains(&memory), "{context}");
+    assert!(context.ends_with(
+        "Graphicle left out part of the repository map to stay within Muse Code's limit on a hook's output (16,384 bytes); the pack tool returns the repository's code.\n"
+    ));
+
+    // Claude Code's start, within 8,000 characters (it shows 10,000 of a
+    // hook's output in full): the memory as before.
+    let mut command = binary(&f);
+    command.args(["hook", "claude-code", "session-start"]);
+    let output = run_with_input(command, &start.to_string());
+    let printed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        s(&printed["hookSpecificOutput"], "additionalContext"),
+        memory
+    );
+}
+
 /// What capture hooks and the command line serve is counted when the
 /// program ends: as the local owner, by the agent's session (a digest of its
 /// id, never the id) for a start context, and on the text served.

@@ -312,7 +312,7 @@ impl Section {
         }
     }
 
-    fn title(self) -> &'static str {
+    pub(crate) fn title(self) -> &'static str {
         match self {
             Self::Header => "Code pack",
             Self::Manifest => "Manifest",
@@ -1103,6 +1103,37 @@ fn render_file(
         prefix_tenths.div_ceil(10),
     );
     (text, tokens)
+}
+
+/// Lines `start..=end` of the file `path` (its `text`), as a markdown pack
+/// shows a file: headed by its path, line range and `why`, its lines
+/// numbered; and its tokens as `counter` counts a pack's file. The range is
+/// clamped to the file. `fix` adds the files a failed round names to the
+/// next round's request this way.
+pub fn file_section(
+    path: &str,
+    text: &str,
+    start: usize,
+    end: usize,
+    why: &str,
+    counter: &Counter,
+) -> (String, usize) {
+    let lines: Vec<&str> = text.lines().collect();
+    let end = end.min(lines.len());
+    let start = start.clamp(1, end.max(1));
+    render_file(
+        Style::Markdown,
+        &FilePiece {
+            path,
+            lines: &lines,
+            start,
+            end,
+            whole: start == 1 && end == lines.len(),
+            numbered: true,
+        },
+        why,
+        counter,
+    )
 }
 
 fn section_open(style: Style, section: Section) -> String {

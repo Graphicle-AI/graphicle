@@ -3,6 +3,157 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.11 - 2026-11-01
+
+Every crate is at 0.1.11, and `graphicle --version` prints
+`graphicle 0.1.11 (core)`. The Python and TypeScript SDKs are at 0.1.11
+too.
+
+Everything new in 0.1.11 was written during Meta's Global AI Developer
+Hackathon.
+[HACKATHON.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.11/HACKATHON.md)
+lists it with when it was written.
+
+### After upgrading
+
+- Run `graphicle sync` once in each project, as after 0.1.10: the saved
+  graph and the query file are keyed to the program's build, so the first
+  sync writes both again.
+
+### `graphicle fix`
+
+- A long test output keeps the lines that report failures. When a round's
+  test output is longer than the 6,000 bytes that go back to the model, the
+  round keeps the lines that report failures from the part that is cut
+  (lines with `FAIL`, `×`, `AssertionError`, `Error:`, `panicked`,
+  `Traceback`, `error[E0425]:`, `expected` or `received`, and the like),
+  each once and at most 2,400 bytes of them, then a `[...]` line and the
+  output's end. Before, only the end was kept, so a runner that prints its
+  failures before a long dump, as vitest does before the DOM it compared,
+  sent the model the dump without the assertion. While the test runs, each
+  output stream holds up to 128 KiB, then drops whole lines from its start
+  down to about its last 64 KiB; the lines that report failures are read in
+  all that it holds and in what it drops, so an output of 64 to 128 KiB
+  keeps an assertion it printed first. Terminal colour codes are removed
+  from the output; the values of the model keys are still hidden in it.
+- The next round reads the files that the failure and the model name. After
+  a failed round, the next round's request adds, after the diff, the files
+  that the test output (or the reasons the edits were refused) names, that
+  the model's explanation and edits name by path, and that define a code
+  name the explanation gives (found in the project's code graph), when the
+  pack does not hold them whole: at most 6 files and 24,000 tokens a round,
+  counted as the pack counts, read from the worktree, and only files the
+  project's last sync holds, inside the project. Without `--budget`, the
+  files take only the room the round's request has left after the pack, so
+  the round is sent with the same pack and its start can stay in the
+  provider's prompt cache. The instructions tell the model that a file it
+  names this way is added to the next round. Each round's JSON report
+  lists what its request added and why under `context`, with what was left
+  out; the readable report lists the added files under each round. A round
+  whose request does not fit the model's input limit with its files goes
+  without them: the readable report lists them as not added, and the next
+  round adds them only when the failure or the model names them again.
+  Before, a file the pack did not hold stayed out of every round. See
+  `docs/fix.md`.
+
+### Fixes
+
+- `graphicle ask` answers when the model cites more passages than an answer
+  keeps. An answer keeps at most 12 citations and 20 unanswered parts (and,
+  with the `grounded-v3` contract, its limit of reading notes). A reply
+  with more, which a broad question can draw, failed the job with "Model
+  output does not match the workflow contract". The reply now keeps its
+  first 12 citations and first 20 unanswered parts, and the job's result
+  gives, under `trimmed_to_cap`, how many the model returned and how many
+  were kept. An answer's text never refers to a citation by its number, so
+  nothing in it points at a citation that was cut. `--workflow reflect`
+  keeps its final reply the same way. (reported in #17)
+- `graphicle ask --workflow reflect` goes on when the model asks to read a
+  source the answer does not have, such as a path it guessed from the code
+  or a file that `sync` leaves out. The read is skipped, the job's trace
+  records it with `"unavailable": true`, the next step reads that note, and
+  the answer comes from the sources that could be read. Before, the job
+  failed with "Reflection requested an unavailable source". (reported in
+  #17)
+- `graphicle ask --pack`, `plan`, `fix` and `review` use a model key saved
+  in the app (`graphicle open`, then Connections), as `ask` and `doctor`
+  do, for the call and for the provider's token count. Before, they read
+  the key only from an environment variable and failed with "Provider
+  credential unavailable; workspace credentials require the service
+  worker". A key in an environment variable is read as before. `fix` hides
+  a key saved in the app in the test output that goes back to the model
+  and into its report, as it hides the keys in variables. (reported in #17)
+
+### The flow and its docs
+
+- `demo/flow/flow.py` uses Muse Spark for computer use by default
+  (`--see-model spark`). On 30 October 2026 Muse Wonder answered the
+  computer tool with HTTP 400 "Unsupported tool type" on the key we tested,
+  and Muse Spark 1.3 ran it. `docs/flow.md` and `demo/README.md` describe
+  the live runs. The Muse Code docs describe the plugin's first live
+  session (Muse Code 1.4.14, 30 October 2026, with 0.1.10's plugin): Muse
+  Code ran four of its six hooks and called its `pack` tool, but stopped its
+  session-start hook, whose output passed the 16,384 bytes Muse Code takes
+  from a hook, so the session started without Graphicle's session-start
+  context (fixed below, under Muse Code plugin).
+- The flow's check keeps its budget when the fix runs on another profile.
+  With computer use on Muse Spark and the fix on Muse Wonder, the check took
+  the computer-use profile's cap less everything the run had spent, so a fix
+  that cost more than that cap left the check a cent and the binary refused
+  its call. The check's budget is now its profile's cap less that profile's
+  own calls.
+
+### Muse Code plugin
+
+- The session start stays within Muse Code's limit on a hook's output. Muse
+  Code takes at most 16,384 bytes of what a hook prints and reads none of a
+  longer output: in the plugin's first live session (Muse Code 1.4.14, 30
+  October 2026), the session start printed more than that, Muse Code
+  stopped it, and the session started without Graphicle's session-start
+  context. The session start now prints at most 14,000 bytes for Muse Code.
+  When the map and the memories do not fit together, it leaves out parts of
+  the map first, in the order a pack over its budget drops them (its least
+  connected files first, then its documentation, folder map and
+  architecture summary), then the whole map, then the memory's last lines
+  (recent turns before memories), never the line on when to use Graphicle,
+  and ends with a line that says what was left out and which tool returns
+  it. Claude Code and Codex get the same output as before. This is tested
+  against the stand-in `muse` program, not yet in a live session.
+- Muse Code's session map is 2,500 tokens by default and at most 3,500
+  tokens (8,000 and 100,000 before), and it lists the most connected files
+  first.
+  Measured on 31 October 2026, a map of 2,500 tokens took 8,464 bytes for
+  Graphicle's own Rust code and 10,580 bytes for its Python tools, which
+  leaves room for the memories; at 8,000 tokens the same maps took 27,551
+  and 33,570 bytes, more than Muse Code's limit on their own.
+
+### Benchmark kits
+
+- The whole-repository benchmark's model runs, which 0.1.10's kit was
+  written for, were made on 30 October 2026. Their results are not in
+  this release.
+- `bench/whole-repo/run.py` gains a `fireworks` profile for Muse Spark Open
+  on Fireworks' serverless API (chat completions, key from
+  `FIREWORKS_API_KEY` or `--key-file`). The run's session id goes in the
+  `x-session-affinity` header and the `user` field, the two hints Fireworks
+  documents for its prompt cache, and the cached tokens come from the usage
+  or, when it has none, from the `fireworks-cached-prompt-tokens` header.
+  `prices.json` has the model's Fireworks prices.
+- `bench/muse-code/` reads the events of Muse Code 1.4.14: an event's name
+  is in `payload_type`, the model calls and tokens come from the one
+  `run.usage` event at the end of a run, and the answer from
+  `run.terminal.completed`. Before, the kit counted no calls and no cost
+  for a 1.4.14 session. With 1.4.14 the kit's cost caps (`--run-cap`,
+  `--day-cap`) can act only after a run, since the usage arrives at its
+  end.
+
+### Packaging
+
+- libz-sys 1.1.31 (from 1.1.29, through flate2). RUSTSEC-2026-0418, a build
+  script that prints the whole build environment when built with cc 1.6.0
+  or later, no longer applies, and `cargo deny` checks every crate without
+  an exception for it. The locks keep cc 1.4.7.
+
 ## 0.1.10 - 2026-10-30
 
 Every crate is at 0.1.10, and `graphicle --version` prints

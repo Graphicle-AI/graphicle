@@ -4,7 +4,7 @@
 //! repository reports cached tokens and the spend log records them; each cap
 //! refuses before anything is sent; `graphicle usage` adds the log up; and the
 //! provider's exact count shrinks a pack that would not fit.
-use axum::{Json, Router, extract::State, routing::post};
+use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -24,6 +24,17 @@ struct Mock {
     count_rate: Arc<Mutex<f64>>,
     /// Bytes per token of the input usage a response reports (0: four).
     usage_rate: Arc<Mutex<f64>>,
+    /// The `Authorization` header of each request to either endpoint.
+    keys: Arc<Mutex<Vec<String>>>,
+}
+
+fn key_of(mock: &Mock, headers: &HeaderMap) {
+    let key = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    mock.keys.lock().unwrap().push(key);
 }
 
 /// The prompt as the provider sees it: the instructions, then the input.
@@ -39,7 +50,12 @@ fn prompt_of(request: &Value) -> String {
 /// prompt's bytes over the usage rate (four unless set); cached tokens are
 /// the start the prompt shares with the last one of its cache key, counted
 /// from 1,024 tokens up.
-async fn responses(State(mock): State<Mock>, Json(request): Json<Value>) -> Json<Value> {
+async fn responses(
+    State(mock): State<Mock>,
+    headers: HeaderMap,
+    Json(request): Json<Value>,
+) -> Json<Value> {
+    key_of(&mock, &headers);
     let prompt = prompt_of(&request);
     let rate = match *mock.usage_rate.lock().unwrap() {
         r if r > 0.0 => r,
@@ -78,7 +94,12 @@ async fn responses(State(mock): State<Mock>, Json(request): Json<Value>) -> Json
 }
 
 /// `POST /v1/responses/input_tokens`: the prompt's bytes over the count rate.
-async fn input_tokens(State(mock): State<Mock>, Json(request): Json<Value>) -> Json<Value> {
+async fn input_tokens(
+    State(mock): State<Mock>,
+    headers: HeaderMap,
+    Json(request): Json<Value>,
+) -> Json<Value> {
+    key_of(&mock, &headers);
     let rate = match *mock.count_rate.lock().unwrap() {
         r if r > 0.0 => r,
         _ => 4.0,
@@ -581,4 +602,85 @@ async fn usage_lists_and_clears_the_calls_not_logged_yet() {
     assert_eq!(cleared["cleared_pending"], 3, "{cleared}");
     assert_eq!(cleared["pending"], json!([]), "{cleared}");
     assert!(!root.join("data/usage-pending.json").exists());
+}
+
+/// A profile whose key is saved in the app (in the workspace's vault, with
+/// `key_env` `secret:ID`) works for `ask --pack` and `plan` as it does for
+/// `ask` and `doctor`: the key goes with the provider's count and with the
+/// call, and nothing prints or logs it. Before, these commands read only
+/// environment variables (GitHub issue #17).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_saved_in_the_app_answers_ask_pack_and_plan() {
+    let mock = Mock::default();
+    let (base, server) = serve(mock.clone()).await;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let project = project(root, 160);
+    models(root, &base, json!({}));
+    json_of(&run(root, &["sync", project.to_str().unwrap()]).await);
+    let secret = "sk-saved-in-the-app-0123456789";
+    {
+        let store = graphicle_runtime::store::Store::open(root.join("data")).unwrap();
+        let session = graphicle_runtime::local::session(&store, false).unwrap();
+        let id = store
+            .save_secret(&session.workspace, "Answering model", secret)
+            .unwrap();
+        let profile = json!({"protocol":"responses","base_url":base,"model":"muse-spark-1.3",
+            "key_env":format!("secret:{id}"),"input_limit":40_000,"output_limit":2_048,
+            "count_tokens":true});
+        store
+            .connect()
+            .unwrap()
+            .execute(
+                "INSERT INTO am_model_profiles VALUES(?,?,?,0,0)",
+                rusqlite::params![session.workspace, "saved", profile.to_string()],
+            )
+            .unwrap();
+    }
+    let asked = run(
+        root,
+        &[
+            "ask",
+            "--pack",
+            "--model",
+            "saved",
+            "--json",
+            "How does the canary start?",
+        ],
+    )
+    .await;
+    let answer = json_of(&asked);
+    assert_eq!(answer["profile"], "saved", "{answer}");
+    // A pack that fills the input limit is counted with the provider first.
+    assert!(answer["input_tokens_counted"].is_u64(), "{answer}");
+    let planned = run(
+        root,
+        &[
+            "plan",
+            "--model",
+            "saved",
+            "--json",
+            "Start the canary first",
+        ],
+    )
+    .await;
+    json_of(&planned);
+    assert_eq!(mock.requests.lock().unwrap().len(), 2);
+    assert!(!mock.counts.lock().unwrap().is_empty());
+    let keys = mock.keys.lock().unwrap().clone();
+    let sent = format!("Bearer {secret}");
+    assert!(
+        keys.len() >= 3 && keys.iter().all(|key| *key == sent),
+        "{} requests, {} with the saved key",
+        keys.len(),
+        keys.iter().filter(|key| **key == sent).count()
+    );
+    for output in [&asked, &planned] {
+        assert!(!String::from_utf8_lossy(&output.stdout).contains(secret));
+        assert!(!String::from_utf8_lossy(&output.stderr).contains(secret));
+    }
+    let log = std::fs::read_to_string(root.join("data/usage.jsonl")).unwrap();
+    assert_eq!(log.lines().count(), 2);
+    assert!(!log.contains(secret));
+    server.abort();
 }

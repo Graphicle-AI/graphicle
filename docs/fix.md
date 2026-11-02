@@ -2,10 +2,11 @@
 
 `graphicle fix` takes an issue, plans a change from a pack of the
 repository's code, asks the model for the edits, applies them on a new branch
-in a new git worktree, and runs your tests there. When the tests fail, the
-end of their output and the diff so far go back to the model, for at most
-`--rounds` rounds. Your working tree and your current branch never change,
-and nothing is pushed.
+in a new git worktree, and runs your tests there. When the tests fail,
+their output (for a long output, the lines that report failures, then its
+end), the diff so far, and the files that the failure and the model name go
+back to the model, for at most `--rounds` rounds. Your working tree and your
+current branch never change, and nothing is pushed.
 
 ```sh
 graphicle fix "The Job controller counts a failed pod create as both failed and succeeded" --test "go test ./pkg/controller/job/..."
@@ -45,27 +46,105 @@ graphicle fix - --test "cargo test -p store" < issue.txt
    when the command ends: whatever it left running in its process group is
    stopped then, and on Linux so is any process it started that left the
    group. At the timeout the command is stopped with its process group (its
-   process tree on Windows). The last 6,000 bytes of its output are kept.
-   On Linux that sweep also stops daemons the test started for later builds
-   to share, such as an `sccache` server or a Gradle daemon; the next build
-   starts them again.
+   process tree on Windows). On Linux that sweep also stops daemons the test
+   started for later builds to share, such as an `sccache` server or a
+   Gradle daemon; the next build starts them again. At most 6,000 bytes of
+   the output, and a short marker where it was cut, go back to the model, without terminal colour codes: all of it
+   when it fits, else the lines that report failures and then its end
+   ([the test output](#the-test-output)).
 6. **Again.** If the tests fail, or no edit could be applied, the next round
-   sends the same instructions, pack, issue and plan, then the end of the
-   test output and the diff so far. Each round's request is fitted to the
-   model's input limit first: the pack is made smaller when the plan, the
-   output and the diff would not fit with it. With the Meta Model API, the
-   round's start can still be in the provider's prompt cache, so most of a
-   follow-up round's input can be billed at the cached price. A provider
-   error stops the rounds and is reported as the provider's error.
+   sends the same instructions, pack, issue and plan, then the test output
+   (or why the edits were refused), the diff so far, and the files that the
+   failure or the model named when the pack does not hold them whole
+   ([files the next round adds](#files-the-next-round-adds)). Each round's
+   request is fitted to the model's input limit first: the pack is made
+   smaller when the plan, the output, the diff and those files would not fit
+   with it. With the Meta Model API, the round's start can still be in the
+   provider's prompt cache, so most of a follow-up round's input can be
+   billed at the cached price. A provider error stops the rounds and is
+   reported as the provider's error.
 7. **Report.** The branch and worktree, the plan, each round's result, test
    time and exit code, the files changed, the cited lines checked against
-   your working tree, the tests the model suggested (shown, never run), and
-   each call's tokens and cost from the [spend log](configuration.md#prices-the-spend-log-and-caps).
+   your working tree, the tests the model suggested (shown, never run), the
+   files each round's request added and why, and each call's tokens and
+   cost from the [spend log](configuration.md#prices-the-spend-log-and-caps).
    With `--commit`, the change is committed on the new branch; otherwise it
    stays in the worktree for you to read (`git -C <worktree> diff`).
 
 The command ends with status 0 when the tests pass, or when the change was
 made without a test command; else with an error that names the worktree.
+
+## The test output
+
+When the test output is longer than 6,000 bytes, the round keeps, from the
+part that is cut, the lines that report failures, each once and cut to 400
+bytes, up to 2,400 bytes of them; then a line `[...]` and the output's end,
+within the same 6,000 bytes. A line reports a failure when it holds what
+test runners and compilers print for one: `FAIL`, `FAILED` or `FAILURES`; a
+failed test's mark such as `×`, `✗` or `✕`; an error or exception with its
+message (`AssertionError`, `TypeError: ...`, `Error: ...`); `panicked` or
+`Traceback`; a compiler's `error:`, `error[E0425]:` or `error TS2304:`, and
+the `-->` line that says where; a count such as `2 failed`; an assertion's
+`expected`, `received`, `left` and `right`; pytest's `E` and `>` lines; or a
+Go test's `x_test.go:12:` message. A runner that prints its failures before
+a long dump, as vitest does before the DOM it compared, so keeps its
+assertion in what the model reads. While the test runs, each output stream
+holds up to 128 KiB, then drops whole lines from its start down to about its
+last 64 KiB, and keeps the lines that report failures in what it drops (64
+at most); all that it holds is read too. With no such line in the part that
+is cut, the end alone is kept, after `...`. The values of the model keys are
+hidden before and after the colour codes are removed.
+
+## Files the next round adds
+
+A failed round's output and the model's reply can name files that the pack
+does not hold. The next round adds:
+
+- the project's files that the test output names, or the reasons the edits
+  were refused: by their path in the project, by an absolute path inside the
+  fix's worktree, or by the end of exactly one of the project's paths (a
+  file name alone counts when one file has it);
+- the files that the model's explanation names by path, and the files its
+  edits name;
+- the files that define the code names the explanation gives (in backticks,
+  or written as code, such as `useOutsideClick` or `parse_config`), found in
+  the project's code graph as `context` finds where a named identifier is
+  defined; a name that more than three files define is left out as too
+  common;
+- the files the failed round had added, after the others.
+
+The output's files and the model's take turns, so that neither fills a round
+alone. A file goes in only when the pack does not hold it whole, and only
+when the project's last sync holds it: never a file the sync leaves out
+(ignored files, credentials and keys, `node_modules` and the like), never a
+symbolic link or a file in a linked folder, which the sync does not read
+either, and never one outside the project. It is read from the worktree as
+it is now, so that a search text can be copied from it, and shown as the
+pack shows a file: its path, its line range, why it is there, and numbered
+lines. A round adds at most 6 files and 24,000 tokens, counted as the pack
+counts them, and 12,000 tokens of one file. Without `--budget`, it also adds
+no more than the room its request has left after the pack, the issue, the
+plan, the output and the diff, so that the round is sent with the same pack
+and its start can still be in the provider's prompt cache. A file larger
+than what the round has left goes in as the lines around the line named in
+it (30 before and 170 after, or half that), and is left out when no line is
+named. When the round's request does not fit the model's input limit with
+these files, even with a smaller pack, the round goes without them, and the
+next round adds them only when this round's failure or the model's reply
+names them again. The instructions tell the model that a file it names by
+path, or by a symbol the file defines, is added to the next round when a
+round fails.
+
+The JSON report says what each round's request added, under `context` in
+that round: `files`, each with its `path`, `start_line`, `end_line`,
+`whole`, `tokens` and `why` (such as `the test output names it`, or
+``it defines `useOutsideClick`, which round 1's explanation names``); their
+`tokens` in all; and `left_out`, at most 20 files or names that were not
+added, with why (`the pack holds it whole`, `over the 6 files a round adds`,
+`more than 3 files define it`, and the like); and `dropped` when the round
+went without them because its request did not fit. The readable report
+lists the added files under each round, and the files of a round that went
+without them as not added.
 
 ## Safety
 
@@ -118,7 +197,7 @@ made without a test command; else with an error that names the worktree.
 | `--issue-file FILE` | none | Read the issue's text from a file (at most 1 MiB) |
 | `--test CMD` | `fix.test` | The test command, run with `sh -c` in the worktree |
 | `--rounds N` | 3 | Rounds of edits and tests at most, 1 to 10 |
-| `--budget TOKENS` | the input limit less 16,000 | The pack's budget; the room after it holds the issue, the plan, and a failed round's test output and diff |
+| `--budget TOKENS` | the input limit less 16,000 | The pack's budget; the room after it holds the issue, the plan, and a failed round's test output and diff, and without `--budget` the files a round adds take only what is left of it |
 | `--branch NAME` | `graphicle/fix-<words>` | The new branch; it must not exist |
 | `--commit` | off | Commit the change on the new branch |
 | `--timeout SECONDS` | `fix.timeout_seconds`, else 600 | How long the test command may run, 1 to 86,400 |

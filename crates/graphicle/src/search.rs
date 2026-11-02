@@ -535,7 +535,15 @@ async fn basic_inner(worker: &Worker, job: &Job) -> Result<Value> {
         }
     }
     packet["answer_contract"] = json!(contract);
-    let mut first = worker.infer(job, &instructions, &input, &schema).await?;
+    let (mut first, trimmed) = worker
+        .infer_capped(
+            job,
+            &instructions,
+            &input,
+            &schema,
+            &workflows::CAPPED_ANSWER_ARRAYS,
+        )
+        .await?;
     let mended = workflows::mend_citations(&mut first, &sources);
     let dropped = if v3 {
         repair_citations(&mut first, &sources)
@@ -556,6 +564,10 @@ async fn basic_inner(worker: &Worker, job: &Job) -> Result<Value> {
     // (now the sources' exact text), or that an abstention dropped.
     if mended > 0 {
         answer["citations_mended"] = json!(mended);
+    }
+    // Arrays the reply ran past the contract's cap, cut to their first items.
+    if trimmed.as_object().is_some_and(|cut| !cut.is_empty()) {
+        answer["trimmed_to_cap"] = trimmed;
     }
     Ok(answer)
 }

@@ -1471,7 +1471,7 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 
 [[package]]
 name = "graphicle"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "aws-config",
  "aws-sdk-bedrockruntime",
@@ -1571,7 +1571,7 @@ dependencies = [
 
 [[package]]
 name = "graphicle-graph"
-version = "0.1.10"
+version = "0.1.11"
 dependencies = [
  "graphicle",
  "libmimalloc-sys",
@@ -2335,9 +2335,9 @@ dependencies = [
 
 [[package]]
 name = "libz-sys"
-version = "1.1.29"
+version = "1.1.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85bc9657773828b90eeb625adff10eeac83cc21bbfd8e23a03eaa8a33c9e28d9"
+checksum = "ff20308ecabd635a2dc1dd5834a86c462cca20efba1d5d3ddab1f8aea3455cb2"
 dependencies = [
  "cc",
  "pkg-config",

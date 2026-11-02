@@ -1196,6 +1196,7 @@ fn muse_code_gets_the_plugin_with_hooks() {
     assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
 
     // The session start: the kept map first, then the memory section.
+    let tokens = graphicle_runtime::muse_code::SESSION_PACK_TOKENS.to_string();
     let built = m.run(
         &m.repo,
         &[
@@ -1205,12 +1206,14 @@ fn muse_code_gets_the_plugin_with_hooks() {
             "--project",
             &project,
             "--pack-tokens",
-            "8000",
+            &tokens,
         ],
     );
     assert!(built.status.success());
     // Built here, or by the build connect started (which holds the lock).
-    let map = m.data.join(format!("muse-code-packs/{project}-8000.md"));
+    let map = m
+        .data
+        .join(format!("muse-code-packs/{project}-{tokens}.md"));
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while !map.is_file() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(200));

@@ -24,8 +24,15 @@ muse plugins install /path/to/graphicle/packaging/muse-code-plugin --scope user
 muse plugins approve graphicle
 ```
 
-The plugin is a preview: it is tested against a stand-in `muse` program and
-has not yet run with Muse Code on Meta's live API.
+The plugin is a preview: it is tested against a stand-in `muse` program. In
+one session of Muse Code 1.4.14 on Meta's live API (30 October 2026, with
+the plugin of Graphicle 0.1.10), Muse Code ran four of its six hooks and
+called its `pack` tool, but stopped its session-start hook, whose output
+passed the 16,384 bytes Muse Code takes from a hook, so that session started
+without Graphicle's session-start context. Graphicle 0.1.11 keeps that
+output under 14,000 bytes; this is tested against the stand-in program, not
+yet in a live session. [docs/muse-code.md](../../docs/muse-code.md) says
+what each hook did.
 
 **Before you uninstall Graphicle or delete its data folder, remove the
 plugin** (`graphicle disconnect muse`, or `muse plugins remove graphicle`).

@@ -3,11 +3,11 @@
   "name": "io.github.Graphicle-AI/graphicle",
   "title": "Graphicle",
   "description": "Code graph and project memory for coding agents, cited to exact files and lines, on your machine.",
-  "version": "0.1.9",
-  "websiteUrl": "https://github.com/Graphicle-AI/graphicle/blob/v0.1.9/docs/mcp.md",
+  "version": "0.1.10",
+  "websiteUrl": "https://github.com/Graphicle-AI/graphicle/blob/v0.1.10/docs/mcp.md",
   "icons": [
     {
-      "src": "https://raw.githubusercontent.com/Graphicle-AI/graphicle/4bbe6cd85d7c9ebce9de5ae7a7c19a105668f1aa/packaging/mcpb/icon.png",
+      "src": "https://raw.githubusercontent.com/Graphicle-AI/graphicle/759b7b9392a6217efbe5c1e29a95aa2c8eb50ea3/packaging/mcpb/icon.png",
       "mimeType": "image/png",
       "sizes": [
         "512x512"
@@ -22,45 +22,45 @@
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.9/graphicle-0.1.9-aarch64-apple-darwin.mcpb",
-      "version": "0.1.9",
-      "fileSha256": "29362eb4ea37f7a42129c3638ced6dbb843d982b88e179b49230139548a7ca5c",
+      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.10/graphicle-0.1.10-aarch64-apple-darwin.mcpb",
+      "version": "0.1.10",
+      "fileSha256": "2314752c454225a9768d0139fd94b2e50fa0fb96d22821b899a69c08f6141d74",
       "transport": {
         "type": "stdio"
       }
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.9/graphicle-0.1.9-x86_64-apple-darwin.mcpb",
-      "version": "0.1.9",
-      "fileSha256": "72173aa9639860e72f290bee5105a7b7c2d47478fa5a02ea69e62974e0430213",
+      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.10/graphicle-0.1.10-x86_64-apple-darwin.mcpb",
+      "version": "0.1.10",
+      "fileSha256": "bb4bf210e53f0e8d09d46e7e845d28583ee5a8470e9d502cd194a80d623e08da",
       "transport": {
         "type": "stdio"
       }
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.9/graphicle-0.1.9-x86_64-pc-windows-msvc.mcpb",
-      "version": "0.1.9",
-      "fileSha256": "fdd5bdbc71383aa228a61a6050d8bf3781787235bf05855a952a165c7d47e296",
+      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.10/graphicle-0.1.10-x86_64-pc-windows-msvc.mcpb",
+      "version": "0.1.10",
+      "fileSha256": "f409f0d7f1a8011cfa8514a309c0f8a0ad95de40347d3cc62af1cf9f6ee55901",
       "transport": {
         "type": "stdio"
       }
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.9/graphicle-0.1.9-x86_64-unknown-linux-gnu.mcpb",
-      "version": "0.1.9",
-      "fileSha256": "7f6b1eef23e0a53b336d3d31fdd44dd7a2ef1c9aee0034eacf8802be0b7e0699",
+      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.10/graphicle-0.1.10-x86_64-unknown-linux-gnu.mcpb",
+      "version": "0.1.10",
+      "fileSha256": "b12b26fa4ff6d1dd82f27c1b48c9fb940f4a96a2789253e915604d59fc5ccd3e",
       "transport": {
         "type": "stdio"
       }
     },
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.9/graphicle-0.1.9-aarch64-unknown-linux-gnu.mcpb",
-      "version": "0.1.9",
-      "fileSha256": "b26cbcde77e8492140aa25d575ab859c7a757fd5a13275bed11655df4a7cbd06",
+      "identifier": "https://github.com/Graphicle-AI/graphicle/releases/download/v0.1.10/graphicle-0.1.10-aarch64-unknown-linux-gnu.mcpb",
+      "version": "0.1.10",
+      "fileSha256": "6b090b634d179b103744229f83c885ada88903016f49b230f147fa83e0e0c875",
       "transport": {
         "type": "stdio"
       }

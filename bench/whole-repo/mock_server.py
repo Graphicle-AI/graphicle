@@ -15,13 +15,15 @@ and /docs/prompt-caching, read 2026-10-26):
   function_call_output must answer a call of that response;
 - usage: input_tokens / output_tokens with output_tokens_details.reasoning_tokens and
   input_tokens_details.cached_tokens (Responses), prompt_tokens / completion_tokens with
-  prompt_tokens_details.cached_tokens (chat).
+  prompt_tokens_details.cached_tokens (chat). Chat completions also return the same counts in the
+  fireworks-prompt-tokens and fireworks-cached-prompt-tokens headers, as Fireworks documents them
+  (https://docs.fireworks.ai/guides/prompt-caching, read 2026-10-30).
 Prompt caching is simulated per cache key (prompt_cache_key in the body, else the
 x-session-affinity header): the cached tokens are the common prefix of the request's input with the
 last input sent under the same key, counted only from 1,024 tokens up; a continued response also
 counts the stored history as cached. Tokens are estimated as UTF-8 bytes / 4.
 --record FILE appends one JSON line per request, without any prompt text: the path, model, cache
-key, retention, session affinity, output cap, reasoning effort and the usage returned.
+key, retention, session affinity, user field, output cap, reasoning effort and the usage returned.
 
 Tool search (https://dev.meta.ai/docs/tool-search.md, hosted mode): a {"type": "tool_search"} tool with
 functions marked defer_loading (inside a namespace) works as documented: before the first call of a
@@ -118,11 +120,13 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def send(self, code, obj):
+    def send(self, code, obj, headers=None):
         body = json.dumps(obj).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
 
@@ -139,7 +143,7 @@ class Handler(BaseHTTPRequestHandler):
         line = {"path": self.path, "status": status, "model": req.get("model"),
                 "prompt_cache_key": req.get("prompt_cache_key"),
                 "prompt_cache_retention": req.get("prompt_cache_retention"),
-                "session_affinity": self.headers.get("x-session-affinity"),
+                "session_affinity": self.headers.get("x-session-affinity"), "user": req.get("user"),
                 "max_output_tokens": req.get("max_output_tokens"), "max_tokens": req.get("max_tokens"),
                 "reasoning_effort": (req.get("reasoning") or {}).get("effort") or req.get("reasoning_effort"),
                 "store": req.get("store"), "previous_response_id": bool(req.get("previous_response_id")),
@@ -208,7 +212,8 @@ class Handler(BaseHTTPRequestHandler):
         self.record(req, usage)
         self.send(200, {"id": "chatcmpl-" + uuid.uuid4().hex[:16], "object": "chat.completion",
                         "model": req.get("model"), "choices": [{"index": 0, "message": msg, "finish_reason": finish}],
-                        "usage": usage})
+                        "usage": usage},
+                  headers={"fireworks-prompt-tokens": str(prompt), "fireworks-cached-prompt-tokens": str(cached)})
 
     def api_responses(self, req, rng):
         effort = (req.get("reasoning") or {}).get("effort")

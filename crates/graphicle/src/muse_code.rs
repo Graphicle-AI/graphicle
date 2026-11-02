@@ -31,6 +31,12 @@
 //! `--prefix-share 1.0`): the same bytes for every session at a commit.
 //! It is built in the background and kept in the data folder
 //! ([`session_pack`]), so a session start never waits for a pack.
+//!
+//! Muse Code reads none of a hook's output past [`HOOK_OUTPUT_CEILING`]
+//! bytes: it stops the hook, and the session starts without its context. The
+//! session start keeps its output within [`HOOK_OUTPUT_BYTES`]
+//! ([`session_start`]), leaving out the least important parts first and
+//! saying so.
 use crate::{Error, Result};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -45,12 +51,27 @@ pub const PACK_FOLDER: &str = "muse-code-packs";
 /// `packaging/muse-code-plugin` holds the same text.
 pub const SKILL: &str = include_str!("muse_code_skill.md");
 /// Tokens of the repository map a session starts with, unless the hook's
-/// `--pack-tokens` says otherwise (0 leaves it out).
-pub const SESSION_PACK_TOKENS: u64 = 8_000;
-/// Most tokens `--pack-tokens` may give.
-pub const SESSION_PACK_MAX: u64 = 100_000;
+/// `--pack-tokens` says otherwise (0 leaves it out). Muse Code takes at most
+/// [`HOOK_OUTPUT_CEILING`] bytes of a hook's output. Measured on 31 October
+/// 2026, a map of 2,500 tokens takes 8,464 bytes in JSON for the program's
+/// own Rust sources and 10,580 for Graphicle's Python tools, which
+/// leaves room for the project's memory in [`HOOK_OUTPUT_BYTES`]; at 8,000
+/// tokens, as in 0.1.9 and 0.1.10, the maps took 27,551 and 33,570 bytes.
+pub const SESSION_PACK_TOKENS: u64 = 2_500;
+/// Most tokens `--pack-tokens` may give: a larger map would leave no room
+/// for the project's memory.
+pub const SESSION_PACK_MAX: u64 = 3_500;
 /// A session pack younger than this is used without a rebuild.
 const PACK_FRESH: std::time::Duration = std::time::Duration::from_secs(600);
+/// Muse Code's limit on what a plugin's hook prints, in bytes. Muse Code
+/// 1.4.14 stops a hook whose standard output passes it and reads none of
+/// that output (`output_too_large`), so the session starts without the
+/// hook's context.
+pub const HOOK_OUTPUT_CEILING: usize = 16_384;
+/// The most bytes the session start prints for Muse Code, its newline
+/// included: [`HOOK_OUTPUT_CEILING`] less room to spare.
+pub const HOOK_OUTPUT_BYTES: usize = 14_000;
+const _: () = assert!(HOOK_OUTPUT_BYTES < HOOK_OUTPUT_CEILING);
 
 /// One hook of the plugin: its id, Muse Code's event, the argument of
 /// `graphicle hook muse` and Muse Code's timeout in milliseconds.
@@ -424,8 +445,10 @@ pub fn session_pack(directory: &Path, project: &str, tokens: u64) -> Option<Stri
 
 /// Build and keep the session pack of `project` at `tokens`: the repository
 /// part of a cache-layout pack with prefix share 1.0 (the same bytes for
-/// every question at a commit), written whole and renamed into place. One
-/// build at a time per pack: a second one finds the lock and leaves.
+/// every question at a commit), written whole and renamed into place. It is
+/// laid out relevant-first, the most connected files first, the order in
+/// which a session start that has to cut it keeps them ([`session_start`]).
+/// One build at a time per pack: a second one finds the lock and leaves.
 pub fn build_pack(store: &crate::store::Store, project: &str, tokens: u64) -> Result<PathBuf> {
     let session = crate::local::session(store, false)?;
     let path = pack_path(&store.directory, project, tokens);
@@ -454,7 +477,8 @@ pub fn build_pack(store: &crate::store::Store, project: &str, tokens: u64) -> Re
             &session.workspace,
             &session.capability,
             &json!({"repository_id":project,"question":"","budget":tokens,
-                "layout":"cache","prefix_share":1.0,"style":"markdown"}),
+                "layout":"cache","prefix_share":1.0,"style":"markdown",
+                "order":"relevant-first"}),
         )?;
         let text = crate::code_pack::text(&pack);
         let mut file = tempfile::NamedTempFile::new_in(&folder)?;
@@ -464,6 +488,232 @@ pub fn build_pack(store: &crate::store::Store, project: &str, tokens: u64) -> Re
     })();
     let _ = std::fs::remove_file(&lock);
     built.map(|()| path)
+}
+
+/// The output of `graphicle hook <client> session-start` for `context`, the
+/// same for every client: one line of JSON.
+pub fn start_output(context: &str) -> Value {
+    json!({"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":context}})
+}
+
+/// The bytes the session start prints for `context`: [`start_output`] and
+/// its newline.
+fn printed_bytes(context: &str) -> usize {
+    start_output(context).to_string().len() + 1
+}
+
+/// The bytes `text` takes inside a JSON string, as [`start_output`] writes
+/// it (six a byte at most).
+fn escaped_bytes(text: &str) -> usize {
+    serde_json::to_string(text).map_or(text.len() * 6, |quoted| quoted.len() - 2)
+}
+
+/// What a session start left out of its map.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum MapCut {
+    /// Nothing: the map is whole, or there is none.
+    Nothing,
+    /// Some of its parts.
+    Part,
+    /// All of it.
+    Whole,
+}
+
+/// The last line of a session start that left something out: what went,
+/// and which tools return it. `lines` memory lines went too.
+fn left_out(map: MapCut, lines: usize) -> String {
+    let memory = match lines {
+        1 => "the last line of project memory".to_string(),
+        lines => format!("the last {lines} lines of project memory"),
+    };
+    let what = match (map, lines) {
+        (MapCut::Part, _) => "part of the repository map".to_string(),
+        (MapCut::Whole, 0) => "the repository map".to_string(),
+        (MapCut::Whole, _) => format!("the repository map and {memory}"),
+        (MapCut::Nothing, _) => memory,
+    };
+    let tools = match (map == MapCut::Nothing, lines == 0) {
+        (false, true) => "the pack tool returns the repository's code",
+        (true, _) => "project_memory and session_timeline return the rest",
+        (false, false) => {
+            "the pack tool returns the repository's code, project_memory and session_timeline the rest"
+        }
+    };
+    format!(
+        "Graphicle left out {what} to stay within Muse Code's limit on a hook's output (16,384 bytes); {tools}."
+    )
+}
+
+/// The parts of the Markdown session pack `map`, in order: its header, then
+/// each section (`## `) and chunk (`### `), cut where those headings start
+/// outside fenced blocks.
+fn map_parts(map: &str) -> Vec<&str> {
+    let mut cuts = vec![0];
+    // The open fence's length in backticks (a pack's fence is longer than
+    // any run of backticks in its body).
+    let mut fence: Option<usize> = None;
+    let mut offset = 0;
+    for line in map.split_inclusive('\n') {
+        let text = line.trim_end();
+        let ticks = text.len() - text.trim_start_matches('`').len();
+        match fence {
+            Some(length) if ticks >= length && text[ticks..].trim().is_empty() => fence = None,
+            Some(_) => {}
+            None if offset > 0 && (text.starts_with("## ") || text.starts_with("### ")) => {
+                cuts.push(offset);
+            }
+            None if ticks >= 3 => fence = Some(ticks),
+            None => {}
+        }
+        offset += line.len();
+    }
+    cuts.push(map.len());
+    cuts.windows(2).map(|pair| &map[pair[0]..pair[1]]).collect()
+}
+
+/// The sections of a session map from the one a pack over its budget keeps
+/// longest to the one it drops first ([`crate::code_pack`]'s repository
+/// part): parts of a section further down this list go first.
+const MAP_KEEPS: [crate::code_pack::Section; 4] = [
+    crate::code_pack::Section::Architecture,
+    crate::code_pack::Section::Map,
+    crate::code_pack::Section::Docs,
+    crate::code_pack::Section::Breadth,
+];
+
+/// What fits of `map` in `room` bytes of JSON, in the map's own order: its
+/// header, then its parts ([`map_parts`]) taken by [`MAP_KEEPS`], each
+/// section's in the map's order (the files from the most connected), while
+/// they fit. A section's heading goes in with the first part of it that
+/// does. `None` when nothing past the header fits.
+fn map_fit(map: &str, room: usize) -> Option<String> {
+    let parts = map_parts(map);
+    // Each part's section: the index of the `## ` part it is in.
+    let mut section = Vec::with_capacity(parts.len());
+    let mut current = None;
+    for (index, part) in parts.iter().enumerate() {
+        if part.starts_with("## ") {
+            current = Some(index);
+        }
+        section.push(current);
+    }
+    let heading_only = |part: &str| {
+        part.starts_with("## ") && part.lines().skip(1).all(|line| line.trim().is_empty())
+    };
+    let rank = |index: usize| {
+        let Some(at) = section[index] else {
+            return 0;
+        };
+        let title = parts[at].lines().next().unwrap_or("")[3..].trim();
+        MAP_KEEPS
+            .iter()
+            .position(|kept| kept.title() == title)
+            .map_or(MAP_KEEPS.len() + 1, |position| position + 1)
+    };
+    let mut order: Vec<usize> = (0..parts.len())
+        .filter(|&index| !heading_only(parts[index]))
+        .collect();
+    order.sort_by_key(|&index| (rank(index), index));
+    let mut chosen = vec![false; parts.len()];
+    let mut used = 0;
+    for index in order {
+        let heading = section[index].filter(|&at| at != index && !chosen[at]);
+        let bytes = escaped_bytes(parts[index]) + heading.map_or(0, |at| escaped_bytes(parts[at]));
+        if used + bytes > room {
+            if index == 0 {
+                return None;
+            }
+            continue;
+        }
+        used += bytes;
+        chosen[index] = true;
+        if let Some(at) = heading {
+            chosen[at] = true;
+        }
+    }
+    if !chosen.iter().skip(1).any(|&kept| kept) {
+        return None;
+    }
+    let kept: String = parts
+        .iter()
+        .zip(&chosen)
+        .filter(|(_, kept)| **kept)
+        .map(|(part, _)| *part)
+        .collect();
+    Some(kept.trim_end().to_string())
+}
+
+/// Muse Code's session-start context: the repository's `map` (the kept
+/// session pack, [`session_pack`]) first, then `context` (the line on when
+/// to use Graphicle, then the project's memory:
+/// [`crate::store::Store::session_start_context`]), within
+/// [`HOOK_OUTPUT_BYTES`] once printed ([`printed_bytes`]). What does not fit
+/// goes, least important first: parts of the map, in the order a pack over
+/// its budget drops them ([`map_fit`]: its least connected files, then its
+/// documentation, folder map and architecture summary), then the whole map,
+/// then the memory's last lines (the recent turns before the memories, a
+/// heading whose lines all went with them), never the line on when to use
+/// Graphicle. A last line then says what was left out and which tools
+/// return it. Empty only if not even that line fits.
+pub fn session_start(map: Option<&str>, context: &str) -> String {
+    let map = map.map(str::trim_end).filter(|map| !map.is_empty());
+    let whole = match map {
+        Some(map) => format!("{map}\n\n{context}"),
+        None => context.to_string(),
+    };
+    if printed_bytes(&whole) <= HOOK_OUTPUT_BYTES {
+        return whole;
+    }
+    // Room for the map and the memory: the note's longest form and the line
+    // breaks around it are set aside (a line break is 2 bytes in JSON).
+    let reserved = printed_bytes("") + escaped_bytes(&left_out(MapCut::Whole, usize::MAX)) + 4;
+    let room = HOOK_OUTPUT_BYTES.saturating_sub(reserved);
+    let mut lines: Vec<&str> = context.split_inclusive('\n').collect();
+    let mut memory = escaped_bytes(context);
+    let (kept, cut) = match map {
+        None => (None, MapCut::Nothing),
+        Some(map) => match map_fit(map, room.saturating_sub(memory + 4)) {
+            Some(fitted) => (Some(fitted), MapCut::Part),
+            None => (None, MapCut::Whole),
+        },
+    };
+    let mut dropped = 0;
+    if kept.is_none() {
+        while lines.len() > 1 && memory > room {
+            memory -= lines.pop().map_or(0, escaped_bytes);
+            dropped += 1;
+        }
+        // A heading whose lines all went goes with them.
+        while dropped > 0
+            && lines.len() > 1
+            && lines
+                .last()
+                .is_some_and(|line| line.trim_end().ends_with(':'))
+        {
+            lines.pop();
+            dropped += 1;
+        }
+    }
+    let mut out = String::new();
+    if let Some(fitted) = &kept {
+        out.push_str(fitted);
+        out.push_str("\n\n");
+    }
+    out.extend(lines.iter().copied());
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&left_out(cut, dropped));
+    out.push('\n');
+    if printed_bytes(&out) <= HOOK_OUTPUT_BYTES {
+        return out;
+    }
+    // Not reached while the sizes above hold; the limit is kept regardless.
+    lines
+        .first()
+        .map(|line| line.to_string())
+        .filter(|line| printed_bytes(line) <= HOOK_OUTPUT_BYTES)
+        .unwrap_or_default()
 }
 
 /// The tool calls a PostToolBatch payload names: each object with a tool
@@ -729,6 +979,212 @@ mod tests {
         let given = json!({"transcript_path": day.join("session.jsonl")});
         assert_eq!(session_log(&given), Some(day.join("session.jsonl")));
         assert_eq!(session_log(&json!({"session_id":"../etc"})), None);
+    }
+
+    /// A breadth chunk of a session map: 30 numbered lines with quotes, a
+    /// backslash and non-ASCII text, which JSON and UTF-8 make longer.
+    fn chunk(file: usize, centrality: usize) -> String {
+        let mut text = format!(
+            "### src/f{file}.rs lines 1-30 (whole file)\nwhy: breadth: centrality {centrality}\n```rust\n"
+        );
+        for line in 1..=30 {
+            text.push_str(&format!("{line}\tlet v{line} = \"naïve \\\\ 東京\";\n"));
+        }
+        text.push_str("```\n\n");
+        text
+    }
+
+    /// The README chunk of a session map: its body holds a heading and a
+    /// fence of its own.
+    const README: &str = "### README.md lines 1-5\nwhy: readme\n````markdown\n## Install\n```sh\nmake\n```\n````\n\n";
+
+    /// A Markdown session pack as `build_pack` keeps it: the header, an
+    /// architecture section, `files` breadth chunks, the most connected
+    /// first, then the documentation.
+    fn session_map(files: usize) -> String {
+        let mut map = String::from(
+            "# Code pack: app\n\nRepository: app at commit abc\nTokens: estimated.\n\n## Architecture summary\n\nOne service and its jobs.\n\n## Breadth\n\n",
+        );
+        for file in 0..files {
+            map.push_str(&chunk(file, files - file));
+        }
+        map.push_str("## Documentation\n\n");
+        map.push_str(README);
+        map
+    }
+
+    fn memory_context(memories: usize) -> String {
+        let titles: String = (0..memories)
+            .map(|i| format!("- Décision \"{i}\" on the 東京 bucket \\ region (memory m{i})\n"))
+            .collect();
+        format!(
+            "{}\nGraphicle project memory. Reviewed memories are current.\nReviewed memories:\n{titles}",
+            crate::agent_instructions::SESSION_ROUTING
+        )
+    }
+
+    #[test]
+    fn a_map_splits_where_a_section_or_chunk_starts() {
+        let map = session_map(2);
+        let parts = map_parts(&map);
+        assert_eq!(parts.concat(), map);
+        let starts: Vec<&str> = parts
+            .iter()
+            .map(|part| part.lines().next().unwrap())
+            .collect();
+        // Not at the heading inside the README's fence.
+        assert_eq!(
+            starts,
+            [
+                "# Code pack: app",
+                "## Architecture summary",
+                "## Breadth",
+                "### src/f0.rs lines 1-30 (whole file)",
+                "### src/f1.rs lines 1-30 (whole file)",
+                "## Documentation",
+                "### README.md lines 1-5"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_session_start_that_fits_is_left_whole() {
+        let context = memory_context(3);
+        let map = session_map(2);
+        assert_eq!(
+            session_start(Some(&map), &context),
+            format!("{}\n\n{context}", map.trim_end())
+        );
+        assert_eq!(session_start(None, &context), context);
+        assert_eq!(session_start(Some(" \n"), &context), context);
+    }
+
+    /// Muse Code 1.4.14 stopped the session start of 0.1.10 for printing
+    /// more than 16,384 bytes. Whatever the sizes, the output stays within
+    /// HOOK_OUTPUT_BYTES and is JSON holding the line on when to use
+    /// Graphicle.
+    #[test]
+    fn the_session_start_stays_within_muse_codes_limit() {
+        for files in [0, 1, 5, 20, 60, 400] {
+            for memories in [0, 10, 100, 400] {
+                let map = session_map(files);
+                let context = memory_context(memories);
+                let out = session_start(Some(&map), &context);
+                let printed = start_output(&out).to_string();
+                assert!(
+                    printed.len() < HOOK_OUTPUT_BYTES,
+                    "{files} files, {memories} memories: {} bytes",
+                    printed.len()
+                );
+                let parsed: Value = serde_json::from_str(&printed).unwrap();
+                assert_eq!(parsed["hookSpecificOutput"]["additionalContext"], out);
+                assert!(out.contains(crate::agent_instructions::SESSION_ROUTING));
+                let whole = printed_bytes(&format!("{}\n\n{context}", map.trim_end()));
+                assert_eq!(
+                    out.contains("Graphicle left out"),
+                    whole > HOOK_OUTPUT_BYTES,
+                    "{files} files, {memories} memories"
+                );
+            }
+        }
+    }
+
+    /// Too large together: the map loses parts as a pack over its budget
+    /// would (its least connected files first, the documentation after
+    /// them), each part whole and in the map's order; the memory stays whole,
+    /// and a last line says so.
+    #[test]
+    fn the_map_is_cut_before_the_memory() {
+        let context = memory_context(60);
+        let out = session_start(Some(&session_map(200)), &context);
+        let routing = format!("\n\n{}", crate::agent_instructions::SESSION_ROUTING);
+        let (map, rest) = out.split_once(&routing).unwrap();
+        let kept = (0..200)
+            .filter(|file| map.contains(&format!("### src/f{file}.rs ")))
+            .count();
+        assert!(kept > 0 && kept < 200, "{map}");
+        let mut expected = String::from(
+            "# Code pack: app\n\nRepository: app at commit abc\nTokens: estimated.\n\n## Architecture summary\n\nOne service and its jobs.\n\n## Breadth\n\n",
+        );
+        for file in 0..kept {
+            expected.push_str(&chunk(file, 200 - file));
+        }
+        expected.push_str("## Documentation\n\n");
+        expected.push_str(README);
+        assert_eq!(map, expected.trim_end());
+        assert!(rest.contains(&context[context.find('\n').unwrap()..]));
+        assert!(out.ends_with(
+            "Graphicle left out part of the repository map to stay within Muse Code's limit on a hook's output (16,384 bytes); the pack tool returns the repository's code.\n"
+        ));
+
+        // A part too large for the room goes; smaller ones after it still
+        // fill the room.
+        let mut map = String::from("# Code pack: app\n\n## Breadth\n\n");
+        map.push_str(&chunk(0, 9));
+        let body: String = (1..=2000)
+            .map(|line| format!("{line}\tlet w = 0;\n"))
+            .collect();
+        map.push_str(&format!(
+            "### src/f1.rs lines 1-2000 (whole file)\nwhy: breadth: centrality 8\n```rust\n{body}```\n\n"
+        ));
+        for file in 2..6 {
+            map.push_str(&chunk(file, 9 - file));
+        }
+        let out = session_start(Some(&map), &context);
+        assert!(printed_bytes(&out) <= HOOK_OUTPUT_BYTES);
+        assert!(out.contains("### src/f0.rs ") && out.contains(&chunk(5, 4)));
+        assert!(!out.contains("### src/f1.rs "), "{out}");
+    }
+
+    /// Memory larger than the limit alone (titles in CJK script take three
+    /// bytes a character): the map goes, then the memory's last lines, and a
+    /// heading whose lines all went; the line on when to use Graphicle
+    /// stays.
+    #[test]
+    fn memory_too_large_loses_its_last_lines_never_the_routing_line() {
+        let routing = crate::agent_instructions::SESSION_ROUTING;
+        let titles: String = (0..120)
+            .map(|i| format!("- {} (memory m{i})\n", "東京".repeat(40)))
+            .collect();
+        let turns: String = (0..5)
+            .map(|i| format!("- 2026-10-30 東京 {i} (connector:c:{i})\n"))
+            .collect();
+        let context = format!(
+            "{routing}\nGraphicle project memory.\nReviewed memories:\n{titles}Recent captured turns (session_timeline for more):\n{turns}"
+        );
+        for map in [Some(session_map(20)), None] {
+            let out = session_start(map.as_deref(), &context);
+            assert!(printed_bytes(&out) <= HOOK_OUTPUT_BYTES);
+            assert!(out.starts_with(routing), "{out}");
+            assert!(out.contains("(memory m0)") && !out.contains("Recent captured"));
+            let kept = out
+                .lines()
+                .filter(|line| line.contains("(memory m"))
+                .count();
+            let note = out.lines().last().unwrap();
+            let left = 120 - kept + 6;
+            let expected = match map {
+                Some(_) => format!(
+                    "Graphicle left out the repository map and the last {left} lines of project memory to stay within Muse Code's limit on a hook's output (16,384 bytes); the pack tool returns the repository's code, project_memory and session_timeline the rest."
+                ),
+                None => format!(
+                    "Graphicle left out the last {left} lines of project memory to stay within Muse Code's limit on a hook's output (16,384 bytes); project_memory and session_timeline return the rest."
+                ),
+            };
+            assert_eq!(note, expected);
+        }
+        // One line too large: it goes, and so does its heading.
+        let context = format!(
+            "{routing}\nGraphicle project memory.\nReviewed memories:\n- {} (memory m0)\n",
+            "東京".repeat(3000)
+        );
+        let out = session_start(None, &context);
+        assert_eq!(
+            out,
+            format!(
+                "{routing}\nGraphicle project memory.\nGraphicle left out the last 2 lines of project memory to stay within Muse Code's limit on a hook's output (16,384 bytes); project_memory and session_timeline return the rest.\n"
+            )
+        );
     }
 
     #[test]

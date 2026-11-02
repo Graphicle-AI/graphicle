@@ -1439,6 +1439,25 @@ impl Worker {
         input: &Value,
         schema: &Value,
     ) -> Result<Value> {
+        Ok(self
+            .infer_capped(job, instructions, input, schema, &[])
+            .await?
+            .0)
+    }
+    /// [`Worker::infer`] for a reply whose top-level arrays named in `capped`
+    /// may hold more items than the schema's `maxItems` allows: each such
+    /// array keeps its first items up to that cap ([`cap_arrays`]) before the
+    /// reply is checked against the schema, so the cap still holds. The
+    /// reply, and for each array cut how many items the model returned and
+    /// how many were kept, for the job's record.
+    pub async fn infer_capped(
+        &self,
+        job: &Job,
+        instructions: &str,
+        input: &Value,
+        schema: &Value,
+        capped: &[&str],
+    ) -> Result<(Value, Value)> {
         let config = crate::settings::configuration(&self.store, &job.workspace, &self.config)?;
         let (_, profile) = config.profile(job.payload["model"].as_str())?;
         if s(&job.payload, "model_key") != model::key(profile) {
@@ -1521,9 +1540,10 @@ impl Worker {
             Ok(None)
         })?;
         if let Some(reply) = cached {
-            let value = reply.json_for(schema)?;
+            let mut value = reply.json_for(schema)?;
+            let cut = cap_arrays(schema, &mut value, capped);
             validate_output(schema, &value)?;
-            return Ok(value);
+            return Ok((value, cut));
         }
         let reply = if job.payload["dispatch"] == "redis" {
             crate::distributed::generate(
@@ -1571,10 +1591,12 @@ impl Worker {
         })?;
         let reply = reply?;
         let raw = reply.json()?;
-        let value = reply.json_for(schema)?;
+        let mut value = reply.json_for(schema)?;
+        let restored = value != raw;
+        let cut = cap_arrays(schema, &mut value, capped);
         validate_output(schema, &value)?;
         guarded(&self.store, job, |db, _, _| {
-            if value != raw {
+            if restored {
                 store::event(
                     db,
                     &job.repository,
@@ -1605,7 +1627,7 @@ impl Worker {
             )?;
             Ok(())
         })?;
-        Ok(value)
+        Ok((value, cut))
     }
     pub async fn embeddings(
         &self,
@@ -1691,6 +1713,27 @@ impl Worker {
 }
 /// How a reply that fails its output schema is reported (see `validate_output`).
 pub const CONTRACT_MISMATCH: &str = "Model output does not match the workflow contract";
+/// Cut each top-level array of `value` that `capped` names to the
+/// `maxItems` that `schema` gives it, keeping its first items. A model that
+/// is not held to the schema (a tool's input schema is a hint to Claude, for
+/// example) can cite more passages than the answer contract keeps. For each
+/// array cut: `{"returned": items in the reply, "kept": the cap}`.
+pub fn cap_arrays(schema: &Value, value: &mut Value, capped: &[&str]) -> Value {
+    let mut cut = serde_json::Map::new();
+    for &field in capped {
+        let Some(cap) = schema["properties"][field]["maxItems"].as_u64() else {
+            continue;
+        };
+        let cap = usize::try_from(cap).unwrap_or(usize::MAX);
+        if let Some(items) = value.get_mut(field).and_then(Value::as_array_mut)
+            && items.len() > cap
+        {
+            cut.insert(field.into(), json!({"returned":items.len(),"kept":cap}));
+            items.truncate(cap);
+        }
+    }
+    Value::Object(cut)
+}
 fn validate_output(schema: &Value, value: &Value) -> Result<()> {
     let validator = jsonschema::validator_for(&model::strict_schema(schema))
         .map_err(|_| Error::bad("Invalid workflow output schema"))?;

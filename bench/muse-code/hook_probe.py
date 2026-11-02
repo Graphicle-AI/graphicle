@@ -125,11 +125,11 @@ def session(a, env, work, name, prompt, max_steps, cap, price):
         "time": muse_bench.now_iso(), "provider": "meta", "kit": muse_bench.KIT, "client": "muse-code",
         "model": a.model, "arm": f"probe-{name}", "run": a.out, "status": "ok" if code == 0 and not reason else
         "stopped" if reason else "error", "input_tokens": tin, "cached_tokens": cached, "output_tokens": tout,
-        "reasoning_tokens": treason, "model_calls": len(meter.calls), "seconds": round(time.time() - t0, 3),
+        "reasoning_tokens": treason, "model_calls": meter.call_count(), "seconds": round(time.time() - t0, 3),
         "cost_usd": round(cost, 6)})
     with open(err_path, encoding="utf-8", errors="replace") as f:
         stderr_tail = f.read()[-2000:]
-    return {"exit_code": code, "stopped": reason, "model_calls": len(meter.calls), "cost_usd": round(cost, 6),
+    return {"exit_code": code, "stopped": reason, "model_calls": meter.call_count(), "cost_usd": round(cost, 6),
             "answer": "\n".join(meter.texts)[-4000:], "stderr_tail": stderr_tail}
 
 

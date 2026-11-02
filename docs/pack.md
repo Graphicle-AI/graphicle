@@ -347,8 +347,11 @@ branch, see [`graphicle fix`](fix.md).
 ## Which model
 
 `ask --pack` and `plan` work with any configured chat model; a pack is only
-as large as the model's input limit allows. For a whole-repository pack,
-use a model with a long context window:
+as large as the model's input limit allows. They find the model's key where
+`ask` finds it: in the environment variable the profile names, or in the
+app's vault for a key saved in the app (`graphicle open`, then
+Connections). For a whole-repository pack, use a model with a long context
+window:
 
 - Muse Spark or Muse Wonder through the Meta Model API: `graphicle config
   set model meta` or `graphicle config set model meta:muse-wonder-1.0`

@@ -216,7 +216,8 @@ class RunnerTest(unittest.TestCase):
         if "--profile" not in args:
             cmd += ["--profile", "mock"]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=dict(os.environ, MODEL_API_KEY="mock-key",
-                                                                                  BASETEN_API_KEY="mock-key"))
+                                                                                  BASETEN_API_KEY="mock-key",
+                                                                                  FIREWORKS_API_KEY="mock-key"))
         if ok:
             self.assertEqual(r.returncode, 0, r.stderr[-2000:])
             self.runs.append(os.path.join(self.tmp, out))
@@ -484,6 +485,52 @@ class RunnerTest(unittest.TestCase):
         later = estimate.cost_of(p, b + 1000, b, 4000)
         self.assertAlmostEqual(estimate.cost_of(p, tin, cached, tout), first + 3 * later)
         self.assertLess(later, first)
+
+    def test_h1_fireworks_profile_sends_the_session_id_as_header_and_user_field(self):
+        # Named to run after the tests whose mock answers depend on the request count (test_g4).
+        from run import PROFILES
+        prof = PROFILES["fireworks"]
+        self.assertEqual((prof["base_url"], prof["api"], prof["model"], prof["key_env"]),
+                         ("https://api.fireworks.ai/inference/v1", "chat", "accounts/fireworks/models/muse-spark-open",
+                          "FIREWORKS_API_KEY"))
+        price = PRICES["models"][prof["model"]]
+        self.assertEqual((price["provider"], price["input"], price["cached_input"], price["output"]),
+                         ("fireworks", 1.25, 0.15, 4.25))
+        self.assertEqual(read_json(os.path.join(HERE, "caps.json"))["usd"]["fireworks"], 60.0)
+        before = len(self.requests())
+        self.run_py("fireworks-trunc", "--profile", "fireworks", "--arm", "trunc", "--budget", "32K",
+                    "--repos", "pytorch", "--jobs", "1")
+        reqs = self.requests()[before:]
+        self.assertEqual(len(reqs), 3)
+        self.assertTrue(all(r["path"].endswith("/chat/completions") for r in reqs))
+        self.assertEqual({r["prompt_cache_key"] for r in reqs}, {None})
+        self.assertEqual({r["prompt_cache_retention"] for r in reqs}, {None})
+        aff = {r["session_affinity"] for r in reqs}
+        self.assertEqual(len(aff), 1, "one session id for the group")
+        self.assertRegex(next(iter(aff)), r"^[0-9a-f]{32}$")
+        self.assertEqual({r["user"] for r in reqs}, aff, "the user field carries the same session id")
+        self.assertEqual({r["max_tokens"] for r in reqs}, {8192})
+        self.assertEqual({r["reasoning_effort"] for r in reqs}, {"medium"})
+        rows = {r["id"]: r for r in self.rows("fireworks-trunc")}
+        self.assertEqual(rows["pytorch-1"]["tokens_cached"], 0)
+        self.assertGreaterEqual(rows["pytorch-2"]["tokens_cached"], 1024)
+        meta = read_json(os.path.join(self.tmp, "fireworks-trunc", "run.json"))
+        self.assertEqual((meta["profile"], meta["api"], meta["session_affinity"], meta["session_affinity_user"]),
+                         ("fireworks", "chat", True, True))
+        resp = read_json(os.path.join(self.tmp, "fireworks-trunc", "raw", "pytorch-2.json"))["responses"][0]
+        self.assertEqual(int(resp["_headers"]["fireworks-cached-prompt-tokens"]),
+                         resp["usage"]["prompt_tokens_details"]["cached_tokens"])
+
+    def test_h2_cached_tokens_fall_back_to_the_fireworks_header(self):
+        from run import usage_of
+        resp = {"usage": {"prompt_tokens": 5000, "completion_tokens": 40,
+                          "completion_tokens_details": {"reasoning_tokens": 30}},
+                "_headers": {"fireworks-prompt-tokens": "5000", "fireworks-cached-prompt-tokens": "4096"}}
+        self.assertEqual(usage_of(resp, "chat"), (5000, 4096, 40, 30))
+        resp["usage"]["prompt_tokens_details"] = {"cached_tokens": 1024}
+        self.assertEqual(usage_of(resp, "chat"), (5000, 1024, 40, 30), "the usage field wins when it is there")
+        self.assertEqual(usage_of({"usage": {"prompt_tokens": 7, "completion_tokens": 1}}, "chat"), (7, 0, 1, 0))
+        self.assertEqual(usage_of({"usage": {"input_tokens": 9, "output_tokens": 2}}, "responses"), (9, 0, 2, 0))
 
     def test_pack_arms_on_a_real_index(self):
         work, binary = os.environ.get("BENCH_WORK"), os.environ.get("BENCH_GRAPHICLE")

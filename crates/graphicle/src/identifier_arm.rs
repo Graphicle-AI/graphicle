@@ -494,6 +494,64 @@ impl CodeGraph {
     }
 }
 
+/// Per code name, the files that define it, each with the start line of
+/// its first definition there ([`defining_files`]).
+pub type Definitions = Vec<Vec<(String, Option<usize>)>>;
+
+/// Where the project's code graph defines each of `names`, as the arm finds
+/// a name's definitions (the longest matching suffix of its dotted name):
+/// per name, the files that define it with the start line of the first
+/// definition in each, in symbol order, at most `most + 1` files (more than
+/// `most` tells the caller the name is too common). A name the graph does
+/// not define gets none; so does every name when the project has no code
+/// graph. A file changed since the graph was built is left out, as the
+/// arm leaves it. `fix` adds the files of the names a failed round's
+/// explanation gives to the next round's request.
+pub fn defining_files(
+    db: &Connection,
+    repository: &str,
+    names: &[String],
+    most: usize,
+) -> Definitions {
+    let mut graph = code_graph(db, repository, true);
+    let mut found = files_defining(graph.as_ref(), names, most);
+    // A query file whose read failed: the resident graph answers instead.
+    if graph.as_ref().is_some_and(CodeGraph::corrupt) {
+        graph = code_graph(db, repository, false);
+        found = files_defining(graph.as_ref(), names, most);
+    }
+    found
+}
+
+fn files_defining(graph: Option<&CodeGraph>, names: &[String], most: usize) -> Definitions {
+    names
+        .iter()
+        .map(|name| {
+            let mut files: Vec<(String, Option<usize>)> = Vec::new();
+            let Some(graph) = graph else {
+                return files;
+            };
+            for i in graph.definitions(name) {
+                let (_, relpath) = graph.symbol(i);
+                if relpath.is_empty()
+                    || files.iter().any(|(file, _)| file == relpath)
+                    || graph
+                        .unchanged
+                        .as_ref()
+                        .is_some_and(|unchanged| !unchanged.contains(relpath))
+                {
+                    continue;
+                }
+                files.push((relpath.to_string(), graph.start_line(i)));
+                if files.len() > most {
+                    break;
+                }
+            }
+            files
+        })
+        .collect()
+}
+
 /// What [`rank`] found.
 struct Ranked {
     ranking: Vec<String>,

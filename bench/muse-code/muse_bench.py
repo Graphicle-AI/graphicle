@@ -26,7 +26,9 @@ when the day's logged total plus the run cap stays within the day cap, and the l
 within the total cap.
 While a run streams, its usage is added up and the run is stopped (SIGTERM to its process group, then SIGKILL)
 once its cost reaches the run cap less --margin, the room left for a call in flight; --max-model-steps bounds
-it as well. Every run appends one line to this kit's spend log (provider meta, kit muse-code), whatever its
+it as well. Muse Code 1.4.14 reports usage once, in run.usage at the end of the run, so with that version the
+cap acts only after the run and --max-model-steps is what bounds it.
+Every run appends one line to this kit's spend log (provider meta, kit muse-code), whatever its
 outcome; the log is separate from the whole-repository benchmark's spend log. The key is read
 from --key-file (or MODEL_API_KEY) and given to Muse Code as META_API_KEY; it is
 never printed or written.
@@ -125,7 +127,9 @@ def walk(value):
 def event_name(event):
     if not isinstance(event, dict):
         return ""
-    for key in ("type", "event", "kind", "method"):
+    # Muse Code 1.4.14 names an event in "payload_type" (run.usage, run.terminal.completed, ...) and puts its
+    # fields in "payload".
+    for key in ("payload_type", "type", "event", "kind", "method"):
         if isinstance(event.get(key), str):
             return event[key]
     return ""
@@ -139,6 +143,7 @@ class Meter:
         self.calls = []          # per-call usage tuples
         self.seen = set()        # response ids already counted
         self.total = None        # run.usage aggregate, when Muse Code printed one
+        self.reported_calls = 0  # model calls that run.usage counted
         self.texts = []          # assistant texts, in order
         self.events = 0
 
@@ -150,15 +155,17 @@ class Meter:
         self.events += 1
         name = event_name(event)
         if "run.usage" in name or (name.endswith("usage") and "run" in name):
-            found = [t for t in (tokens_of(obj) for obj in walk(event)) if t]
+            found = [(obj, t) for obj, t in ((obj, tokens_of(obj)) for obj in walk(event)) if t]
             if found:
                 # A total beside per-model rows is the sum of the others: use it alone.
-                big = max(found, key=lambda t: t[0])
-                rest = [t for t in found if t is not big]
+                big_obj, big = max(found, key=lambda f: f[1][0])
+                rest = [t for obj, t in found if obj is not big_obj]
                 if rest and all(sum(t[i] for t in rest) == big[i] for i in range(4)):
-                    self.total = big
+                    rows = [big_obj]
                 else:
-                    self.total = tuple(sum(t[i] for t in found) for i in range(4))
+                    rows = [obj for obj, _ in found]
+                self.total = tuple(sum(tokens_of(obj)[i] for obj in rows) for i in range(4))
+                self.reported_calls = sum(obj["calls"] for obj in rows if isinstance(obj.get("calls"), int))
             return
         for obj in walk(event):
             usage = obj.get("usage")
@@ -170,8 +177,10 @@ class Meter:
                         self.seen.add(rid)
                     self.calls.append(t)
             kind = obj.get("kind") or obj.get("type") or ""
+            # run_terminal: Muse Code 1.4.14's final answer (run.terminal.completed); its run_output_delta
+            # pieces are left out, since the terminal event repeats the whole text.
             if isinstance(kind, str) and (kind in ("assistant_message_committed", "assistant_message",
-                                                   "agent_message", "final_message")
+                                                   "agent_message", "final_message", "run_terminal")
                                           or kind.endswith("message.completed")):
                 text = obj.get("text") or obj.get("message") or obj.get("content")
                 if isinstance(text, list):
@@ -183,6 +192,10 @@ class Meter:
         if self.total is not None and self.total[0] > 0:
             return self.total
         return tuple(sum(c[i] for c in self.calls) for i in range(4))
+
+    def call_count(self):
+        """Model calls: one per usage event seen, else the count run.usage reported."""
+        return len(self.calls) or self.reported_calls
 
     def spent(self):
         tin, cached, tout, _ = self.usage()
@@ -293,7 +306,7 @@ def run_question(a, q, text, clone, template, key, price, out):
     norm = normalize_answer(files, file_set) if files is not None else []
     row = {"id": qid, "repo": q["repo"], "arm": a.arm, "model": a.model, "gold": q["gold"], "files": norm,
            "answer_parsed": files is not None, "exit_code": code, "stopped": reason, "events": meter.events,
-           "model_calls": len(meter.calls), "tokens_in": tin, "tokens_cached": cached, "tokens_out": tout,
+           "model_calls": meter.call_count(), "tokens_in": tin, "tokens_cached": cached, "tokens_out": tout,
            "tokens_reasoning": treason, "cost_usd": round(cost, 6), "wall_seconds": round(seconds, 1)}
     row.update(score_answer(norm, q["gold"]))
     append_log(a.spend_log, {"time": now_iso(), "provider": "meta", "kit": KIT, "client": "muse-code",
@@ -301,7 +314,7 @@ def run_question(a, q, text, clone, template, key, price, out):
                              "repo": q["repo"].split("/")[-1], "question": qid, "status": "ok" if code == 0 and
                              not reason else "stopped" if reason else "error", "input_tokens": tin,
                              "cached_tokens": cached, "output_tokens": tout, "reasoning_tokens": treason,
-                             "model_calls": len(meter.calls), "seconds": round(seconds, 3),
+                             "model_calls": meter.call_count(), "seconds": round(seconds, 3),
                              "cost_usd": round(cost, 6)})
     return row
 

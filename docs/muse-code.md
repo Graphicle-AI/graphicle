@@ -11,12 +11,30 @@ after each code question, and to keep each session as a source of the
 project, so that the next session can recall what this one decided.
 
 **Status of the plugin.** It is built and tested against a stand-in `muse`
-program that follows Muse Code's plugin contract. It has not yet run with
-Muse Code on Meta's live API, so which hook events reach the model, and how
-the context sits in each request, are as designed, not yet observed.
-`bench/muse-code/hook_probe.py` checks the hook events in one short
-session. Until that check has passed, setup does not install the plugin for
-you.
+program that follows Muse Code's plugin contract. On 30 October 2026 the
+plugin of Graphicle 0.1.10 ran in one session of Muse Code 1.4.14 on Meta's
+live API. Muse Code listed the plugin's tools and ran four of its six hooks:
+
+- `SessionStart` failed. Its output passed the 16,384 bytes Muse Code takes
+  from a hook, so Muse Code stopped it and read none of it, and the session
+  started without Graphicle's session-start context.
+- `UserPromptSubmit` exited normally in 22 milliseconds and added no
+  context. It adds context only to a prompt it reads as a code question, and
+  it did not read that prompt (a report in plain words that named no code)
+  as one.
+- `PostToolBatch` exited normally after each of the session's 6 batches of
+  tool calls. After one of them it added its sentence on Graphicle's tools,
+  in 17 milliseconds, and 4 seconds later Muse Code called the plugin's
+  `pack` tool.
+- `Stop` exited normally in 17 milliseconds.
+
+0.1.11 keeps the session start's output under 14,000 bytes
+([below](#context-that-keeps-the-prompt-cache)). That is tested against the
+stand-in `muse` program, not yet in a live session. Which hook events reach
+the model, and how the context sits in each request, are as designed, not
+yet observed: `bench/muse-code/hook_probe.py` checks the hook events in one
+short session. Until that check has passed, setup does not install the
+plugin for you.
 
 ## Connect
 
@@ -83,7 +101,7 @@ Code does when a plugin's server cannot start, with and without the field.
 |---|---|
 | MCP server | `graphicle mcp --project . --or-workspace` with the flags you gave `connect`: the project of the folder Muse Code starts it in, else every project of the workspace, so it starts in any folder. The code graph's tools, cited search, `pack`, and with `--allow-learning` memory proposals that a person reviews. It sets `"mode": "optional"`, as the settings entry does; whether Muse Code then skips it when it cannot start is not confirmed ([above](#add-the-plugin-preview)). |
 | Skill `graphicle` | When to call which tool: `pack` for a question across files, `query_graph` and `get_neighbors` for definitions, callers and callees, `recall_project` for past decisions, `propose_memory` to record one. |
-| `SessionStart` hook | Adds the project's map (below) and its reviewed memories. |
+| `SessionStart` hook | Adds the project's map (below) and its reviewed memories, within 14,000 bytes. |
 | `UserPromptSubmit` hook | For a code question, adds the cited excerpts `graphicle context` finds, at most 8,400 characters, within the hook's time budget (10 seconds unless `prompt_context.seconds` says otherwise). |
 | `PostToolBatch` hook | After a batch of tool calls that searched the files, adds one sentence on Graphicle's graph tools, at most five times a session. |
 | `Stop`, `PreCompact`, `SessionEnd` hooks | Hand the session log to a detached `graphicle sessions import`: finished turns become sources of the project. |
@@ -105,10 +123,11 @@ requests to the live API:
 
 - **At session start:** the project's map comes first. It is the repository
   part of a cache-layout pack with `--prefix-share 1.0`
-  ([packs](pack.md#layouts-and-the-prompt-cache)), 8,000 tokens by default:
+  ([packs](pack.md#layouts-and-the-prompt-cache)), 2,500 tokens by default:
   the architecture summary, a map of the folders, the most connected files
-  and the top documentation. It is the same bytes for every session at a
-  commit, so sessions can share it too. The reviewed memories follow it.
+  (most connected first) and the top documentation. It is the same bytes for
+  every session at a commit, so sessions can share it too. The reviewed
+  memories follow it.
 - **After a prompt:** the question's excerpts follow the prompt they answer,
   so the conversation before them stays as it was.
 - **Never before every model call:** context added on `PreLLMCall` would
@@ -119,7 +138,21 @@ background when it is older than ten minutes, so a session start never
 waits for a pack; the first session after `connect muse --hooks` may start
 without it.
 `--pack-tokens N` after `hook muse session-start` in the plugin's manifest
-sizes it (0 leaves it out, at most 100,000).
+sizes it (0 leaves it out, at most 3,500).
+
+Muse Code takes at most 16,384 bytes of what a hook prints; past that it
+stops the hook and reads none of it. The session start prints at most
+14,000 bytes. A map of 2,500 tokens took 8,464 bytes for Graphicle's own
+Rust code and 10,580 bytes for its Python tools (measured on 31 October
+2026), which leaves room for the memories. When the map and the memories do
+not fit together, the session start leaves out the least important parts
+first: parts of the map, in the order a pack over its budget drops them
+(its least connected files first, then its documentation, folder map and
+architecture summary), then the whole map, then the memory's last lines
+(recent turns before memories), never the line on when to use Graphicle. A
+last line then says what was left out and which tool returns it. With a map
+cut this way, the map is the same bytes from session to session while the
+memories stay the same.
 
 ## Session memory
 

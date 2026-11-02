@@ -21,8 +21,8 @@ before and after too, with no model, so a run against the mock still shows what 
 
 **Mock** (--mock): mock_meta.py stands in for the Meta Model API (no key, no model, no cost); its computer-use,
 reading and fix replies come from the target's "mock" section. **Live** (--models FILE --key-file FILE): FILE
-names the profiles (--see-model and --fix-model for Muse Wonder, --read-model for Muse Spark, --sam-model for SAM
-3.1), each with its price; the key file (mode 0600) goes to Graphicle's processes as MODEL_API_KEY, never to the
+names the profiles (--see-model for computer use, Muse Spark by default; --fix-model for Muse Wonder; --read-model
+for Muse Spark; --sam-model for SAM 3.1), each with its price; the key file (mode 0600) goes to Graphicle's processes as MODEL_API_KEY, never to the
 app, the driver or the receipt. Every call goes through the usage ledger under this run's own copies of the
 profiles, whose caps hold the run to --max-run-cost (the binary checks them before each call); the run does
 not start when the day's flow runs and this one could pass --max-day-cost.
@@ -277,6 +277,13 @@ class Flow:
     def run_cost(self):
         return sum((r.get("cost_usd") or 0.0) for r in self.mine())
 
+    def see_budget(self):
+        """What see's profile may still spend: its cap less its own calls. When see and fix share a profile,
+        fix's calls are among them; when they do not, fix spends from its own cap, not from the check's."""
+        name = self.profiles["see"]
+        spent = sum((r.get("cost_usd") or 0.0) for r in self.mine() if r.get("profile") == name)
+        return max(0.01, self.caps[name] - spent)
+
     # ------------------------------------------------------------ the app
 
     def checkout(self):
@@ -390,7 +397,7 @@ class Flow:
     def see(self, step, url, look_for, task):
         task_file = self.out / f"{step}-task.md"
         task_file.write_text(task)
-        remaining = max(0.01, self.caps[self.profiles["see"]] - self.run_cost())
+        remaining = self.see_budget()
         args = ["see", "--task-file", str(task_file), "--driver", self.driver_command(url), "--look-for", look_for,
                 "--out", str(self.out / step), "--steps", str(self.args.steps), "--max-cost", f"{remaining:.4f}",
                 "--model", self.profiles["see"], "--json"]
@@ -709,7 +716,7 @@ def main():
     mode.add_argument("--mock", action="store_true", help="run against mock_meta.py (no key, no model, no cost)")
     mode.add_argument("--models", help="live: the models file with the profiles named below")
     parser.add_argument("--key-file", help="live: the Meta Model API key, in a file of mode 0600")
-    parser.add_argument("--see-model", default="wonder")
+    parser.add_argument("--see-model", default="spark")
     parser.add_argument("--fix-model", default="wonder")
     parser.add_argument("--read-model", default="spark")
     parser.add_argument("--sam-model", default="sam")
