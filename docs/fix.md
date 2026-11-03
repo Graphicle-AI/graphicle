@@ -46,17 +46,18 @@ graphicle fix - --test "cargo test -p store" < issue.txt
    written with CRLF, so the file keeps its line breaks; an LF file keeps
    LF. In a file that mixes the two, or has no line break, the search text
    must match as it is written, and the replacement is written as it is.
-5. **Test.** Your test command runs in the worktree with `sh -c`, with a
-   timeout (`--timeout`, 1 to 86,400 seconds, default 600). The run ends
-   when the command ends: whatever it left running in its process group is
-   stopped then, and on Linux so is any process it started that left the
-   group. At the timeout the command is stopped with its process group (its
-   process tree on Windows). On Linux that sweep also stops daemons the test
-   started for later builds to share, such as an `sccache` server or a
-   Gradle daemon; the next build starts them again. At most 6,000 bytes of
-   the output, and a short marker where it was cut, go back to the model, without terminal colour codes: all of it
-   when it fits, else the lines that report failures and then its end
-   ([the test output](#the-test-output)).
+5. **Test.** Your test command runs in the worktree with `sh -c` (`cmd /C`
+   on Windows), with a timeout (`--timeout`, 1 to 86,400 seconds, default
+   600). The run ends when the command ends: whatever it left running in its
+   process group is stopped then, and on Linux so is any process it started
+   that left the group. At the timeout the command is stopped with its
+   process group (its process tree on Windows). On Linux that sweep also
+   stops daemons the test started for later builds to share, such as an
+   `sccache` server or a Gradle daemon; the next build starts them again. At
+   most 6,000 bytes of the output, and a short marker where it was cut, go
+   back to the model, without terminal colour codes: all of it when it fits,
+   else the lines that report failures and then its end ([the test
+   output](#the-test-output)).
 6. **Again.** If the tests fail, or no edit could be applied, the next round
    sends the same instructions, pack, issue and plan, then the test output
    (or why the edits were refused), the diff so far, and the files that the
@@ -200,7 +201,7 @@ without them as not added.
 |---|---|---|
 | `ISSUE` | none | The issue's text; `-` reads it from standard input |
 | `--issue-file FILE` | none | Read the issue's text from a file (at most 1 MiB) |
-| `--test CMD` | `fix.test` | The test command, run with `sh -c` in the worktree |
+| `--test CMD` | `fix.test` | The test command, run with `sh -c` (`cmd /C` on Windows) in the worktree |
 | `--rounds N` | 3 | Rounds of edits and tests at most, 1 to 10 |
 | `--budget TOKENS` | the input limit less 16,000 | The pack's budget; the room after it holds the issue, the plan, and a failed round's test output and diff, and without `--budget` the files a round adds take only what is left of it |
 | `--branch NAME` | `graphicle/fix-<words>` | The new branch; it must not exist |
