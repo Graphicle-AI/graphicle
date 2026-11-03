@@ -85,12 +85,26 @@ pub fn rebase(payload: &mut Value, source_root: &Path, target_root: &Path) {
     if source_root == target_root {
         return;
     }
+    // A converted Office document outside the scan root is spelled by the
+    // file name of its sidecar (`extract_normalize::portable_spelling`), which
+    // `StoredSourcePaths::identity` maps back to the sidecar: that name is no
+    // path under the scan root, so it stays as it is.
+    let converted = crate::extract_normalize::converted_dir(source_root, None);
+    let mut sidecars: HashMap<String, bool> = HashMap::new();
+    let mut is_sidecar = |name: &str| {
+        *sidecars
+            .entry(name.to_string())
+            .or_insert_with(|| converted.join(name).is_file() && !source_root.join(name).exists())
+    };
     for bucket in ["nodes", "edges", "hyperedges"] {
         if let Some(a) = payload.get_mut(bucket).and_then(Value::as_array_mut) {
             for item in a {
                 for key in ["source_file", "definition_file"] {
                     let source = text(item, key);
                     if source.is_empty() || Path::new(&source).is_absolute() {
+                        continue;
+                    }
+                    if !source.contains('/') && is_sidecar(&source) {
                         continue;
                     }
                     if let Ok(rel) = source_root.join(source).strip_prefix(target_root) {
@@ -265,6 +279,38 @@ fn anchors(existing: &Value, root: &Path, sample: usize) -> bool {
 mod tests {
     use super::StoredSourcePaths;
     use serde_json::json;
+
+    /// A watch of a subfolder rebases its extraction to the project: a
+    /// sidecar's file name stays as it is (it is no path under the
+    /// subfolder) and still names the sidecar, while the subfolder's own
+    /// files take the subfolder's path.
+    #[test]
+    fn rebase_keeps_a_sidecar_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let project = temp.path().canonicalize().unwrap();
+        let src = project.join("src");
+        let converted = crate::extract_normalize::converted_dir(&src, None);
+        std::fs::create_dir_all(&converted).unwrap();
+        let sidecar = converted.join("notes_0a1b2c3d.md");
+        std::fs::write(&sidecar, "# Notes\n").unwrap();
+        std::fs::write(src.join("main.py"), "x = 1\n").unwrap();
+        let mut payload = json!({
+            "nodes": [
+                {"id": "notes", "source_file": "notes_0a1b2c3d.md"},
+                {"id": "main", "source_file": "main.py"}
+            ],
+            "edges": [{"source": "notes", "target": "main", "source_file": "notes_0a1b2c3d.md"}]
+        });
+        super::rebase(&mut payload, &src, &project);
+        assert_eq!(payload["nodes"][0]["source_file"], "notes_0a1b2c3d.md");
+        assert_eq!(payload["nodes"][1]["source_file"], "src/main.py");
+        assert_eq!(payload["edges"][0]["source_file"], "notes_0a1b2c3d.md");
+        let paths = StoredSourcePaths::new(&json!({}), &project.join(".graphicle"), &project, &src);
+        assert_eq!(
+            paths.identity("notes_0a1b2c3d.md"),
+            paths.absolute_identity(&sidecar.to_string_lossy(), &project)
+        );
+    }
 
     /// A stored source that is a converted sidecar's file name (an Office
     /// document converted outside the scan root) names the sidecar in this
