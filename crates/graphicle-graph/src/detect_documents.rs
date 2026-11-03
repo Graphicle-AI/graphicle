@@ -505,10 +505,13 @@ fn table_header_ranges(path: &Path) -> HashMap<String, (u32, u32, u32)> {
     let read = || -> Result<HashMap<String, (u32, u32, u32)>> {
         let mut zip = zip::ZipArchive::new(File::open(path).map_err(crate::Error::from)?)
             .map_err(crate::Error::from)?;
+        // zip decodes a name when it is read; one it cannot decode is not a
+        // table part.
         let names = zip
             .file_names()
+            .filter_map(std::result::Result::ok)
             .filter(|name| name.starts_with("xl/tables/") && name.ends_with(".xml"))
-            .map(str::to_owned)
+            .map(std::borrow::Cow::into_owned)
             .collect::<Vec<_>>();
         let coordinate = |s: &str| -> Option<(u32, u32)> {
             let column = s

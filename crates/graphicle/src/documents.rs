@@ -238,7 +238,8 @@ fn archive(bytes: &[u8]) -> Result<zip::ZipArchive<Cursor<&[u8]>>> {
         if expanded > max_expanded() || file.size() > max_binary() as u64 {
             return Err(Error::bad("Expanded document exceeds limits"));
         }
-        if file.enclosed_name().is_none() || file.name().contains('\\') {
+        // A name zip cannot decode has no enclosed name either.
+        if file.enclosed_name().is_none() || file.name().is_ok_and(|name| name.contains('\\')) {
             return Err(Error::bad("Document contains a traversal path"));
         }
     }
@@ -337,8 +338,11 @@ fn zip_text(bytes: &[u8], ext: &str) -> Result<String> {
     let mut names = if ext == "epub" {
         epub_spine(&mut archive)?
     } else {
+        // Every name decodes: archive() refuses an archive with one that
+        // does not.
         archive
             .file_names()
+            .filter_map(std::result::Result::ok)
             .filter(|name| match ext {
                 "docx" => {
                     *name == "word/document.xml"
@@ -353,7 +357,7 @@ fn zip_text(bytes: &[u8], ext: &str) -> Result<String> {
                 "odt" | "odp" => *name == "content.xml",
                 _ => false,
             })
-            .map(str::to_string)
+            .map(std::borrow::Cow::into_owned)
             .collect()
     };
     if ext != "epub" {
@@ -401,7 +405,10 @@ fn sheets(bytes: &[u8]) -> Result<String> {
             let mut part = zipped
                 .by_index(i)
                 .map_err(|_| Error::bad("Invalid spreadsheet archive"))?;
-            if !part.name().starts_with("xl/worksheets/") || !part.name().ends_with(".xml") {
+            let worksheet = part
+                .name()
+                .is_ok_and(|name| name.starts_with("xl/worksheets/") && name.ends_with(".xml"));
+            if !worksheet {
                 continue;
             }
             let mut xml = Vec::new();

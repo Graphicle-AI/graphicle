@@ -127,8 +127,9 @@ mimalloc = { version = "0.1", default-features = false }
 libmimalloc-sys = { version = "0.1.49", default-features = false }
 smallvec = "=1.16.1"
 wait-timeout = "0.2"
-zip = { version = "8", default-features = false, features = ["deflate"] }
-calamine = { version = "0.36", features = ["dates"] }
+# zip 9.0.5 is the first release with every published zip advisory fixed.
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+calamine = { version = "0.38", features = ["dates"] }
 pdf-extract = "0.12"
 md-5 = "0.10"
 encoding_rs = "0.8"

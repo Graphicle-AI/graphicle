@@ -50,9 +50,12 @@ ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, fea
 # Exact token counts for `graphicle pack --tokenizer`, in every build: pure Rust
 # (fancy-regex; no onig, no esaxx C++).
 tokenizers = { version = "=0.22.2", default-features = false, features = ["fancy-regex"] }
-quick-xml = "0.41"
-zip = { version = "8", default-features = false, features = ["deflate"] }
-calamine = "0.36"
+# `encoding`: document XML in the encoding its declaration names. calamine 0.36
+# turned it on here; calamine 0.37 and later bring their own quick-xml.
+quick-xml = { version = "0.41", features = ["encoding"] }
+# zip 9.0.5 is the first release with every published zip advisory fixed.
+zip = { version = "9.0.5", default-features = false, features = ["deflate"] }
+calamine = "0.38"
 pdf-extract = "0.12"
 html2text = "0.15"
 redis = { version = "=0.32.7", default-features = false, features = ["tokio-rustls-comp", "streams"] }
