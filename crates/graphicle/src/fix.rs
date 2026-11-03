@@ -283,6 +283,28 @@ fn unnumbered(text: &str) -> Option<String> {
     any.then_some(out)
 }
 
+/// The line break `text` uses: `"\r\n"` when every line break in it is
+/// CRLF, `"\n"` when none is; `None` when it has no line break, or both.
+fn line_break(text: &str) -> Option<&'static str> {
+    let crlf = text.matches("\r\n").count();
+    match text.matches('\n').count() {
+        0 => None,
+        lf if lf == crlf => Some("\r\n"),
+        _ if crlf == 0 => Some("\n"),
+        _ => None,
+    }
+}
+
+/// `text` with each of its line breaks, CRLF or LF, written as `line_break`.
+fn with_line_breaks(text: &str, line_break: &str) -> String {
+    let lf = text.replace("\r\n", "\n");
+    if line_break == "\n" {
+        lf
+    } else {
+        lf.replace('\n', line_break)
+    }
+}
+
 /// Whether the file system under `root` ignores case: the root under its
 /// own name with the case of its letters swapped is found too.
 fn case_insensitive(root: &Path) -> bool {
@@ -402,11 +424,21 @@ pub fn apply(root: &Path, reply: &Value) -> std::result::Result<Applied, Vec<Str
             problems.push(format!("{path}: an empty search text"));
             continue;
         }
-        let (search, replace) = match current.matches(search).count() {
-            0 => match (unnumbered(search), unnumbered(replace)) {
-                (Some(s), r) if current.matches(&s).count() == 1 => {
-                    (s, r.unwrap_or_else(|| replace.to_string()))
-                }
+        // The search text and its replacement take the file's line breaks:
+        // an edit written with LF, as models write, finds its text in a file
+        // checked out with CRLF (Git for Windows' default), which stays CRLF,
+        // and the other way round. In a file with no line break, or with
+        // both, they are matched and written as they are.
+        let (search, replace) = match line_break(&current) {
+            Some(line_break) => (
+                with_line_breaks(search, line_break),
+                with_line_breaks(replace, line_break),
+            ),
+            None => (search.to_string(), replace.to_string()),
+        };
+        let (search, replace) = match current.matches(&search).count() {
+            0 => match (unnumbered(&search), unnumbered(&replace)) {
+                (Some(s), r) if current.matches(&s).count() == 1 => (s, r.unwrap_or(replace)),
                 _ => {
                     problems.push(format!(
                         "{path}: the search text is not in the file as it is now"
@@ -414,7 +446,7 @@ pub fn apply(root: &Path, reply: &Value) -> std::result::Result<Applied, Vec<Str
                     continue;
                 }
             },
-            1 => (search.to_string(), replace.to_string()),
+            1 => (search, replace),
             n => {
                 problems.push(format!(
                     "{path}: the search text occurs {n} times; give a longer one"
@@ -2702,6 +2734,85 @@ mod tests {
             let problems = apply(root, &bad).unwrap_err();
             assert!(problems[0].contains(why), "{problems:?}");
         }
+    }
+
+    /// An edit written with LF applies to a file checked out with CRLF, and
+    /// the file keeps CRLF; an LF file keeps LF, whichever an edit is written
+    /// with; a file with both, or with no line break, takes an edit as it is
+    /// written.
+    #[test]
+    fn edits_take_the_files_line_breaks() {
+        fn edit(path: &str, search: &str, replace: &str) -> Value {
+            json!({"edits":[{"path":path,"search":search,"replace":replace}],"new_files":[]})
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let read = |name: &str| std::fs::read_to_string(root.join(name)).unwrap();
+        assert_eq!(line_break("a\r\nb\r\n"), Some("\r\n"));
+        assert_eq!(line_break("a\nb"), Some("\n"));
+        assert_eq!(line_break("a\r\nb\n"), None);
+        assert_eq!(line_break("a\rb"), None);
+        // CRLF: an LF search text and replacement apply, written with CRLF.
+        std::fs::write(
+            root.join("crlf.go"),
+            "func A() int {\r\n\treturn 41\r\n}\r\n",
+        )
+        .unwrap();
+        let lf = edit(
+            "crlf.go",
+            "{\n\treturn 41\n",
+            "{\n\t// The answer.\n\treturn 42\n",
+        );
+        assert_eq!(apply(root, &lf).unwrap().changed, vec!["crlf.go"]);
+        assert_eq!(
+            read("crlf.go"),
+            "func A() int {\r\n\t// The answer.\r\n\treturn 42\r\n}\r\n"
+        );
+        // The pack's line numbers still come off, a CRLF search text still
+        // matches, and a text found more than once is still refused.
+        apply(
+            root,
+            &edit("crlf.go", "3\t\treturn 42\n", "3\t\treturn 43\n"),
+        )
+        .unwrap();
+        apply(root, &edit("crlf.go", "\treturn 43\r\n", "\treturn 44\n")).unwrap();
+        assert_eq!(
+            read("crlf.go"),
+            "func A() int {\r\n\t// The answer.\r\n\treturn 44\r\n}\r\n"
+        );
+        let problems = apply(root, &edit("crlf.go", "\n", "x")).unwrap_err();
+        assert!(problems[0].contains("occurs 4 times"), "{problems:?}");
+        // LF: an LF edit applies as before, and a CRLF one is written with LF.
+        std::fs::write(root.join("lf.go"), "func A() int {\n\treturn 41\n}\n").unwrap();
+        apply(root, &edit("lf.go", "\treturn 41\n", "\treturn 42\n")).unwrap();
+        apply(
+            root,
+            &edit("lf.go", "\treturn 42\r\n}\r\n", "\treturn 43\r\n}\r\n"),
+        )
+        .unwrap();
+        assert_eq!(read("lf.go"), "func A() int {\n\treturn 43\n}\n");
+        // Both: the search text must match as it is written.
+        std::fs::write(
+            root.join("mixed.go"),
+            "func A() int {\r\n\treturn 41\n}\r\n",
+        )
+        .unwrap();
+        let problems = apply(
+            root,
+            &edit("mixed.go", "{\n\treturn 41\n", "{\n\treturn 42\n"),
+        )
+        .unwrap_err();
+        assert!(problems[0].contains("not in the file"), "{problems:?}");
+        apply(
+            root,
+            &edit("mixed.go", "{\r\n\treturn 41\n", "{\r\n\treturn 42\n"),
+        )
+        .unwrap();
+        assert_eq!(read("mixed.go"), "func A() int {\r\n\treturn 42\n}\r\n");
+        // None: the replacement is written as it is.
+        std::fs::write(root.join("one.txt"), "value = 41").unwrap();
+        apply(root, &edit("one.txt", "41", "42\r\n")).unwrap();
+        assert_eq!(read("one.txt"), "value = 42\r\n");
     }
 
     /// New files `a` and `a/b`, or a new file under an existing file: the

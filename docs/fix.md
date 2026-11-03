@@ -40,7 +40,12 @@ graphicle fix - --test "cargo test -p store" < issue.txt
    together). Spellings of one path (`src//lib.rs`, `./src/lib.rs`, another
    case where the file system ignores case) are one file. If a write fails,
    every file the round wrote is put back. A search text that carries the
-   pack's line numbers still matches.
+   pack's line numbers still matches. Edits take the line breaks of the
+   file: in a file whose lines all end in CRLF, as Git for Windows checks
+   files out, a search text written with LF matches, and the replacement is
+   written with CRLF, so the file keeps its line breaks; an LF file keeps
+   LF. In a file that mixes the two, or has no line break, the search text
+   must match as it is written, and the replacement is written as it is.
 5. **Test.** Your test command runs in the worktree with `sh -c`, with a
    timeout (`--timeout`, 1 to 86,400 seconds, default 600). The run ends
    when the command ends: whatever it left running in its process group is
