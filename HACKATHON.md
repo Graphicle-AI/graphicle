@@ -6,10 +6,11 @@ Graphicle is entered in the startup track of Meta's Global AI Developer Hackatho
 
 - **Graphicle 0.1.8**, released on 26 October 2026 before the kickoff, is the baseline.
 - **Written on 26 October before the kickoff, and not released before the event:**
-  - a first version of `graphicle pack`, which fills a token budget with the parts of a repository a question needs;
-  - first versions of `graphicle ask --pack` and `graphicle plan`;
+  - a first draft of `graphicle pack`, which fills a token budget with the parts of a repository a question needs;
+  - first drafts of `graphicle ask --pack` and `graphicle plan`;
   - a Meta Model API profile for Muse Spark, and Muse Code in `graphicle setup`;
   - the harness and question sets of the whole-repository benchmark, and a first tuning round on its two development repositories (kubernetes and home-assistant).
+- Every change to these drafts after the kickoff is event work, and is listed below.
 
 ## Built during the event
 
