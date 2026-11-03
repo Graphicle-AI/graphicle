@@ -534,9 +534,9 @@ enum Command {
         /// Read the issue's text from this file (at most 1 MiB).
         #[arg(long, value_name = "FILE")]
         issue_file: Option<PathBuf>,
-        /// The test command, run with `sh -c` in the new worktree; never a
-        /// command the model suggests [default: the configuration's fix.test,
-        /// else none, and the change is untested].
+        /// The test command, run with `sh -c` (`cmd /C` on Windows) in the
+        /// new worktree; never a command the model suggests [default: the
+        /// configuration's fix.test, else none, and the change is untested].
         #[arg(long, value_name = "CMD")]
         test: Option<String>,
         /// Rounds of edits and tests at most.

@@ -124,7 +124,8 @@ const KEY_VARIABLES: &[&str] = &[
 /// What `fix` is asked for.
 pub struct Options {
     pub issue: String,
-    /// The test command, run with `sh -c` in the worktree.
+    /// The test command, run with `sh -c` (`cmd /C` on Windows) in the
+    /// worktree.
     pub test: Option<String>,
     pub rounds: usize,
     pub branch: Option<String>,

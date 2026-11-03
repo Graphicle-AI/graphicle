@@ -515,8 +515,8 @@ pub struct Args {
     /// Read the task from this file (at most 1 MiB).
     #[arg(long, value_name = "FILE")]
     pub task_file: Option<PathBuf>,
-    /// The driver: a command, run with `sh -c`, that speaks the driver
-    /// protocol on its standard input and output, such as
+    /// The driver: a command, run with `sh -c` (`cmd /C` on Windows), that
+    /// speaks the driver protocol on its standard input and output, such as
     /// `python3 demo/browser_driver.py --url http://HOST:PORT/`.
     #[arg(long, value_name = "CMD")]
     pub driver: String,

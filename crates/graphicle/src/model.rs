@@ -237,8 +237,8 @@ pub struct Config {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FixSettings {
-    /// The test command `fix` runs in its worktree (with `sh -c`) when
-    /// `--test` gives none.
+    /// The test command `fix` runs in its worktree (with `sh -c`, or
+    /// `cmd /C` on Windows) when `--test` gives none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test: Option<String>,
     /// The seconds the test command may run [default: 600].

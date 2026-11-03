@@ -73,7 +73,7 @@ default) with what the run has cost so far. A profile without a price is refused
 | Option | Default | Meaning |
 |---|---|---|
 | `TASK` or `--task-file FILE` | none | The issue: its steps and what goes wrong; `-` reads standard input |
-| `--driver CMD` | none | The driver command, run with `sh -c` (below) |
+| `--driver CMD` | none | The driver command, run with `sh -c` (`cmd /C` on Windows); its protocol is below |
 | `--look-for bug\|expected` | `bug` | Reproduce the bug, or check the expected behaviour after a fix |
 | `--steps N` | 25 | Model calls at most, 1 to 29 |
 | `--max-cost USD` | 3 | The run's cap at the profile's price |
