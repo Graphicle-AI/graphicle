@@ -181,7 +181,12 @@ Speed-up = Graphify's median / Graphicle's median, from the unrounded times
 - **Determinism.** Graphify 0.9.100 wrote the same graph in every run of every
   measurement. Graphicle 0.1.11 wrote 3 different graphs, with the same
   counts, in its 3 runs of pandas' priming update and of its update with no
-  change; 0.1.0 did the same.
+  change; 0.1.0 did the same. The cause: each run wrote to its own output
+  folder outside the project, and the ids of pandas' Office documents (its
+  `.xlsx` test data, which Graphicle converts to Markdown in the output
+  folder) were taken from that folder's path. From 0.1.12 they are not when
+  the output folder is given by an absolute path, as in these runs, and runs
+  with different output folders write the same graph.
 - **Graphicle 0.1.0 on the same machine** (run afterwards, on its own, with
   the same settings): it took less time than 0.1.11 in 26 of the 39
   measurements, and 0.1.11 in 13, among them all three on prometheus,
