@@ -1,6 +1,7 @@
-//! The early stop of a full rebuild (`update`, `watch`, the hooks' full
-//! rebuilds) when nothing it reads changed since the last full rebuild, as
-//! Graphify 0.9.100 stops ("No relevant changes", #4740).
+//! The early stop of a full rebuild (`update`, a full `watch` rebuild, the
+//! hooks' full rebuilds) when nothing it reads changed since a full rebuild
+//! that found nothing to change, as Graphify 0.9.100 stops ("No relevant
+//! changes", #4740).
 //!
 //! A full rebuild can find nothing to change: it extracts every file again,
 //! finds the stored graph's topology and leaves graph.json, the report and
@@ -12,52 +13,78 @@
 //! removes the record: its output depends on the stored graph it read, so
 //! the next rebuild of the same inputs may still change it (on next.js
 //! 16.4.0, two updates in a row with nothing changed added, then removed,
-//! the same two nodes and moved 22 import edges). The record holds:
+//! the same two nodes and moved 22 import edges). The record holds digests
+//! of:
 //! - the engine build (version, source hash, dependency lock, features, the
 //!   program file and the grammar packs it may load);
 //! - the settings that change what it writes: the roots, the options, the
-//!   build configuration in the output folder, `.graphiclerc` and the
-//!   engine's environment variables (not the worker count, the timing
-//!   switches or the size cap: `NOT_OUTPUT_ENV`);
+//!   build configuration in the output folder, `.graphiclerc`, HOME and the
+//!   engine's environment variables (not the ones in `NOT_OUTPUT_ENV`);
 //! - the scan: every path detection classified, by kind;
-//! - the content of each scanned file, through manifest.json, and of the
-//!   scanned files the manifest has no hash for (files that failed);
-//! - files outside the scan that extraction reads: `go.mod`, `go.work`,
-//!   `package.json`, `jsconfig.json` and `tsconfig*.json` in the folders
-//!   above the root, and in the root when an ignore rule hides them;
-//! - graph.json's and manifest.json's size, times and inode.
+//! - the size, modification time and (on Unix) status-change time and inode
+//!   of every scanned file and of each configuration file an ignore rule
+//!   hides, taken after the scan, before extraction ([`Snapshot`]);
+//! - the configuration files extraction reads in the folders above the root
+//!   (`go.mod`, `go.work`, `package.json`, `jsconfig.json`, `tsconfig*.json`,
+//!   `pnpm-workspace.yaml`, with their content) and whether those folders
+//!   hold `.git`, `.hg` or `.svn`;
+//! - graph.json's stats when the rebuild read it, and manifest.json's when
+//!   it wrote it.
 //!
-//! The record holds digests, counts, sizes, times and inodes, never a path
-//! or a setting's value. The next full rebuild compares them before it
-//! extracts anything and stops early when all are the same; it then does
-//! what the full rebuild does when it finds nothing to change
-//! (`watch::stop_early`). Anything it cannot prove the same (a missing or
-//! unreadable record, a file it cannot read) takes the full rebuild: a false
-//! "changed" only costs time. A rebuild that reads beyond these
-//! (`--precise`: SCIP indexes, runtime traces, installed packages) never
-//! stops early and records nothing.
+//! The record holds digests, counts and file stats, never a path or a
+//! setting's value. A rebuild records only when the snapshotted files,
+//! graph.json and manifest.json still have the stats it saw, when none of
+//! the snapshotted files changed within the time granularity before the
+//! snapshot (two seconds by default, as the extraction cache trusts a
+//! file's stats: a file system moves times in steps, so a later change
+//! could keep them), and when no file failed to extract (a failure may not
+//! happen again: the full rebuild retries it). The next full rebuild
+//! compares them before it extracts anything and stops early when all are
+//! the same; it then does what the full rebuild does when it finds nothing
+//! to change (`watch::stop_early`). The check trusts the recorded stats: a
+//! file whose content changed while its size, times and inode stayed (a
+//! change no file system makes on its own) is not seen. Anything else it
+//! cannot prove the same takes the full rebuild. A rebuild that reads
+//! beyond these never stops early and records nothing: `--precise` (SCIP
+//! indexes, runtime traces, installed packages), and a JavaScript workspace
+//! in a folder above the root (its member packages beside the project).
 use crate::{detect_manifest, paths, rcfile, serve_socket::FORWARDED_ENV, watch::RebuildOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{
-    collections::BTreeSet,
-    path::{Path, PathBuf},
-};
+use std::path::Path;
 
 /// The record of the last full rebuild, in the output folder.
 pub const STATE_FILE: &str = ".graphicle_build_state.json";
 /// The record's layout; another layout is never read as a match.
-const SCHEMA: u32 = 1;
-/// Settings that change how fast a rebuild runs, never what it writes (the
-/// worker count among them: `cli/tests/same_graph.rs`), and the size cap on
-/// reading graph.json, which [`before_scan`] applies as the full rebuild does.
+const SCHEMA: u32 = 2;
+/// Settings that change how fast or how verbosely a rebuild runs, never
+/// what it writes: the worker count (`cli/tests/same_graph.rs`), the timing,
+/// profile, log and socket switches, the resource limits, the hooks' own
+/// settings and change lists (a full rebuild reads no change list), and the
+/// size cap on reading graph.json, which [`before_scan`] applies as the full
+/// rebuild does.
 const NOT_OUTPUT_ENV: &[&str] = &[
+    "GRAPHICLE_CHANGED",
+    "GRAPHICLE_CHANGED_JSON",
+    "GRAPHICLE_HOOK_NUDGE_CAP",
+    "GRAPHICLE_HOOK_STRICT",
+    "GRAPHICLE_HOOK_STRICT_TTL",
     "GRAPHICLE_MAX_GRAPH_BYTES",
     "GRAPHICLE_MAX_WORKERS",
     "GRAPHICLE_PRECISE_TIMING",
     "GRAPHICLE_PROFILE",
+    "GRAPHICLE_QUERY_LOG",
+    "GRAPHICLE_QUERY_LOG_DISABLE",
+    "GRAPHICLE_QUERY_LOG_ENABLE",
+    "GRAPHICLE_QUERY_LOG_RESPONSES",
     "GRAPHICLE_QUERY_TIMING",
+    "GRAPHICLE_REBUILD_LOG",
+    "GRAPHICLE_REBUILD_MEMORY_LIMIT_MB",
+    "GRAPHICLE_REBUILD_TIMEOUT",
+    "GRAPHICLE_SKIP_HOOK",
+    "GRAPHICLE_SOCKET_DEBUG",
+    "GRAPHICLE_SOCKET_TIMEOUT",
     "GRAPHICLE_WATCH_TIMING",
 ];
 /// Files extraction reads that the scan may not cover: Go module paths and
@@ -65,8 +92,13 @@ const NOT_OUTPUT_ENV: &[&str] = &[
 fn config_name(name: &str) -> bool {
     matches!(
         name,
-        "go.mod" | "go.work" | "package.json" | "jsconfig.json"
+        "go.mod" | "go.work" | "package.json" | "jsconfig.json" | "pnpm-workspace.yaml"
     ) || (name.starts_with("tsconfig") && name.ends_with(".json"))
+}
+/// Version control folders: JavaScript resolution anchors a project without
+/// a package.json at the nearest one (`find_js_project_anchor`).
+fn vcs_name(name: &str) -> bool {
+    matches!(name, ".git" | ".hg" | ".svn")
 }
 
 fn digest(value: &impl Serialize) -> String {
@@ -92,8 +124,8 @@ fn content(path: &Path) -> String {
 }
 
 /// What tells a rewritten file from the one recorded: its size and times
-/// (and on Unix its inode and status-change time, which every write and
-/// replacement moves).
+/// (and on Unix its inode and status-change time, which every write, every
+/// change of the modification time and every replacement moves).
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug, Default)]
 pub struct FileStat {
     size: u64,
@@ -139,8 +171,8 @@ pub struct State {
 }
 impl State {
     /// The state of a rebuild of `path` (resolved: `watch_root`) into `out`,
-    /// or `None` when its output may depend on more than [`State`] and the
-    /// scan record (`--precise`).
+    /// or why its output may depend on more than [`State`] and the scan
+    /// record: `--precise`, or a JavaScript workspace above the root.
     pub fn current(
         path: &Path,
         watch_root: &Path,
@@ -149,11 +181,14 @@ impl State {
         options: &RebuildOptions,
         excludes: &[String],
         gitignore: bool,
-    ) -> Option<State> {
+    ) -> Result<State, Changed> {
         if crate::extract::precise() {
-            return None;
+            return Err("--precise");
         }
-        Some(State {
+        if workspace_above(watch_root) {
+            return Err("a JavaScript workspace above the root");
+        }
+        Ok(State {
             build: build(),
             settings: settings(
                 path,
@@ -167,6 +202,20 @@ impl State {
             above: above(watch_root),
         })
     }
+}
+
+/// Whether a folder above the root may be a JavaScript workspace root
+/// (`pnpm-workspace.yaml`, or a package.json with a `workspaces` key):
+/// resolution then reads the workspace's member packages, which may lie
+/// beside the project (`resolution_js::find_workspace_root`). The
+/// package.json is read from disk, never from a running extraction's
+/// cache, and any one that names `workspaces` counts.
+fn workspace_above(watch_root: &Path) -> bool {
+    watch_root.ancestors().skip(1).any(|dir| {
+        dir.join("pnpm-workspace.yaml").exists()
+            || std::fs::read(detect_manifest::os_path(&dir.join("package.json")))
+                .is_ok_and(|bytes| bytes.windows(12).any(|w| w == b"\"workspaces\""))
+    })
 }
 
 /// The engine build: what the rebuild's code is.
@@ -235,10 +284,11 @@ fn settings(
     excludes: &[String],
     gitignore: bool,
 ) -> String {
-    // HOME is not one: the grammar packs under it are part of the build, and
-    // the ignore rules it holds show in the scan.
+    // HOME bounds the search for a JavaScript project's package.json
+    // (`resolution_js::find_js_project_anchor`).
     let mut env = FORWARDED_ENV
         .iter()
+        .chain(&["HOME"])
         .filter(|name| !NOT_OUTPUT_ENV.contains(*name))
         .filter_map(|name| {
             let value = std::env::var_os(name)?;
@@ -265,7 +315,7 @@ fn settings(
 }
 
 /// The configuration files extraction may read in the folders above the
-/// scan root, with their content.
+/// scan root, with their content, and the version control folders there.
 fn above(watch_root: &Path) -> String {
     let rows = watch_root
         .ancestors()
@@ -274,12 +324,15 @@ fn above(watch_root: &Path) -> String {
             let listed = std::fs::read_dir(dir).map(|entries| {
                 let mut found = entries
                     .flatten()
-                    .filter(|e| config_name(&e.file_name().to_string_lossy()))
-                    .map(|e| {
-                        (
-                            e.file_name().to_string_lossy().into_owned(),
-                            content(&e.path()),
-                        )
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        if config_name(&name) {
+                            Some((name, content(&e.path())))
+                        } else if vcs_name(&name) {
+                            Some((name, "present".into()))
+                        } else {
+                            None
+                        }
                     })
                     .collect::<Vec<_>>();
                 found.sort();
@@ -344,74 +397,85 @@ fn scanned(detected: &Value) -> impl Iterator<Item = &str> {
         .filter_map(Value::as_str)
 }
 
-/// A manifest row's content hash, when it has one.
-fn row_hash(row: &Value) -> Option<&str> {
-    row.get("ast_hash")
-        .and_then(Value::as_str)
-        .filter(|hash| !hash.is_empty())
-}
-
-/// The scanned files the manifest has no content hash for (files whose
-/// extraction failed, which a full rebuild leaves unstamped).
-fn unstamped<'a>(detected: &'a Value, manifest: &Value) -> BTreeSet<&'a str> {
-    scanned(detected)
+/// The configuration files an ignore rule hides from the scan, which
+/// extraction may still read.
+fn hidden_configs(detected: &Value) -> impl Iterator<Item = &str> {
+    strings(detected, "ignored")
+        .chain(
+            strings(detected, "skipped_sensitive")
+                .map(|entry| entry.split(" [").next().unwrap_or("")),
+        )
         .filter(|path| {
-            manifest
-                .get(paths::nfc(path).as_str())
-                .and_then(row_hash)
-                .is_none()
-        })
-        .collect()
-}
-
-/// The content of the files the manifest does not vouch for: the unstamped
-/// scanned files, and configuration files an ignore rule hides from the scan.
-fn inputs(detected: &Value, unstamped: &BTreeSet<&str>) -> String {
-    let hidden = strings(detected, "ignored").chain(
-        strings(detected, "skipped_sensitive").map(|entry| entry.split(" [").next().unwrap_or("")),
-    );
-    let mut files = unstamped
-        .iter()
-        .copied()
-        .chain(hidden.filter(|path| {
             Path::new(path)
                 .file_name()
                 .is_some_and(|name| config_name(&name.to_string_lossy()))
-        }))
-        .collect::<Vec<_>>();
-    files.sort_unstable();
-    files.dedup();
-    let rows = crate::par::map(&files, crate::par::io_workers(), |path| {
-        (*path, content(Path::new(path)))
-    });
-    digest(&rows)
+        })
 }
 
-/// Whether a manifest row's file still has the content the row records:
-/// `Some(true)` with the recorded modification time, `Some(false)` with
-/// another one (a full rebuild would restamp the manifest), `None` when the
-/// content changed or cannot be proven the same. A row without a content
-/// hash is `Some(true)`: its file is checked by [`inputs`] if it is scanned.
-fn row_unchanged(path: &str, row: &Value) -> Option<bool> {
-    let Some(hash) = row_hash(row) else {
-        return Some(true);
-    };
-    // A language a project declares for an extension is part of the row.
-    let language = row.get("language").and_then(Value::as_str);
-    if rcfile::cache_salt(path).as_deref() != language {
-        return None;
+/// The stats of the files a rebuild reads, taken after the scan and before
+/// extraction: every scanned file and the configuration files an ignore
+/// rule hides from the scan.
+pub struct Snapshot {
+    files: Vec<String>,
+    stats: Vec<Option<FileStat>>,
+    digest: String,
+    /// When the stats were taken, and the time a file system may take to
+    /// move a file's times (`GRAPHICLE_MTIME_GRANULARITY_MS`, as the
+    /// extraction cache reads it).
+    taken_ns: u64,
+    granularity_ns: u64,
+}
+impl Snapshot {
+    pub fn take(detected: &Value) -> Snapshot {
+        let granularity = crate::cache::mtime_granularity(
+            std::env::var("GRAPHICLE_MTIME_GRANULARITY_MS")
+                .ok()
+                .as_deref(),
+        );
+        Snapshot::with_granularity(detected, granularity.max(0) as u64)
     }
-    let current = detect_manifest::mtime(Path::new(path)).ok()?;
-    let recorded = if row["mtime"].is_object() {
-        detect_manifest::numeric(&row["mtime"]["mtime"])
-    } else {
-        detect_manifest::numeric(&row["mtime"])
-    };
-    let same_time = recorded == Some(current);
-    if same_time && !detect_manifest::mtime_may_hide_a_rewrite(current, row) {
-        return Some(true);
+    fn with_granularity(detected: &Value, granularity_ns: u64) -> Snapshot {
+        let mut files = scanned(detected)
+            .chain(hidden_configs(detected))
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        files.sort_unstable();
+        files.dedup();
+        let taken_ns = crate::cache::clock_ns().max(0) as u64;
+        let stats = stats_of(&files);
+        let digest = rows_digest(&files, &stats);
+        Snapshot {
+            files,
+            stats,
+            digest,
+            taken_ns,
+            granularity_ns,
+        }
     }
-    (detect_manifest::md5_file(Path::new(path)) == hash).then_some(same_time)
+    /// Whether every file still has the stats it had.
+    fn unchanged(&self) -> bool {
+        rows_digest(&self.files, &stats_of(&self.files)) == self.digest
+    }
+    /// Whether a file changed so shortly before the stats were taken that a
+    /// later change could leave its size and times as they were (a file
+    /// system moves times in steps, up to the granularity): its stats then
+    /// prove nothing, as the extraction cache treats them (`stat_fresh`).
+    fn recent(&self) -> bool {
+        self.stats.iter().flatten().any(|stat| {
+            stat.modified_ns
+                .max(stat.changed_ns)
+                .saturating_add(self.granularity_ns)
+                > self.taken_ns
+        })
+    }
+}
+fn stats_of(files: &[String]) -> Vec<Option<FileStat>> {
+    crate::par::map(files, crate::par::io_workers(), |path| {
+        FileStat::of(Path::new(path))
+    })
+}
+fn rows_digest(files: &[String], stats: &[Option<FileStat>]) -> String {
+    digest(&files.iter().zip(stats).collect::<Vec<_>>())
 }
 
 /// The record a full rebuild leaves for the next one ([`STATE_FILE`]).
@@ -422,86 +486,115 @@ struct Record {
     settings: String,
     above: String,
     scan: String,
-    inputs: String,
+    files: String,
     graph: FileStat,
     manifest: FileStat,
     nodes: usize,
     edges: usize,
 }
 
-/// Record a full rebuild of `detected` that found nothing to change and left
-/// the outputs in `out` as they are now, with `nodes` and `edges` in its
-/// graph. Nothing is recorded (and an older record is removed) when an
-/// output it describes is missing or the record cannot be written: the next
-/// rebuild is then a full one.
+/// What a full rebuild saw while it ran, for its record.
+pub struct Seen<'a> {
+    /// The scanned files' stats before extraction.
+    pub snapshot: &'a Snapshot,
+    /// graph.json's stats when the rebuild read or checked it.
+    pub graph: Option<FileStat>,
+    /// manifest.json's stats when the rebuild wrote or checked it.
+    pub manifest: Option<FileStat>,
+    /// Whether a file failed to extract.
+    pub failed: bool,
+}
+
+/// Record a full rebuild of `detected` that found nothing to change, with
+/// `nodes` and `edges` in its graph, when what it saw still holds: no file
+/// failed, no snapshotted file changed shortly before the snapshot and each
+/// still has its stats, and graph.json and manifest.json are the files the
+/// rebuild read and wrote. Otherwise, or when the record cannot be written,
+/// any record is removed (the next rebuild is then a full one) and the
+/// error says why.
 pub fn record(
     out: &Path,
-    watch_root: &Path,
-    state: Option<&State>,
+    state: &State,
     detected: &Value,
+    seen: &Seen<'_>,
     nodes: usize,
     edges: usize,
-) {
-    let file = out.join(STATE_FILE);
-    let made = state.and_then(|state| {
-        let manifest_path = out.join("manifest.json");
-        let manifest = detect_manifest::load_manifest(&manifest_path, Some(watch_root));
-        let record = Record {
-            schema: SCHEMA,
-            build: state.build.clone(),
-            settings: state.settings.clone(),
-            above: state.above.clone(),
-            scan: scan(detected),
-            inputs: inputs(detected, &unstamped(detected, &manifest)),
-            graph: FileStat::of(&out.join("graph.json"))?,
-            manifest: FileStat::of(&manifest_path)?,
-            nodes,
-            edges,
-        };
-        let text = serde_json::to_string(&record).ok()?;
-        paths::write_text_atomic(&file, &(text + "\n")).ok()
-    });
-    if made.is_none() {
-        let _ = std::fs::remove_file(&file);
+) -> Result<(), Changed> {
+    let made = write_record(out, state, detected, seen, nodes, edges);
+    if made.is_err() {
+        forget(out);
     }
+    made
+}
+
+fn write_record(
+    out: &Path,
+    state: &State,
+    detected: &Value,
+    seen: &Seen<'_>,
+    nodes: usize,
+    edges: usize,
+) -> Result<(), Changed> {
+    let graph = seen.graph.clone().ok_or("graph.json not read")?;
+    let manifest = seen.manifest.clone().ok_or("manifest.json not written")?;
+    if seen.failed {
+        return Err("a file failed to extract");
+    }
+    if FileStat::of(&out.join("graph.json")).as_ref() != Some(&graph) {
+        return Err("graph.json changed since it was read");
+    }
+    if FileStat::of(&out.join("manifest.json")).as_ref() != Some(&manifest) {
+        return Err("manifest.json changed since it was written");
+    }
+    if seen.snapshot.recent() {
+        return Err("a file changed just before the scan");
+    }
+    if !seen.snapshot.unchanged() {
+        return Err("a file changed during the rebuild");
+    }
+    let record = Record {
+        schema: SCHEMA,
+        build: state.build.clone(),
+        settings: state.settings.clone(),
+        above: state.above.clone(),
+        scan: scan(detected),
+        files: seen.snapshot.digest.clone(),
+        graph,
+        manifest,
+        nodes,
+        edges,
+    };
+    let text = serde_json::to_string(&record).map_err(|_| "record not written")?;
+    paths::write_text_atomic(&out.join(STATE_FILE), &(text + "\n"))
+        .map_err(|_| "record not written")
 }
 
 /// Remove the record: a rebuild wrote a new graph, which the next full
-/// rebuild may still change.
+/// rebuild may still change, or could not vouch for what it read.
 pub fn forget(out: &Path) {
     let _ = std::fs::remove_file(out.join(STATE_FILE));
-}
-
-/// A full rebuild whose record matched until the scan: the record and what
-/// the manifest check found.
-pub struct Pending {
-    record: Record,
-    manifest: Value,
-    restamp: bool,
-    converted: PathBuf,
-}
-
-/// What the early stop does besides leaving the outputs: restamp the
-/// manifest when a file's modification time moved (its content did not),
-/// as the full rebuild would, with the files that failed last time.
-pub struct Unchanged {
-    pub restamp: bool,
-    pub failed: BTreeSet<String>,
-    pub nodes: usize,
-    pub edges: usize,
 }
 
 /// Why a full rebuild does not stop early: the first check that failed.
 pub type Changed = &'static str;
 
+/// A full rebuild whose record matched until the scan.
+pub struct Pending {
+    record: Record,
+}
+
+/// What the early stop vouches for.
+pub struct Unchanged {
+    pub nodes: usize,
+    pub edges: usize,
+}
+
 /// The part of the check that needs no scan: the record exists, the build,
 /// settings and files above the root are the same, graph.json and
-/// manifest.json are the files it recorded, and every manifest row's file
-/// has the content the row records. An error takes the full rebuild.
+/// manifest.json are the files it recorded, and no file the manifest lists
+/// has another modification time. An error takes the full rebuild.
 pub fn before_scan(out: &Path, watch_root: &Path, state: &State) -> Result<Pending, Changed> {
     let text = std::fs::read_to_string(out.join(STATE_FILE)).map_err(|_| "no record")?;
-    // The rows' declared languages are compared with this root's (`.graphiclerc`).
-    rcfile::activate_language_overrides(watch_root);
     let record = serde_json::from_str::<Record>(&text).map_err(|_| "record unreadable")?;
     let graph_path = out.join("graph.json");
     let manifest_path = out.join("manifest.json");
@@ -524,57 +617,43 @@ pub fn before_scan(out: &Path, watch_root: &Path, state: &State) -> Result<Pendi
     }
     // The full rebuild reads graph.json under the size cap.
     crate::security::check_own_graph_size_cap(&graph_path).map_err(|_| "graph size cap")?;
+    // A quick look before the scan: a file whose modification time moved has
+    // changed (the stats after the scan decide the rest). A full rebuild then
+    // reads the stored graph while it scans.
     let manifest = detect_manifest::load_manifest(&manifest_path, Some(watch_root));
     let rows = manifest
         .as_object()
         .ok_or("manifest unreadable")?
         .iter()
         .collect::<Vec<_>>();
-    let checked = crate::par::map(&rows, crate::par::io_workers(), |(path, row)| {
-        row_unchanged(path, row)
+    let moved = crate::par::map(&rows, crate::par::io_workers(), |(path, row)| {
+        let recorded = if row["mtime"].is_object() {
+            detect_manifest::numeric(&row["mtime"]["mtime"])
+        } else {
+            detect_manifest::numeric(&row["mtime"])
+        };
+        detect_manifest::mtime(Path::new(path)).ok() != recorded
     });
-    let mut restamp = false;
-    for unchanged in checked {
-        restamp |= !unchanged.ok_or("file content")?;
+    if moved.into_iter().any(|moved| moved) {
+        return Err("file times");
     }
-    Ok(Pending {
-        record,
-        manifest,
-        restamp,
-        converted: crate::extract_normalize::converted_dir(watch_root, None),
-    })
+    Ok(Pending { record })
 }
 
 impl Pending {
     /// The rest of the check, with the scan: the same paths classified the
-    /// same way, and the same content for the files the manifest has no
-    /// hash for. An error takes the full rebuild.
+    /// same way, and every scanned file (and hidden configuration file) with
+    /// the stats the record holds. An error takes the full rebuild.
     pub fn after_scan(self, detected: &Value) -> Result<Unchanged, Changed> {
-        let Pending {
-            record,
-            manifest,
-            mut restamp,
-            converted,
-        } = self;
-        if scan(detected) != record.scan {
+        if scan(detected) != self.record.scan {
             return Err("scanned files");
         }
-        // The scan converts an Office document again when it is newer than
-        // its Markdown sidecar: the sidecars' rows are checked once more.
-        for path in scanned(detected).filter(|path| Path::new(path).starts_with(&converted)) {
-            if let Some(row) = manifest.get(paths::nfc(path).as_str()) {
-                restamp |= !row_unchanged(path, row).ok_or("converted document")?;
-            }
-        }
-        let unstamped = unstamped(detected, &manifest);
-        if inputs(detected, &unstamped) != record.inputs {
-            return Err("unstamped or hidden files");
+        if Snapshot::take(detected).digest != self.record.files {
+            return Err("file stats");
         }
         Ok(Unchanged {
-            restamp,
-            failed: unstamped.into_iter().map(str::to_string).collect(),
-            nodes: record.nodes,
-            edges: record.edges,
+            nodes: self.record.nodes,
+            edges: self.record.edges,
         })
     }
 }
@@ -591,6 +670,7 @@ mod tests {
             "go.work",
             "package.json",
             "jsconfig.json",
+            "pnpm-workspace.yaml",
             "tsconfig.json",
             "tsconfig.base.json",
         ] {
@@ -630,69 +710,210 @@ mod tests {
         assert_ne!(scan(&base), scan(&kind));
     }
 
-    /// The rows `stamp_manifest` writes vouch for every scanned file but the
-    /// ones whose extraction failed, which the record hashes itself.
+    /// A JavaScript workspace root in a folder above the project, by
+    /// `pnpm-workspace.yaml` or by a package.json with `workspaces`.
     #[test]
-    fn a_stamped_scan_leaves_only_failed_files_unstamped() {
+    fn a_workspace_above_the_root_is_seen() {
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let root = base.join("packages/app");
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(!workspace_above(&root));
+        std::fs::write(base.join("package.json"), r#"{"name":"monorepo"}"#).unwrap();
+        assert!(!workspace_above(&root));
+        std::fs::write(
+            base.join("package.json"),
+            r#"{"name":"monorepo","workspaces":["packages/*"]}"#,
+        )
+        .unwrap();
+        assert!(workspace_above(&root));
+        std::fs::remove_file(base.join("package.json")).unwrap();
+        std::fs::write(
+            base.join("pnpm-workspace.yaml"),
+            "packages:\n  - 'packages/*'\n",
+        )
+        .unwrap();
+        assert!(workspace_above(&root));
+        // The project's own workspace file is scanned, not above it.
+        std::fs::remove_file(base.join("pnpm-workspace.yaml")).unwrap();
+        std::fs::write(root.join("pnpm-workspace.yaml"), "packages:\n  - 'lib/*'\n").unwrap();
+        assert!(!workspace_above(&root));
+    }
+
+    fn state() -> State {
+        State {
+            build: "build".into(),
+            settings: "settings".into(),
+            above: "above".into(),
+        }
+    }
+
+    /// A rebuild records only what still holds when it records: a file that
+    /// changed after the scan (while the rebuild extracted), a graph.json or
+    /// manifest.json another command wrote after the rebuild read or wrote
+    /// it, or a file that failed to extract keeps it from recording, and
+    /// removes an older record.
+    #[test]
+    fn a_rebuild_records_only_what_still_holds() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
         let out = root.join(".graphicle");
-        std::fs::create_dir_all(root.join("pkg")).unwrap();
         std::fs::create_dir_all(&out).unwrap();
-        let (a, b) = (root.join("pkg/a.py"), root.join("b.py"));
-        std::fs::write(&a, "x = 1\n").unwrap();
-        std::fs::write(&b, "y = (\n").unwrap();
-        let spell = |p: &Path| p.to_string_lossy().into_owned();
-        let detected = json!({"files": {"code": [spell(&a), spell(&b)], "document": []}});
-        let mut stamped = detected["files"].as_object().unwrap().clone();
-        stamped["code"] = json!([spell(&a)]);
-        let manifest_path = out.join("manifest.json");
-        detect_manifest::save_manifest(
-            &stamped,
-            &manifest_path,
-            "ast",
-            &detect_manifest::ManifestOptions {
-                root: Some(root.clone()),
-                scan_corpus: Some(vec![spell(&a), spell(&b)]),
-                clear_ast: Some(vec![spell(&b)]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let manifest = detect_manifest::load_manifest(&manifest_path, Some(&root));
-        let b = spell(&b);
+        let source = root.join("a.py");
+        let (graph, manifest) = (out.join("graph.json"), out.join("manifest.json"));
+        std::fs::write(&source, "x = 1\n").unwrap();
+        std::fs::write(&graph, "{\"nodes\":[],\"links\":[]}\n").unwrap();
+        std::fs::write(&manifest, "{}\n").unwrap();
+        let detected = json!({"files": {"code": [source.to_string_lossy()]}});
+        let state = state();
+        let recorded = || out.join(STATE_FILE).is_file();
+        let run = |snapshot: &Snapshot, graph_seen, manifest_seen, failed| {
+            let seen = Seen {
+                snapshot,
+                graph: graph_seen,
+                manifest: manifest_seen,
+                failed,
+            };
+            let made = record(&out, &state, &detected, &seen, 1, 0);
+            assert_eq!(made.is_ok(), recorded());
+            made
+        };
+        let snapshot = Snapshot::with_granularity(&detected, 0);
+        let both = || (FileStat::of(&graph), FileStat::of(&manifest));
+        let (g, m) = both();
+        assert_eq!(run(&snapshot, g, m, false), Ok(()));
+        // A file that changed after the scan.
+        std::fs::write(&source, "x = 22\n").unwrap();
+        let (g, m) = both();
         assert_eq!(
-            unstamped(&detected, &manifest),
-            BTreeSet::from([b.as_str()])
+            run(&snapshot, g, m, false),
+            Err("a file changed during the rebuild")
+        );
+        let snapshot = Snapshot::with_granularity(&detected, 0);
+        let (g, m) = both();
+        assert_eq!(run(&snapshot, g, m, false), Ok(()));
+        // graph.json written by another command after the rebuild read it.
+        let graph_seen = FileStat::of(&graph);
+        std::fs::write(&graph, "{\"nodes\":[{\"id\":\"x\"}],\"links\":[]}\n").unwrap();
+        assert_eq!(
+            run(&snapshot, graph_seen, FileStat::of(&manifest), false),
+            Err("graph.json changed since it was read")
+        );
+        // manifest.json written by another command after the rebuild wrote it.
+        let manifest_seen = FileStat::of(&manifest);
+        std::fs::write(&manifest, "{\"other\": 1}\n").unwrap();
+        assert_eq!(
+            run(&snapshot, FileStat::of(&graph), manifest_seen, false),
+            Err("manifest.json changed since it was written")
+        );
+        // A file that failed to extract.
+        let (g, m) = both();
+        assert_eq!(run(&snapshot, g, m, true), Err("a file failed to extract"));
+        let (g, m) = both();
+        assert_eq!(run(&snapshot, g, m, false), Ok(()));
+        // Without a graph.json read, nothing is vouched for.
+        assert_eq!(
+            run(&snapshot, None, FileStat::of(&manifest), false),
+            Err("graph.json not read")
         );
     }
 
-    /// A row vouches for its file while the file keeps the recorded content:
-    /// with the recorded time it is not read; with another time its content
-    /// decides; a row without a hash is left to the scan's check.
+    /// A file changed shortly before the snapshot (within the granularity)
+    /// may change again with the same size and times, so its stats prove
+    /// nothing yet and the rebuild records nothing.
     #[test]
-    fn rows_vouch_for_unchanged_content() {
+    fn a_file_changed_just_before_the_scan_is_not_recorded() {
         let temp = tempfile::tempdir().unwrap();
-        let file = temp.path().join("a.py");
-        std::fs::write(&file, "x = 1\n").unwrap();
-        let path = file.to_string_lossy().into_owned();
-        let mtime = detect_manifest::mtime(&file).unwrap();
-        let hash = detect_manifest::md5_file(&file);
-        // Seen long after it was written: outside the window where a
-        // same-second rewrite can hide.
-        let row =
-            json!({"mtime": mtime, "seen": mtime + 100.0, "ast_hash": hash, "semantic_hash": ""});
-        assert_eq!(row_unchanged(&path, &row), Some(true));
-        let moved = json!({"mtime": mtime - 50.0, "seen": mtime + 100.0, "ast_hash": hash});
-        assert_eq!(row_unchanged(&path, &moved), Some(false));
-        let other =
-            json!({"mtime": mtime - 50.0, "seen": mtime + 100.0, "ast_hash": "0".repeat(32)});
-        assert_eq!(row_unchanged(&path, &other), None);
-        assert_eq!(
-            row_unchanged(&path, &json!({"mtime": mtime, "ast_hash": ""})),
-            Some(true)
-        );
-        std::fs::remove_file(&file).unwrap();
-        assert_eq!(row_unchanged(&path, &row), None);
+        let root = temp.path().canonicalize().unwrap();
+        let out = root.join(".graphicle");
+        std::fs::create_dir_all(&out).unwrap();
+        let source = root.join("a.py");
+        std::fs::write(&source, "x = 1\n").unwrap();
+        std::fs::write(out.join("graph.json"), "{\"nodes\":[],\"links\":[]}\n").unwrap();
+        std::fs::write(out.join("manifest.json"), "{}\n").unwrap();
+        let detected = json!({"files": {"code": [source.to_string_lossy()]}});
+        let state = state();
+        let run = |granularity_ns: u64| {
+            let snapshot = Snapshot::with_granularity(&detected, granularity_ns);
+            let seen = Seen {
+                snapshot: &snapshot,
+                graph: FileStat::of(&out.join("graph.json")),
+                manifest: FileStat::of(&out.join("manifest.json")),
+                failed: false,
+            };
+            record(&out, &state, &detected, &seen, 1, 0)
+        };
+        let minute = 60_000_000_000;
+        assert_eq!(run(minute), Err("a file changed just before the scan"));
+        assert!(!out.join(STATE_FILE).exists());
+        // An old modification time does not help: the status-change time is
+        // the time of the last change.
+        let file = std::fs::File::options().append(true).open(&source).unwrap();
+        let hour_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        file.set_modified(hour_ago).unwrap();
+        #[cfg(unix)]
+        assert_eq!(run(minute), Err("a file changed just before the scan"));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(run(20_000_000), Ok(()));
+        assert!(out.join(STATE_FILE).exists());
+    }
+
+    /// Before the scan, a file whose modification time moved since the
+    /// manifest stamped it is a change; after the scan, so is any other
+    /// change of its stats, with the modification time kept.
+    #[test]
+    fn the_check_sees_moved_times_and_kept_times() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let out = root.join(".graphicle");
+        std::fs::create_dir_all(&out).unwrap();
+        let source = root.join("a.py");
+        std::fs::write(&source, "x = 1\n").unwrap();
+        std::fs::write(out.join("graph.json"), "{\"nodes\":[],\"links\":[]}\n").unwrap();
+        let spelled = source.to_string_lossy().into_owned();
+        let detected = json!({"files": {"code": [spelled.clone()]}});
+        let stamp = |files: &serde_json::Map<String, Value>| {
+            detect_manifest::save_manifest(
+                files,
+                &out.join("manifest.json"),
+                "ast",
+                &detect_manifest::ManifestOptions {
+                    root: Some(root.clone()),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        };
+        stamp(detected["files"].as_object().unwrap());
+        let state = state();
+        let snapshot = Snapshot::with_granularity(&detected, 0);
+        let seen = Seen {
+            snapshot: &snapshot,
+            graph: FileStat::of(&out.join("graph.json")),
+            manifest: FileStat::of(&out.join("manifest.json")),
+            failed: false,
+        };
+        assert_eq!(record(&out, &state, &detected, &seen, 0, 0), Ok(()));
+        let check = || {
+            before_scan(&out, &root, &state)
+                .and_then(|pending| pending.after_scan(&detected))
+                .map(|_| ())
+        };
+        assert_eq!(check(), Ok(()));
+        // The same content and size, another modification time.
+        let file = std::fs::File::options().append(true).open(&source).unwrap();
+        let modified = std::fs::metadata(&source).unwrap().modified().unwrap();
+        file.set_modified(modified - std::time::Duration::from_secs(60))
+            .unwrap();
+        assert_eq!(check(), Err("file times"));
+        // Other content of the same size, the old modification time back.
+        // A file's status-change time moves with the kernel's clock tick, so
+        // the rewrite waits past one.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::fs::write(&source, "x = 2\n").unwrap();
+        let file = std::fs::File::options().append(true).open(&source).unwrap();
+        file.set_modified(modified).unwrap();
+        #[cfg(unix)]
+        assert_eq!(check(), Err("file stats"));
     }
 }

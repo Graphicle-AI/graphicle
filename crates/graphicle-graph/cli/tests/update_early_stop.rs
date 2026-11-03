@@ -1,15 +1,25 @@
 //! `update` stops early when nothing it reads changed since a full update
 //! that found nothing to change: it leaves every output byte as the full
 //! update leaves it. An update that writes a new graph is not enough (the
-//! next one may still change it), and any change (a file's content, an
-//! added, deleted or renamed file, an option or setting that changes the
-//! output, another build, a graph.json written by another command, a
-//! configuration file above the project) takes the full update again.
+//! next one may still change it), nor is one right after a file changed,
+//! and any change (a file's content, size or times, an added, deleted or
+//! renamed file, an option or setting that changes the output, another
+//! build, a graph.json written by another command, a configuration file
+//! above the project) takes the full update again. A file that fails to
+//! extract, or a JavaScript workspace above the project, keeps it from ever
+//! stopping early.
+//!
+//! The updates here trust a file's stats at once
+//! (`GRAPHICLE_MTIME_GRANULARITY_MS=0`): by default a file changed in the
+//! two seconds before an update keeps that update from recording.
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
     process::Command,
 };
+
+#[allow(dead_code)]
+mod common;
 
 const EARLY: &str = "No relevant changes; outputs left untouched.";
 const UNCHANGED: &str = "No code-graph topology changes detected; outputs left untouched.";
@@ -25,9 +35,14 @@ struct Project {
 
 impl Project {
     fn new() -> Project {
+        Project::at("project")
+    }
+
+    /// The project in the folder `rel` of a new temporary folder.
+    fn at(rel: &str) -> Project {
         let temp = tempfile::tempdir().unwrap();
         let base = temp.path().canonicalize().unwrap();
-        let (root, out, home) = (base.join("project"), base.join("out"), base.join("home"));
+        let (root, out, home) = (base.join(rel), base.join("out"), base.join("home"));
         std::fs::create_dir_all(root.join("pkg")).unwrap();
         std::fs::create_dir_all(&home).unwrap();
         let write = |rel: &str, text: &str| std::fs::write(root.join(rel), text).unwrap();
@@ -54,7 +69,8 @@ impl Project {
     }
 
     /// The engine's standard output for `args`, with `env` added to a clean
-    /// environment.
+    /// environment, then its standard error (which says why an update did
+    /// not stop early).
     fn run(&self, args: &[&str], env: &[(&str, &str)]) -> String {
         let run = Command::new(env!("CARGO_BIN_EXE_graphicle-graph"))
             .args(args)
@@ -63,11 +79,17 @@ impl Project {
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &self.home)
             .env("GRAPHICLE_OUT", &self.out)
+            .env("GRAPHICLE_WATCH_TIMING", "1")
+            .env("GRAPHICLE_MTIME_GRANULARITY_MS", "0")
             .envs(env.iter().copied())
             .output()
             .unwrap();
         assert!(run.status.success(), "{args:?}: {run:?}");
-        String::from_utf8_lossy(&run.stdout).into_owned()
+        format!(
+            "{}\n--- stderr ---\n{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        )
     }
 
     fn update_with(&self, options: &[&str], env: &[(&str, &str)]) -> String {
@@ -231,18 +253,6 @@ fn any_change_takes_the_full_rebuild() {
     std::fs::write(root("NOTES.md"), "# Notes\n\nSee `helper()`.\n").unwrap();
     project.full_then_early("added document");
 
-    // A new modification time without new content: the early stop, with
-    // the manifest restamped as the full rebuild restamps it.
-    let manifest = std::fs::read(project.out.join("manifest.json")).unwrap();
-    touch(&root("pkg/main.py"), 3600);
-    let touched = project.update();
-    assert!(touched.contains(EARLY), "{touched}");
-    assert_ne!(
-        std::fs::read(project.out.join("manifest.json")).unwrap(),
-        manifest
-    );
-    assert!(project.update().contains(EARLY));
-
     // Options and settings that change what an update writes.
     project.full_then_early_with("--follow-symlinks", &["--follow-symlinks"], &[]);
     project.full_then_early("without --follow-symlinks");
@@ -273,4 +283,188 @@ fn any_change_takes_the_full_rebuild() {
     project.full_then_early("go.mod added above the root");
     std::fs::write(&above, "module example.com/two\n").unwrap();
     project.full_then_early("go.mod edited above the root");
+}
+
+/// A new modification time without new content takes the full update,
+/// which restamps the manifest; the next update stops early and leaves the
+/// manifest as that full update wrote it.
+#[test]
+fn a_new_modification_time_takes_the_full_update() {
+    let project = Project::new();
+    project.full_then_early("first update");
+    let manifest = std::fs::read(project.out.join("manifest.json")).unwrap();
+    touch(&project.root.join("pkg/main.py"), 3600);
+    let touched = project.update();
+    assert!(
+        touched.contains(UNCHANGED)
+            && !touched.contains(EARLY)
+            && touched.contains("no early stop: file times"),
+        "{touched}"
+    );
+    let restamped = project.outputs();
+    assert_ne!(
+        restamped["manifest.json"], manifest,
+        "the full update restamps the file's time"
+    );
+    let early = project.update();
+    assert!(early.contains(EARLY), "{early}");
+    assert!(
+        project.outputs() == restamped,
+        "the early stop changed an output"
+    );
+}
+
+/// Other content of the same size with the old modification time back
+/// (`cp -p`, `rsync -a`, `tar -x`, `touch -r`): the status-change time moved,
+/// so the update is a full one.
+#[cfg(unix)]
+#[test]
+fn an_edit_that_keeps_size_and_time_takes_the_full_update() {
+    let project = Project::new();
+    project.full_then_early("first update");
+    let path = project.root.join("pkg/util.py");
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    std::fs::write(&path, "def helper():\n    return 7\n").unwrap();
+    let file = std::fs::File::options().append(true).open(&path).unwrap();
+    file.set_modified(modified).unwrap();
+    let after = project.update();
+    assert!(
+        !after.contains(EARLY) && after.contains("no early stop: file stats"),
+        "{after}"
+    );
+}
+
+/// A file changed just before an update (within the granularity) may change
+/// again with the same size and times, so that update records nothing; once
+/// the granularity has passed, the next full update records.
+#[test]
+fn an_update_right_after_a_change_is_not_recorded() {
+    let project = Project::new();
+    project.full_then_early("first update");
+    let slow = [("GRAPHICLE_MTIME_GRANULARITY_MS", "3000")];
+    touch(&project.root.join("pkg/main.py"), 0);
+    let racy = project.update_with(&[], &slow);
+    assert!(
+        racy.contains(UNCHANGED)
+            && racy.contains("not recorded: a file changed just before the scan"),
+        "{racy}"
+    );
+    assert!(!project.out.join(RECORD).exists());
+    std::thread::sleep(std::time::Duration::from_millis(3200));
+    let settled = project.update_with(&[], &slow);
+    assert!(
+        settled.contains(UNCHANGED) && !settled.contains("not recorded"),
+        "{settled}"
+    );
+    let early = project.update_with(&[], &slow);
+    assert!(early.contains(EARLY), "{early}");
+}
+
+/// A file that fails to extract is tried again by every full update (a
+/// failure may not repeat), so an update with one is never recorded.
+#[test]
+fn a_failed_file_is_never_recorded() {
+    let project = Project::new();
+    // A JSON file over the extractor's 1 MiB limit fails to extract.
+    let big = format!("{{\"data\": \"{}\"}}\n", "x".repeat(1_100_000));
+    std::fs::write(project.root.join("big.json"), big).unwrap();
+    for run in 0..3 {
+        let update = project.update();
+        assert!(!update.contains(EARLY), "run {run}: {update}");
+        assert!(!project.out.join(RECORD).exists(), "run {run}: recorded");
+    }
+    let last = project.update();
+    assert!(
+        last.contains("not recorded: a file failed to extract"),
+        "{last}"
+    );
+}
+
+/// A JavaScript workspace root above the project: resolution reads its
+/// member packages beside the project, which no record covers, so the
+/// update never stops early.
+#[test]
+fn a_workspace_above_the_project_never_stops_early() {
+    let project = Project::at("packages/app");
+    std::fs::write(
+        project.base.join("pnpm-workspace.yaml"),
+        "packages:\n  - 'packages/*'\n",
+    )
+    .unwrap();
+    let lib = project.base.join("packages/lib");
+    std::fs::create_dir_all(&lib).unwrap();
+    std::fs::write(
+        lib.join("package.json"),
+        r#"{"name":"lib","main":"index.js"}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        lib.join("index.js"),
+        "export function shared() { return 1; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        project.root.join("index.js"),
+        "import { shared } from 'lib';\nexport function run() { return shared(); }\n",
+    )
+    .unwrap();
+    for run in 0..3 {
+        let update = project.update();
+        assert!(
+            !update.contains(EARLY)
+                && update.contains("no early stop: a JavaScript workspace above the root"),
+            "run {run}: {update}"
+        );
+        assert!(!project.out.join(RECORD).exists(), "run {run}: recorded");
+    }
+}
+
+/// Configuration files extraction reads in the folders above the project:
+/// a tsconfig.json, a package.json, a version control folder.
+#[test]
+fn configuration_above_the_project_takes_the_full_update() {
+    let project = Project::new();
+    project.full_then_early("first update");
+    std::fs::write(
+        project.base.join("tsconfig.json"),
+        r#"{"compilerOptions":{"baseUrl":"."}}"#,
+    )
+    .unwrap();
+    project.full_then_early("tsconfig.json added above the root");
+    std::fs::write(project.base.join("package.json"), r#"{"name":"outer"}"#).unwrap();
+    project.full_then_early("package.json added above the root");
+    std::fs::create_dir_all(project.base.join(".git")).unwrap();
+    project.full_then_early(".git added above the root");
+}
+
+/// A converted Office document: the update stops early while it is the
+/// same, and a new version of it takes the full update.
+#[test]
+fn an_office_document_stops_early_until_it_changes() {
+    let project = Project::new();
+    let notes = project.root.join("notes.docx");
+    let version = |text: &str| common::word_document(&[(Some("Heading1"), "Notes"), (None, text)]);
+    std::fs::write(&notes, version("Call `helper()` first.")).unwrap();
+    project.full_then_early("first update");
+    std::fs::write(&notes, version("Call `parse_all()` first.")).unwrap();
+    touch(&notes, 0);
+    project.full_then_early("the document changed");
+}
+
+/// HOME is a setting (it bounds where JavaScript resolution looks for a
+/// package.json); the hooks' change lists are not.
+#[test]
+fn home_counts_and_hook_change_lists_do_not() {
+    let project = Project::new();
+    project.full_then_early("first update");
+    let hook = project.update_with(&[], &[("GRAPHICLE_CHANGED_JSON", "[\"pkg/util.py\"]")]);
+    assert!(hook.contains(EARLY), "{hook}");
+    let other_home = project.base.join("home2");
+    std::fs::create_dir_all(&other_home).unwrap();
+    let home = other_home.to_string_lossy().into_owned();
+    let moved = project.update_with(&[], &[("HOME", home.as_str())]);
+    assert!(
+        !moved.contains(EARLY) && moved.contains("no early stop: settings"),
+        "{moved}"
+    );
 }
