@@ -804,6 +804,7 @@ turns both off.
 |---|---|
 | `.graphicle/` | The graph's output folder in the project. `GRAPHICLE_OUT` sets another one |
 | `.graphicleignore` | Paths the graph leaves out, in `.gitignore` syntax. `--no-gitignore` stops `extract` from reading `.gitignore` |
+| `.graphicle/.graphicle_build_state.json` | What the last full `update` read when it found nothing to change: the engine build, the settings that change its output, and the files with their content. A full `update` (or `watch` rebuild) with none of it changed since stops early, says "No relevant changes", and leaves the outputs as they are; an update that writes a new graph removes it, and `--force` always rebuilds |
 | `~/.graphicle-graph/` | Engine settings: custom LLM providers (`providers.json`, managed with `graphicle graph provider add`), the global graph and grammar packs |
 | `--backend NAME --model NAME` | The LLM that reads documents, papers and images in a full `extract` (code always goes through the parser). Without `--backend`, the engine takes the first key it finds: `GEMINI_API_KEY` or `GOOGLE_API_KEY`, `MOONSHOT_API_KEY`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, then Azure OpenAI (`AZURE_OPENAI_API_KEY` with `AZURE_OPENAI_ENDPOINT`) or an Ollama address (`OLLAMA_BASE_URL`). `--code-only` never calls an LLM, and `--dry-run` reports what a full extract would send |
 | `--precise` or `GRAPHICLE_PRECISE=1` | Adds precise call resolution to `extract`, `update`, `watch` and `serve --watch` |

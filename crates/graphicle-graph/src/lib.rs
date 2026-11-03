@@ -162,6 +162,7 @@ mod unicode15;
 pub mod validate;
 pub mod vtab;
 pub mod watch;
+mod watch_gate;
 mod watch_paths;
 mod watch_reconcile;
 pub mod wiki;
