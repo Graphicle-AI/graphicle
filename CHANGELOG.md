@@ -3,7 +3,105 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## 0.1.11 - 2026-11-01
+## 0.1.12 - 2026-11-03
+
+Every crate is at 0.1.12, and `graphicle --version` prints
+`graphicle 0.1.12 (core)`. The Python and TypeScript SDKs are at 0.1.12 too.
+
+Everything new in 0.1.12 was written during Meta's Global AI Developer
+Hackathon.
+[HACKATHON.md](https://github.com/Graphicle-AI/graphicle/blob/v0.1.12/HACKATHON.md)
+lists it with when it was written.
+
+### After upgrading
+
+- Run `graphicle sync` once in each project, as after 0.1.11: the saved
+  graph and the query file are keyed to the program's build, so the first
+  sync writes both again.
+- On Windows, if you set `GRAPHICLE_MAX_WORKERS=1` to get past the crash
+  below, remove it: extract and update use all their workers again.
+
+### Fixes
+
+- On Windows, `graphicle-graph extract` and `update` no longer exit with
+  0xC0000005 (an access violation) once they split their work across worker
+  threads, which a file with a few tens of symbols was enough to start. The
+  crash came from mimalloc 3.3.2, most likely microsoft/mimalloc#1306, so
+  the Windows programs now use the system allocator, as the macOS programs
+  have since 0.1.1. Linux keeps mimalloc. Reported by Michael George in #18,
+  with the cases that reproduced it.
+- `graphicle fix`: a second run on the same issue that starts within the
+  same second as the first takes the next free worktree folder (`-2`, `-3`
+  and so on), as the branch name already did. Before, it stopped with git's
+  "already exists".
+- `graphicle fix` applies the model's edits to files whose lines end in
+  CRLF, as Git for Windows checks them out, and those files keep CRLF.
+  Before, every edit whose search text spans a line break was refused there
+  with "the search text is not in the file as it is now". An edit takes the
+  file's line breaks when all of them are CRLF or all are LF; a file with
+  both, or with none, takes an edit as it is written (`docs/fix.md`, step
+  4).
+- With the output folder outside the project, given by an absolute path in
+  `GRAPHICLE_OUT`, the nodes of Office documents no longer depend on where
+  that folder is. Each `.docx` and `.xlsx` file is converted to a Markdown
+  file in the output folder, and the ids of its nodes were taken from that
+  file's path, so two output folders gave two graphs with the same counts;
+  the 0.1.11 benchmarks found three graphs of pandas this way. The ids now
+  come from the converted file's name, which is hashed from the document's
+  path in the project, so they change once, at the first
+  `graphicle-graph update`, or `watch` or hook rebuild, after upgrading.
+  Graphs without Office documents or Google Workspace shortcuts, and graphs
+  in the default output folder (`.graphicle` in the project), are unchanged.
+  An output folder given by a relative path that leads outside the project
+  (`../out`) still names them by that path.
+- `graphicle-graph watch` of a subfolder (`watch src`) keeps the nodes of
+  Office documents in its incremental rebuilds. Before, with an output
+  folder more than three folders up, it dropped them until the next full
+  update.
+
+### Dependencies
+
+- zip 9.2.2 and calamine 0.38.0, for RUSTSEC-2026-0367, -0368, -0369 and
+  -0429 and GitHub's zip advisories of 28 and 29 October, one of them
+  critical (GHSA-m665-v7pm-7grj, fixed in zip 9.0.5, the lowest zip the
+  crates now accept). `deny.toml` no longer makes exceptions for them, and
+  the third-party licence pages list the new versions.
+- calamine 0.38 reads two kinds of legacy `.xls` file more correctly: the
+  rows of an embedded chart no longer appear in its sheet, and BIFF5
+  rich-text strings keep symbols such as `•` and `’`.
+
+### Hosted demo
+
+- `demo/modal_app.py` runs the hosted demo on Modal: an image with the
+  v0.1.10 release's binary and the checkouts, a Volume with the data folder,
+  and `server.py` scaling to zero, live with the Meta key's secret or,
+  without it, showing the recorded answers (`demo/README.md`, "Modal").
+
+### Docs
+
+- The README opens with "Graphify, ported to Rust. Plus memory." and the
+  live flow from a bug on the screen to a tested fix, and gives the
+  13-codebase results as bar charts of time and peak memory.
+- `docs/benchmarks.md` gives Graphicle 0.1.11 against Graphify 0.9.100 on
+  one Linux machine: updates after 30 recent commits in three repositories,
+  and the time and peak memory of three operations on 13 codebases. Its note
+  on pandas' three graphs now gives their cause, fixed above.
+- HACKATHON.md calls the pack, `ask --pack` and `plan` written before the
+  kickoff first drafts, and says that every change to them after it is event
+  work.
+- `docs/fix.md` and `graphicle fix --help` say that the test command runs
+  with `cmd /C` on Windows, not `sh -c`, so a test command written for sh
+  does not run there as it is written; `docs/flow.md` and
+  `graphicle see --help` say the same of its driver.
+
+### Packaging
+
+- `server.json` at the repository's root is the MCP Registry entry of
+  0.1.11, the latest listed release (it named 0.1.10).
+- `graphicle-graph`'s NOTICE says that the program uses mimalloc as its Rust
+  allocator on Linux only.
+
+## 0.1.11 - 2026-11-02
 
 Every crate is at 0.1.11, and `graphicle --version` prints
 `graphicle 0.1.11 (core)`. The Python and TypeScript SDKs are at 0.1.11
