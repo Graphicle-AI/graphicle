@@ -106,6 +106,9 @@ pub struct StoredSourcePaths {
     pub watch_root: PathBuf,
     pub existing_source_root: PathBuf,
     pub legacy_watch_relative: bool,
+    /// Where the scan's Office documents are converted to Markdown, as
+    /// `detect` spells it (`extract_normalize::converted_dir`).
+    pub converted: PathBuf,
     /// Memo of `identity()` results: identities are pure functions of the
     /// stored source string once the roots are fixed, and a rebuild asks for
     /// the same handful of file identities once per node/edge.
@@ -119,6 +122,7 @@ impl StoredSourcePaths {
             watch_root: watch_root.into(),
             existing_source_root: project_root.into(),
             legacy_watch_relative: false,
+            converted: crate::extract_normalize::converted_dir(watch_root, None),
             identity_cache: RefCell::new(HashMap::new()),
             normalize_cache: RefCell::new(HashMap::new()),
         };
@@ -203,6 +207,15 @@ impl StoredSourcePaths {
         } else {
             &self.existing_source_root
         };
+        // A converted Office document outside the scan root is stored by the
+        // file name of its sidecar (`extract_normalize::portable_spelling`):
+        // it names that sidecar, unless the root holds a file of that name.
+        if !n.is_empty() && !n.contains('/') && !Path::new(&n).is_absolute() {
+            let sidecar = self.converted.join(&n);
+            if sidecar.is_file() && !root.join(&n).exists() {
+                return self.absolute_identity(&sidecar.to_string_lossy(), root);
+            }
+        }
         self.absolute_identity(&n, root)
     }
     pub fn in_watch(&self, source: &str) -> bool {
@@ -246,4 +259,37 @@ fn anchors(existing: &Value, root: &Path, sample: usize) -> bool {
         }
     }
     checked == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::StoredSourcePaths;
+    use serde_json::json;
+
+    /// A stored source that is a converted sidecar's file name (an Office
+    /// document converted outside the scan root) names the sidecar in this
+    /// run's `converted` folder; a file of that name in the root wins.
+    #[test]
+    fn a_sidecar_name_is_the_sidecar_in_the_converted_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let converted = crate::extract_normalize::converted_dir(&root, None);
+        std::fs::create_dir_all(&converted).unwrap();
+        let sidecar = converted.join("notes_0a1b2c3d.md");
+        std::fs::write(&sidecar, "# Notes\n").unwrap();
+        // A new value per check: identities are memoised.
+        let paths = || StoredSourcePaths::new(&json!({}), &root.join(".graphicle"), &root, &root);
+        let absolute =
+            |path: &std::path::Path| paths().absolute_identity(&path.to_string_lossy(), &root);
+        assert_eq!(paths().identity("notes_0a1b2c3d.md"), absolute(&sidecar));
+        assert_eq!(
+            paths().identity("other_0a1b2c3d.md"),
+            absolute(&root.join("other_0a1b2c3d.md"))
+        );
+        std::fs::write(root.join("notes_0a1b2c3d.md"), "# Root notes\n").unwrap();
+        assert_eq!(
+            paths().identity("notes_0a1b2c3d.md"),
+            absolute(&root.join("notes_0a1b2c3d.md"))
+        );
+    }
 }

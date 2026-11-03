@@ -1702,7 +1702,15 @@ fn assemble_records(
     types::merge_go_package_types(&mut nodes, &edges);
     drop(profiled);
     let profiled = crate::profile::span("assemble.normalize_ids");
-    per_dispatch!(&mut per, p => norm::normalize_ids(paths, &mut nodes, &mut edges, &mut p[..], root));
+    // The Markdown sidecars of Office documents sit in the output folder:
+    // their ids must not depend on where that folder is.
+    let converted = Some(resolved(&norm::converted_dir(
+        root,
+        options.cache_root.as_deref(),
+    )))
+    .filter(|dir| dir.is_dir());
+    let converted = converted.as_deref();
+    per_dispatch!(&mut per, p => norm::normalize_ids(paths, &mut nodes, &mut edges, &mut p[..], root, converted));
     drop(profiled);
     let profiled = crate::profile::span("assemble.repoint_python_imports");
     merge::repoint_python_imports(paths, &nodes, &mut edges, root);
@@ -1890,8 +1898,8 @@ fn assemble_records(
     drop(profiled);
     let profiled = crate::profile::span("assemble.finish");
     match &mut edges {
-        EdgeList::Values(values) => norm::finish(&mut nodes, values, root),
-        EdgeList::Records(records) => norm::finish(&mut nodes, records, root),
+        EdgeList::Values(values) => norm::finish(&mut nodes, values, root, converted),
+        EdgeList::Records(records) => norm::finish(&mut nodes, records, root, converted),
     }
     drop(profiled);
     let mut result = serde_json::Map::new();
@@ -2862,5 +2870,54 @@ mod tests {
             };
             assert_eq!(extract(&paths, &options).unwrap(), clean);
         }
+    }
+
+    /// The Markdown sidecar of a converted Office document sits in the output
+    /// folder, outside the scan root when the output folder is: its nodes and
+    /// edges are the same wherever that folder is, one folder up from the
+    /// root or more than three, and no id or source names the folder.
+    #[test]
+    fn converted_sidecars_do_not_depend_on_the_output_folder() {
+        let _serial = extractors::parse_cache::test_serial();
+        let temp = tempfile::tempdir().unwrap();
+        let base = temp.path().canonicalize().unwrap();
+        let root = base.join("w/x/y/z/repo");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("app.py"), "def parse_all():\n    return 1\n").unwrap();
+        let run = |output: &Path| {
+            let converted = output
+                .join(crate::paths::OUT_DIR.as_str())
+                .join("converted");
+            std::fs::create_dir_all(&converted).unwrap();
+            let sidecar = converted.join("notes_0a1b2c3d.md");
+            std::fs::write(
+                &sidecar,
+                "<!-- converted from notes.docx -->\n\n# Release notes\n\nThe parser reads every file.\n\n\
+                 ## Usage\n\nCall `parse_all()` from the command line.\n\n## Sheet: Sheet1\n| a | b |\n| --- | --- |\n| 1 | 2 |\n",
+            )
+            .unwrap();
+            let out = extract(
+                &[root.join("app.py"), sidecar],
+                &ExtractOptions {
+                    root: Some(root.clone()),
+                    cache_root: Some(output.to_path_buf()),
+                    parallel: false,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            serde_json::to_string(&json!({"nodes": out["nodes"], "edges": out["edges"]})).unwrap()
+        };
+        // One folder up from the root, and five (the far spelling until now).
+        let near = run(&base.join("w/x/y/z/outnear"));
+        let far = run(&base.join("outfar"));
+        for (name, graph) in [("near", &near), ("far", &far)] {
+            assert!(graph.contains("ext_notes_0a1b2c3d_md"), "{name}: {graph}");
+            assert!(
+                !graph.contains("outnear") && !graph.contains("outfar"),
+                "{name}: {graph}"
+            );
+        }
+        assert_eq!(near, far);
     }
 }

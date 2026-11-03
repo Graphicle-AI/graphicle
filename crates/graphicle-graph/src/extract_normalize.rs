@@ -28,12 +28,44 @@ pub fn portable_outside(path: &Path, root: &Path) -> String {
         })
         .replace('\\', "/");
     if rel.split('/').take_while(|p| *p == "..").count() > 3 {
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
+        file_name(path)
     } else {
         rel
+    }
+}
+fn file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned()
+}
+/// The folder where `detect` writes the Markdown sidecars of a scan's Office
+/// documents (`<output>/converted`), spelled as `detect` spells it: the output
+/// folder under `cache_root` (`extract --out`) or else under `root`. An
+/// absolute `GRAPHICLE_OUT` replaces either.
+pub fn converted_dir(root: &Path, cache_root: Option<&Path>) -> PathBuf {
+    let base = cache_root.unwrap_or(root);
+    crate::fsutil::resolve_missing(base)
+        .unwrap_or_else(|_| base.to_path_buf())
+        .join(crate::paths::OUT_DIR.as_str())
+        .join("converted")
+}
+/// Whether `path` is a sidecar in `converted` (resolved; see [`converted_dir`]).
+fn is_converted_sidecar(path: &Path, converted: Option<&Path>) -> bool {
+    converted.is_some_and(|dir| resolved(path).starts_with(dir))
+}
+/// [`portable_outside`] of a source outside the scan root, except that the
+/// sidecar of a converted Office document is spelled by its file name, as a
+/// source more than three folders up is: the sidecar lives in the output
+/// folder, whose place is the run's choice, while its name already
+/// identifies the document (it is hashed from the document's path in the
+/// scan root). Spelled by its path, the same document took another id in
+/// each output folder, so two runs of one corpus wrote different graphs.
+fn portable_spelling(path: &Path, root: &Path, converted: Option<&Path>) -> String {
+    if is_converted_sidecar(path, converted) {
+        file_name(path)
+    } else {
+        portable_outside(path, root)
     }
 }
 pub fn apply_ids<P: PerFile>(
@@ -349,12 +381,14 @@ fn edge_key(e: &Value) -> Vec<u8> {
     out
 }
 /// The raw calls are rewritten where they sit, in the per-file results.
+/// `converted` is the resolved [`converted_dir`] of the run.
 pub fn normalize_ids<P: PerFile>(
     paths: &[PathBuf],
     nodes: &mut [Value],
     edges: &mut Vec<Value>,
     per: &mut [P],
     root: &Path,
+    converted: Option<&Path>,
 ) {
     let mut map = BTreeMap::new();
     // Input files that minted each old file-level id key, resolved (0.9.91,
@@ -378,7 +412,7 @@ pub fn normalize_ids<P: PerFile>(
         }
         if !full.starts_with(root) {
             if full.is_file() {
-                let new = make_id(["ext", portable_outside(&full, root).as_str()]);
+                let new = make_id(["ext", portable_spelling(&full, root, converted).as_str()]);
                 for p in [&full, &original] {
                     let old = make_id([p.to_string_lossy().as_ref()]);
                     map.insert(old.clone(), new.clone());
@@ -741,7 +775,67 @@ fn relativize<R: Rec>(
         item.rec_set("metadata", metadata);
     }
 }
-pub fn finish<E: Rec>(nodes: &mut [Value], edges: &mut [E], root: &Path) {
+/// The new ids of the symbols (headings, sections) of each converted Office
+/// document whose sidecar lies outside the scan root ([`portable_spelling`]).
+/// A symbol's id starts with the stem of its file's path, and the stem of a
+/// sidecar's absolute path names the output folder: such a symbol takes the
+/// file's portable id as its prefix instead, the prefix an endpoint that
+/// names no node already gets below.
+fn converted_sidecar_symbols(
+    nodes: &[Value],
+    root: &Path,
+    converted: Option<&Path>,
+) -> FxHashMap<String, String> {
+    let mut symbols = FxHashMap::default();
+    if converted.is_none() {
+        return symbols;
+    }
+    // Per sidecar: its file-level ids (renamed by `relativize`), the prefixes
+    // its symbols were minted with, and their new prefix.
+    type Sidecar = (BTreeSet<String>, Vec<String>, String);
+    let mut sidecars: FxHashMap<&str, Option<Sidecar>> = FxHashMap::default();
+    for n in nodes {
+        let sf = s(n, "source_file");
+        if sf.is_empty() {
+            continue;
+        }
+        let entry = sidecars.entry(sf).or_insert_with(|| {
+            let p = Path::new(sf);
+            (p.is_absolute() && p.strip_prefix(root).is_err() && is_converted_sidecar(p, converted))
+                .then(|| {
+                    let full = resolved(p);
+                    let files =
+                        BTreeSet::from([make_id([sf]), make_id([full.to_string_lossy().as_ref()])]);
+                    let old = BTreeSet::from([file_node_id(p), file_node_id(&full)])
+                        .into_iter()
+                        .map(|stem| format!("{stem}_"))
+                        .collect();
+                    (
+                        files,
+                        old,
+                        format!("{}_", make_id(["ext", file_name(p).as_str()])),
+                    )
+                })
+        });
+        let Some((files, old, new)) = entry else {
+            continue;
+        };
+        let id = s(n, "id");
+        if files.contains(id) {
+            continue;
+        }
+        if let Some(tail) = old
+            .iter()
+            .find_map(|prefix| id.strip_prefix(prefix.as_str()))
+            .filter(|tail| !tail.is_empty())
+        {
+            symbols.insert(id.to_string(), format!("{new}{tail}"));
+        }
+    }
+    symbols
+}
+/// `converted` is the resolved [`converted_dir`] of the run.
+pub fn finish<E: Rec>(nodes: &mut [Value], edges: &mut [E], root: &Path, converted: Option<&Path>) {
     let owned = nodes
         .iter()
         .map(|n| s(n, "id").to_string())
@@ -753,7 +847,7 @@ pub fn finish<E: Rec>(nodes: &mut [Value], edges: &mut [E], root: &Path) {
         let (source, id) = match p.strip_prefix(root) {
             Ok(rel) => (rel.to_string_lossy().replace('\\', "/"), file_node_id(rel)),
             Err(_) => {
-                let portable = portable_outside(p, root);
+                let portable = portable_spelling(p, root, converted);
                 let id = make_id(["ext", portable.as_str()]);
                 (portable, id)
             }
@@ -767,12 +861,16 @@ pub fn finish<E: Rec>(nodes: &mut [Value], edges: &mut [E], root: &Path) {
         ]);
         (source, id, keys)
     };
+    let sidecar_symbols = converted_sidecar_symbols(nodes, root, converted);
     // Nodes first, then edges: the first spelling of an id wins in `map`.
     for item in nodes.iter_mut() {
         relativize(item, &owned, &mut map, &mut source_files, &sf_entry);
     }
     for item in edges.iter_mut() {
         relativize(item, &owned, &mut map, &mut source_files, &sf_entry);
+    }
+    for (old, new) in sidecar_symbols {
+        map.entry(old).or_insert(new);
     }
     // `None` means the id is already canonical, so the value is left untouched.
     let canon = |id: &str| -> Option<String> {
