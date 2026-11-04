@@ -66,7 +66,9 @@ passages) and those lines must exist in the working tree. A citation that
 does not hold is dropped, and a paragraph left with none is dropped. The run
 reports both counts. The check says that the cited lines were in front of
 the model, not that they prove the paragraph. Text from the model is
-escaped so that it cannot add links, images or HTML to the page.
+escaped so that it cannot add Markdown links, images or HTML to the page (a
+viewer such as GitHub may still turn a bare `https://` address into a
+link).
 
 Each article starts with its provenance: the model, the profile, the time,
 the commit and a digest of its sources. A line under the title says a model
@@ -130,11 +132,19 @@ calibration from earlier calls, plus a 10% margin), none of them cached, and
 the output limit, at the profile's configured price. The output limit is
 4,000 tokens an article, or 16,000 for a profile that sets
 `reasoning_effort`, since reasoning tokens count as output; never more than
-the profile's own `output_limit`. The run stops before a call whose worst
-case would bring it over `--max-cost` (default 1 US dollar). A call that
-fails is counted too: at its cost in the spend log when the provider
-reported usage (a reply cut at the output limit is billed), else at its
-worst case. Three failed calls in a row stop the run. The profile's own
+the profile's own `output_limit`. A model that reasons by default without
+`reasoning_effort` set still gets 4,000 output tokens, which its reasoning
+can use up: set `reasoning_effort` for such a model. The run stops before a
+call whose worst case would bring it over `--max-cost` (default 1 US
+dollar). A finished call counts at the usage the provider reported, or at
+its worst case when the provider reported none (not every
+OpenAI-compatible server does). A call that fails is counted too: at its
+cost in the spend log when the provider reported usage (a reply cut at the
+output limit is billed), else at its worst case. The input side of the
+worst case is an estimate: a call whose input was much larger than
+estimated can cost more than its worst case and bring the run past
+`--max-cost` by that difference; it is counted at what it cost, and the
+run then stops before the next call. Three failed calls in a row stop the run. The profile's own
 caps (`max_cost_per_call`, `max_cost_per_day`) apply too, and every call
 goes in the spend log (`graphicle usage`), without prompts or answers.
 `--dry-run` prints the articles to write and the worst case of their cost,
