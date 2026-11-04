@@ -22,16 +22,22 @@
 //! patch in the wiki's `proposals/` folder for you to read and apply, and
 //! a memory's goes to the approval queue as a draft (`memory.propose`).
 //! Graphicle never changes your files. One more call suggests articles and
-//! questions for the knowledge gaps. No web search.
+//! questions for the knowledge gaps. No web search. Only files whose bytes
+//! are the ones last synced are read and sent, a verdict's citations must
+//! fall in the lines its request showed, and a failed call counts against
+//! the cap at its logged cost, else its worst case.
 use crate::{
-    Result,
+    Error, Result,
     long_context::{self, Request, Run, Tree},
     model,
-    project_wiki::{self, Budget, Manifest, Target},
+    project_wiki::{self, Budget, Manifest, Shown, Target},
     store::{Store, s},
 };
 use serde_json::{Value, json};
-use std::{collections::BTreeSet, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 /// The options of `wiki check`.
 #[derive(clap::Args, Clone)]
@@ -107,15 +113,27 @@ fn numbered(text: &str, from: usize, to: usize) -> String {
         .collect()
 }
 
-/// A file of the working tree, if it is one.
-fn read(folder: Option<&Path>, path: &str) -> Option<String> {
-    let folder = folder?;
-    if Path::new(path).is_absolute() || path.split('/').any(|part| part == "..") {
-        return None;
+/// The project's synced files in its working tree.
+pub struct Files<'a> {
+    pub folder: Option<&'a Path>,
+    /// path -> sha256 of the bytes last synced.
+    pub heads: BTreeMap<String, String>,
+}
+
+impl Files<'_> {
+    /// A file of the working tree whose bytes are the ones last synced: a
+    /// file the sync leaves out (ignored, private or too large) or that
+    /// changed since is never read, so never sent to a model.
+    pub fn read(&self, path: &str) -> Option<String> {
+        let folder = self.folder?;
+        if Path::new(path).is_absolute() || path.split('/').any(|part| part == "..") {
+            return None;
+        }
+        let synced = self.heads.get(path)?;
+        let bytes = std::fs::read(folder.join(path)).ok()?;
+        (&graphicle_memory::text::sha256(&bytes) == synced)
+            .then(|| String::from_utf8_lossy(&bytes).into_owned())
     }
-    std::fs::read(folder.join(path))
-        .ok()
-        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// The passage (run of non-blank lines) of `text` that holds line `line`:
@@ -138,17 +156,36 @@ pub fn passage_lines(text: &str, line: usize) -> Option<(usize, usize)> {
 }
 
 /// A unified diff of `path` that replaces its lines `[first, last]` with
-/// `corrected`, with [`CONTEXT`] lines around, as `git apply` reads it.
+/// `corrected`, with [`CONTEXT`] lines around, as `git apply` reads it. A
+/// file with CRLF line ends gets them on the new lines too, and a last
+/// line without a line end is marked so.
 pub fn patch(path: &str, text: &str, first: usize, last: usize, corrected: &str) -> String {
-    let lines: Vec<&str> = text.lines().collect();
+    const NO_NEWLINE: &str = "\\ No newline at end of file\n";
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    let no_newline = !text.is_empty() && !text.ends_with('\n');
+    if !no_newline {
+        lines.pop();
+    }
     let start = first.saturating_sub(1).saturating_sub(CONTEXT);
     let end = (last + CONTEXT).min(lines.len());
     let before = &lines[start..first - 1];
     let old = &lines[first - 1..last];
     let after = &lines[last..end];
-    let new: Vec<&str> = corrected.trim_end_matches('\n').lines().collect();
+    let crlf = old.first().is_some_and(|line| line.ends_with('\r'));
+    let new: Vec<String> = corrected
+        .trim_end_matches(['\n', '\r'])
+        .lines()
+        .map(|line| {
+            if crlf {
+                format!("{line}\r")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
     let old_count = before.len() + old.len() + after.len();
     let new_count = before.len() + new.len() + after.len();
+    let at_end = no_newline && end == lines.len();
     let mut out = format!(
         "--- a/{path}\n+++ b/{path}\n@@ -{},{old_count} +{},{new_count} @@\n",
         start + 1,
@@ -160,23 +197,34 @@ pub fn patch(path: &str, text: &str, first: usize, last: usize, corrected: &str)
     for line in old {
         out.push_str(&format!("-{line}\n"));
     }
+    if at_end && after.is_empty() {
+        out.push_str(NO_NEWLINE);
+    }
     for line in &new {
         out.push_str(&format!("+{line}\n"));
+    }
+    if at_end && after.is_empty() {
+        out.push_str(NO_NEWLINE);
     }
     for line in after {
         out.push_str(&format!(" {line}\n"));
     }
+    if at_end && !after.is_empty() {
+        out.push_str(NO_NEWLINE);
+    }
     out
 }
 
-/// The citations of a reply that hold in the working tree.
-fn held(reply: &Value, tree: &mut Tree) -> Vec<long_context::Citation> {
+/// The citations of a reply that fall in the lines its request showed
+/// (`shown`) and hold in the working tree.
+fn held(reply: &Value, tree: &mut Tree, shown: &Shown) -> Vec<long_context::Citation> {
     let mut out = Vec::new();
     for cited in reply["citations"].as_array().into_iter().flatten() {
         for citation in long_context::citations(cited.as_str().unwrap_or("")) {
-            if tree
-                .problem(&citation.path, citation.line, citation.end)
-                .is_none()
+            if shown.holds(&citation.path, citation.line, citation.end)
+                && tree
+                    .problem(&citation.path, citation.line, citation.end)
+                    .is_none()
                 && !out.contains(&citation)
             {
                 out.push(citation);
@@ -201,8 +249,14 @@ fn deterministic(store: &Store, target: &Target, dir: &Path, args: &Args) -> Res
         store.authorized_read(&session.workspace, &session.capability, "read", |db, p| {
             let repository = crate::store::repo(db, p, &target.project)?;
             let memories = crate::memory::list(db, &repository, p, false)?;
-            let mut found = project_wiki::areas(db, p, &target.project, args.max_areas as usize)?;
-            project_wiki::assign_slugs(&mut found.areas, &manifest.clone().unwrap_or_default());
+            let found = project_wiki::wiki_areas(
+                db,
+                p,
+                &target.project,
+                args.max_areas as usize,
+                &manifest.clone().unwrap_or_default(),
+                &project_wiki::Own::of(target, dir),
+            )?;
             let inputs = project_wiki::inputs(db, p, &target.project, &found.areas)?;
             Ok((memories, found, inputs))
         })?;
@@ -297,19 +351,30 @@ pub async fn check(store: &Store, config: &model::Config, args: Args) -> Result<
     Ok(())
 }
 
-/// One check call: the reply, or why there is none. `Ok(None)` when the
-/// run's cap stops it.
+/// What one check call came to.
+enum Asked {
+    Reply(Value),
+    /// The call failed, or its reply was not JSON.
+    Failed(String),
+    /// The call's worst case would bring the pass over `--max-cost`.
+    Capped,
+    /// The profile's caps, or the spend log, refused the call.
+    Refused(String),
+}
+
+/// One check call.
 #[allow(clippy::too_many_arguments)]
 async fn ask(
     run: &Run<'_>,
     name: &str,
     profile: &model::Profile,
     budget: &mut Budget,
+    ratio: Option<f64>,
     pack: &Value,
     instructions: &str,
     prompt: &str,
     schema: &Value,
-) -> Result<Option<std::result::Result<Value, String>>> {
+) -> Asked {
     let user_of = |_: &Value| prompt.to_string();
     let request = Request {
         question: "",
@@ -320,13 +385,13 @@ async fn ask(
     };
     let estimate = long_context::request_estimate(pack, instructions, prompt);
     let worst = budget.worst(
-        crate::spend::worst_input(estimate, None, None),
+        crate::spend::worst_input(estimate, None, ratio),
         profile.output_limit as u64,
     );
     if !budget.fits(worst) {
-        return Ok(None);
+        return Asked::Capped;
     }
-    let (result, _) = match long_context::send(
+    let (result, entry) = match long_context::send(
         run,
         "wiki check",
         name,
@@ -334,25 +399,74 @@ async fn ask(
         pack,
         &request,
         None,
-        None,
+        ratio,
         &mut |_| {},
     )
     .await
     {
         Ok(sent) => sent,
-        // A cap of the profile refused the call.
-        Err(_) => return Ok(None),
+        Err(error) => return Asked::Refused(error.message),
     };
-    Ok(Some(match result {
+    match result {
         Ok(done) => {
             budget.add(&done);
             match long_context::json_in(&done.text) {
-                Ok(reply) if reply.is_object() => Ok(reply),
-                _ => Err("The model's reply is not a JSON object".into()),
+                Ok(reply) if reply.is_object() => Asked::Reply(reply),
+                _ => Asked::Failed("The model's reply is not a JSON object".into()),
             }
         }
-        Err(error) => Err(error.message),
-    }))
+        Err(error) => {
+            // A failed call can be billed: a reply cut at the output limit
+            // is.
+            budget.add_failed(&entry, worst);
+            Asked::Failed(error.message)
+        }
+    }
+}
+
+/// Why the model pass stopped: its status and, for a refusal, the reason.
+#[derive(Default)]
+struct Stop {
+    status: Option<&'static str>,
+    reason: Option<String>,
+    in_a_row: usize,
+}
+
+impl Stop {
+    /// The reply of `asked`, or why there is none (`Err`); `None` when the
+    /// pass stops here.
+    fn take(&mut self, asked: Asked) -> Option<std::result::Result<Value, String>> {
+        match asked {
+            Asked::Reply(reply) => {
+                self.in_a_row = 0;
+                Some(Ok(reply))
+            }
+            Asked::Failed(error) => {
+                self.in_a_row += 1;
+                if self.in_a_row >= project_wiki::FAILURES_IN_A_ROW {
+                    self.status = Some("stopped");
+                    self.reason = Some(format!(
+                        "{} calls in a row failed, the last with: {error}",
+                        self.in_a_row
+                    ));
+                }
+                Some(Err(error))
+            }
+            Asked::Capped => {
+                self.status = Some("stopped_at_cost_cap");
+                None
+            }
+            Asked::Refused(reason) => {
+                self.status = Some("stopped");
+                self.reason = Some(reason);
+                None
+            }
+        }
+    }
+
+    fn stopped(&self) -> bool {
+        self.status.is_some()
+    }
 }
 
 /// The model pass over the deterministic report.
@@ -378,20 +492,39 @@ async fn model_pass(
         json: !human,
     };
     let (name, mut profile) = long_context::profile(&run)?;
-    profile.output_limit = profile.output_limit.min(OUTPUT_TOKENS);
+    profile.output_limit = project_wiki::output_limit(&profile, OUTPUT_TOKENS);
     let mut budget = Budget::new(&name, &profile, args.max_cost)?;
+    if target.folder.is_none() {
+        return Err(Error::bad(
+            "This project has no working tree here to read its code from: run graphicle wiki check in its synced folder, or pass --no-model",
+        ));
+    }
+    let ratio = long_context::calibration(store, &name, &profile);
+    let heads = store.authorized_read(
+        &target.session.workspace,
+        &target.session.capability,
+        "read",
+        |db, p| {
+            let repository = crate::store::repo(db, p, &target.project)?;
+            crate::store::heads(db, s(&repository, "id"))
+        },
+    )?;
     let commit = target
         .folder
         .as_deref()
         .and_then(crate::code_pack::git_head);
     // The calls carry no pack: the spend log's project and commit only.
     let pack = json!({"project":target.name,"commit":commit,"tokens":0,"tokenizer":"estimate"});
-    let folder = target.folder.as_deref();
+    let files = Files {
+        folder: target.folder.as_deref(),
+        heads,
+    };
     let mut tree = Tree::new(target.folder.clone());
     let schema = verdict_schema();
     let proposals = dir.join("proposals");
     let mut items = Vec::new();
-    let mut stopped = false;
+    let mut stop = Stop::default();
+    let mut passages_asked: BTreeSet<(String, usize)> = BTreeSet::new();
     let max = args.max_items as usize;
     for mention in report["stale_mentions"]["stale"]
         .as_array()
@@ -404,36 +537,45 @@ async fn model_pass(
             continue;
         };
         let line = mention["line"].as_u64().unwrap_or(0) as usize;
-        let Some(doc) = read(folder, path) else {
-            items.push(json!({"kind":"doc_mention","document":path,"line":line,"verdict":"skipped","reason":"not in the working tree"}));
+        let Some(doc) = files.read(path) else {
+            items.push(
+                json!({"kind":"doc_mention","document":path,"line":line,"verdict":"skipped",
+                "reason":"not in the working tree as last synced (sync the project first)"}),
+            );
             continue;
         };
         let Some((first, last)) = passage_lines(&doc, line) else {
             continue;
         };
+        // One call per passage, however many flagged names it holds.
+        if !passages_asked.insert((path.to_string(), first)) {
+            continue;
+        }
         let passage: String = doc
             .lines()
             .skip(first - 1)
             .take(last - first + 1)
             .collect::<Vec<_>>()
             .join("\n");
+        let mut shown = Shown::default();
+        shown.add(path, first, last);
         let mut prompt =
             format!("# The passage: {path}:{first}-{last}\n{passage}\n\n# What changed\n");
-        prompt.push_str(&changed_text(mention, folder));
+        prompt.push_str(&changed_text(mention, &files, &mut shown));
         prompt.push_str("\nIs the passage still true of the code?\n");
-        let Some(answer) = ask(
+        let asked = ask(
             &run,
             &name,
             &profile,
             &mut budget,
+            ratio,
             &pack,
             VERDICT_INSTRUCTIONS,
             &prompt,
             &schema,
         )
-        .await?
-        else {
-            stopped = true;
+        .await;
+        let Some(answer) = stop.take(asked) else {
             break;
         };
         let mut item =
@@ -441,7 +583,7 @@ async fn model_pass(
         match answer {
             Err(error) => item["error"] = json!(error),
             Ok(reply) => {
-                let cites = held(&reply, &mut tree);
+                let cites = held(&reply, &mut tree, &shown);
                 item["verdict"] = reply["verdict"].clone();
                 item["reason"] = reply["reason"].clone();
                 item["citations"] = json!(cites.iter().map(cite).collect::<Vec<_>>());
@@ -460,12 +602,15 @@ async fn model_pass(
             }
         }
         items.push(item);
+        if stop.stopped() {
+            break;
+        }
     }
     let memories: Vec<Value> = report["stale_memories"]["memories"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    if !stopped {
+    if !stop.stopped() {
         let full = store.authorized_read(
             &target.session.workspace,
             &target.session.capability,
@@ -479,20 +624,21 @@ async fn model_pass(
             let Some(memory) = full.iter().find(|m| m["id"] == listed["id"]) else {
                 continue;
             };
-            let prompt = memory_prompt(memory, folder);
-            let Some(answer) = ask(
+            let mut shown = Shown::default();
+            let prompt = memory_prompt(memory, &files, &mut shown);
+            let asked = ask(
                 &run,
                 &name,
                 &profile,
                 &mut budget,
+                ratio,
                 &pack,
                 VERDICT_INSTRUCTIONS,
                 &prompt,
                 &schema,
             )
-            .await?
-            else {
-                stopped = true;
+            .await;
+            let Some(answer) = stop.take(asked) else {
                 break;
             };
             let mut item =
@@ -500,18 +646,21 @@ async fn model_pass(
             match answer {
                 Err(error) => item["error"] = json!(error),
                 Ok(reply) => {
-                    let cites = held(&reply, &mut tree);
+                    let cites = held(&reply, &mut tree, &shown);
                     item["verdict"] = reply["verdict"].clone();
                     item["reason"] = reply["reason"].clone();
                     item["citations"] = json!(cites.iter().map(cite).collect::<Vec<_>>());
                     let corrected = s(&reply, "corrected_text").trim().to_string();
                     if reply["verdict"] == "outdated" && !corrected.is_empty() {
                         item["proposal"] =
-                            propose(store, target, memory, &corrected, &reply, &cites, folder);
+                            propose(store, target, memory, &corrected, &reply, &cites, &files);
                     }
                 }
             }
             items.push(item);
+            if stop.stopped() {
+                break;
+            }
         }
     }
     let gaps: Vec<Value> = report["knowledge_gaps"]["areas"]
@@ -519,7 +668,7 @@ async fn model_pass(
         .cloned()
         .unwrap_or_default();
     let mut suggestions = json!({"status":"not_needed"});
-    if !gaps.is_empty() && !stopped {
+    if !gaps.is_empty() && !stop.stopped() {
         let mut prompt = String::from("# Areas with no doc, memory or article\n");
         for gap in gaps.iter().take(20) {
             prompt.push_str(&format!(
@@ -541,29 +690,27 @@ async fn model_pass(
                     .join(", ")
             ));
         }
-        suggestions = match ask(
+        let asked = ask(
             &run,
             &name,
             &profile,
             &mut budget,
+            ratio,
             &pack,
             GAPS_INSTRUCTIONS,
             &prompt,
             &gaps_schema(),
         )
-        .await?
-        {
-            None => {
-                stopped = true;
-                json!({"status":"stopped"})
-            }
+        .await;
+        suggestions = match stop.take(asked) {
+            None => json!({"status":"stopped"}),
             Some(Err(error)) => json!({"status":"error","error":error}),
             Some(Ok(reply)) => json!({"status":"done","articles":reply["articles"],
                 "questions":reply["questions"]}),
         };
     }
     Ok(
-        json!({"status":if stopped {"stopped_at_cost_cap"} else {"done"},"items":items,
+        json!({"status":stop.status.unwrap_or("done"),"stopped_reason":stop.reason,"items":items,
         "gap_suggestions":suggestions,"model":profile.model,"profile":name,
         "cost_usd":(budget.spent * 1_000_000.0).round() / 1_000_000.0,"max_cost_usd":budget.max,
         "priced":budget.price.is_some(),"proposals_folder":proposals}),
@@ -580,7 +727,7 @@ fn cite(citation: &long_context::Citation) -> String {
 
 /// What changed for a flagged mention: the definition as it is now, or that
 /// it is gone.
-fn changed_text(mention: &Value, folder: Option<&Path>) -> String {
+fn changed_text(mention: &Value, files: &Files, shown: &mut Shown) -> String {
     let name = s(mention, "mention");
     let was = &mention["was"];
     if mention["state"] == crate::doc_stale::MISSING {
@@ -599,9 +746,17 @@ fn changed_text(mention: &Value, folder: Option<&Path>) -> String {
         .map(|e| e as usize)
         .unwrap_or(line + CODE_LINES - 1)
         .max(line);
-    let code = read(folder, path)
+    let code = files
+        .read(path)
         .map(|text| numbered(&text, line, end))
         .unwrap_or_default();
+    if let Some(last) = code
+        .lines()
+        .last()
+        .and_then(|l| l.split('\t').next()?.parse::<usize>().ok())
+    {
+        shown.add(path, line, last);
+    }
     format!(
         "The passage names `{name}` ({}), whose code changed after the passage was written. Its current code, {path}:{line}-{end}:\n{code}",
         s(now, "qualified_name")
@@ -610,7 +765,7 @@ fn changed_text(mention: &Value, folder: Option<&Path>) -> String {
 
 /// A stale memory's prompt: its text, why it is withheld and the current
 /// code of the files it depends on.
-fn memory_prompt(memory: &Value, folder: Option<&Path>) -> String {
+fn memory_prompt(memory: &Value, files: &Files, shown: &mut Shown) -> String {
     let mut prompt = format!(
         "# The memory: {} ({})\n{}\n\n# What changed\nIt is withheld because: {}\n",
         s(memory, "title"),
@@ -637,7 +792,9 @@ fn memory_prompt(memory: &Value, folder: Option<&Path>) -> String {
         }
     }
     for path in paths.iter().take(4) {
-        if let Some(text) = read(folder, path) {
+        if let Some(text) = files.read(path) {
+            let lines = text.lines().count().min(CODE_LINES);
+            shown.add(path, 1, lines);
             prompt.push_str(&format!(
                 "\n# Current code: {path}\n{}",
                 numbered(&text, 1, CODE_LINES)
@@ -658,11 +815,11 @@ fn propose(
     corrected: &str,
     reply: &Value,
     cites: &[long_context::Citation],
-    folder: Option<&Path>,
+    files: &Files,
 ) -> Value {
     let mut evidence = Vec::new();
     for citation in cites.iter().take(10) {
-        let Some(text) = read(folder, &citation.path) else {
+        let Some(text) = files.read(&citation.path) else {
             continue;
         };
         let quote: String = text
@@ -783,10 +940,14 @@ pub fn text(report: &Value) -> String {
         return out;
     }
     out.push_str(&format!(
-        "\nModel pass ({}, {}): {}\n",
+        "\nModel pass ({}, {}): {}{}\n",
         s(pass, "profile"),
         s(pass, "model"),
-        s(pass, "status")
+        s(pass, "status"),
+        pass["stopped_reason"]
+            .as_str()
+            .map(|reason| format!(" ({reason})"))
+            .unwrap_or_default()
     ));
     for item in pass["items"].as_array().into_iter().flatten() {
         let what = if item["kind"] == "memory" {
@@ -856,6 +1017,52 @@ mod tests {
     }
 
     #[test]
+    fn a_patch_keeps_crlf_and_a_last_line_without_a_line_end() {
+        let crlf = "a\r\nb\r\nc\r\n";
+        let diff = patch("x.md", crlf, 2, 2, "B\n");
+        assert_eq!(
+            diff,
+            "--- a/x.md\n+++ b/x.md\n@@ -1,3 +1,3 @@\n a\r\n-b\r\n+B\r\n c\r\n"
+        );
+        // The passage is the last line, with no line end.
+        let open = "a\n\nlast one";
+        let diff = patch("x.md", open, 3, 3, "last two\n");
+        assert_eq!(
+            diff,
+            "--- a/x.md\n+++ b/x.md\n@@ -1,3 +1,3 @@\n a\n \n-last one\n\\ No newline at end of file\n+last two\n\\ No newline at end of file\n"
+        );
+        // The last line is context.
+        let diff = patch("x.md", "a\nb", 1, 1, "A");
+        assert_eq!(
+            diff,
+            "--- a/x.md\n+++ b/x.md\n@@ -1,2 +1,2 @@\n-a\n+A\n b\n\\ No newline at end of file\n"
+        );
+    }
+
+    #[test]
+    fn only_files_as_last_synced_are_read() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("a.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.path().join(".env"), "KEY=secret\n").unwrap();
+        let mut heads = BTreeMap::new();
+        heads.insert(
+            "a.py".to_string(),
+            graphicle_memory::text::sha256(b"x = 1\n"),
+        );
+        let files = Files {
+            folder: Some(dir.path()),
+            heads,
+        };
+        assert_eq!(files.read("a.py").as_deref(), Some("x = 1\n"));
+        // Not synced.
+        assert_eq!(files.read(".env"), None);
+        assert_eq!(files.read("../a.py"), None);
+        // Changed since the sync.
+        std::fs::write(dir.path().join("a.py"), "x = 2\n").unwrap();
+        assert_eq!(files.read("a.py"), None);
+    }
+
+    #[test]
     fn numbered_lines_start_at_their_line() {
         assert_eq!(numbered("a\nb\nc\n", 2, 3), "2\tb\n3\tc\n");
         assert_eq!(numbered("a\n", 1, 9), "1\ta\n");
@@ -878,8 +1085,12 @@ mod tests {
     #[test]
     fn a_missing_definition_says_so() {
         let mention = json!({"mention":"gone","state":"missing","was":{"qualified_name":"m.gone","relpath":"m.py","line":4}});
+        let files = Files {
+            folder: None,
+            heads: BTreeMap::new(),
+        };
         assert!(
-            changed_text(&mention, None)
+            changed_text(&mention, &files, &mut Shown::default())
                 .contains("`gone`, which no longer exists: it was m.gone at m.py:4")
         );
     }
@@ -889,10 +1100,19 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         std::fs::write(dir.path().join("a.py"), "x\ny\n").unwrap();
         let mut tree = Tree::new(Some(dir.path().to_path_buf()));
+        let mut shown = Shown::default();
+        shown.add("a.py", 1, 2);
+        shown.add("b.py", 1, 1);
         let found = held(
             &json!({"citations":["a.py:2","a.py:5","b.py:1"]}),
             &mut tree,
+            &shown,
         );
         assert_eq!(found.iter().map(cite).collect::<Vec<_>>(), ["a.py:2"]);
+        // Lines the request did not show do not hold, though the file has
+        // them.
+        let mut narrow = Shown::default();
+        narrow.add("a.py", 1, 1);
+        assert!(held(&json!({"citations":["a.py:2"]}), &mut tree, &narrow).is_empty());
     }
 }

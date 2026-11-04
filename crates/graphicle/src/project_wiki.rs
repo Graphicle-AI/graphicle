@@ -5,24 +5,29 @@
 //!   project's code graph (the clustering the graph tools read), largest
 //!   first, each with at least [`MIN_SYMBOLS`] code symbols. A thinner
 //!   community joins the area it has the most graph edges with; one with
-//!   none is counted and left out, and so are areas past `--max-articles`.
+//!   none is counted and left out. An area that has an article keeps it
+//!   while the area exists; new articles stop at `--max-articles`, which
+//!   the wiki keeps with its `--budget` for later runs.
 //! - **Inputs.** For each area: a code pack whose focus pins the area's most
 //!   connected symbols, within a per-article token budget; the passages of
 //!   the project's own repository documents that name the area's symbols
-//!   ([`crate::doc_links::passages_naming`]); the reviewed, current
+//!   ([`crate::doc_links::passages_naming`], never the wiki's own
+//!   articles); the reviewed, current
 //!   memories linked to its symbols or files (retained answers among them);
 //!   and the areas it connects to, by graph edges. Never captured sessions
 //!   or connector documents.
 //! - **Checked.** The model returns paragraphs, each with the `path:line`
-//!   citations it rests on. A citation that does not hold in the working
-//!   tree is dropped, and a paragraph left with none is dropped; the run
-//!   counts both.
+//!   citations it rests on. A citation must fall in the lines the request
+//!   showed the model (the pack's excerpts and the doc passages) and hold
+//!   in the working tree; one that does not is dropped, and a paragraph
+//!   left with none is dropped. The run counts both.
 //! - **Provenance and updates.** Each article names its model, date, commit
 //!   and the digest of its inputs; `manifest.json` keeps the checked reply.
-//!   `wiki update` writes again only the articles whose inputs changed,
-//!   drops the articles of areas that are gone, and leaves the rest
-//!   byte-identical (the sections Graphicle lists itself, such as connected
-//!   areas, are rendered again without a model). An area is matched to its
+//!   `wiki update` writes again only the articles whose inputs changed and
+//!   drops the articles of areas that are gone. The others keep the text
+//!   the model wrote; only the sections Graphicle lists itself, such as
+//!   connected areas, are rendered again without a model, so an article
+//!   whose listed part did not change keeps its bytes. An area is matched to its
 //!   earlier article by the share of files they have in common, so a new
 //!   clustering keeps its file names. Each article's files are recorded as
 //!   its sources in the dependency index ([`crate::invalidation`]), so a
@@ -32,12 +37,17 @@
 //!   subfolder that the engine's `export wiki` (which replaces the `.md`
 //!   files at the top of `wiki/`) never touches. When `wiki/index.md` does
 //!   not exist, a short one that points to `written/index.md` is written.
-//!   `--out DIR` writes elsewhere, for a wiki kept in the repository.
+//!   `--out DIR` writes elsewhere, for a wiki kept in the repository. A
+//!   file there that this program did not write (its front matter says) is
+//!   never replaced, and a lock file keeps two runs from writing at once.
 //! - **Cost.** Every call goes through the spend log and the profile's caps;
 //!   the run also stops before a call whose worst case would bring it over
 //!   `--max-cost`. `--dry-run` prints the plan and its worst case. A run
 //!   that stops keeps the finished articles: the next run picks up the
-//!   rest. A profile without a price runs only on this machine.
+//!   rest. A failed call is counted at its logged cost (a reply cut at the
+//!   output limit is billed), else at its worst case, and
+//!   [`FAILURES_IN_A_ROW`] failures stop the run. A profile without a
+//!   price runs only on this machine.
 use crate::{
     Error, Result,
     local::Session,
@@ -73,6 +83,17 @@ const MEMORIES: usize = 8;
 const MEMORY_CHARS: usize = 1_500;
 /// Output tokens an article may use at most.
 pub const OUTPUT_TOKENS: usize = 4_000;
+/// How many times [`OUTPUT_TOKENS`] a profile with a reasoning effort may
+/// use: its reasoning tokens count as output.
+const REASONING_FACTOR: usize = 4;
+/// Failed calls in a row that stop a run.
+pub const FAILURES_IN_A_ROW: usize = 3;
+/// The lock a run that writes holds in the wiki's folder.
+const LOCK: &str = ".graphicle-wiki.lock";
+/// `--max-articles` and `--budget` when neither the command nor the wiki
+/// names them.
+const DEFAULT_MAX_ARTICLES: u64 = 30;
+const DEFAULT_BUDGET: u64 = 12_000;
 /// The share of files an area must have in common with an earlier article
 /// to keep its name.
 const MATCH_SHARE: f64 = 0.5;
@@ -110,7 +131,7 @@ pub enum Action {
     /// stops (at --max-cost, for example) goes on where it ended.
     Build(WriteArgs),
     /// Write again only the articles whose sources changed, and drop those
-    /// of areas that are gone; the others stay byte-identical.
+    /// of areas that are gone; the others keep the text the model wrote.
     Update(WriteArgs),
     /// Health checks: stale doc mentions, stale memories, articles whose
     /// sources changed, citations that no longer hold and areas with no
@@ -140,12 +161,15 @@ pub struct WriteArgs {
     /// worst case would bring the run over it is not sent.
     #[arg(long, value_name = "USD", default_value_t = 1.0)]
     pub max_cost: f64,
-    /// Articles at most, the largest areas first.
-    #[arg(long, value_name = "N", default_value_t = 30, value_parser = clap::value_parser!(u64).range(1..=500))]
-    pub max_articles: u64,
-    /// Tokens of code each article's pack holds at most.
-    #[arg(long, value_name = "TOKENS", default_value_t = 12_000, value_parser = clap::value_parser!(u64).range(1_000..=200_000))]
-    pub budget: u64,
+    /// Articles at most, the largest areas first; an area that has an
+    /// article keeps it while the area exists [default: the wiki's own,
+    /// else 30].
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..=500))]
+    pub max_articles: Option<u64>,
+    /// Tokens of code each article's pack holds at most [default: the
+    /// wiki's own, else 12000].
+    #[arg(long, value_name = "TOKENS", value_parser = clap::value_parser!(u64).range(1_000..=200_000))]
+    pub budget: Option<u64>,
     /// Print the articles to write and the worst case of their cost; call
     /// no model and write nothing.
     #[arg(long)]
@@ -274,9 +298,59 @@ fn prose(path: &str) -> bool {
         .any(|ext| lower.ends_with(ext))
 }
 
+/// The files of a wiki kept in the project's folder that are not prose:
+/// they are never part of an area of the code.
+#[derive(Clone, Debug, Default)]
+pub struct Own {
+    /// The wiki folder's path in the project, with a final `/` (empty at
+    /// the project's top), when it is in the project's folder.
+    prefix: Option<String>,
+}
+
+impl Own {
+    /// The wiki in `dir` for `target`.
+    pub fn of(target: &Target, dir: &Path) -> Self {
+        let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        let prefix = target.folder.as_ref().and_then(|folder| {
+            let absolute = if dir.is_absolute() {
+                dir.to_path_buf()
+            } else {
+                std::env::current_dir().ok()?.join(dir)
+            };
+            let relative = canonical(&absolute)
+                .strip_prefix(canonical(folder))
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            Some(if relative.is_empty() {
+                relative
+            } else {
+                format!("{relative}/")
+            })
+        });
+        Self { prefix }
+    }
+
+    /// Whether `path` (a project path) is the wiki's manifest, lock or a
+    /// proposal.
+    pub fn holds(&self, path: &str) -> bool {
+        let Some(prefix) = &self.prefix else {
+            return false;
+        };
+        path.strip_prefix(prefix.as_str())
+            .is_some_and(|rest| rest == MANIFEST || rest == LOCK || rest.starts_with("proposals/"))
+    }
+}
+
 /// The areas of `repository`'s current code graph, largest first, at most
-/// `max`.
-pub fn areas(db: &Connection, p: &Principal, repository: &str, max: usize) -> Result<Areas> {
+/// `max`, without the files of the wiki (`own`).
+pub fn areas(
+    db: &Connection,
+    p: &Principal,
+    repository: &str,
+    max: usize,
+    own: &Own,
+) -> Result<Areas> {
     let resident = crate::graph_tools::current(db, p, repository)?;
     let graph = &resident.context.graph;
     let nodes = graph.nodes();
@@ -291,7 +365,7 @@ pub fn areas(db: &Connection, p: &Principal, repository: &str, max: usize) -> Re
             let Some(path) = crate::code_graph_arm::relpath(attributes) else {
                 continue;
             };
-            if prose(&path) {
+            if prose(&path) || own.holds(&path) {
                 continue;
             }
             files.insert(path.clone());
@@ -469,6 +543,57 @@ pub fn assign_slugs(areas: &mut [Area], manifest: &Manifest) {
     }
 }
 
+/// The areas a wiki covers, named: every area that has an article in
+/// `manifest` keeps it while the area exists, and the largest of the
+/// others follow until there are `max` (a cap only on new articles).
+/// Links between them are kept; links to areas left out are dropped.
+pub fn wiki_areas(
+    db: &Connection,
+    p: &Principal,
+    repository: &str,
+    max: usize,
+    manifest: &Manifest,
+    own: &Own,
+) -> Result<Areas> {
+    let mut all = areas(db, p, repository, usize::MAX, own)?;
+    assign_slugs(&mut all.areas, manifest);
+    let mut keep: Vec<bool> = all
+        .areas
+        .iter()
+        .map(|a| manifest.articles.contains_key(&a.slug))
+        .collect();
+    let mut count = keep.iter().filter(|k| **k).count();
+    for k in keep.iter_mut() {
+        if count >= max {
+            break;
+        }
+        if !*k {
+            *k = true;
+            count += 1;
+        }
+    }
+    let mut index = vec![None; keep.len()];
+    let mut chosen = Vec::new();
+    for (i, area) in all.areas.into_iter().enumerate() {
+        if keep[i] {
+            index[i] = Some(chosen.len());
+            chosen.push(area);
+        }
+    }
+    for area in &mut chosen {
+        area.links = area
+            .links
+            .iter()
+            .filter_map(|(other, edges)| index[*other].map(|n| (n, *edges)))
+            .collect();
+    }
+    Ok(Areas {
+        areas: chosen,
+        thin: all.thin,
+        left_out: keep.iter().filter(|k| !**k).count(),
+    })
+}
+
 /// What an area's article is written from.
 #[derive(Clone, Debug, Default)]
 pub struct Inputs {
@@ -554,10 +679,27 @@ pub fn inputs(
 #[derive(Clone, Debug, Default)]
 pub struct Manifest {
     pub articles: BTreeMap<String, Value>,
+    /// The run settings the wiki keeps: `max_articles` and `budget`.
+    pub settings: Value,
+}
+
+/// Whether `slug` can name an article: a plain file name in the wiki's
+/// folder, as [`assign_slugs`] makes them (no separator, no `..`, not
+/// absolute, not the index).
+pub fn valid_slug(slug: &str) -> bool {
+    !slug.is_empty()
+        && slug.chars().count() <= 100
+        && slug == graphicle::wiki::safe_filename(slug, 1_000)
+        && !slug.contains(['/', '\\'])
+        && !slug.contains("..")
+        && !Path::new(slug).is_absolute()
+        && !slug.eq_ignore_ascii_case("index")
 }
 
 impl Manifest {
-    /// The manifest in `dir`, if there is one.
+    /// The manifest in `dir`, if there is one. A manifest that names an
+    /// article by anything but a plain file name ([`valid_slug`]) is
+    /// refused: its names become paths.
     pub fn load(dir: &Path) -> Result<Option<Self>> {
         let path = dir.join(MANIFEST);
         let text = match std::fs::read_to_string(&path) {
@@ -567,11 +709,24 @@ impl Manifest {
         };
         let value: Value = serde_json::from_str(&text)
             .map_err(|_| Error::bad(format!("{} is not a wiki manifest", path.display())))?;
-        let articles = value["articles"]
-            .as_object()
-            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            .unwrap_or_default();
-        Ok(Some(Self { articles }))
+        let Some(listed) = value["articles"].as_object() else {
+            return Err(Error::bad(format!(
+                "{} is not a wiki manifest",
+                path.display()
+            )));
+        };
+        if let Some(bad) = listed.keys().find(|slug| !valid_slug(slug)) {
+            return Err(Error::bad(format!(
+                "{} names an article {bad:?}, which is not a plain file name: remove the manifest or that entry",
+                path.display()
+            )));
+        }
+        let articles = listed.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let settings = match &value["settings"] {
+            Value::Object(_) => value["settings"].clone(),
+            _ => json!({}),
+        };
+        Ok(Some(Self { articles, settings }))
     }
 
     /// Write the manifest in `dir`, whole or not at all.
@@ -581,11 +736,17 @@ impl Manifest {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        let value = json!({"rules":RULES,"project":project,"articles":articles});
-        write_atomic(
+        let settings = match &self.settings {
+            Value::Object(_) => self.settings.clone(),
+            _ => json!({}),
+        };
+        let value =
+            json!({"rules":RULES,"project":project,"settings":settings,"articles":articles});
+        write_if_changed(
             &dir.join(MANIFEST),
             &format!("{}\n", serde_json::to_string_pretty(&value)?),
-        )
+        )?;
+        Ok(())
     }
 }
 
@@ -610,9 +771,66 @@ fn write_if_changed(path: &Path, text: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// Whether `text` is an article this program wrote.
+/// Whether `text` is a file of the wiki this program wrote: an article or
+/// the index, which start with the same front matter.
 pub fn is_article(text: &str) -> bool {
     text.starts_with(&format!("---\n{MARK}: "))
+}
+
+/// Whether this program may write `path`: it does not exist, or it is a
+/// file of the wiki this program wrote.
+pub fn ours(path: &Path) -> bool {
+    match std::fs::read(path) {
+        Ok(bytes) => std::str::from_utf8(&bytes).is_ok_and(is_article),
+        Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// The lock of a run that writes the wiki in `dir`, held until it is
+/// dropped; `None` when another run holds it.
+pub fn lock(dir: &Path) -> Result<Option<std::fs::File>> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(dir.join(LOCK))?;
+    match file.try_lock() {
+        Ok(()) => Ok(Some(file)),
+        Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+        Err(std::fs::TryLockError::Error(error)) => Err(error.into()),
+    }
+}
+
+/// Model text made safe to render as Markdown prose: `\\`, `[`, `]`, `(`,
+/// `)`, `<` and `>` are escaped outside code spans, so a reply cannot add
+/// links, images or HTML.
+pub fn escape_markdown(text: &str) -> String {
+    let parts: Vec<&str> = text.split('`').collect();
+    // An odd count of backticks leaves the last one unpaired: its text is
+    // prose.
+    let paired = if parts.len().is_multiple_of(2) {
+        parts.len() - 1
+    } else {
+        parts.len()
+    };
+    let mut out = String::with_capacity(text.len());
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push('`');
+        }
+        if i % 2 == 1 && i < paired {
+            out.push_str(part);
+            continue;
+        }
+        for c in part.chars() {
+            if matches!(c, '\\' | '[' | ']' | '(' | ')' | '<' | '>') {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The prompt's area part, after the pack.
@@ -686,6 +904,59 @@ fn area_text(area: &Area, all: &[Area], inputs: &Inputs) -> String {
     text
 }
 
+/// The lines of each file a request showed the model: a citation must fall
+/// in them.
+#[derive(Clone, Debug, Default)]
+pub struct Shown(BTreeMap<String, Vec<(usize, usize)>>);
+
+impl Shown {
+    /// Lines `start..=end` of `path`.
+    pub fn add(&mut self, path: &str, start: usize, end: usize) {
+        if start == 0 || end < start {
+            return;
+        }
+        let ranges = self.0.entry(path.to_string()).or_default();
+        ranges.push((start, end));
+        ranges.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::with_capacity(ranges.len());
+        for &(a, b) in ranges.iter() {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 + 1 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        *ranges = merged;
+    }
+
+    /// The excerpts of a code pack.
+    pub fn pack(&mut self, pack: &Value) {
+        for section in pack["sections"].as_array().into_iter().flatten() {
+            for chunk in section["chunks"].as_array().into_iter().flatten() {
+                if let (Some(path), Some(start), Some(end)) = (
+                    chunk["path"].as_str(),
+                    chunk["start_line"].as_u64(),
+                    chunk["end_line"].as_u64(),
+                ) {
+                    self.add(path, start as usize, end as usize);
+                }
+            }
+        }
+    }
+
+    /// A passage of `text` from line `line` of `path`.
+    pub fn passage(&mut self, path: &str, line: usize, text: &str) {
+        let lines = text.lines().count().max(1);
+        self.add(path, line, line + lines - 1);
+    }
+
+    /// Whether lines `line..=end` of `path` were shown.
+    pub fn holds(&self, path: &str, line: usize, end: usize) -> bool {
+        self.0
+            .get(path)
+            .is_some_and(|ranges| ranges.iter().any(|(a, b)| *a <= line && end <= *b))
+    }
+}
+
 /// Counts of what the check of a reply dropped.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Dropped {
@@ -693,10 +964,11 @@ pub struct Dropped {
     pub citations: usize,
 }
 
-/// The reply with every citation checked against the working tree: a
-/// citation that does not hold is dropped, and so is a paragraph left
-/// with none. Text is made one line per paragraph.
-pub fn check_reply(reply: &Value, tree: &mut Tree) -> (Value, Dropped) {
+/// The reply with every citation checked: a citation outside the lines
+/// the request showed (`shown`) or that does not hold in the working tree
+/// is dropped, and so is a paragraph left with none. Text is made one line
+/// per paragraph.
+pub fn check_reply(reply: &Value, tree: &mut Tree, shown: &Shown) -> (Value, Dropped) {
     let mut dropped = Dropped::default();
     let line = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = json!({"title":line(reply["title"].as_str().unwrap_or("")),
@@ -715,9 +987,10 @@ pub fn check_reply(reply: &Value, tree: &mut Tree) -> (Value, Dropped) {
                     dropped.citations += 1;
                     continue;
                 };
-                if tree
-                    .problem(&citation.path, citation.line, citation.end)
-                    .is_some()
+                if !shown.holds(&citation.path, citation.line, citation.end)
+                    || tree
+                        .problem(&citation.path, citation.line, citation.end)
+                        .is_some()
                 {
                     dropped.citations += 1;
                     continue;
@@ -766,8 +1039,8 @@ pub fn render(slug: &str, record: &Value, links: &[(String, usize)]) -> String {
         s(record, "digest")
     );
     let title = match s(reply, "title") {
-        "" => slug,
-        title => title,
+        "" => slug.to_string(),
+        title => escape_markdown(title),
     };
     text.push_str(&format!("# {title}\n\n"));
     text.push_str(&format!(
@@ -779,7 +1052,7 @@ pub fn render(slug: &str, record: &Value, links: &[(String, usize)]) -> String {
         }
     ));
     if !s(reply, "summary").is_empty() {
-        text.push_str(&format!("{}\n\n", s(reply, "summary")));
+        text.push_str(&format!("{}\n\n", escape_markdown(s(reply, "summary"))));
     }
     for (key, heading) in SECTIONS {
         let paragraphs = reply[key].as_array().cloned().unwrap_or_default();
@@ -796,7 +1069,7 @@ pub fn render(slug: &str, record: &Value, links: &[(String, usize)]) -> String {
                 .collect();
             text.push_str(&format!(
                 "{} ({})\n\n",
-                s(&paragraph, "text"),
+                escape_markdown(s(&paragraph, "text")),
                 cites.join(", ")
             ));
         }
@@ -808,7 +1081,10 @@ pub fn render(slug: &str, record: &Value, links: &[(String, usize)]) -> String {
     if !questions.is_empty() {
         text.push_str("## Open questions\n\n");
         for question in questions {
-            text.push_str(&format!("- {}\n", question.as_str().unwrap_or("")));
+            text.push_str(&format!(
+                "- {}\n",
+                escape_markdown(question.as_str().unwrap_or(""))
+            ));
         }
         text.push('\n');
     }
@@ -865,14 +1141,15 @@ pub fn render(slug: &str, record: &Value, links: &[(String, usize)]) -> String {
 /// The index: one line per article, in the areas' order.
 pub fn index(project: &str, entries: &[(String, Value)], thin: usize, left_out: usize) -> String {
     let mut text = format!(
-        "# {project}: project wiki\n\nWritten by a model from the project's code, docs and reviewed memories; every paragraph of an article cites file and line. `graphicle wiki update` keeps it current and `graphicle wiki check` lists what went stale.\n\n"
+        "---\n{MARK}: {RULES}\nkind: index\n---\n\n# {}: project wiki\n\nWritten by a model from the project's code, docs and reviewed memories; every paragraph of an article cites file and line. `graphicle wiki update` keeps it current and `graphicle wiki check` lists what went stale.\n\n",
+        escape_markdown(project)
     );
     for (slug, record) in entries {
         let title = match s(&record["reply"], "title") {
-            "" => slug.as_str(),
-            title => title,
+            "" => slug.clone(),
+            title => escape_markdown(title),
         };
-        let summary = s(&record["reply"], "summary");
+        let summary = escape_markdown(s(&record["reply"], "summary"));
         text.push_str(&format!("- [{title}]({slug}.md): {summary}\n"));
     }
     if thin > 0 || left_out > 0 {
@@ -933,13 +1210,34 @@ const POINTER: &str = "# Project wiki\n\nThe articles a model wrote about this p
 
 /// Whether a profile's endpoint is on this machine.
 pub fn on_this_machine(profile: &model::Profile) -> bool {
-    let url = profile.base_url.to_ascii_lowercase();
-    let rest = url
-        .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .unwrap_or(&url);
-    let host = rest.split(['/', ':']).next().unwrap_or("");
-    matches!(host, "localhost" | "127.0.0.1" | "[") || rest.starts_with("[::1]")
+    let Ok(url) = url::Url::parse(profile.base_url.trim()) else {
+        return false;
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Domain(name)) => name.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        None => false,
+    }
+}
+
+/// The output limit of a call for `profile` whose reply needs `base`
+/// tokens at most: [`REASONING_FACTOR`] times as many for a profile that
+/// sets a reasoning effort, whose reasoning counts as output.
+pub fn output_limit(profile: &model::Profile, base: usize) -> usize {
+    let reasons = profile
+        .reasoning_effort
+        .as_deref()
+        .is_some_and(|effort| !matches!(effort, "none" | "minimal"));
+    let wanted = if reasons {
+        base * REASONING_FACTOR
+    } else {
+        base
+    };
+    profile.output_limit.min(wanted)
 }
 
 /// The run's spend against `--max-cost`.
@@ -983,6 +1281,12 @@ impl Budget {
         self.spent + worst <= self.max + 1e-12
     }
 
+    /// Count a failed call: its cost in the spend log `entry` (a reply cut
+    /// at the output limit, for one, is billed), else its worst case.
+    pub fn add_failed(&mut self, entry: &Value, worst: f64) {
+        self.spent += entry["cost_usd"].as_f64().unwrap_or(worst);
+    }
+
     /// Count a finished call by its usage.
     pub fn add(&mut self, done: &model::Completion) {
         if let Some(price) = &self.price {
@@ -1007,21 +1311,55 @@ struct Planned {
 async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: bool) -> Result<()> {
     let target = target(store, config, args.project.clone())?;
     let (dir, default_place) = folder_of(&target, args.out.as_deref())?;
-    let earlier = Manifest::load(&dir)?;
-    if update && earlier.is_none() {
+    if update && !dir.join(MANIFEST).exists() {
         return Err(Error::bad(format!(
             "No wiki in {}: graphicle wiki build writes one",
             dir.display()
         )));
     }
-    let mut manifest = earlier.unwrap_or_default();
+    // A run that writes holds the folder's lock before it reads the
+    // manifest, so two runs never write it, or spend, at once.
+    let _lock = if args.dry_run {
+        None
+    } else {
+        std::fs::create_dir_all(&dir)?;
+        match lock(&dir)? {
+            Some(file) => Some(file),
+            None => {
+                return Err(Error::bad(format!(
+                    "Another graphicle wiki run is writing {}; this one stops",
+                    dir.display()
+                )));
+            }
+        }
+    };
+    let mut manifest = Manifest::load(&dir)?.unwrap_or_default();
+    let own = Own::of(&target, &dir);
+    // The wiki keeps the settings it was written with, so the commit
+    // hook's runs, which name none, cover the same areas.
+    let max_articles = args
+        .max_articles
+        .or_else(|| manifest.settings["max_articles"].as_u64())
+        .unwrap_or(DEFAULT_MAX_ARTICLES)
+        .clamp(1, 500);
+    let pack_budget = args
+        .budget
+        .or_else(|| manifest.settings["budget"].as_u64())
+        .unwrap_or(DEFAULT_BUDGET)
+        .clamp(1_000, 200_000);
     let (found, all_inputs) = store.authorized_read(
         &target.session.workspace,
         &target.session.capability,
         "read",
         |db, p| {
-            let mut found = areas(db, p, &target.project, args.max_articles as usize)?;
-            assign_slugs(&mut found.areas, &manifest);
+            let found = wiki_areas(
+                db,
+                p,
+                &target.project,
+                max_articles as usize,
+                &manifest,
+                &own,
+            )?;
             let all = inputs(db, p, &target.project, &found.areas)?;
             Ok((found, all))
         },
@@ -1050,19 +1388,29 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
         project: target.project.clone(),
         folder: target.folder.clone(),
         model: args.model.clone(),
-        budget: Some(args.budget as usize),
+        budget: Some(pack_budget as usize),
         layout: Some("standard".into()),
         prefix_share: None,
         json: !human,
     };
     let profiled = long_context::profile(&run);
+    let ratio = profiled
+        .as_ref()
+        .ok()
+        .and_then(|(name, profile)| long_context::calibration(store, name, profile));
     if args.dry_run {
-        return dry_run(&args, &dir, &found, &plan, profiled.ok(), human);
+        let settings = (max_articles, pack_budget, ratio);
+        return dry_run(&args, settings, &dir, &found, &plan, profiled.ok(), human);
     }
     let (name, mut profile) = profiled?;
-    profile.output_limit = profile.output_limit.min(OUTPUT_TOKENS);
+    profile.output_limit = output_limit(&profile, OUTPUT_TOKENS);
     let mut budget = Budget::new(&name, &profile, args.max_cost)?;
-    std::fs::create_dir_all(&dir)?;
+    if target.folder.is_none() {
+        return Err(Error::bad(
+            "This project has no working tree here to check the articles' citations against: run graphicle wiki in its synced folder",
+        ));
+    }
+    manifest.settings = json!({"max_articles":max_articles,"budget":pack_budget});
     let commit = target
         .folder
         .as_deref()
@@ -1072,9 +1420,11 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
     let schema = article_schema();
     let mut written = Vec::new();
     let mut failed = Vec::new();
+    let mut not_ours = Vec::new();
     let mut dropped = Dropped::default();
     let mut stopped: Option<String> = None;
     let mut left: Vec<String> = Vec::new();
+    let mut in_a_row = 0usize;
     // Articles of areas that are gone.
     let current: BTreeSet<&str> = found.areas.iter().map(|a| a.slug.as_str()).collect();
     let removed: Vec<String> = manifest
@@ -1090,13 +1440,20 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
         }
         manifest.articles.remove(slug);
     }
-    if !removed.is_empty() {
-        manifest.save(&dir, &target.name)?;
-    }
+    manifest.save(&dir, &target.name)?;
     for planned in plan.iter().filter(|p| p.write) {
         let area = &found.areas[planned.area];
         if stopped.is_some() {
             left.push(area.slug.clone());
+            continue;
+        }
+        let path = dir.join(format!("{}.md", area.slug));
+        if !ours(&path) {
+            not_ours.push(path.clone());
+            failed.push(json!({"area":area.slug,"error":format!(
+                "{} exists and graphicle wiki did not write it: it is left as it is",
+                path.display()
+            )}));
             continue;
         }
         let rest = area_text(area, &found.areas, &planned.inputs);
@@ -1112,7 +1469,7 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
             &run,
             &profile,
             &question_of(area),
-            args.budget as usize,
+            pack_budget as usize,
             None,
         );
         pack_args["focus"] = focus_of(area);
@@ -1123,7 +1480,7 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
         )?;
         let estimate = long_context::request_estimate(&pack, WIKI_INSTRUCTIONS, &rest);
         let worst = budget.worst(
-            crate::spend::worst_input(estimate, None, None),
+            crate::spend::worst_input(estimate, None, ratio),
             profile.output_limit as u64,
         );
         if !budget.fits(worst) {
@@ -1152,16 +1509,12 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
             &pack,
             &request,
             None,
-            None,
+            ratio,
             &mut |_| {},
         )
         .await;
-        let done = match sent {
-            Ok((Ok(done), _)) => done,
-            Ok((Err(error), _)) => {
-                failed.push(json!({"area":area.slug,"error":error.message}));
-                continue;
-            }
+        let (result, entry) = match sent {
+            Ok(sent) => sent,
             // A cap refused the call: nothing more is sent.
             Err(error) => {
                 stopped = Some(error.message);
@@ -1169,17 +1522,47 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
                 continue;
             }
         };
-        budget.add(&done);
-        let reply = match long_context::json_in(&done.text) {
-            Ok(reply) if reply.is_object() => reply,
-            _ => {
-                failed.push(
-                    json!({"area":area.slug,"error":"The model's article is not a JSON object"}),
-                );
+        let reply = match result {
+            Ok(done) => {
+                budget.add(&done);
+                match long_context::json_in(&done.text) {
+                    Ok(reply) if reply.is_object() => Ok((done, reply)),
+                    _ => Err("The model's article is not a JSON object".to_string()),
+                }
+            }
+            Err(error) => {
+                // A failed call can be billed: a reply cut at the output
+                // limit is.
+                budget.add_failed(&entry, worst);
+                Err(error.message)
+            }
+        };
+        let (done, reply) = match reply {
+            Ok(found) => {
+                in_a_row = 0;
+                found
+            }
+            Err(error) => {
+                failed.push(json!({"area":area.slug,"error":error}));
+                in_a_row += 1;
+                if in_a_row >= FAILURES_IN_A_ROW {
+                    stopped = Some(format!(
+                        "{in_a_row} calls in a row failed, the last with: {error}"
+                    ));
+                }
                 continue;
             }
         };
-        let (checked, lost) = check_reply(&reply, &mut tree);
+        let mut shown = Shown::default();
+        shown.pack(&pack);
+        for passage in &planned.inputs.passages {
+            shown.passage(
+                s(passage, "path"),
+                passage["line"].as_u64().unwrap_or(0) as usize,
+                s(passage, "text"),
+            );
+        }
+        let (checked, lost) = check_reply(&reply, &mut tree, &shown);
         dropped.paragraphs += lost.paragraphs;
         dropped.citations += lost.citations;
         let record = json!({"digest":planned.inputs.digest,"model":done.model,"profile":name,
@@ -1188,7 +1571,7 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
             "memories":planned.inputs.memories.iter().map(|m| json!({"id":m["id"],"title":m["title"]})).collect::<Vec<_>>(),
             "dropped":{"paragraphs":lost.paragraphs,"citations":lost.citations},"reply":checked});
         let text = render(&area.slug, &record, &links_of(area, &found.areas));
-        write_atomic(&dir.join(format!("{}.md", area.slug)), &text)?;
+        write_atomic(&path, &text)?;
         manifest.articles.insert(area.slug.clone(), record);
         manifest.save(&dir, &target.name)?;
         written.push(area.slug.clone());
@@ -1198,15 +1581,29 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
     let mut rerendered = Vec::new();
     for planned in plan.iter().filter(|p| !p.write) {
         let area = &found.areas[planned.area];
+        let path = dir.join(format!("{}.md", area.slug));
         if let Some(record) = manifest.articles.get(&area.slug) {
+            if !ours(&path) {
+                not_ours.push(path);
+                continue;
+            }
             let text = render(&area.slug, record, &links_of(area, &found.areas));
-            if write_if_changed(&dir.join(format!("{}.md", area.slug)), &text)? {
+            if write_if_changed(&path, &text)? {
                 rerendered.push(area.slug.clone());
             }
         }
     }
-    let entries: Vec<(String, Value)> = found
-        .areas
+    // The index lists the largest areas first, and areas of the same size
+    // by name: the graph's own order of a tie can change from one sync to
+    // the next.
+    let mut ordered: Vec<&Area> = found.areas.iter().collect();
+    ordered.sort_by(|a, b| {
+        b.symbols
+            .len()
+            .cmp(&a.symbols.len())
+            .then_with(|| a.slug.cmp(&b.slug))
+    });
+    let entries: Vec<(String, Value)> = ordered
         .iter()
         .filter_map(|a| {
             manifest
@@ -1216,10 +1613,14 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
         })
         .collect();
     let index_text = index(&target.name, &entries, found.thin, found.left_out);
+    let index_path = dir.join("index.md");
     let index_written = if entries.is_empty() {
         false
+    } else if !ours(&index_path) {
+        not_ours.push(index_path.clone());
+        false
     } else {
-        write_if_changed(&dir.join("index.md"), &index_text)?
+        write_if_changed(&index_path, &index_text)?
     };
     if default_place
         && !entries.is_empty()
@@ -1244,8 +1645,10 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
     let report = json!({"result":if stopped.is_some() {"stopped"} else if failed.is_empty() {"done"} else {"partial"},
         "wiki":dir,"written":written,"kept":kept,"rerendered":rerendered,"removed":removed,
         "failed":failed,"left":left,"stopped":stopped,"index_written":index_written,
+        "not_replaced":not_ours,
         "dropped":{"paragraphs":dropped.paragraphs,"citations":dropped.citations},
         "areas":found.areas.len(),"thin_areas":found.thin,"left_out":found.left_out,
+        "max_articles":max_articles,"budget":pack_budget,
         "model":profile.model,"profile":name,"cost_usd":round(budget.spent),"max_cost_usd":budget.max,
         "priced":budget.price.is_some()});
     if args.quiet {
@@ -1358,9 +1761,12 @@ pub fn article_id(project: &str, slug: &str) -> String {
     format!("wiki:{project}:{slug}")
 }
 
-/// `--dry-run`: the articles to write, their worst-case input and cost.
+/// `--dry-run`: the articles to write, their worst-case input and cost,
+/// by the formula the run stops at: the estimate with the profile's
+/// calibration and the same margin, and the run's output limit.
 fn dry_run(
     args: &WriteArgs,
+    (max_articles, pack_budget, ratio): (u64, u64, Option<f64>),
     dir: &Path,
     found: &Areas,
     plan: &[Planned],
@@ -1369,7 +1775,7 @@ fn dry_run(
 ) -> Result<()> {
     let output = profile
         .as_ref()
-        .map_or(OUTPUT_TOKENS, |(_, p)| p.output_limit.min(OUTPUT_TOKENS)) as u64;
+        .map_or(OUTPUT_TOKENS, |(_, p)| output_limit(p, OUTPUT_TOKENS)) as u64;
     let mut items = Vec::new();
     let mut total_input = 0u64;
     let mut total_cost = 0.0;
@@ -1378,11 +1784,12 @@ fn dry_run(
         let rest = area_text(area, &found.areas, &planned.inputs);
         // The pack fills its budget at most; the rest is counted by the
         // estimator's rate.
-        let input = args.budget
+        let estimate = pack_budget
             + crate::code_pack::estimate::tokens(
                 WIKI_INSTRUCTIONS.len() + rest.len() + 32,
                 crate::code_pack::estimate::PACK_TEXT_BYTES_PER_TOKEN,
             ) as u64;
+        let input = crate::spend::worst_input(estimate, None, ratio);
         let worst = profile
             .as_ref()
             .and_then(|(_, p)| p.price.as_ref())
@@ -1402,6 +1809,7 @@ fn dry_run(
         "to_write":plan.iter().filter(|p| p.write).count(),
         "input_tokens_at_most":total_input,"worst_cost_usd":priced.then(|| round(total_cost)),
         "max_cost_usd":args.max_cost,"thin_areas":found.thin,"left_out":found.left_out,
+        "max_articles":max_articles,"budget":pack_budget,
         "profile":profile.as_ref().map(|(name, _)| name),"model":profile.as_ref().map(|(_, p)| &p.model)});
     if !human {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1489,6 +1897,14 @@ fn write_text(report: &Value) -> String {
             dropped["paragraphs"], dropped["citations"]
         ));
     }
+    let not_replaced: Vec<String> = list("not_replaced");
+    if !not_replaced.is_empty() {
+        text.push_str(&format!(
+            "Not replaced: {} file(s) that graphicle wiki did not write ({})\n",
+            not_replaced.len(),
+            not_replaced.join(", ")
+        ));
+    }
     for failure in report["failed"].as_array().into_iter().flatten() {
         text.push_str(&format!(
             "Failed: {}: {}\n",
@@ -1569,41 +1985,47 @@ pub fn hook_block(
     ))
 }
 
-/// `text` (a hook) with the wiki block for `folder` set to `block`, or
-/// removed when `block` is `None`.
-pub fn hook_text(text: Option<&str>, folder: &Path, block: Option<&str>) -> Option<String> {
-    let start = format!("{HOOK_START}{}", folder.to_string_lossy());
-    let mut lines: Vec<String> = text.unwrap_or("").split('\n').map(str::to_string).collect();
-    let found = lines.iter().position(|l| l == &start).map(|a| {
-        let b = lines[a..]
-            .iter()
-            .position(|l| l == HOOK_END)
-            .map_or(lines.len(), |k| a + k + 1);
-        (a, b)
-    });
-    match (found, block) {
-        (Some((a, b)), Some(block)) => {
-            lines.splice(a..b, block.split('\n').map(str::to_string));
-            Some(lines.join("\n"))
-        }
-        (Some((a, b)), None) => {
-            lines.drain(a..b);
-            Some(lines.join("\n"))
-        }
-        (None, Some(block)) => match text {
-            None => Some(format!("#!/bin/sh\n{block}\n")),
-            Some(text) => {
-                let mut out = text.to_string();
-                if !out.ends_with('\n') {
-                    out.push('\n');
-                }
-                out.push('\n');
-                out.push_str(block);
-                out.push('\n');
-                Some(out)
-            }
+/// The wiki block's markers.
+const HOOK_MARKERS: crate::git_hooks::Markers = crate::git_hooks::Markers {
+    start: HOOK_START,
+    end: HOOK_END,
+};
+
+/// What `wiki hook` does to a hook's text.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HookChange {
+    /// Write this text.
+    Write(String),
+    /// The hook holds nothing else: remove the file.
+    Remove,
+    /// Nothing to do.
+    Unchanged,
+}
+
+/// `text` (a hook, `None` when there is none) with the wiki block for
+/// `folder` set to `block`, or removed when `block` is `None`, by the rules
+/// of the freshness hooks ([`crate::git_hooks::upsert_marked`]): a hook in
+/// another language is refused, the block goes before a final `exit` or
+/// `exec`, and a block without its end line is never matched, so the rest
+/// of the hook stays.
+pub fn hook_text(text: Option<&str>, folder: &Path, block: Option<&str>) -> Result<HookChange> {
+    use crate::git_hooks::{self, Upserted};
+    match block {
+        Some(block) => match git_hooks::upsert_marked(HOOK_MARKERS, text, block, folder) {
+            Upserted::Changed(new, _) => Ok(HookChange::Write(new)),
+            Upserted::Unchanged => Ok(HookChange::Unchanged),
+            Upserted::NotShell => Err(Error::bad(format!(
+                "The post-commit hook is not a shell script, so graphicle leaves it alone; add this line to it yourself: graphicle wiki update --project {} --quiet >/dev/null 2>&1 &",
+                git_hooks::quote(&folder.to_string_lossy())
+            ))),
         },
-        (None, None) => None,
+        None => Ok(
+            match text.and_then(|t| git_hooks::remove_marked(HOOK_MARKERS, t, Some(folder))) {
+                None => HookChange::Unchanged,
+                Some(new) if git_hooks::empty(&new) => HookChange::Remove,
+                Some(new) => HookChange::Write(new),
+            },
+        ),
     }
 }
 
@@ -1639,8 +2061,8 @@ fn hook(store: &Store, config: &model::Config, args: HookArgs) -> Result<()> {
     } else {
         None
     };
-    match hook_text(existing.as_deref(), &folder, block.as_deref()) {
-        Some(text) => {
+    match hook_text(existing.as_deref(), &folder, block.as_deref())? {
+        HookChange::Write(text) => {
             std::fs::create_dir_all(&hooks)?;
             std::fs::write(&path, text)?;
             #[cfg(unix)]
@@ -1661,7 +2083,19 @@ fn hook(store: &Store, config: &model::Config, args: HookArgs) -> Result<()> {
                 println!("Removed the wiki block from {}.", path.display());
             }
         }
-        None => println!("No wiki block in {}.", path.display()),
+        HookChange::Remove => {
+            std::fs::remove_file(&path)?;
+            println!(
+                "Removed the wiki block, and {}, which held nothing else.",
+                path.display()
+            );
+        }
+        HookChange::Unchanged if on => println!(
+            "The post-commit hook already runs graphicle wiki update for {} ({}).",
+            folder.display(),
+            path.display()
+        ),
+        HookChange::Unchanged => println!("No wiki block in {}.", path.display()),
     }
     Ok(())
 }
@@ -1721,8 +2155,16 @@ mod tests {
             {"text":"Gone.","citations":["b.py:1"]},
             {"text":"No cites.","citations":[]}],
             "key_parts":[{"text":"Range.","citations":["a.py:1-3","see a.py:2"]}],
-            "connections":[],"docs_and_memories":[],"open_questions":["Why?",""]});
-        let (checked, dropped) = check_reply(&reply, &mut tree);
+            "connections":[{"text":"Not shown.","citations":["a.py:3"]}],
+            "docs_and_memories":[],"open_questions":["Why?",""]});
+        // The request showed lines 1-2 and 2-3 of a.py in two excerpts,
+        // which together hold a.py:1-3, and lines of b.py, which is not in
+        // the tree.
+        let mut shown = Shown::default();
+        shown.add("a.py", 1, 2);
+        shown.add("a.py", 2, 3);
+        shown.add("b.py", 1, 5);
+        let (checked, dropped) = check_reply(&reply, &mut tree, &shown);
         assert_eq!(checked["title"], "Parser");
         assert_eq!(checked["summary"], "Reads headers.");
         assert_eq!(
@@ -1735,12 +2177,39 @@ mod tests {
         );
         assert_eq!(checked["open_questions"], json!(["Why?"]));
         assert_eq!(
+            checked["connections"],
+            json!([{"text":"Not shown.","citations":["a.py:3"]}])
+        );
+        assert_eq!(
             dropped,
             Dropped {
                 paragraphs: 2,
                 citations: 3
             }
         );
+        // A citation of lines the request never showed is dropped, though
+        // the file holds them.
+        let mut narrow = Shown::default();
+        narrow.add("a.py", 1, 1);
+        let (checked, dropped) = check_reply(&reply, &mut tree, &narrow);
+        assert_eq!(checked["purpose"], json!([]));
+        assert_eq!(checked["key_parts"], json!([]));
+        assert_eq!(dropped.paragraphs, 5);
+    }
+
+    #[test]
+    fn a_pack_and_a_passage_show_their_lines() {
+        let pack = json!({"sections":[{"chunks":[
+            {"path":"a.py","start_line":10,"end_line":20,"text":""},
+            {"path":null,"start_line":null,"end_line":null,"text":"header"}]}]});
+        let mut shown = Shown::default();
+        shown.pack(&pack);
+        shown.passage("docs/a.md", 3, "one\ntwo\n");
+        assert!(shown.holds("a.py", 10, 20));
+        assert!(!shown.holds("a.py", 9, 10));
+        assert!(shown.holds("docs/a.md", 4, 4));
+        assert!(!shown.holds("docs/a.md", 5, 5));
+        assert!(!shown.holds("b.py", 1, 1));
     }
 
     #[test]
@@ -1764,22 +2233,201 @@ mod tests {
     }
 
     #[test]
+    fn the_wiki_s_own_files_are_not_code() {
+        let own = Own {
+            prefix: Some("docs/wiki/".into()),
+        };
+        assert!(own.holds("docs/wiki/manifest.json"));
+        assert!(own.holds("docs/wiki/.graphicle-wiki.lock"));
+        assert!(own.holds("docs/wiki/proposals/a.md-L3.patch"));
+        assert!(!own.holds("docs/wiki/tool.py"));
+        assert!(!own.holds("manifest.json"));
+        let top = Own {
+            prefix: Some(String::new()),
+        };
+        assert!(top.holds("manifest.json"));
+        assert!(!top.holds("src/manifest.json"));
+        assert!(!Own::default().holds("manifest.json"));
+    }
+
+    #[test]
+    fn model_text_cannot_add_links_or_html() {
+        assert_eq!(
+            escape_markdown("See [x](http://e.com) <img> `Vec<T>` and a(b)"),
+            "See \\[x\\]\\(http://e.com\\) \\<img\\> `Vec<T>` and a\\(b\\)"
+        );
+        // An unpaired backtick leaves the rest as prose.
+        assert_eq!(escape_markdown("a ` [b]"), "a ` \\[b\\]");
+        assert_eq!(escape_markdown("back\\slash"), "back\\\\slash");
+        let record = json!({"digest":"d","model":"m","files":[],
+            "reply":{"title":"[T](javascript:x)","summary":"<script>","purpose":[
+                {"text":"![i](http://e.com/p.png)","citations":["a.py:1"]}],
+                "key_parts":[],"connections":[],"docs_and_memories":[],"open_questions":["<b>?"]}});
+        let text = render("t", &record, &[]);
+        assert!(text.contains("# \\[T\\]\\(javascript:x\\)\n"), "{text}");
+        assert!(text.contains("\\<script\\>\n"), "{text}");
+        assert!(
+            text.contains("!\\[i\\]\\(http://e.com/p.png\\) (`a.py:1`)"),
+            "{text}"
+        );
+        assert!(text.contains("- \\<b\\>?\n"), "{text}");
+        let index = index("p", &[("t".into(), record)], 0, 0);
+        assert!(is_article(&index), "{index}");
+        assert!(
+            index.contains("- [\\[T\\]\\(javascript:x\\)](t.md): \\<script\\>\n"),
+            "{index}"
+        );
+    }
+
+    #[test]
+    fn a_manifest_names_articles_by_plain_file_names_only() {
+        for slug in ["parser", "index_2", "Reader.read", "a_b-c"] {
+            assert!(valid_slug(slug), "{slug}");
+        }
+        for slug in [
+            "", "../x", "..", "a/b", "a\\b", "/etc/x", "index", "a..b", "a:b",
+        ] {
+            assert!(!valid_slug(slug), "{slug}");
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let save = |articles: Value| {
+            std::fs::write(
+                dir.path().join(MANIFEST),
+                json!({"rules":RULES,"articles":articles}).to_string(),
+            )
+            .unwrap();
+        };
+        save(json!({"parser":{"files":["a.py"]}}));
+        let loaded = Manifest::load(dir.path()).unwrap().unwrap();
+        assert_eq!(loaded.articles.len(), 1);
+        for bad in ["../../outside", "/tmp/abs", "sub/dir"] {
+            save(json!({bad:{"files":["a.py"]}}));
+            let error = Manifest::load(dir.path()).unwrap_err();
+            assert!(error.message.contains("not a plain file name"), "{bad}");
+        }
+        std::fs::write(dir.path().join(MANIFEST), "{\"x\":1}").unwrap();
+        assert!(Manifest::load(dir.path()).is_err());
+        // The settings are kept.
+        let manifest = Manifest {
+            settings: json!({"max_articles":3,"budget":5000}),
+            ..Manifest::default()
+        };
+        manifest.save(dir.path(), "p").unwrap();
+        let loaded = Manifest::load(dir.path()).unwrap().unwrap();
+        assert_eq!(loaded.settings["max_articles"], 3);
+    }
+
+    #[test]
+    fn only_files_this_program_wrote_are_replaced() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("a.md");
+        assert!(ours(&path));
+        std::fs::write(&path, "# My notes\n").unwrap();
+        assert!(!ours(&path));
+        std::fs::write(&path, render("a", &json!({"reply":{}}), &[])).unwrap();
+        assert!(ours(&path));
+        std::fs::write(&path, [0xff, 0xfe]).unwrap();
+        assert!(!ours(&path));
+    }
+
+    #[test]
+    fn one_run_at_a_time_writes_a_wiki() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let held = lock(dir.path()).unwrap();
+        assert!(held.is_some());
+        assert!(lock(dir.path()).unwrap().is_none());
+        drop(held);
+        assert!(lock(dir.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn a_failed_call_is_counted_at_its_logged_cost_else_its_worst_case() {
+        let mut profile: model::Profile = serde_json::from_value(json!({"protocol":"responses",
+            "base_url":"https://api.example.com/v1","model":"m","input_limit":8000,"output_limit":32000,
+            "price":{"input":1.0,"output":2.0}}))
+        .unwrap();
+        let mut budget = Budget::new("m", &profile, 1.0).unwrap();
+        budget.add_failed(&json!({"cost_usd":0.25,"status":"max_output_tokens"}), 0.5);
+        budget.add_failed(&json!({"cost_usd":null,"status":"error"}), 0.5);
+        assert!((budget.spent - 0.75).abs() < 1e-12);
+        assert_eq!(output_limit(&profile, OUTPUT_TOKENS), OUTPUT_TOKENS);
+        profile.reasoning_effort = Some("high".into());
+        assert_eq!(output_limit(&profile, OUTPUT_TOKENS), 16_000);
+        profile.reasoning_effort = Some("minimal".into());
+        assert_eq!(output_limit(&profile, OUTPUT_TOKENS), OUTPUT_TOKENS);
+        profile.reasoning_effort = Some("high".into());
+        profile.output_limit = 6_000;
+        assert_eq!(output_limit(&profile, OUTPUT_TOKENS), 6_000);
+    }
+
+    #[test]
     fn the_hook_block_is_added_replaced_and_removed() {
         let folder = Path::new("/w/p");
         let block = hook_block(folder, Path::new("/bin/graphicle"), None, 0.5, None).unwrap();
         assert!(block.contains("wiki update --project '/w/p' --max-cost 0.5 --quiet"));
-        let added = hook_text(None, folder, Some(&block)).unwrap();
+        let written = |change: HookChange| match change {
+            HookChange::Write(text) => text,
+            other => panic!("{other:?}"),
+        };
+        let added = written(hook_text(None, folder, Some(&block)).unwrap());
         assert!(added.starts_with("#!/bin/sh\n# graphicle-wiki-start /w/p\n"));
-        let other = hook_text(Some("#!/bin/sh\necho hi\n"), folder, Some(&block)).unwrap();
+        assert_eq!(
+            hook_text(Some(&added), folder, Some(&block)).unwrap(),
+            HookChange::Unchanged
+        );
+        // A hook that holds nothing else is removed, not left as `#!/bin/sh`.
+        assert_eq!(
+            hook_text(Some(&added), folder, None).unwrap(),
+            HookChange::Remove
+        );
+        let other = written(hook_text(Some("#!/bin/sh\necho hi\n"), folder, Some(&block)).unwrap());
         assert!(other.starts_with("#!/bin/sh\necho hi\n\n# graphicle-wiki-start"));
         let changed = hook_block(folder, Path::new("/bin/graphicle"), None, 0.25, None).unwrap();
-        let replaced = hook_text(Some(&other), folder, Some(&changed)).unwrap();
+        let replaced = written(hook_text(Some(&other), folder, Some(&changed)).unwrap());
         assert!(replaced.contains("--max-cost 0.25"));
         assert!(!replaced.contains("--max-cost 0.5 "));
-        let removed = hook_text(Some(&replaced), folder, None).unwrap();
-        assert!(!removed.contains("graphicle-wiki"));
-        assert!(removed.contains("echo hi"));
-        assert_eq!(hook_text(Some(&removed), folder, None), None);
+        let removed = written(hook_text(Some(&replaced), folder, None).unwrap());
+        assert_eq!(removed, "#!/bin/sh\necho hi\n");
+        assert_eq!(
+            hook_text(Some(&removed), folder, None).unwrap(),
+            HookChange::Unchanged
+        );
+        // A hook that ends in `exit 0` gets the block before it, and loses
+        // it again whole.
+        let exits = "#!/bin/sh\necho hi\nexit 0\n";
+        let before = written(hook_text(Some(exits), folder, Some(&block)).unwrap());
+        assert!(
+            before.ends_with("# graphicle-wiki-end\n\nexit 0\n"),
+            "{before}"
+        );
+        assert_eq!(
+            written(hook_text(Some(&before), folder, None).unwrap()),
+            exits
+        );
+        // A hook in another language is left alone.
+        let python = "#!/usr/bin/env python3\nprint(1)\n";
+        let refused = hook_text(Some(python), folder, Some(&block)).unwrap_err();
+        assert!(
+            refused.message.contains("not a shell script"),
+            "{}",
+            refused.message
+        );
+        // A block whose end line is gone is not matched: off keeps every
+        // line after it.
+        let cut = format!(
+            "#!/bin/sh\n{}\necho after\n",
+            block.trim_end_matches("# graphicle-wiki-end")
+        );
+        assert_eq!(
+            hook_text(Some(&cut), folder, None).unwrap(),
+            HookChange::Unchanged
+        );
+        // The freshness block of `graphicle setup` is not the wiki's.
+        let sync = "#!/bin/sh\n# graphicle-sync-start /w/p\n(\n  true\n)\n# graphicle-sync-end\n";
+        assert_eq!(
+            hook_text(Some(sync), folder, None).unwrap(),
+            HookChange::Unchanged
+        );
     }
 
     #[test]
@@ -1795,5 +2443,28 @@ mod tests {
         assert!(budget.fits(budget.worst(100_000, 100_000)));
         assert!(!budget.fits(budget.worst(1_000_000, 0) + 0.5));
         assert!(Budget::new("remote", &profile, 0.0).is_err());
+    }
+
+    #[test]
+    fn this_machine_is_the_host_of_the_url() {
+        let mut profile: model::Profile = serde_json::from_value(json!({"protocol":"openai_chat",
+            "base_url":"http://127.0.0.1:8080/v1","model":"local","input_limit":8000,"output_limit":1000}))
+        .unwrap();
+        for (url, local) in [
+            ("http://localhost:11434/v1", true),
+            ("http://LOCALHOST/v1", true),
+            ("http://127.0.0.2:8080/v1", true),
+            ("http://[::1]:8080/v1", true),
+            ("http://[2001:db8::1]:8080/v1", false),
+            ("http://localhost@api.example.com/v1", false),
+            ("http://localhost:x@api.example.com/v1", false),
+            ("http://127.0.0.1.example.com/v1", false),
+            ("https://api.example.com/v1", false),
+            ("file:///tmp/model", false),
+            ("not a url", false),
+        ] {
+            profile.base_url = url.into();
+            assert_eq!(on_this_machine(&profile), local, "{url}");
+        }
     }
 }

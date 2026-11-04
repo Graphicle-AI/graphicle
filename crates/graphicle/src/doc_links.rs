@@ -3125,13 +3125,18 @@ fn stale_listing(
         let Some(flag) = stale_flag(readable, project, &link, state)? else {
             continue;
         };
-        total += 1;
-        if out.len() >= limit {
-            continue;
-        }
         if !texts.contains_key(&document) {
             let text = document_text(db, project, &document, &listed.sha)?;
             texts.insert(document.clone(), text);
+        }
+        // A `graphicle wiki` article kept in a synced folder is not a doc
+        // of the project: `wiki check` reports its own staleness.
+        if crate::project_wiki::is_article(&texts[&document]) {
+            continue;
+        }
+        total += 1;
+        if out.len() >= limit {
+            continue;
         }
         let at = link["byte_start"].as_u64().unwrap_or(0) as usize;
         let mut item = json!({"document_id":document,"source_kind":link["source_kind"],
@@ -3170,7 +3175,8 @@ pub fn stale_mentions(
 /// `limit`, each once: `{document_id, path, line, mentions, text, stale}`
 /// with the passage's text cut at `chars` characters. Connector documents
 /// and captured sessions are left out (`graphicle wiki` sends these to a
-/// model).
+/// model), and so are the wiki's own articles, kept in a synced folder
+/// with `--out`: an article is never an input to itself or to another.
 pub fn passages_naming(
     db: &Connection,
     project: &str,
@@ -3204,6 +3210,9 @@ pub fn passages_naming(
         let Some(content) = texts[&document].as_deref() else {
             continue;
         };
+        if crate::project_wiki::is_article(content) {
+            continue;
+        }
         let at = link["byte_start"].as_u64().unwrap_or(0) as usize;
         let spans = crate::doc_stale::passages(content);
         let Some((a, b)) = crate::doc_stale::passage_at(&spans, at) else {

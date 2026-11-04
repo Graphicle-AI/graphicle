@@ -5,22 +5,31 @@
 //! paragraph whose citation does not hold and logs every call; `update`
 //! leaves unchanged articles byte-identical and writes again only the
 //! article whose code changed; `check --no-model` lists the stale doc
-//! mention; `check` writes a suggested patch and edits no file; a run over
-//! `--max-cost` sends nothing; `hook on` and `hook off` add and remove the
-//! post-commit block.
+//! mention and the stale memory; `check` writes a suggested patch, proposes
+//! a draft for the memory and edits no file; one call suggests articles for
+//! the areas with no doc; a run over `--max-cost` sends nothing; a wiki kept
+//! in a synced folder is not an input to itself; a reply cut at the output
+//! limit is billed and counted; files the wiki did not write are never
+//! replaced, and the wiki keeps its settings; `hook on` and `hook off` add
+//! and remove the post-commit block by the rules of the freshness hooks.
 use axum::{Json, Router, extract::State, response::IntoResponse, routing::post};
 use graphicle_runtime::store::s;
 use serde_json::{Value, json};
 use std::{
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 use tempfile::TempDir;
 
 #[derive(Clone, Default)]
 struct Mock {
     requests: Arc<Mutex<Vec<Value>>>,
+    /// Articles are cut at the output limit (and billed).
+    cut: Arc<AtomicBool>,
 }
 
 /// The first `path:line` the text gives after `marker`.
@@ -29,23 +38,44 @@ fn after<'a>(text: &'a str, marker: &str) -> Option<&'a str> {
     text[at..].split([',', '\n', ' ']).find(|w| !w.is_empty())
 }
 
-/// A reply for each kind of request: an article citing the area's first
-/// file (and one paragraph citing a file that does not exist), a verdict
-/// that the passage is outdated, or suggestions for the gaps.
+/// The area's most connected symbol, as its prompt lists it: its name and
+/// `path:line`.
+fn first_symbol(tail: &str) -> (String, String) {
+    let marker = "Its most connected symbols:\n- ";
+    let Some(at) = tail.find(marker) else {
+        return ("area".into(), "src/none.py:1".into());
+    };
+    let line = tail[at + marker.len()..].lines().next().unwrap_or("");
+    let open = line.rfind(" (").unwrap_or(line.len());
+    let close = line.rfind("), ").unwrap_or(line.len());
+    let name: String = line[..open]
+        .split('(')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    (name, line.get(open + 2..close).unwrap_or("").to_string())
+}
+
+/// A reply for each kind of request: an article naming the area's most
+/// connected symbol and citing its line (and one paragraph citing a file
+/// that does not exist), a verdict that the passage or memory is outdated,
+/// or suggestions for the gaps.
 fn reply_for(request: &Value) -> Value {
     let instructions = request["instructions"].as_str().unwrap_or("");
     let input = request["input"].as_str().unwrap_or("");
     if instructions.starts_with("You write one article") {
         let tail = &input[input.find("# The area: ").unwrap_or(0)..];
         let area = after(tail, "# The area: ").unwrap_or("area");
-        let file = after(tail, "): ").unwrap_or("src/none.py");
+        let (name, cited) = first_symbol(tail);
         return json!({"title":format!("Area {area}"),"summary":format!("What {area} does."),
-            "purpose":[{"text":format!("{area} holds this code."),"citations":[format!("{file}:1")]},
+            "purpose":[{"text":format!("`{name}` holds this code."),"citations":[cited]},
                 {"text":"A claim with no ground.","citations":["src/nowhere.py:3"]}],
             "key_parts":[],"connections":[],"docs_and_memories":[],"open_questions":["Why two areas?"]});
     }
     if instructions.starts_with("You check one passage") {
         let code = after(input, "Its current code, ")
+            .or_else(|| after(input, "# Current code: "))
             .and_then(|c| c.split(':').next())
             .unwrap_or("src/none.py")
             .to_string();
@@ -64,7 +94,20 @@ async fn responses(State(mock): State<Mock>, Json(request): Json<Value>) -> impl
         request["input"].as_str().unwrap_or("")
     );
     let text = reply_for(&request).to_string();
+    let article = request["instructions"]
+        .as_str()
+        .unwrap_or("")
+        .starts_with("You write one article");
     mock.requests.lock().unwrap().push(request);
+    if article && mock.cut.load(Ordering::SeqCst) {
+        // Cut at the output limit: billed for 20,000 input tokens and 4,000
+        // output tokens, with no reply.
+        return Json(json!({"status":"incomplete","model":"muse-spark-1.3",
+            "incomplete_details":{"reason":"max_output_tokens"},
+            "usage":{"input_tokens":20_000,"input_tokens_details":{"cached_tokens":0},
+                "output_tokens":4_000,"output_tokens_details":{"reasoning_tokens":4_000}},
+            "output":[]}));
+    }
     Json(json!({"status":"completed","model":"muse-spark-1.3",
         "usage":{"input_tokens":prompt.len() / 4,"input_tokens_details":{"cached_tokens":0},
             "output_tokens":200,"output_tokens_details":{"reasoning_tokens":0}},
@@ -211,6 +254,57 @@ async fn the_wiki_is_written_kept_current_and_checked() {
     let calls = || mock.requests.lock().unwrap().len();
     let wiki = project.join(".graphicle/wiki/written");
 
+    // A reviewed memory about the parser, quoting a line of parse_header.
+    {
+        use graphicle_runtime::{jobs, local, store::Store};
+        let store = Store::open(root.join("data")).unwrap();
+        let session = local::session(&store, false).unwrap();
+        let repo = local::project(&store, &session, project.to_str()).unwrap();
+        jobs::drain_projection(&store, &repo).unwrap();
+        store
+            .note(
+                &session.workspace,
+                &session.capability,
+                &json!({"repository_id":repo,"kind":"decision","title":"Header values",
+                    "body":"parse_header keeps header values as they are.",
+                    "evidence":[{"id":"file:wire/parse.py","quote":"name, _, value = line.partition(\":\")"}]}),
+            )
+            .unwrap();
+    }
+
+    // Before any article: one call suggests articles for the areas with no
+    // doc, memory or article.
+    let gaps = printed(
+        &run(
+            root,
+            &project,
+            &["wiki", "check", "--json", "--max-cost", "5"],
+        )
+        .await,
+    );
+    assert!(
+        gaps["knowledge_gaps"]["count"].as_u64().unwrap() >= 1,
+        "{gaps}"
+    );
+    let suggested = &gaps["model_pass"]["gap_suggestions"];
+    assert_eq!(suggested["status"], "done", "{gaps}");
+    assert_eq!(suggested["articles"][0]["title"], "Storage");
+    assert_eq!(
+        suggested["questions"],
+        json!(["What happens when a save fails?"])
+    );
+    {
+        let mut requests = mock.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "{gaps}");
+        let input = requests[0]["input"].as_str().unwrap();
+        assert!(
+            input.starts_with("# Areas with no doc, memory or article"),
+            "{input}"
+        );
+        assert!(input.contains("vault/"), "{input}");
+        requests.clear();
+    }
+
     // The plan and its worst case; nothing is sent or written.
     let plan = printed(&run(root, &project, &["wiki", "build", "--dry-run", "--json"]).await);
     assert_eq!(plan["result"], "dry_run");
@@ -296,6 +390,7 @@ async fn the_wiki_is_written_kept_current_and_checked() {
     assert!(synced.status.success());
     let checked = printed(&run(root, &project, &["wiki", "check", "--no-model", "--json"]).await);
     assert_eq!(checked["stale_mentions"]["count"], 1, "{checked}");
+    assert_eq!(checked["stale_memories"]["count"], 1, "{checked}");
     assert_eq!(
         checked["stale_mentions"]["stale"][0]["mention"],
         "parse_header"
@@ -321,7 +416,8 @@ async fn the_wiki_is_written_kept_current_and_checked() {
         }
     }
 
-    // The model pass: a suggested patch for the guide, which stays as it was.
+    // The model pass: a suggested patch for the guide, which stays as it
+    // was, and a draft for the memory in the approval queue.
     let checked = printed(
         &run(
             root,
@@ -348,6 +444,17 @@ async fn the_wiki_is_written_kept_current_and_checked() {
         std::fs::read_to_string(project.join("docs/guide.md")).unwrap(),
         GUIDE
     );
+    let memory = pass["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["kind"] == "memory")
+        .unwrap_or_else(|| panic!("{pass}"));
+    assert_eq!(memory["verdict"], "outdated", "{pass}");
+    assert_eq!(memory["proposal"]["status"], "proposed", "{pass}");
+    assert!(memory["proposal"]["memory_id"].is_string(), "{pass}");
+    // Its citation is a line the request showed.
+    assert_eq!(memory["citations"], json!(["wire/parse.py:1"]), "{pass}");
 
     // A cap below one call's worst case sends nothing.
     let sent = calls();
@@ -392,6 +499,47 @@ async fn the_wiki_is_written_kept_current_and_checked() {
     assert!(project.join("wiki-docs/index.md").exists());
     let synced = run(root, &project, &["sync", project.to_str().unwrap()]).await;
     assert!(synced.status.success());
+    // Its articles name the code, but are not sources of the wiki: an
+    // update writes nothing, and no article is a stale doc.
+    let index_before = std::fs::read_to_string(project.join("wiki-docs/index.md")).unwrap();
+    let sent = calls();
+    let again = printed(
+        &run(
+            root,
+            &project,
+            &["wiki", "update", "--out", "wiki-docs", "--json"],
+        )
+        .await,
+    );
+    assert_eq!(again["written"], json!([]), "{again}");
+    assert_eq!(again["rerendered"], json!([]), "{again}");
+    assert_eq!(
+        again["index_written"],
+        false,
+        "{again}\n{index_before}\n{}",
+        std::fs::read_to_string(project.join("wiki-docs/index.md")).unwrap()
+    );
+    assert_eq!(calls(), sent);
+    let checked = printed(
+        &run(
+            root,
+            &project,
+            &[
+                "wiki",
+                "check",
+                "--no-model",
+                "--out",
+                "wiki-docs",
+                "--json",
+            ],
+        )
+        .await,
+    );
+    assert!(
+        !checked["stale_mentions"].to_string().contains("wiki-docs/"),
+        "{checked}"
+    );
+    assert_eq!(checked["wiki"]["sources_changed"], json!([]), "{checked}");
     let packet = printed(&run(root, &project, &["context", "which area holds this code"]).await);
     assert!(
         packet["wiki_articles"].as_u64().unwrap_or(0) >= 1,
@@ -439,4 +587,209 @@ async fn the_commit_hook_is_off_until_turned_on() {
     let off = run(root, &project, &["wiki", "hook", "off"]).await;
     assert!(off.status.success());
     assert!(!marked());
+    // The hook held nothing else, so it is gone.
+    assert!(!hook.exists());
+
+    // A hook that ends in `exit 0` gets the block before it, and is the
+    // same bytes after off.
+    let own = "#!/bin/sh\necho committed\nexit 0\n";
+    std::fs::write(&hook, own).unwrap();
+    let on = run(root, &project, &["wiki", "hook", "on"]).await;
+    assert!(on.status.success());
+    let text = std::fs::read_to_string(&hook).unwrap();
+    assert!(text.ends_with("# graphicle-wiki-end\n\nexit 0\n"), "{text}");
+    let start = text
+        .lines()
+        .find(|line| line.starts_with("# graphicle-wiki-start "))
+        .unwrap()
+        .to_string();
+    let off = run(root, &project, &["wiki", "hook", "off"]).await;
+    assert!(off.status.success());
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), own);
+
+    // A Python hook is left alone.
+    let python = "#!/usr/bin/env python3\nprint('committed')\n";
+    std::fs::write(&hook, python).unwrap();
+    let on = run(root, &project, &["wiki", "hook", "on"]).await;
+    assert!(!on.status.success());
+    assert!(
+        String::from_utf8_lossy(&on.stderr).contains("not a shell script"),
+        "{}",
+        String::from_utf8_lossy(&on.stderr)
+    );
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), python);
+
+    // A block whose end line is gone: off keeps the lines after it.
+    let cut = format!("#!/bin/sh\n{start}\n( true )\necho after\n");
+    std::fs::write(&hook, &cut).unwrap();
+    let off = run(root, &project, &["wiki", "hook", "off"]).await;
+    assert!(off.status.success());
+    assert_eq!(std::fs::read_to_string(&hook).unwrap(), cut);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_cut_at_the_output_limit_is_counted_against_the_cap() {
+    let mock = Mock::default();
+    mock.cut.store(true, Ordering::SeqCst);
+    let (url, server) = serve(mock.clone()).await;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    models(root, &url);
+    let project = repository(root);
+    let synced = run(root, &project, &["sync", project.to_str().unwrap()]).await;
+    assert!(synced.status.success());
+    // The first call fits under 0.05 US dollars; its cut reply is billed
+    // about 0.042 (20,000 input and 4,000 output tokens at 1.25 and 4.25
+    // per million), so the second call's worst case no longer fits.
+    let built = printed(
+        &run(
+            root,
+            &project,
+            &["wiki", "build", "--json", "--max-cost", "0.05"],
+        )
+        .await,
+    );
+    assert_eq!(built["result"], "stopped", "{built}");
+    assert_eq!(mock.requests.lock().unwrap().len(), 1, "{built}");
+    assert_eq!(built["written"], json!([]));
+    assert_eq!(built["failed"].as_array().unwrap().len(), 1, "{built}");
+    let cost = built["cost_usd"].as_f64().unwrap();
+    assert!((cost - 0.042).abs() < 1e-9, "{built}");
+    // The spend log has the call, with its cost.
+    let log = std::fs::read_to_string(root.join("data/usage.jsonl")).unwrap();
+    let entry: Value = serde_json::from_str(
+        log.lines()
+            .find(|l| l.contains("\"command\":\"wiki\""))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(entry["status"], "max_output_tokens", "{entry}");
+    assert!((entry["cost_usd"].as_f64().unwrap() - cost).abs() < 1e-9);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wiki_keeps_its_settings_and_never_replaces_a_file_it_did_not_write() {
+    let mock = Mock::default();
+    let (url, server) = serve(mock.clone()).await;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    models(root, &url);
+    let project = repository(root);
+    let synced = run(root, &project, &["sync", project.to_str().unwrap()]).await;
+    assert!(synced.status.success());
+    let calls = || mock.requests.lock().unwrap().len();
+    let plan = printed(&run(root, &project, &["wiki", "build", "--dry-run", "--json"]).await);
+    let slugs: Vec<String> = plan["articles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["area"].as_str().unwrap().to_string())
+        .collect();
+    assert!(slugs.len() >= 2, "{plan}");
+
+    // The folder holds the user's own index.md and a file named as the
+    // second article: both stay, and that article costs no call.
+    let kb = project.join("kb");
+    std::fs::create_dir_all(&kb).unwrap();
+    let mine = "# My notes\n";
+    std::fs::write(kb.join("index.md"), mine).unwrap();
+    let theirs = kb.join(format!("{}.md", slugs[1]));
+    std::fs::write(&theirs, mine).unwrap();
+    let built = printed(
+        &run(
+            root,
+            &project,
+            &["wiki", "build", "--out", "kb", "--json", "--max-cost", "5"],
+        )
+        .await,
+    );
+    assert_eq!(built["result"], "partial", "{built}");
+    assert!(!strings(&built["written"]).contains(&slugs[1]), "{built}");
+    assert_eq!(calls(), slugs.len() - 1);
+    assert_eq!(std::fs::read_to_string(kb.join("index.md")).unwrap(), mine);
+    assert_eq!(std::fs::read_to_string(&theirs).unwrap(), mine);
+    assert_eq!(built["index_written"], false);
+    let not_replaced = built["not_replaced"].to_string();
+    assert!(not_replaced.contains("index.md"), "{built}");
+    assert!(
+        not_replaced.contains(&format!("{}.md", slugs[1])),
+        "{built}"
+    );
+
+    // Without them, the next build writes the rest and the index.
+    std::fs::remove_file(kb.join("index.md")).unwrap();
+    std::fs::remove_file(&theirs).unwrap();
+    let built = printed(
+        &run(
+            root,
+            &project,
+            &["wiki", "build", "--out", "kb", "--json", "--max-cost", "5"],
+        )
+        .await,
+    );
+    assert_eq!(built["result"], "done", "{built}");
+    assert_eq!(strings(&built["written"]), vec![slugs[1].clone()]);
+    assert_eq!(built["index_written"], true);
+
+    // A lower cap on articles never removes an article whose area exists.
+    let update = printed(
+        &run(
+            root,
+            &project,
+            &[
+                "wiki",
+                "update",
+                "--out",
+                "kb",
+                "--max-articles",
+                "1",
+                "--json",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(update["removed"], json!([]), "{update}");
+    assert_eq!(update["kept"].as_array().unwrap().len(), slugs.len());
+    for slug in &slugs {
+        assert!(kb.join(format!("{slug}.md")).exists(), "{slug}");
+    }
+
+    // A wiki keeps its settings: an update that names none (as the commit
+    // hook's) covers the areas the build did.
+    let sent = calls();
+    let one = printed(
+        &run(
+            root,
+            &project,
+            &[
+                "wiki",
+                "build",
+                "--out",
+                "one",
+                "--max-articles",
+                "1",
+                "--budget",
+                "4000",
+                "--json",
+                "--max-cost",
+                "5",
+            ],
+        )
+        .await,
+    );
+    assert_eq!(one["written"].as_array().unwrap().len(), 1, "{one}");
+    let update = printed(
+        &run(
+            root,
+            &project,
+            &["wiki", "update", "--out", "one", "--json"],
+        )
+        .await,
+    );
+    assert_eq!(update["written"], json!([]), "{update}");
+    assert_eq!(update["max_articles"], 1, "{update}");
+    assert_eq!(update["budget"], 4000, "{update}");
+    assert_eq!(calls(), sent + 1);
+    server.abort();
 }
