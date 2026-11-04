@@ -498,6 +498,8 @@ pub fn codebehind_symbols(
     let Some(cb) = codebehind_path(path) else {
         return (None, BTreeMap::new(), vec![]);
     };
+    // Its content is read: noted, since the scan may not list it.
+    crate::inputs::content(&cb);
     let result = extract_languages::extract_language(&cb, "CSHARP");
     if result.get("error").is_some() {
         return (None, BTreeMap::new(), vec![]);

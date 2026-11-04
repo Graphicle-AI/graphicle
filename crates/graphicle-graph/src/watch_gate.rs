@@ -76,7 +76,10 @@ use crate::{detect_manifest, paths, rcfile, serve_socket::FORWARDED_ENV, watch::
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 /// The record of the last full rebuild, in the output folder.
 pub const STATE_FILE: &str = ".graphicle_build_state.json";
@@ -411,6 +414,26 @@ fn scan(detected: &Value) -> String {
     digest(&(files, rest))
 }
 
+/// The folders of `files` that hold converted sidecars, which the walk
+/// never lists: a folder named `converted` directly in a folder the walk
+/// pruned (the output folder), or outside the scan root.
+fn sidecar_folders(detected: &Value, files: &[String]) -> HashSet<PathBuf> {
+    let pruned = strings(detected, "pruned_noise_dirs")
+        .map(|dir| PathBuf::from(dir.trim_end_matches(['/', '\\'])))
+        .collect::<HashSet<_>>();
+    let root = detected["scan_root"].as_str().map(Path::new);
+    files
+        .iter()
+        .filter_map(|file| Path::new(file).parent())
+        .filter(|dir| {
+            dir.file_name().is_some_and(|name| name == "converted")
+                && (dir.parent().is_some_and(|up| pruned.contains(up))
+                    || root.is_some_and(|root| !dir.starts_with(root)))
+        })
+        .map(Path::to_path_buf)
+        .collect()
+}
+
 /// The scanned files of a detection result, of every kind.
 fn scanned(detected: &Value) -> impl Iterator<Item = &str> {
     detected["files"]
@@ -441,6 +464,9 @@ fn hidden_configs(detected: &Value) -> impl Iterator<Item = &str> {
 /// rule hides from the scan.
 pub struct Snapshot {
     files: Vec<String>,
+    /// The folders the walk never lists although scanned files sit there:
+    /// the folder of converted Office and Google sidecars.
+    unwalked: HashSet<PathBuf>,
     stats: Vec<Option<FileStat>>,
     digest: String,
     /// When the stats were taken, and the time a file system may take to
@@ -477,11 +503,13 @@ impl Snapshot {
             .collect::<Vec<_>>();
         files.sort_unstable();
         files.dedup();
+        let unwalked = sidecar_folders(detected, &files);
         let taken_ns = crate::cache::clock_ns().max(0) as u64;
         let stats = stats_of(&files);
         let digest = rows_digest(&files, &stats);
         Snapshot {
             files,
+            unwalked,
             stats,
             digest,
             taken_ns,
@@ -538,6 +566,7 @@ impl Snapshot {
             .files
             .iter()
             .filter_map(|file| Path::new(file).parent())
+            .filter(|dir| !self.unwalked.contains(*dir))
             .collect::<HashSet<_>>();
         let plain = |path: &Path| {
             !path.components().any(|c| {
@@ -563,6 +592,8 @@ impl Snapshot {
                                     &name.to_string_lossy(),
                                 )
                             })
+                            // The walk leaves installed rule files out too.
+                            && !crate::detect_types::is_installed_rule_file(&path)
                     }
                     crate::inputs::Kind::Listing => walked.contains(path.as_path()),
                     _ => false,
@@ -857,6 +888,29 @@ mod tests {
         kind["files"]["document"] = json!([]);
         kind["files"]["paper"] = json!(["/r/README.md"]);
         assert_ne!(scan(&base), scan(&kind));
+    }
+
+    /// The folder of converted sidecars is not one the walk lists: in the
+    /// pruned output folder, or outside the scan root; a project folder
+    /// named `converted` is.
+    #[test]
+    fn the_sidecar_folder_is_not_walked() {
+        let detected = json!({"scan_root":"/r","pruned_noise_dirs":["/r/graphicle-out/"]});
+        let files = [
+            "/r/a.py",
+            "/r/graphicle-out/converted/notes_0a1b2c3d.md",
+            "/r/converted/b.py",
+            "/out/converted/sheet_1a2b3c4d.md",
+        ]
+        .map(String::from);
+        let found = sidecar_folders(&detected, &files);
+        assert_eq!(
+            found,
+            HashSet::from([
+                PathBuf::from("/r/graphicle-out/converted"),
+                PathBuf::from("/out/converted"),
+            ])
+        );
     }
 
     /// A JavaScript workspace root in a folder above the project, by
