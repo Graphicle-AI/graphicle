@@ -158,13 +158,27 @@ pub fn manual_line(folder: &Path, data_dir: Option<&Path>) -> String {
     )
 }
 
+/// The first and last lines of a marked block: the first is `start`
+/// followed by the folder the block is for.
+#[derive(Clone, Copy, Debug)]
+pub struct Markers {
+    pub start: &'static str,
+    pub end: &'static str,
+}
+
+/// The freshness block's markers.
+pub const SYNC: Markers = Markers {
+    start: START,
+    end: END,
+};
+
 /// The blocks of `text`: each one's lines `start..end` and folder.
-fn blocks(lines: &[&str]) -> Vec<(usize, usize, PathBuf)> {
+fn blocks(lines: &[&str], markers: Markers) -> Vec<(usize, usize, PathBuf)> {
     let mut found = Vec::new();
     let mut i = 0;
     while i < lines.len() {
-        if let Some(folder) = lines[i].trim_start().strip_prefix(START)
-            && let Some(end) = (i + 1..lines.len()).find(|j| lines[*j].trim() == END)
+        if let Some(folder) = lines[i].trim_start().strip_prefix(markers.start)
+            && let Some(end) = (i + 1..lines.len()).find(|j| lines[*j].trim() == markers.end)
         {
             found.push((i, end + 1, PathBuf::from(folder.trim_end())));
             i = end + 1;
@@ -177,7 +191,7 @@ fn blocks(lines: &[&str]) -> Vec<(usize, usize, PathBuf)> {
 
 /// The folders whose blocks `text` holds.
 pub fn folders(text: &str) -> Vec<PathBuf> {
-    blocks(&text.split('\n').collect::<Vec<_>>())
+    blocks(&text.split('\n').collect::<Vec<_>>(), SYNC)
         .into_iter()
         .map(|(_, _, folder)| folder)
         .collect()
@@ -227,12 +241,22 @@ pub enum Upserted {
 /// is; else before a final `exit` or `exec` line, which would end the hook
 /// before it; else at the end. `None` is a hook that does not exist yet.
 pub fn upsert(existing: Option<&str>, block: &str, folder: &Path) -> Upserted {
+    upsert_marked(SYNC, existing, block, folder)
+}
+
+/// [`upsert`] for a block with other `markers`.
+pub fn upsert_marked(
+    markers: Markers,
+    existing: Option<&str>,
+    block: &str,
+    folder: &Path,
+) -> Upserted {
     let Some(text) = existing else {
         return Upserted::Changed(format!("#!/bin/sh\n{block}\n"), "added");
     };
     let mut lines: Vec<&str> = text.split('\n').collect();
     let new: Vec<&str> = block.split('\n').collect();
-    if let Some((start, end, _)) = blocks(&lines)
+    if let Some((start, end, _)) = blocks(&lines, markers)
         .into_iter()
         .find(|(_, _, found)| found == folder)
     {
@@ -273,8 +297,13 @@ pub fn upsert(existing: Option<&str>, block: &str, folder: &Path) -> Upserted {
 /// `text` without the blocks for `folder` (every block when `None`), and
 /// the blank line each one brought; `None` when there is none.
 pub fn remove(text: &str, folder: Option<&Path>) -> Option<String> {
+    remove_marked(SYNC, text, folder)
+}
+
+/// [`remove`] for blocks with other `markers`.
+pub fn remove_marked(markers: Markers, text: &str, folder: Option<&Path>) -> Option<String> {
     let mut lines: Vec<&str> = text.split('\n').collect();
-    let found: Vec<(usize, usize, PathBuf)> = blocks(&lines)
+    let found: Vec<(usize, usize, PathBuf)> = blocks(&lines, markers)
         .into_iter()
         .filter(|(_, _, found)| folder.is_none_or(|folder| found == folder))
         .collect();
