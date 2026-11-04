@@ -42,6 +42,7 @@
 //!   store; the engine's opt-in query log (`GRAPHICLE_QUERY_LOG*`), when set
 //!   in the server's environment, also records `query_graph` questions, as
 //!   it does for `graphicle graph serve`.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result, code_graph_arm,
     extension::McpTool,
@@ -55,7 +56,6 @@ use graphicle::{
     serve_search::{label, neighbors},
 };
 use graphicle_memory::graph::span;
-use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},

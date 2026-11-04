@@ -229,7 +229,7 @@ fn a_skipped_arm_reports_projection_state_and_episode_lag() {
             .unwrap()
             .execute(
                 "UPDATE am_jobs SET state=? WHERE kind='project' AND repository_id=?",
-                rusqlite::params![state, f.repo],
+                graphicle_runtime::params![state, f.repo],
             )
             .unwrap();
     };
@@ -331,11 +331,7 @@ fn an_unsynced_repository_reports_no_projection() {
 fn context_opens_no_write_transaction() {
     let f = Fixture::new(&[("a.py", A_V1), ("b.py", B)]);
     let watcher = f.store.connect().unwrap();
-    let version = || -> i64 {
-        watcher
-            .query_row("PRAGMA data_version", [], |r| r.get(0))
-            .unwrap()
-    };
+    let version = || -> String { graphicle_runtime::db::data_version(&watcher).unwrap() };
     let before = version();
     assert_eq!(
         f.context("where is beta defined")["code_graph"]["status"],

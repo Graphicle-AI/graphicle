@@ -170,7 +170,7 @@ impl Fixture {
         let stamp = graphicle_runtime::now();
         self.store.connect().unwrap().execute(
             "INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,priority,max_attempts,not_before,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,3,?,?,?)",
-            rusqlite::params![id, self.repo, kind, id, payload.to_string(), self.principal(), priority, stamp, stamp, stamp],
+            graphicle_runtime::params![id, self.repo, kind, id, payload.to_string(), self.principal(), priority, stamp, stamp, stamp],
         )
         .unwrap();
     }
@@ -279,7 +279,7 @@ async fn archived_options_are_refused_where_callers_sent_them_and_inert_values_p
                 .unwrap()
                 .execute(
                     "UPDATE am_connectors SET config=json_set(config,'$.observe',json(?)) WHERE id=?",
-                    rusqlite::params![
+                    graphicle_runtime::params![
                         json!({ entry.option: turned_on(entry) }).to_string(),
                         f.connector
                     ],

@@ -19,7 +19,7 @@ fn snapshot(documents: Vec<Value>, memories: Vec<Value>) -> query::Snapshot {
 
 /// A store's connection: `memory::dependencies` resolves quotes in code
 /// files against its live-symbol table, which is empty here.
-fn store() -> (tempfile::TempDir, rusqlite::Connection) {
+fn store() -> (tempfile::TempDir, graphicle_runtime::db::Connection) {
     let dir = tempfile::TempDir::new().unwrap();
     let db = graphicle_runtime::store::Store::open(dir.path())
         .unwrap()

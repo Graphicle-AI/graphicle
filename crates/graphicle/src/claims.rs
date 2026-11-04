@@ -1,10 +1,10 @@
 //! Grounded interpretation drafts and explicitly reviewed temporal revisions.
+use crate::db::{Connection, params};
 use crate::{Error, Result, digest, id, native, now, string};
 use crate::{
     memory,
     store::{Principal, Store, decode, one, repo, rows, s},
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -273,7 +273,7 @@ pub fn apply_memory_review(
                 &json!({"repository":repository,"name":name,"speaker":data["speaker"],"source":provenance}),
             );
             db.execute(
-                "INSERT OR IGNORE INTO am_entities VALUES(?,?,?,?,?,?)",
+                "INSERT INTO am_entities VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                 params![
                     entity_id,
                     repository,
@@ -286,7 +286,7 @@ pub fn apply_memory_review(
             entities.push(entity_id);
         }
         db.execute(
-            "INSERT OR REPLACE INTO am_entity_links VALUES(?,?,?,?)",
+            "INSERT INTO am_entity_links VALUES(?,?,?,?) ON CONFLICT(repository_id,claim_id) DO UPDATE SET subject_id=excluded.subject_id,object_id=excluded.object_id",
             params![repository, s(&claim, "id"), entities[0], entities[1]],
         )?;
     }

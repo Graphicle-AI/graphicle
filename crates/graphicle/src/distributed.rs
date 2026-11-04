@@ -1,5 +1,6 @@
 //! Redis/Valkey inference dispatch. The coordinator alone owns sources, permissions and commits.
 //! Consumers receive bounded inference requests, never workspace capabilities or provider secrets.
+use crate::db::params;
 use crate::{
     Error, Result, digest, id,
     jobs::{self, Job, Worker},
@@ -11,7 +12,6 @@ use redis::{
     AsyncCommands,
     streams::{StreamAutoClaimReply, StreamReadReply},
 };
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
@@ -79,7 +79,7 @@ pub fn configure(store: &Store, workspace: &str, token: &str, args: &Value) -> R
     let queue: Queue = serde_json::from_value(args["config"].clone())?;
     validate(&queue)?;
     store.resolve_credential(workspace, &queue.credential_ref)?;
-    store.authorized(workspace,token,"admin",|db,p|{let repository=repo(db,p,string(args,"repository_id",100)?)?;db.execute("INSERT OR REPLACE INTO am_backends VALUES(?,?,?)",params![s(&repository,"id"),"redis",serde_json::to_string(&queue)?])?;Ok(json!({"configured":true,"dispatch":"explicit per job","source_authority":"coordinator"}))})
+    store.authorized(workspace,token,"admin",|db,p|{let repository=repo(db,p,string(args,"repository_id",100)?)?;db.execute("INSERT INTO am_backends VALUES(?,?,?) ON CONFLICT(repository_id,kind) DO UPDATE SET config=excluded.config",params![s(&repository,"id"),"redis",serde_json::to_string(&queue)?])?;Ok(json!({"configured":true,"dispatch":"explicit per job","source_authority":"coordinator"}))})
 }
 #[derive(Serialize, Deserialize)]
 struct Request {

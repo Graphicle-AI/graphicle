@@ -1,11 +1,11 @@
 //! Property graph projections over current authorized sources and reviewed knowledge.
 //! Neo4j is optional infrastructure; its results never bypass the canonical source view.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result, claims, digest, integer, model, now, query,
     store::{Principal, Store, decode, one, repo, rows, s},
     string,
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -522,7 +522,7 @@ pub fn configure_neo4j(store: &Store, workspace: &str, token: &str, args: &Value
     string(&secret, "username", 200)?;
     string(&secret, "password", 1000)?;
     let value = json!({"endpoint":endpoint,"database":database,"credential_ref":reference});
-    store.authorized(workspace,token,"admin",|db,p|{let repository=repo(db,p,string(args,"repository_id",100)?)?;if let Some(old)=one(db,"SELECT config FROM am_backends WHERE repository_id=? AND kind='neo4j'",[s(&repository,"id")])?{let cfg:Value=serde_json::from_str(s(&old,"config"))?;if cfg!=value{crate::projection::enqueue_config(db,workspace,s(&repository,"id"),"neo4j",&cfg,"backend_reconfigured")?;}}db.execute("INSERT OR REPLACE INTO am_backends VALUES(?,?,?)",params![s(&repository,"id"),"neo4j",value.to_string()])?;Ok(json!({"configured":true,"index_visibility":"private administrator-owned graph projection"}))})
+    store.authorized(workspace,token,"admin",|db,p|{let repository=repo(db,p,string(args,"repository_id",100)?)?;if let Some(old)=one(db,"SELECT config FROM am_backends WHERE repository_id=? AND kind='neo4j'",[s(&repository,"id")])?{let cfg:Value=serde_json::from_str(s(&old,"config"))?;if cfg!=value{crate::projection::enqueue_config(db,workspace,s(&repository,"id"),"neo4j",&cfg,"backend_reconfigured")?;}}db.execute("INSERT INTO am_backends VALUES(?,?,?) ON CONFLICT(repository_id,kind) DO UPDATE SET config=excluded.config",params![s(&repository,"id"),"neo4j",value.to_string()])?;Ok(json!({"configured":true,"index_visibility":"private administrator-owned graph projection"}))})
 }
 async fn cypher(
     store: &Store,

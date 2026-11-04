@@ -1,10 +1,10 @@
 //! Project operations shared by the HTTP and stdio surfaces.
+use crate::db::params;
 use crate::{Error, Result, integer, now, string};
 use crate::{
     memory,
     store::{self, Store, decode, one, repo, rows, s},
 };
-use rusqlite::params;
 use serde_json::{Value, json};
 
 impl Store {
@@ -252,7 +252,7 @@ impl Store {
         Ok(result)
     }
 }
-pub fn purge_derived_cache(db: &rusqlite::Connection, repository: &str) -> Result<()> {
+pub fn purge_derived_cache(db: &crate::db::Connection, repository: &str) -> Result<()> {
     for table in [
         "am_model_cache",
         "am_query_cache",

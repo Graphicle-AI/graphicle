@@ -99,7 +99,7 @@ impl Fixture {
         let app = App::new(self.store.clone(), model::Config::default(), vec![]).unwrap();
         graphicle_runtime::api::command(&app, &self.workspace, &self.key, "graph.impact", &args)
     }
-    fn db(&self) -> rusqlite::Connection {
+    fn db(&self) -> graphicle_runtime::db::Connection {
         self.store.connect().unwrap()
     }
     fn count(&self, table: &str) -> i64 {
@@ -398,7 +398,7 @@ fn a_head_set_recorded_by_an_older_engine_is_projected_again() {
     db.pragma_update(None, "foreign_keys", false).unwrap();
     db.execute(
         "UPDATE gf_episodes SET episode=? WHERE repository_id=?",
-        rusqlite::params![legacy, f.repo],
+        graphicle_runtime::params![legacy, f.repo],
     )
     .unwrap();
     drop(db);
@@ -528,7 +528,7 @@ fn projection_fingerprints_skip_clean_groups_and_preserve_history() {
     };
     let stats = |episode: &str| -> Value {
         let raw: String = db.query_row("SELECT json_extract(attributes,'$.extraction_run.persistence') FROM gf_episodes WHERE repository_id=? AND episode=?",
-            rusqlite::params![f.repo, episode], |r| r.get(0)).unwrap();
+            graphicle_runtime::params![f.repo, episode], |r| r.get(0)).unwrap();
         serde_json::from_str(&raw).unwrap()
     };
     let first = make("first", "c", true);
@@ -603,11 +603,16 @@ fn failed_projection_rolls_back_rows_and_restores_cache_invalidation() {
         .unwrap();
     assert!(db.is_autocommit());
     db.execute_batch(
-        "CREATE TABLE rollback_marker(value INTEGER);
+        "CREATE TABLE rollback_marker(value BIGINT);
+         CREATE FUNCTION reject_projection() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+             IF NEW.valid_from_episode='failed' THEN
+                 RAISE EXCEPTION 'forced projection failure';
+             END IF;
+             RETURN NEW;
+         END $$;
          CREATE TRIGGER reject_projection BEFORE INSERT ON gf_edges
-         WHEN NEW.valid_from_episode='failed' BEGIN
-             SELECT RAISE(ABORT,'forced projection failure');
-         END;",
+         FOR EACH ROW EXECUTE FUNCTION reject_projection();",
     )
     .unwrap();
     let outer = db.unchecked_transaction().unwrap();
@@ -679,7 +684,7 @@ fn earlier_episode_is_reconstructed_as_of_after_later_projection() {
     let closed: i64 = db
         .query_row(
             "SELECT count(*) FROM gf_nodes WHERE repository_id=? AND node_id='a_beta' AND valid_to_episode=? AND expired_at IS NOT NULL",
-            rusqlite::params![f.repo, episode2],
+            graphicle_runtime::params![f.repo, episode2],
             |r| r.get(0),
         )
         .unwrap();

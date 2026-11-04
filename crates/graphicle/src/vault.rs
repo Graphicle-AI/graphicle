@@ -1,6 +1,7 @@
 //! Workspace-bound authenticated encryption for provider secrets. The key is
 //! the device key file `vault.key`, unless an installed extension holds it
 //! ([`crate::extension::Extension::vault_key`]).
+use crate::db::params;
 use crate::{
     Error, Result, id, now,
     store::{Store, one, s},
@@ -11,7 +12,6 @@ use aes_gcm::{
     aead::{Aead, Payload},
 };
 use rand::{RngCore, rngs::OsRng};
-use rusqlite::params;
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 

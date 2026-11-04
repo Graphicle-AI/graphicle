@@ -1,8 +1,8 @@
+use crate::db::{Connection, params};
 use crate::memory;
 use crate::store::{Principal, Store, decode, one, repo, rows, s};
 use crate::{Error, Result, digest, graph_projection, integer, native, string};
 use graphicle::graph::Graph;
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -2478,7 +2478,7 @@ pub fn project_packet(
         for row in crate::store::rows(
             db,
             "SELECT identity,source_sha,vector FROM am_vectors WHERE repository_id=? AND model_key=?",
-            rusqlite::params![s(repository, "id"), key],
+            crate::params![s(repository, "id"), key],
         )? {
             if valid.get(s(&row, "identity")) == Some(&s(&row, "source_sha")) {
                 vectors.insert(
@@ -3045,7 +3045,7 @@ mod tests {
             })
             .collect();
         let snapshot = synthetic(documents, vec![]);
-        let db = rusqlite::Connection::open_in_memory().unwrap();
+        let db = crate::db::Connection::open_in_memory().unwrap();
         let principal = crate::store::Principal {
             workspace: "w".into(),
             credential: "c".into(),

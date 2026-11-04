@@ -53,7 +53,7 @@ impl Fixture {
                 rows(
                     db,
                     "SELECT p.revision,p.data FROM repo_parses p JOIN repo_heads h ON h.repository_id=p.repository_id AND h.path=p.path AND h.sha256=p.sha256 WHERE h.repository_id=? AND h.path=?",
-                    rusqlite::params![repository, path],
+                    graphicle_runtime::params![repository, path],
                 )
             })
             .unwrap()
@@ -697,7 +697,7 @@ fn a_folders_html_past_the_file_limit_or_not_utf8_is_converted() {
             .read(|db| {
                 Ok(db.query_row(
                     "SELECT o.content,(SELECT count(*) FROM am_binary_heads b WHERE b.repository_id=h.repository_id AND b.path=h.path) FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 WHERE h.repository_id=? AND h.path=?",
-                    rusqlite::params![repository, path],
+                    graphicle_runtime::params![repository, path],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
                 )?)
             })

@@ -747,6 +747,12 @@ enum Command {
     Backup { path: Option<PathBuf> },
     /// Restore a database into a new data directory; existing data is never overwritten.
     Restore { path: PathBuf },
+    /// Copy a SQLite store (`reviews.sqlite3`, Graphicle 0.1.12 and
+    /// earlier) into this data folder's new PostgreSQL store. Without PATH,
+    /// the data folder's own `reviews.sqlite3`. The SQLite file is left as
+    /// it is.
+    #[cfg(feature = "sqlite-import")]
+    ImportSqlite { path: Option<PathBuf> },
     /// Show or change settings, such as the answer model.
     ///
     /// `graphicle config set model anthropic` (or openai, or ollama) makes
@@ -1185,6 +1191,11 @@ where
     if let Command::Restore { path } = command {
         return print(&local::restore(&path, &directory)?);
     }
+    #[cfg(feature = "sqlite-import")]
+    if let Command::ImportSqlite { path } = command {
+        let path = path.unwrap_or_else(|| directory.join("reviews.sqlite3"));
+        return print(&crate::import_sqlite::import(&path, &directory)?);
+    }
     if let Command::Usage {
         since,
         json,
@@ -1250,18 +1261,18 @@ where
             );
         }
         // The Git hooks' quiet sync never creates a data folder.
-        Command::Sync { quiet: true, .. } if !directory.join("reviews.sqlite3").is_file() => {
+        Command::Sync { quiet: true, .. } if !crate::db::Database::exists(&directory) => {
             return Ok(());
         }
         // Offboarding never creates one.
-        Command::Offboard { .. } if !directory.join("reviews.sqlite3").is_file() => {
+        Command::Offboard { .. } if !crate::db::Database::exists(&directory) => {
             return Err(Error::bad(format!(
                 "There is no Graphicle data folder at {}: nothing to offboard",
                 directory.display()
             )));
         }
         // An agent's server never creates one either: it says what to run.
-        Command::Mcp { .. } if !directory.join("reviews.sqlite3").is_file() => {
+        Command::Mcp { .. } if !crate::db::Database::exists(&directory) => {
             return Err(Error::bad(format!(
                 "Graphicle is not set up yet: its data folder {} is missing. In your repository, run `graphicle setup`.",
                 directory.display()
@@ -1464,6 +1475,8 @@ where
         }
         Command::DocumentWorker { .. } => unreachable!(),
         Command::Restore { .. } => unreachable!(),
+        #[cfg(feature = "sqlite-import")]
+        Command::ImportSqlite { .. } => unreachable!(),
         Command::RedisWorker { .. } => unreachable!(),
         Command::Init { name } => {
             let session = if store.directory.join("local-session.json").exists() {
@@ -2650,7 +2663,7 @@ fn hook(
     let muse = client == crate::capture::Client::Muse;
     // A data folder that is gone stays gone: `graphicle setup` makes a new
     // one (doctor reports the hooks that point at it).
-    if !directory.join("reviews.sqlite3").is_file() {
+    if !crate::db::Database::exists(directory) {
         return;
     }
     let mut input = Vec::new();

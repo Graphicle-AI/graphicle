@@ -16,12 +16,12 @@
 //! question ([`crate::code_question::is_code_question`]), `true` for any
 //! question that names identifiers or paths, `false` for none.
 use crate::code_graph_arm::{self, Reading};
+use crate::db::Connection;
 use crate::query::Passages;
 use crate::store::s;
 use crate::{Result, graph_projection};
 use graphicle::graph::Graph;
 use graphicle::session::GraphHandle;
-use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::LazyLock;

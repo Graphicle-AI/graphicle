@@ -4,6 +4,7 @@ pub mod agent_instructions;
 pub mod agent_setup;
 pub mod answer_review;
 pub mod api;
+pub mod archive;
 pub mod archived;
 pub mod atlassian;
 pub mod auto_observe;
@@ -17,6 +18,7 @@ pub mod codex_config;
 pub mod computer;
 pub mod connectors;
 pub mod core_capabilities;
+pub mod db;
 pub mod deletion;
 pub mod disconnect;
 pub mod distributed;
@@ -37,6 +39,8 @@ pub mod graph_projection;
 pub mod graph_tools;
 pub mod identifier_arm;
 pub mod identifier_route;
+#[cfg(feature = "sqlite-import")]
+pub mod import_sqlite;
 pub mod indexed_query;
 pub mod ingestion;
 pub mod invalidation;
@@ -137,8 +141,8 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
-impl From<rusqlite::Error> for Error {
-    fn from(e: rusqlite::Error) -> Self {
+impl From<crate::db::Error> for Error {
+    fn from(e: crate::db::Error) -> Self {
         Self::bad(format!("Storage operation failed: {e}"))
     }
 }

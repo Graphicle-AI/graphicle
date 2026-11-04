@@ -1,11 +1,11 @@
 //! Read-only source adapters with resumable staging and atomic activation.
+use crate::db::{Connection, params};
 use crate::{Error, Result, digest, id, integer, now, string};
 use crate::{
     jobs::{self, Job, Worker},
     memory, model,
     store::{self, Store, decode, one, repo, rows, s},
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -277,7 +277,7 @@ impl Store {
                 let payload=json!({"kind":"connector","repository_id":connector["repository_id"],"connector_id":connector["id"],"max_requests":64,"max_calls":0,"max_input_tokens":0,"max_output_tokens":0,"scheduled":true,"interval_seconds":interval});
                 let input=digest(&json!({"payload":payload,"generation":connector["generation"],"cursor":connector["cursor"],"slot":chrono::Utc::now().timestamp()/60}));
                 let stamp=now();
-                count+=db.execute("INSERT OR IGNORE INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,max_attempts,not_before,created_at,updated_at) VALUES(?,?,'connector',?,?,?,'queued',1,?,?,?)",params![id(),s(&connector,"repository_id"),input,payload.to_string(),s(&connector,"capability_hash"),stamp,stamp,stamp])?;
+                count+=db.execute("INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,max_attempts,not_before,created_at,updated_at) VALUES(?,?,'connector',?,?,?,'queued',1,?,?,?) ON CONFLICT DO NOTHING",params![id(),s(&connector,"repository_id"),input,payload.to_string(),s(&connector,"capability_hash"),stamp,stamp,stamp])?;
             }
             Ok(count)
         })
@@ -535,7 +535,7 @@ pub(crate) fn stage(db: &Connection, connector: &Value, scan: &str, doc: &Value)
         return Err(Error::bad("Source metadata is too large"));
     }
     db.execute(
-        "INSERT OR REPLACE INTO am_connector_stage VALUES(?,?,?,?,?,?,?)",
+        "INSERT INTO am_connector_stage VALUES(?,?,?,?,?,?,?) ON CONFLICT(connector_id,scan_id,id) DO UPDATE SET content=excluded.content,sha256=excluded.sha256,metadata=excluded.metadata,acl=excluded.acl",
         params![
             s(connector, "id"),
             scan,
@@ -546,7 +546,7 @@ pub(crate) fn stage(db: &Connection, connector: &Value, scan: &str, doc: &Value)
             connector["config"]["acl"].to_string()
         ],
     )?;
-    let bytes:i64=db.query_row("SELECT coalesce(sum(length(CAST(content AS BLOB))),0) FROM am_connector_stage WHERE connector_id=?",[s(connector,"id")],|r|r.get(0))?;
+    let bytes:i64=db.query_row("SELECT coalesce(sum(octet_length(content)),0) FROM am_connector_stage WHERE connector_id=?",[s(connector,"id")],|r|r.get(0))?;
     // Earlier builds: 64 MiB.
     let cap = crate::limits::current().connector_snapshot_bytes;
     if usize::try_from(bytes).unwrap_or(usize::MAX) > cap {
@@ -606,7 +606,7 @@ pub(crate) fn activate(db: &Connection, connector: &Value, scan: &str, full: boo
             )?;
         }
         db.execute(
-            "INSERT OR IGNORE INTO am_connector_versions VALUES(?,?,?,?,?,?)",
+            "INSERT INTO am_connector_versions VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING",
             params![
                 identifier,
                 s(&row, "id"),
@@ -1815,7 +1815,7 @@ pub fn keep_original(
             )));
         }
         db.execute(
-            "INSERT OR IGNORE INTO am_original_documents VALUES(?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO am_original_documents VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
             params![
                 remote.job.repository,
                 s(remote.connector, "id"),

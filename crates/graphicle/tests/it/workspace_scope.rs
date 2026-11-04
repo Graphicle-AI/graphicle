@@ -134,8 +134,8 @@ impl Fixture {
             .unwrap();
     }
     /// The store's database, to damage it.
-    fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(self.dir.path().join("reviews.sqlite3")).unwrap()
+    fn db(&self) -> graphicle_runtime::db::Connection {
+        graphicle_runtime::db::open_existing(self.dir.path()).unwrap()
     }
     /// The money library, then the shop that imports it, linked.
     fn shop_and_money() -> (Self, String, String) {
@@ -1811,10 +1811,8 @@ fn mapped() -> (Fixture, String, String, String) {
 fn the_workspace_map_lists_projects_imports_and_counts() {
     let (f, shop, money, scratch) = mapped();
     let watcher = f.db();
-    let version = |db: &rusqlite::Connection| {
-        db.query_row("PRAGMA data_version", [], |r| r.get::<_, i64>(0))
-            .unwrap()
-    };
+    let version =
+        |db: &graphicle_runtime::db::Connection| graphicle_runtime::db::data_version(db).unwrap();
     let before = version(&watcher);
     let map = f
         .store

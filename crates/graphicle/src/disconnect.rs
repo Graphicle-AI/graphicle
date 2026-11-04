@@ -777,7 +777,7 @@ pub fn uninstall(data: &Path, purge: bool, yes: bool, json_flag: bool) -> Result
             "--purge deletes the data folder: add --yes to confirm when not in a terminal",
         ));
     }
-    let store = if data.join("reviews.sqlite3").is_file() {
+    let store = if crate::db::Database::exists(data) {
         Some(Store::open(data)?)
     } else {
         None
@@ -812,7 +812,7 @@ fn purge_data(data: &Path, env: &Environment) -> Result<bool> {
     }
     let data = data.canonical()?;
     let home = env.home.as_deref().and_then(|home| home.canonical().ok());
-    if !data.join("reviews.sqlite3").is_file()
+    if !crate::db::Database::exists(&data)
         || data.parent().is_none()
         || home.as_deref() == Some(data.as_path())
     {

@@ -5107,7 +5107,7 @@ impl Store {
             )?;
             let fetch = move |path: &str| {
                 statement
-                    .query_row(rusqlite::params![id, path], |row| row.get::<_, String>(0))
+                    .query_row(crate::params![id, path], |row| row.get::<_, String>(0))
                     .ok()
             };
             let name = s(&repository, "name").to_string();
@@ -5159,7 +5159,7 @@ impl Store {
 
 /// The ranking's passages for `question`: `context`'s fused order.
 fn rank(
-    db: &rusqlite::Connection,
+    db: &crate::db::Connection,
     p: &crate::store::Principal,
     repository: &Value,
     question: &str,

@@ -1,10 +1,10 @@
 //! Workspace-owned inference configuration. Changes never rewrite a queued model fingerprint.
+use crate::db::params;
 use crate::{
     Error, Result, model,
     store::{Store, rows, s},
     string,
 };
-use rusqlite::params;
 use serde_json::{Value, json};
 
 pub fn configuration(

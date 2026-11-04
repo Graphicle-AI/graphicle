@@ -9,6 +9,7 @@
 //! projection, the arm reads the latest recorded episode, cites only the
 //! files whose bytes that episode recorded, and follows only the edges read
 //! from those files (the lag fallback).
+use crate::db::Connection;
 use crate::{
     Result, graph_projection,
     query::Snapshot,
@@ -19,7 +20,6 @@ use graphicle_memory::graph::{
     retrieval::{ExpandOptions, expand, expand_seeds, lexical_candidates, resident_index},
     span,
 };
-use rusqlite::Connection;
 use serde_json::{Map, Value, json};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};

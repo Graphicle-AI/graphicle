@@ -4399,7 +4399,7 @@ pub fn doctor(options: &Doctor<'_>) -> Result<Value> {
 fn existing_store(
     directory: &Path,
 ) -> Option<std::result::Result<(Store, Option<local::Session>), Error>> {
-    if !directory.join("reviews.sqlite3").is_file() {
+    if !crate::db::Database::exists(directory) {
         return None;
     }
     Some(Store::open(directory).map(|store| {
@@ -4730,7 +4730,7 @@ fn checks(options: &Doctor<'_>) -> Vec<Check> {
         }
         let found = connected_without_store(directory, &folders, &home);
         (!found.is_empty()).then(|| {
-            let state = if directory.join("reviews.sqlite3").is_file() {
+            let state = if crate::db::Database::exists(directory) {
                 "has no workspace"
             } else {
                 "does not exist"

@@ -1601,7 +1601,7 @@ pub fn search(run: &Run<'_>, query: &Query, top: usize) -> Result<Found> {
             "SELECT o.content FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 WHERE h.repository_id=?1 AND h.path=?2",
         )?;
         let mut fetch = |path: &str| {
-            one.query_row(rusqlite::params![id, path], |row| row.get::<_, String>(0))
+            one.query_row(crate::params![id, path], |row| row.get::<_, String>(0))
                 .ok()
         };
         lookup.follow_keys(&mut fetch);

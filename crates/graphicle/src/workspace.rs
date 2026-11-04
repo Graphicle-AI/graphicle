@@ -42,6 +42,7 @@
 //!
 //! Queries stay read-only: everything here runs in the
 //! caller's read-only snapshot.
+use crate::db::Connection;
 use crate::{
     Error, Result, code_graph_arm, digest, evidence, graph_projection,
     graph_projection::CrossDirection,
@@ -49,7 +50,6 @@ use crate::{
     store::{Principal, Store, repo, rows, s},
 };
 use graphicle::graph::Graph;
-use rusqlite::Connection;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

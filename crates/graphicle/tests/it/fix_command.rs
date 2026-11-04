@@ -1226,7 +1226,7 @@ async fn the_key_of_a_profile_stored_in_the_workspace_is_removed_too() {
             .unwrap()
             .execute(
                 "INSERT INTO am_model_profiles VALUES(?,?,?,0,0)",
-                rusqlite::params![session.workspace, "stored", profile.to_string()],
+                graphicle_runtime::params![session.workspace, "stored", profile.to_string()],
             )
             .unwrap();
     }
@@ -1292,7 +1292,7 @@ async fn a_key_saved_in_the_app_is_used_and_hidden_from_the_test_output() {
             .unwrap()
             .execute(
                 "INSERT INTO am_model_profiles VALUES(?,?,?,0,0)",
-                rusqlite::params![session.workspace, "saved", profile.to_string()],
+                graphicle_runtime::params![session.workspace, "saved", profile.to_string()],
             )
             .unwrap();
     }

@@ -1,12 +1,12 @@
 //! Structured recall over the existing reviewed-memory journal and source ACLs.
 //! No second store, implicit approval, model call or benchmark-specific policy.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result, memory, now, query,
     store::{Store, decode, repo, rows, s},
     string,
 };
 use graphicle_memory::recall::{self, Metadata, Query, Record};
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
 pub fn metadata(value: &Value) -> Result<Metadata> {

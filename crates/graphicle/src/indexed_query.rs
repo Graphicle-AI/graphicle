@@ -12,12 +12,12 @@
 //! take the full path ([`ineligible`]), as does a project whose index is
 //! missing or lacks more than [`MAX_MISSING`] of its current files.
 use crate::code_graph_arm;
+use crate::db::Connection;
 use crate::passage_index::{self, Index};
 use crate::query::{self, Indexed, Lift, LiftScoring, Passages, Snapshot};
 use crate::store::{Principal, s};
 use crate::{Error, Result, digest, memory, string};
 use graphicle_memory::{cache, retrieval, stem::Stemmer};
-use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};

@@ -1,4 +1,5 @@
 //! Repository-scoped, append-only valid/recorded-time graph assertions.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result, graph_projection,
     store::{one, rows, s},
@@ -6,7 +7,6 @@ use crate::{
 use chrono::{DateTime, SecondsFormat, Utc};
 use graphicle::graph::Graph;
 use graphicle_memory::graph::canonical::AliasSet;
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -66,7 +66,7 @@ pub fn observe(
     if branch.is_empty() || branch.len() > 256 || branch.chars().any(char::is_control) {
         return Err(Error::bad("Invalid timeline branch"));
     }
-    db.execute("INSERT OR IGNORE INTO gf_timeline(repository_id,branch,episode,valid_us,recorded_us,origin) VALUES(?,?,?,?,?,?)",
+    db.execute("INSERT INTO gf_timeline(repository_id,branch,episode,valid_us,recorded_us,origin) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING",
         params![repository,branch,episode,valid,recorded,origin])?;
     Ok(())
 }

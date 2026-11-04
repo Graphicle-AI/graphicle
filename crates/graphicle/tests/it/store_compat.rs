@@ -10,13 +10,13 @@
 //! (`tests/fixtures/pro_store_tables.sql`; the commercial edition's tests check the copy against its
 //! schema). the commercial edition re-runs this suite with its extensions installed,
 //! where the tables already exist and its own hooks apply as well.
+use graphicle_runtime::db::{Connection, params};
 use graphicle_runtime::{
     api::{self, App},
     jobs::Worker,
     model,
     store::{Store, s},
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -306,7 +306,8 @@ fn portable_backups_carry_no_session_token_or_paid_entitlement() {
     .unwrap();
     let file = f.store.directory.join("portable.sqlite3");
     f.store.backup(&file).unwrap();
-    let copy = Connection::open(&file).unwrap();
+    let backup = graphicle_runtime::archive::open_scratch(&file).unwrap();
+    let copy = backup.connect().unwrap();
     let count =
         |db: &Connection, sql: &str| -> i64 { db.query_row(sql, [], |r| r.get(0)).unwrap() };
     assert_eq!(count(&copy, "SELECT count(*) FROM am_browser_sessions"), 0);
@@ -438,7 +439,7 @@ fn a_store_without_the_team_tables_names_none_of_them() {
         .connect()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE name IN ('am_members','am_sso','am_subscriptions')",
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN ('am_members','am_sso','am_subscriptions')",
             [],
             |r| r.get(0),
         )

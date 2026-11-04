@@ -100,22 +100,17 @@ pub fn data_dir_of(args: &[OsString]) -> Option<PathBuf> {
 /// The store at `directory`, opened to read under the saved local session
 /// without creating, migrating or writing anything, and that session's
 /// principal.
-fn read_only(directory: &Path) -> Option<(rusqlite::Connection, crate::store::Principal)> {
-    let database = directory.join("reviews.sqlite3");
+fn read_only(directory: &Path) -> Option<(crate::db::Connection, crate::store::Principal)> {
     let session = directory.join("local-session.json");
-    if !database.is_file() || database.is_symlink() || session.is_symlink() {
+    if session.is_symlink() {
         return None;
     }
+    let store = crate::store::Store::existing(directory).ok()??;
     let bytes = std::fs::read(&session).ok().filter(|b| b.len() <= 8192)?;
     let session: crate::local::Session = serde_json::from_slice(&bytes).ok()?;
-    let db = rusqlite::Connection::open_with_flags(
-        &database,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )
-    .ok()?;
+    let db = store.connect().ok()?;
     db.busy_timeout(std::time::Duration::from_millis(200))
         .ok()?;
-    db.pragma_update(None, "query_only", true).ok()?;
     let principal = crate::store::authorize_hash(
         &db,
         &session.workspace,
@@ -127,7 +122,7 @@ fn read_only(directory: &Path) -> Option<(rusqlite::Connection, crate::store::Pr
 }
 
 /// The name of project `id`.
-fn project_name(db: &rusqlite::Connection, id: &str) -> Option<String> {
+fn project_name(db: &crate::db::Connection, id: &str) -> Option<String> {
     db.query_row("SELECT name FROM repo_projects WHERE id=?", [id], |row| {
         row.get(0)
     })
