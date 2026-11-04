@@ -1856,6 +1856,9 @@ fn context_impl(
             .unwrap_or_else(|error| json!({"status":"error","error":error.message})),
         None => json!({"status":"not_requested"}),
     };
+    // Excerpts of a model-written wiki article ([`crate::project_wiki`])
+    // say so, and go after the code and docs they cite.
+    let wiki_articles = crate::project_wiki::annotate(documents, &mut hits);
     // Memories lifted through links follow the selected ones.
     let pack_memories: Vec<&Value> = selected_memories.iter().chain(&linked_memories).collect();
     // The packer centres excerpts on the query's words; the packet names the
@@ -2081,6 +2084,9 @@ fn context_impl(
     packet["query_focus"] = focus.report;
     packet["source_age"] = source_age;
     packet["stale_mentions"] = stale_mentions;
+    if wiki_articles > 0 {
+        packet["wiki_articles"] = json!(wiki_articles);
+    }
     notes_report["defaulted"] = json!(notes_first_defaulted);
     packet[crate::notes_first::FIELD] = notes_report;
     if let Some(stemmer) = ranked.get("stemmer") {

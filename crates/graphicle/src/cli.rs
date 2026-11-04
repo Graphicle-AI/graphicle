@@ -504,6 +504,15 @@ enum Command {
     /// changed lines and cite evidence that holds in the working tree;
     /// --format github prints a review for GitHub. Nothing is posted.
     Review(crate::review::Args),
+    /// A project wiki a model writes from the code, docs and reviewed
+    /// memories: one cited article per area of the code and an index,
+    /// rewritten only where the sources changed; and health checks of docs,
+    /// memories and the wiki. Every model call is opt-in, capped by
+    /// --max-cost and logged in the spend log.
+    Wiki {
+        #[command(subcommand)]
+        action: crate::project_wiki::Action,
+    },
     /// The spend log of `ask --pack`, `plan` and `fix`: calls, tokens, the
     /// cached share and the cost at the configured price, by day and model.
     /// The log is `usage.jsonl` in the data folder, one line per model call,
@@ -1012,7 +1021,7 @@ fn read_dash(text: String) -> Result<String> {
 
 /// The session, project and working tree of a long-context command (`ask
 /// --pack`, `plan`), with the folder brought up to date first.
-fn long_context_target(
+pub(crate) fn long_context_target(
     store: &crate::store::Store,
     config: &crate::model::Config,
     project: Option<String>,
@@ -1068,6 +1077,12 @@ fn notice_allowed(command: Option<&Command>) -> bool {
         Some(Command::Sync { json, quiet, .. }) => *json || *quiet,
         Some(Command::Pixel(args)) => args.json,
         Some(Command::See(args)) => args.json,
+        Some(Command::Wiki { action }) => match action {
+            crate::project_wiki::Action::Build(args)
+            | crate::project_wiki::Action::Update(args) => args.json || args.quiet,
+            crate::project_wiki::Action::Check(args) => args.json,
+            crate::project_wiki::Action::Hook(_) => false,
+        },
         _ => return false,
     };
     crate::terminal::human(json)
@@ -2223,6 +2238,7 @@ where
             crate::pixel::pixel(run, args).await
         }
         Command::See(args) => crate::computer::see(&store, &config, args).await,
+        Command::Wiki { action } => crate::project_wiki::command(&store, &config, action).await,
         Command::Plan {
             request,
             project,

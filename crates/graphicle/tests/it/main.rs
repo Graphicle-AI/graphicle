@@ -87,5 +87,6 @@ mod structured_memory;
 mod symbol_links;
 mod temporal_graph;
 mod ux_terminal;
+mod wiki;
 mod workflows;
 mod workspace_scope;

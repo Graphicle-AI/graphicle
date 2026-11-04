@@ -145,6 +145,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 - **One MCP server.** `graphicle mcp` serves the code-graph tools, under Graphify's tool names such as `query_graph`, `get_neighbors` and `shortest_path`, next to the memory tools. With `--pull-requests` it also serves the pull-request tools `list_prs`, `get_pr_impact` and `triage_prs`, which use the GitHub CLI ([MCP](docs/mcp.md)).
 - **Memory tied to your code.** Reviewed memories are tied to the functions they are about: a memory goes stale when that code changes, and edits elsewhere in the file usually leave it current ([the exact rule](crates/graphicle/README.md#memory-anchored-to-code-symbols)). Mentions of code in your docs are linked to the definitions they name (`graphicle call graph.doc_links` lists them).
 - **Reviews of a change.** `graphicle review` reviews what a branch adds with the code around it, the callers, callees and tests of what it changes, and keeps only comments on changed lines whose citations hold. A GitHub Action posts the review on pull requests ([review](docs/review.md)).
+- **A project wiki a model keeps.** `graphicle wiki build` writes one cited article per area of the code and an index, `wiki update` rewrites only what changed, and `wiki check` lists stale doc mentions, stale memories and broken citations, then proposes corrections for your approval; every model call is opt-in and capped ([wiki](docs/wiki.md)).
 - **From the screen to the code.** `graphicle see` lets a model reproduce a bug in a web app with computer use on the Meta Model API, `graphicle pixel` finds the code that draws what it points at, and `graphicle fix` patches it and runs your tests ([see it, find it, fix it, check it](docs/flow.md)).
 - **Across repositories.** Recall can span the repositories of a workspace: `graphicle context --workspace`, or [the workspace MCP endpoint](docs/mcp.md#several-projects-in-one-connection).
 - **Always current.** Before each answer Graphicle syncs the few files you changed; Git hooks sync after each commit, merge and checkout.
@@ -307,7 +308,7 @@ More answers: [FAQ](docs/faq.md) · [Troubleshooting](docs/troubleshooting.md) �
 
 ## Documentation
 
-[Quick start](docs/quickstart.md) · [Agents](docs/agents.md) · [Muse Code](docs/muse-code.md) · [MCP](docs/mcp.md) · [Packs](docs/pack.md) · [Fix](docs/fix.md) · [Flow](docs/flow.md) · [Review](docs/review.md) · [Install](docs/install.md) · [Configuration](docs/configuration.md) ·
+[Quick start](docs/quickstart.md) · [Agents](docs/agents.md) · [Muse Code](docs/muse-code.md) · [MCP](docs/mcp.md) · [Packs](docs/pack.md) · [Fix](docs/fix.md) · [Flow](docs/flow.md) · [Review](docs/review.md) · [Wiki](docs/wiki.md) · [Install](docs/install.md) · [Configuration](docs/configuration.md) ·
 [Team server](docs/team.md) · [Moving from Graphify](docs/migrate-from-graphify.md) · [Benchmarks](docs/benchmarks.md) · [FAQ](docs/faq.md) · [Changelog](CHANGELOG.md) · [Built at Meta's hackathon](HACKATHON.md)
 
 The code: [`crates/graphicle/`](crates/graphicle/README.md) (the program: command line, app, HTTP and MCP server), [`crates/graphicle-graph/`](crates/graphicle-graph/README.md) (the code-graph engine),
