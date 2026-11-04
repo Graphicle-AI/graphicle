@@ -41,14 +41,16 @@ fn file_name(path: &Path) -> String {
 }
 /// The folder where `detect` writes the Markdown sidecars of a scan's Office
 /// documents (`<output>/converted`), spelled as `detect` spells it: the output
-/// folder under `cache_root` (`extract --out`) or else under `root`. An
-/// absolute `GRAPHICLE_OUT` replaces either.
+/// folder under `cache_root` (`extract --out`) or else under `root`, without
+/// `..`. An absolute `GRAPHICLE_OUT` replaces either.
 pub fn converted_dir(root: &Path, cache_root: Option<&Path>) -> PathBuf {
     let base = cache_root.unwrap_or(root);
-    crate::fsutil::resolve_missing(base)
-        .unwrap_or_else(|_| base.to_path_buf())
-        .join(crate::paths::OUT_DIR.as_str())
-        .join("converted")
+    crate::detect_ignore::absolute_lexical(
+        &crate::fsutil::resolve_missing(base)
+            .unwrap_or_else(|_| base.to_path_buf())
+            .join(crate::paths::OUT_DIR.as_str())
+            .join("converted"),
+    )
 }
 /// Whether `path` is a sidecar in `converted` (resolved; see [`converted_dir`]).
 fn is_converted_sidecar(path: &Path, converted: Option<&Path>) -> bool {

@@ -40,6 +40,16 @@ fn write_project(dir: &Path) {
 /// harness's three commands (an extract of the code, a first update, an
 /// update with nothing changed) run with `workers` workers.
 fn outputs(project: &Path, out: &Path, workers: &str) -> Vec<(String, Option<Vec<u8>>)> {
+    outputs_as(project, out.as_os_str(), out, workers)
+}
+
+/// [`outputs`] with `GRAPHICLE_OUT` set to `setting`, which leads to `out`.
+fn outputs_as(
+    project: &Path,
+    setting: &std::ffi::OsStr,
+    out: &Path,
+    workers: &str,
+) -> Vec<(String, Option<Vec<u8>>)> {
     let home = tempfile::tempdir().unwrap();
     let source = project.to_string_lossy().into_owned();
     for args in [
@@ -53,7 +63,7 @@ fn outputs(project: &Path, out: &Path, workers: &str) -> Vec<(String, Option<Vec
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", home.path())
-            .env("GRAPHICLE_OUT", out)
+            .env("GRAPHICLE_OUT", setting)
             .env("GRAPHICLE_MAX_WORKERS", workers)
             .env("RAYON_NUM_THREADS", workers)
             .output()
@@ -112,6 +122,33 @@ fn every_run_writes_the_same_graph() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// A relative output folder that leads outside the project (`../out`) gives
+/// the graph an absolute output folder there gives: the Office document is
+/// named by its sidecar, not by the folder.
+#[test]
+fn a_relative_output_folder_outside_the_project_writes_the_same_graph() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let project = base.join("p/project");
+    write_project(&project);
+    let absolute = outputs(&project, &base.join("p/outa"), "2");
+    for (setting, out) in [
+        ("../outd", base.join("p/outd")),
+        ("../../oute/graph", base.join("oute/graph")),
+    ] {
+        let written = outputs_as(&project, std::ffi::OsStr::new(setting), &out, "2");
+        let graph =
+            String::from_utf8_lossy(written[0].1.as_deref().expect("graph.json")).into_owned();
+        assert!(graph.contains("release_notes"), "{setting}");
+        for name in ["outd", "oute"] {
+            assert!(!graph.contains(name), "{name} in the graph of {setting}");
+        }
+        for ((name, a), (_, b)) in absolute.iter().zip(&written) {
+            assert!(a == b, "{name} differs with GRAPHICLE_OUT={setting}");
         }
     }
 }
