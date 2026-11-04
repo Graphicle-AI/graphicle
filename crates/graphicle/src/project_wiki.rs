@@ -792,7 +792,9 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
         }
         other => other?,
     };
-    let written = file.write_all(text.as_bytes()).and_then(|()| file.sync_all());
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all());
     drop(file);
     if let Err(error) = written.and_then(|()| std::fs::rename(&temporary, path)) {
         let _ = std::fs::remove_file(&temporary);

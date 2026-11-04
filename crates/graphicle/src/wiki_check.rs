@@ -1035,8 +1035,16 @@ mod tests {
         std::os::unix::fs::symlink(&hook, &name).unwrap();
         let file = write_proposal(&proposals, "docs/guide.md", 3, "--- a/x\n").unwrap();
         assert_eq!(file, name);
-        assert_eq!(std::fs::read_to_string(&hook).unwrap(), "#!/bin/sh\nexit 0\n");
-        assert!(!std::fs::symlink_metadata(&file).unwrap().file_type().is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&hook).unwrap(),
+            "#!/bin/sh\nexit 0\n"
+        );
+        assert!(
+            !std::fs::symlink_metadata(&file)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "--- a/x\n");
         // A link at the temporary file's name is not written through either.
         let temporary = proposals.join(format!(
@@ -1046,7 +1054,10 @@ mod tests {
         ));
         std::os::unix::fs::symlink(&hook, &temporary).unwrap();
         write_proposal(&proposals, "docs/other.md", 1, "--- b\n").unwrap();
-        assert_eq!(std::fs::read_to_string(&hook).unwrap(), "#!/bin/sh\nexit 0\n");
+        assert_eq!(
+            std::fs::read_to_string(&hook).unwrap(),
+            "#!/bin/sh\nexit 0\n"
+        );
     }
 
     #[test]
