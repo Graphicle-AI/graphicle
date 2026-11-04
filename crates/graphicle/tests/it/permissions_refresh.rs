@@ -48,7 +48,7 @@ fn provider_store() -> (tempfile::TempDir, Store, String, String, String, String
         .unwrap();
     let cfg = json!({"repository":"org/project","permission_mode":"provider","permission_max_age_seconds":300,"sync_every_seconds":900,"acl":{"workspace_readers":true,"credentials":[]}});
     // Never synced, so a scheduler would queue its first sync.
-    store.connect().unwrap().execute("UPDATE am_connectors SET kind='github',config=?,credential_env=?,last_sync=NULL WHERE id=?",rusqlite::params![cfg.to_string(),s(&credential,"credential_ref"),s(&connector,"id")]).unwrap();
+    store.connect().unwrap().execute("UPDATE am_connectors SET kind='github',config=?,credential_env=?,last_sync=NULL WHERE id=?",graphicle_runtime::params![cfg.to_string(),s(&credential,"credential_ref"),s(&connector,"id")]).unwrap();
     let connector = s(&connector, "id").to_string();
     (dir, store, w, key, r, connector)
 }
@@ -124,7 +124,7 @@ async fn provider_permission_work_waits_for_graphicle_pro() {
     let stamp = graphicle_runtime::now();
     for kind in ["permissions", "connector"] {
         let payload = json!({"kind":kind,"repository_id":r,"connector_id":connector,"max_requests":64,"max_calls":0,"scheduled":true});
-        store.connect().unwrap().execute("INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,priority,max_attempts,not_before,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',10,1,?,?,?)",rusqlite::params![format!("pro-{kind}"),r,kind,format!("input-{kind}"),payload.to_string(),owner,stamp,stamp,stamp]).unwrap();
+        store.connect().unwrap().execute("INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,priority,max_attempts,not_before,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',10,1,?,?,?)",graphicle_runtime::params![format!("pro-{kind}"),r,kind,format!("input-{kind}"),payload.to_string(),owner,stamp,stamp,stamp]).unwrap();
     }
     let worker = Worker::new(store.clone(), config).unwrap();
     assert!(!worker.once().await.unwrap(), "nothing is leased");
@@ -212,7 +212,8 @@ fn portable_backup_excludes_encrypted_credentials_and_pauses_their_connections()
     store.connector_add(w,key,&json!({"repository_id":repo["id"],"name":"GitHub","kind":"github","credential_ref":credential["credential_ref"],"config":{"repository":"org/project","acl":{"workspace_readers":false,"credentials":[]}}})).unwrap();
     let file = dir.path().join("backup.sqlite3");
     store.backup(&file).unwrap();
-    let restored = rusqlite::Connection::open(file).unwrap();
+    let backup = graphicle_runtime::archive::open_scratch(&file).unwrap();
+    let restored = backup.connect().unwrap();
     assert_eq!(
         restored
             .query_row("SELECT count(*) FROM am_secrets", [], |r| r

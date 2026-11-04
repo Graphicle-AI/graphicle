@@ -646,7 +646,7 @@ const LINK_TABLES: &[&str] = &[
 
 /// Every row of the cross-repository link tables, live and closed, without
 /// row ids and timestamps, sorted.
-fn link_rows(db: &rusqlite::Connection) -> Vec<String> {
+fn link_rows(db: &graphicle_runtime::db::Connection) -> Vec<String> {
     let mut out = Vec::new();
     for table in ["gf_cross_edges", "gf_cross_unresolved", "gf_cross_packages"] {
         let mut statement = db.prepare(&format!("SELECT * FROM {table}")).unwrap();
@@ -662,7 +662,7 @@ fn link_rows(db: &rusqlite::Connection) -> Vec<String> {
                 if column == "id" || column == "created_at" {
                     continue;
                 }
-                let value: rusqlite::types::Value = row.get(i).unwrap();
+                let value: graphicle_runtime::db::types::Value = row.get(i).unwrap();
                 fields.push(format!("{column}={value:?}"));
             }
             out.push(fields.join("|"));

@@ -188,7 +188,7 @@ fn provider_membership_expiry_and_revocation_change_recall() {
         .unwrap()
         .execute(
             "INSERT INTO am_provider_identities VALUES(?,?,?,?,?)",
-            rusqlite::params![
+            graphicle_runtime::params![
                 ws,
                 "slack",
                 "U123",

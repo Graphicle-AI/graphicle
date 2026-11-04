@@ -1,10 +1,10 @@
 //! Durable removal of only this application's external graph/vector scopes.
 //! Requests survive project removal, process failure and credential outages.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result, digest, id, now,
     store::{Store, one, rows, s},
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
 fn address_hash(config: &Value) -> String {
@@ -56,7 +56,7 @@ pub fn enqueue_config(
         return Err(Error::bad("Unsupported projection cleanup"));
     }
     let stamp = now();
-    db.execute("INSERT INTO am_projection_cleanup(id,workspace_id,scope,kind,config,config_hash,revision,state,not_before,reason,created_at,updated_at) VALUES(?,?,?,?,?,?,1,'pending',?,?,?,?) ON CONFLICT(scope,kind,config_hash) DO UPDATE SET config=excluded.config,revision=revision+1,state=CASE WHEN state='running' THEN 'running' ELSE 'pending' END,not_before=excluded.not_before,reason=excluded.reason,updated_at=excluded.updated_at",params![id(),workspace,scope,kind,config.to_string(),address_hash(config),stamp,reason,stamp,stamp])?;
+    db.execute("INSERT INTO am_projection_cleanup(id,workspace_id,scope,kind,config,config_hash,revision,state,not_before,reason,created_at,updated_at) VALUES(?,?,?,?,?,?,1,'pending',?,?,?,?) ON CONFLICT(scope,kind,config_hash) DO UPDATE SET config=excluded.config,revision=am_projection_cleanup.revision+1,state=CASE WHEN am_projection_cleanup.state='running' THEN 'running' ELSE 'pending' END,not_before=excluded.not_before,reason=excluded.reason,updated_at=excluded.updated_at",params![id(),workspace,scope,kind,config.to_string(),address_hash(config),stamp,reason,stamp,stamp])?;
     Ok(())
 }
 pub fn ready(db: &Connection, repository: &str, kind: &str, config: &Value) -> Result<()> {

@@ -1831,14 +1831,19 @@ fn hooks_exit_zero_promptly_while_another_process_locks_the_store() {
         assert!(output.status.success(), "{output:?}");
         took
     };
-    // An exclusive-mode writer keeps every other connection, readers too,
-    // out of the database until it closes.
+    // A writer holding every table's ACCESS EXCLUSIVE lock keeps every
+    // other connection, readers too, out of the store until it ends (SQLite's
+    // exclusive locking mode).
     let lock = f.store.connect().unwrap();
-    lock.pragma_update(None, "locking_mode", "EXCLUSIVE")
-        .unwrap();
-    lock.execute_batch(
-        "BEGIN EXCLUSIVE; CREATE TABLE lock_probe(x); INSERT INTO lock_probe VALUES(1);",
-    )
+    let tables: Vec<String> = graphicle_runtime::store::tables(&lock)
+        .unwrap()
+        .iter()
+        .map(|t| format!("\"{t}\""))
+        .collect();
+    lock.execute_batch(&format!(
+        "BEGIN; LOCK TABLE {} IN ACCESS EXCLUSIVE MODE; CREATE TABLE lock_probe(x BIGINT); INSERT INTO lock_probe VALUES(1);",
+        tables.join(",")
+    ))
     .unwrap();
     let transcript = f.dir.path().join("locked.jsonl");
     std::fs::write(&transcript, claude(&f.root.to_string_lossy(), true)).unwrap();

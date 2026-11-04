@@ -20,10 +20,10 @@
 //! trailer, their length and checksum ([`TRAILER`]): a sync checks the
 //! length, and the read that finds a file of this build truncated or
 //! damaged removes it, so that the next sync writes it again.
+use crate::db::Connection;
 use crate::{Result, graph_projection};
 use graphicle::graph::Graph;
 use graphicle::serve_search::SearchIndex;
-use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};

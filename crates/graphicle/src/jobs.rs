@@ -1,10 +1,10 @@
 //! Leased, bounded jobs. Network calls never hold a SQLite transaction.
+use crate::db::{Connection, params};
 use crate::{Error, Result, digest, id, integer, now, string};
 use crate::{
     memory, model,
     store::{self, Principal, Store, authorize_hash, decode, one, repo, rows, s},
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::sync::{
     Arc, LazyLock,
@@ -14,7 +14,10 @@ use std::sync::{
 // All work is serialized by repository unless both jobs explicitly opt into
 // independent observer sources. Prefix intersection is conservative: even a
 // newly ingested source cannot belong to both groups. Compare bytes, matching
-// Rust's starts_with (including non-ASCII and embedded-NUL prefixes).
+// Rust's starts_with: the JSON texts are compared, each without its closing
+// quote, which keeps the prefix relation of the strings themselves (JSON
+// escapes each character on its own) and holds NUL characters, which
+// PostgreSQL text cannot.
 const RUNNING_CONFLICT: &str = r#"
 EXISTS (
     SELECT 1 FROM am_jobs r
@@ -30,9 +33,9 @@ EXISTS (
         AND NOT EXISTS (
             SELECT 1 FROM json_each(j.payload,'$.include') a
             CROSS JOIN json_each(r.payload,'$.include') b
-            WHERE substr(CAST(a.value AS BLOB),1,length(CAST(b.value AS BLOB)))=CAST(b.value AS BLOB)
-               OR substr(CAST(b.value AS BLOB),1,length(CAST(a.value AS BLOB)))=CAST(a.value AS BLOB)
-        ), 0
+            WHERE starts_with(left(a.json, -1), left(b.json, -1))
+               OR starts_with(left(b.json, -1), left(a.json, -1))
+        ), false
     )
 )"#;
 
@@ -50,7 +53,7 @@ static READY_JOB_QUERY: LazyLock<String> = LazyLock::new(|| {
 // it, and never hides known work behind the candidate cap.
 static LEASE_JOB_QUERY: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT j.*,p.workspace_id FROM am_jobs j JOIN repo_projects p ON p.id=j.repository_id WHERE j.state IN ('queued','retry') AND j.not_before<=?1 AND j.kind NOT IN (SELECT value FROM json_each(?2)) AND j.kind IN (SELECT value FROM json_each(?6)) AND (?3 IS NULL OR (j.repository_id=?3 AND j.kind=?4)) AND (?5 OR j.kind!='connector' OR NOT EXISTS (SELECT 1 FROM am_connectors c WHERE c.repository_id=j.repository_id AND c.id=json_extract(j.payload,'$.connector_id') AND json_extract(c.config,'$.permission_mode')='provider')) AND NOT {RUNNING_CONFLICT} ORDER BY j.priority DESC,j.created_at LIMIT 100"
+        "SELECT j.*,p.workspace_id FROM am_jobs j JOIN repo_projects p ON p.id=j.repository_id WHERE j.state IN ('queued','retry') AND j.not_before<=?1 AND j.kind NOT IN (SELECT value FROM json_each(?2)) AND j.kind IN (SELECT value FROM json_each(?6)) AND (?3::text IS NULL OR (j.repository_id=?3 AND j.kind=?4)) AND (?5 OR j.kind!='connector' OR NOT EXISTS (SELECT 1 FROM am_connectors c WHERE c.repository_id=j.repository_id AND c.id=json_extract(j.payload,'$.connector_id') AND json_extract(c.config,'$.permission_mode')='provider')) AND NOT {RUNNING_CONFLICT} ORDER BY j.priority DESC,j.created_at LIMIT 100"
     )
 });
 
@@ -1605,7 +1608,7 @@ impl Worker {
                 )?;
             }
             db.execute(
-                "INSERT OR REPLACE INTO am_model_cache VALUES(?,?,?,?,?)",
+                "INSERT INTO am_model_cache VALUES(?,?,?,?,?) ON CONFLICT(repository_id,request_hash) DO UPDATE SET source_state=excluded.source_state,result=excluded.result,created_at=excluded.created_at",
                 params![
                     job.repository,
                     request_hash,
@@ -1614,7 +1617,7 @@ impl Worker {
                     now()
                 ],
             )?;
-            db.execute("DELETE FROM am_model_cache WHERE repository_id=? AND request_hash IN (SELECT request_hash FROM am_model_cache WHERE repository_id=? ORDER BY created_at DESC LIMIT -1 OFFSET 500)",params![job.repository,job.repository])?;
+            db.execute("DELETE FROM am_model_cache WHERE repository_id=? AND request_hash IN (SELECT request_hash FROM am_model_cache WHERE repository_id=? ORDER BY created_at DESC LIMIT ALL OFFSET 500)",params![job.repository,job.repository])?;
             // A cached answer is only as current as the principal that produced it.
             crate::invalidation::record_dependency(
                 db,

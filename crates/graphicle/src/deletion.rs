@@ -31,10 +31,10 @@
 //! named only by one-way hashes, which also stop a later sync re-importing
 //! them. Backups taken earlier, provider-side retention of past model requests
 //! and copies exported earlier are outside any receipt.
+use crate::db::types::ValueRef;
+use crate::db::{Connection, params, params_from_iter};
 use crate::store::{Principal, Store, decode, one, repo, rows, s};
 use crate::{Error, Result, digest, id, now, string};
-use rusqlite::types::ValueRef;
-use rusqlite::{Connection, params, params_from_iter};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -270,7 +270,7 @@ pub(crate) fn forgotten(db: &Connection, connector: &str, document: &str) -> Res
 /// document leaves, so no identifier is kept.
 pub(crate) fn block(db: &Connection, connector: &str, document: &str) -> Result<()> {
     db.execute(
-        "INSERT OR IGNORE INTO am_forgotten_sources VALUES(?,?,?)",
+        "INSERT INTO am_forgotten_sources VALUES(?,?,?) ON CONFLICT DO NOTHING",
         params![connector, tombstone(connector, document), now()],
     )?;
     Ok(())
@@ -286,7 +286,7 @@ fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
 }
 
-fn count(db: &Connection, sql: &str, arguments: impl rusqlite::Params) -> Result<usize> {
+fn count(db: &Connection, sql: &str, arguments: impl crate::db::Params) -> Result<usize> {
     Ok(db.query_row(sql, arguments, |r| r.get::<_, i64>(0))? as usize)
 }
 
@@ -295,7 +295,7 @@ fn count(db: &Connection, sql: &str, arguments: impl rusqlite::Params) -> Result
 fn select_rowids(
     db: &Connection,
     sql: &str,
-    arguments: impl rusqlite::Params,
+    arguments: impl crate::db::Params,
     keep: impl Fn(&str) -> bool,
 ) -> Result<Vec<i64>> {
     let mut statement = db.prepare(sql)?;
@@ -322,7 +322,7 @@ fn delete_rowids(db: &Connection, table: &str, rowids: &[i64]) -> Result<usize> 
 fn tables(db: &Connection) -> Result<Vec<Table>> {
     let all = rows(
         db,
-        "SELECT name,coalesce(sql,'') AS sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        "SELECT table_name AS name,'' AS sql FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
         [],
     )?;
     let virtual_tables: Vec<&str> = all
@@ -350,7 +350,7 @@ fn tables(db: &Connection) -> Result<Vec<Table>> {
             text: vec![],
             columns: BTreeSet::new(),
         };
-        for column in rows(db, "SELECT name,type FROM pragma_table_info(?)", [name])? {
+        for column in crate::store::table_info(db, name)? {
             let kind = s(&column, "type").to_ascii_uppercase();
             if kind.is_empty()
                 || ["TEXT", "CHAR", "CLOB", "JSON"]
@@ -473,7 +473,7 @@ fn document_references(
             .iter()
             .map(|c| format!("coalesce(CAST({} AS TEXT),'')", quote(c)))
             .collect::<Vec<_>>()
-            .join("||char(10)||");
+            .join("||chr(10)||");
         let (sql, values) = instr_query(table, &joined, &ids, filter(table, repository, workspace));
         let mut statement = db.prepare(&sql)?;
         let mut found = statement.query(params_from_iter(values))?;
@@ -553,8 +553,13 @@ fn excerpt(content: &str) -> Option<String> {
         .then(|| window.to_string())
 }
 
-fn secure_delete(db: &Connection) -> Result<bool> {
-    Ok(db.query_row("PRAGMA secure_delete", [], |r| r.get::<_, i64>(0))? == 1)
+/// Whether deleted rows are overwritten where they were stored. SQLite
+/// stores (0.1.12 and earlier) ran with `secure_delete`; PostgreSQL keeps a
+/// deleted row's bytes in the table's free space and the server's
+/// write-ahead log until they are reused, so this is false: the receipt
+/// says so rather than claim it ([`checkpoint`] vacuums the tables).
+fn secure_delete(_db: &Connection) -> Result<bool> {
+    Ok(false)
 }
 
 fn external(db: &Connection, repository: &str) -> Result<Vec<Value>> {
@@ -799,7 +804,7 @@ fn since_visible(
             Some(since) => count(
                 db,
                 &format!(
-                    "SELECT count(*) FROM {table} WHERE repository_id=?1 AND {column}>=?2 AND (?3 IS NULL OR {column}<?3)"
+                    "SELECT count(*) FROM {table} WHERE repository_id=?1 AND {column}>=?2 AND (?3::text IS NULL OR {column}<?3)"
                 ),
                 params![repository, since, until],
             )?,
@@ -1209,7 +1214,7 @@ pub fn forget(
     // An extraction read whose drafts were just removed must run again.
     let reads = select_rowids(
         db,
-        "SELECT rowid,source_id||char(10)||claim_ids FROM am_document_reads WHERE repository_id=?",
+        "SELECT rowid,source_id||chr(10)||claim_ids FROM am_document_reads WHERE repository_id=?",
         [repository],
         |v| {
             let (source, claims) = v.split_once('\n').unwrap_or((v, ""));
@@ -1395,7 +1400,7 @@ pub fn erase(db: &Connection, repository: &str, scope: &Scope) -> Result<Value> 
     let stamp = now();
     for hash in scope.hashes() {
         db.execute(
-            "INSERT OR IGNORE INTO am_forgotten_sources VALUES(?,?,?)",
+            "INSERT INTO am_forgotten_sources VALUES(?,?,?) ON CONFLICT DO NOTHING",
             params![connector, hash, stamp],
         )?;
     }
@@ -1617,7 +1622,7 @@ pub fn state(db: &Connection, workspace: &str, repository: &str) -> Result<Value
     let history = history(db)?;
     let all = rows(
         db,
-        "SELECT name,coalesce(sql,'') AS sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        "SELECT table_name AS name,'' AS sql FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
         [],
     )?;
     let virtual_tables: Vec<String> = all
@@ -1642,7 +1647,7 @@ pub fn state(db: &Connection, workspace: &str, repository: &str) -> Result<Value
         {
             continue;
         }
-        let columns = rows(db, "SELECT name,type,pk FROM pragma_table_info(?)", [name])?;
+        let columns = crate::store::table_info(db, name)?;
         let has = |c: &str| columns.iter().any(|col| s(col, "name") == c);
         let cross: Vec<&str> = ["source_repository_id", "target_repository_id"]
             .into_iter()
@@ -1940,21 +1945,22 @@ fn chain(db: &Connection, workspace: &str) -> Result<Value> {
     Ok(json!({"length":length,"intact":intact,"head":previous}))
 }
 
-/// Flush deleted pages out of the write-ahead log after the deletion commits;
-/// `secure_delete` has already zeroed them in the database pages.
+/// After a deletion commits, vacuum the store's tables, so that the rows
+/// deleted are removed from them and their space is reused. PostgreSQL
+/// manages its own write-ahead log (`wal_checkpoint` says so): the deleted
+/// bytes stay in its segments until the server recycles them, and in any
+/// archive of them.
 pub fn checkpoint(store: &Store) -> Result<Value> {
-    let (busy, log, done) =
-        store
-            .connect()?
-            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?;
+    let db = store.connect()?;
+    let tables = crate::store::tables(&db)?;
+    for table in &tables {
+        db.execute_batch(&format!(
+            "VACUUM (SKIP_LOCKED) \"{}\"",
+            table.replace('"', "\"\"")
+        ))?;
+    }
     Ok(
-        json!({"wal_checkpoint":if busy == 0 {"truncated"} else {"busy"},"log_frames":log,"checkpointed_frames":done}),
+        json!({"wal_checkpoint":"server-managed","vacuumed_tables":tables.len(),"engine":"postgresql"}),
     )
 }
 
@@ -2089,7 +2095,7 @@ pub fn list(store: &Store, workspace: &str, token: &str) -> Result<Value> {
     store.authorized_read(workspace, token, "admin", |db, _| {
         let receipts: Vec<Value> = rows(
             db,
-            "SELECT id,sequence,repository_id,operation,target,digest,previous,created_at,json_extract(body,'$.verified_local') AS verified_local,json_extract(body,'$.external_pending') AS external_pending FROM am_deletion_receipts WHERE workspace_id=? ORDER BY sequence DESC LIMIT 200",
+            "SELECT id,sequence,repository_id,operation,target,digest,previous,created_at,CASE WHEN json_extract(body,'$.verified_local')='1' THEN 1 ELSE 0 END AS verified_local,CASE WHEN json_extract(body,'$.external_pending')='1' THEN 1 ELSE 0 END AS external_pending FROM am_deletion_receipts WHERE workspace_id=? ORDER BY sequence DESC LIMIT 200",
             [workspace],
         )?
         .into_iter()

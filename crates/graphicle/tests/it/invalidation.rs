@@ -80,7 +80,7 @@ impl Fixture {
             )
             .unwrap()
     }
-    fn db(&self) -> rusqlite::Connection {
+    fn db(&self) -> graphicle_runtime::db::Connection {
         self.store.connect().unwrap()
     }
     fn stale(&self, kind: &str) -> Vec<String> {
@@ -89,7 +89,9 @@ impl Fixture {
             .prepare("SELECT id FROM gf_stale WHERE workspace=? AND kind=? ORDER BY id")
             .unwrap();
         statement
-            .query_map(rusqlite::params![self.workspace, kind], |r| r.get(0))
+            .query_map(graphicle_runtime::params![self.workspace, kind], |r| {
+                r.get(0)
+            })
             .unwrap()
             .map(Result::unwrap)
             .collect()
@@ -333,7 +335,7 @@ fn removing_a_file_marks_dependents_stale() {
         let source: String = db
             .query_row(
                 "SELECT source_id FROM gf_dependencies WHERE workspace=? AND dependent_kind='graph_node' AND dependent_id=?",
-                rusqlite::params![f.workspace, node],
+                graphicle_runtime::params![f.workspace, node],
                 |r| r.get(0),
             )
             .unwrap();
@@ -423,9 +425,10 @@ fn memories_record_their_sources_and_go_stale_when_sources_change() {
             .prepare("SELECT source_id FROM gf_dependencies WHERE workspace=? AND dependent_kind=? AND dependent_id=?")
             .unwrap();
         statement
-            .query_map(rusqlite::params![f.workspace, MEMORY, memory_id], |r| {
-                r.get(0)
-            })
+            .query_map(
+                graphicle_runtime::params![f.workspace, MEMORY, memory_id],
+                |r| r.get(0),
+            )
             .unwrap()
             .map(Result::unwrap)
             .collect()
@@ -473,7 +476,12 @@ fn revocation_invalidates_answers_cached_for_the_principal() {
     assert_eq!(status["freshness"]["by_kind"]["answer"], 1);
 }
 
-fn record(db: &rusqlite::Connection, ws: &str, dependent: (&str, &str), source: (&str, &str)) {
+fn record(
+    db: &graphicle_runtime::db::Connection,
+    ws: &str,
+    dependent: (&str, &str),
+    source: (&str, &str),
+) {
     invalidation::record_dependency(db, ws, dependent, source).unwrap();
 }
 

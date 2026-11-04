@@ -12,9 +12,9 @@
 //! never matches an old entry. Remote providers are assumed to serve fixed
 //! weights for a model name. Share one file only within one trust domain: a
 //! hit reveals that the same text was embedded before.
+use crate::db::{Connection, OptionalExtension, params, types::ValueRef};
 use crate::platform::CanonicalExt;
 use crate::{Error, Result};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params, types::ValueRef};
 use std::path::Path;
 use std::time::Duration;
 
@@ -54,25 +54,22 @@ impl Cache {
             .unwrap_or_else(|| Path::new("."))
             .canonical()?;
         let path = parent.join(name);
-        // SQLite inherits the database mode when it creates WAL/SHM files.
-        // Restrict the main file before SQLite can write, and repair existing
-        // sidecars too: chmod on the database alone leaves their data exposed.
+        // The file is made private before anything is written to it (and
+        // sidecars that a SQLite cache of 0.1.12 left are repaired too).
         #[cfg(unix)]
         let private_files = PrivateFiles::acquire(&path)?;
-        let db = Connection::open_with_flags(
-            &path,
-            OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-        )?;
-        // Several embedding jobs may share one file; writes are short.
+        // The file names the cache's schema of the store's database
+        // (`crate::db`); the vectors live there.
+        let db = crate::db::Database::for_file(&path, true)?.connect()?;
+        // Several embedding jobs may share one cache; writes are short.
         db.busy_timeout(Duration::from_secs(60))?;
-        db.pragma_update(None, "journal_mode", "WAL")?;
         db.execute_batch(
             "CREATE TABLE IF NOT EXISTS am_embedding_cache(
                 model_key TEXT NOT NULL,
                 text_sha256 TEXT NOT NULL,
-                vector BLOB NOT NULL,
+                vector BYTEA NOT NULL,
                 PRIMARY KEY(model_key, text_sha256)
-            ) WITHOUT ROWID",
+            )",
         )?;
         Ok(Self {
             db,
@@ -103,8 +100,9 @@ impl Cache {
     pub fn put<'a>(&self, entries: impl IntoIterator<Item = (&'a str, &'a [f64])>) -> Result<()> {
         let tx = self.db.unchecked_transaction()?;
         {
-            let mut insert =
-                tx.prepare_cached("INSERT OR IGNORE INTO am_embedding_cache VALUES(?,?,?)")?;
+            let mut insert = tx.prepare_cached(
+                "INSERT INTO am_embedding_cache VALUES(?,?,?) ON CONFLICT DO NOTHING",
+            )?;
             for (text, vector) in entries {
                 if vector.is_empty() || !vector.iter().all(|x| x.is_finite()) {
                     continue;
@@ -248,65 +246,6 @@ mod tests {
         assert_eq!(decode(&f64::INFINITY.to_le_bytes()), None);
     }
 
-    /// Whether another process sees a read lock on byte `offset` of `path`.
-    /// A child probes it, so this process never opens (and closes) the file.
-    /// The child is a fork that never execs: it holds a copy of every
-    /// descriptor of this test process until it exits, so it is created and
-    /// reaped under [`crate::fork_guard::forking`], while no test that relies
-    /// on flock exclusivity runs.
-    #[cfg(unix)]
-    fn read_locked_elsewhere(path: &Path, offset: i64) -> bool {
-        use std::os::unix::ffi::OsStrExt;
-        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-        let _forking = crate::fork_guard::forking();
-        // SAFETY: the child calls only async-signal-safe functions, then _exit.
-        unsafe {
-            match libc::fork() {
-                -1 => panic!("fork failed"),
-                0 => {
-                    let fd = libc::open(name.as_ptr(), libc::O_RDWR);
-                    let mut lock: libc::flock = std::mem::zeroed();
-                    lock.l_type = libc::F_WRLCK as _;
-                    lock.l_whence = libc::SEEK_SET as _;
-                    lock.l_start = offset as _;
-                    lock.l_len = 1;
-                    let held = fd >= 0
-                        && libc::fcntl(fd, libc::F_GETLK, &mut lock) == 0
-                        && lock.l_type == libc::F_RDLCK as libc::c_short;
-                    libc::_exit(if held { 0 } else { 1 })
-                }
-                child => {
-                    let mut status = 0;
-                    assert_eq!(libc::waitpid(child, &mut status, 0), child);
-                    libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0
-                }
-            }
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn another_handle_keeps_the_live_ones_locks() {
-        // Every process with a live WAL connection read-locks byte 128 of the
-        // -shm file (SQLite's UNIX_SHM_DMS); a process without it may reset
-        // the shared WAL index under that connection.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cache.sqlite");
-        let shm = dir.path().canonical().unwrap().join("cache.sqlite-shm");
-        let first = Cache::open(&path, "m").unwrap();
-        first.put([("a", [1.0].as_slice())]).unwrap();
-        assert!(read_locked_elsewhere(&shm, 128));
-        let second = Cache::open(&path, "m").unwrap();
-        assert!(
-            read_locked_elsewhere(&shm, 128),
-            "opening a second handle released the first one's locks"
-        );
-        drop(first);
-        second.put([("b", [2.0].as_slice())]).unwrap();
-        assert!(read_locked_elsewhere(&shm, 128));
-        assert_eq!(second.get("a").unwrap(), Some(vec![1.0]));
-    }
-
     #[cfg(unix)]
     #[test]
     fn keeps_cache_files_private() {
@@ -315,14 +254,12 @@ mod tests {
         let path = dir.path().join("cache.sqlite");
         let cache = Cache::open(&path, "m").unwrap();
         cache.put([("a", [1.0].as_slice())]).unwrap();
-        for suffix in ["", "-wal", "-shm"] {
-            let file = dir.path().join(format!("cache.sqlite{suffix}"));
-            let mode = std::fs::symlink_metadata(&file)
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o077, 0, "{suffix} is {mode:o}");
-        }
+        // The cache file names its schema; there are no sidecar files.
+        let mode = std::fs::symlink_metadata(&path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "the cache file is {mode:o}");
     }
 
     #[cfg(unix)]
@@ -338,14 +275,11 @@ mod tests {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
         let cache = Cache::open(&path, "m").unwrap();
         cache.put([("private passage", [1.0].as_slice())]).unwrap();
-        for suffix in ["", "-wal", "-shm"] {
-            let file = dir.path().join(format!("cache.sqlite{suffix}"));
-            let mode = std::fs::symlink_metadata(file)
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(mode & 0o077, 0, "recreated {suffix} is {mode:o}");
-        }
+        let mode = std::fs::symlink_metadata(&path)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o077, 0, "the recreated cache file is {mode:o}");
     }
 
     #[cfg(unix)]

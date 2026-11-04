@@ -28,9 +28,9 @@
 //! catalogue, as when every passage is chunked and scored, so a question
 //! within the old per-question bounds ranks exactly as before; past them it
 //! reads every passage instead of the ones its words selected.
+use crate::db::{Connection, OptionalExtension, params};
 use crate::{Error, Result, now};
 use graphicle_memory::{cache, ingest, retrieval, stem::Stemmer};
-use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -65,18 +65,18 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS am_passage_segments (
             repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
-            segment INTEGER NOT NULL, format INTEGER NOT NULL,
-            files INTEGER NOT NULL, passages INTEGER NOT NULL, created_at TEXT NOT NULL,
+            segment BIGINT NOT NULL, format BIGINT NOT NULL,
+            files BIGINT NOT NULL, passages BIGINT NOT NULL, created_at TEXT NOT NULL,
             PRIMARY KEY(repository_id,segment));
          CREATE TABLE IF NOT EXISTS am_passage_files (
             repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
             path TEXT NOT NULL, sha256 TEXT NOT NULL,
-            segment INTEGER NOT NULL, ordinal INTEGER NOT NULL, spans BLOB NOT NULL,
+            segment BIGINT NOT NULL, ordinal BIGINT NOT NULL, spans BYTEA NOT NULL,
             PRIMARY KEY(repository_id,path));
          CREATE TABLE IF NOT EXISTS am_passage_terms (
             repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
-            segment INTEGER NOT NULL, term TEXT NOT NULL,
-            postings BLOB NOT NULL, PRIMARY KEY(repository_id,segment,term)) WITHOUT ROWID;",
+            segment BIGINT NOT NULL, term TEXT NOT NULL,
+            postings BYTEA NOT NULL, PRIMARY KEY(repository_id,segment,term));",
     )?;
     Ok(())
 }
@@ -371,14 +371,14 @@ fn segments(db: &Connection, repository: &str) -> Result<Vec<Segment>> {
         .query_map([repository], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<crate::db::Result<Vec<_>>>()?;
     Ok(found)
 }
 
 /// Whether the database has `table`.
 fn has_table(db: &Connection, table: &str) -> Result<bool> {
     Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?)",
         [table],
         |r| r.get(0),
     )?)
@@ -588,7 +588,7 @@ fn write_segment(
             params![repository, segment, FORMAT, analysed.len() as i64, passages as i64, now()],
         )?;
         let mut file = db.prepare_cached(
-            "INSERT OR REPLACE INTO am_passage_files(repository_id,path,sha256,segment,ordinal,spans) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO am_passage_files(repository_id,path,sha256,segment,ordinal,spans) VALUES(?,?,?,?,?,?) ON CONFLICT(repository_id,path) DO UPDATE SET sha256=excluded.sha256,segment=excluded.segment,ordinal=excluded.ordinal,spans=excluded.spans",
         )?;
         for (ordinal, one) in analysed.iter().enumerate() {
             file.execute(params![
@@ -600,12 +600,16 @@ fn write_segment(
                 encode_passages(&one.passages)
             ])?;
         }
-        let mut term = db.prepare_cached(
-            "INSERT INTO am_passage_terms(repository_id,segment,term,postings) VALUES(?,?,?,?)",
-        )?;
+        // In multi-row statements: a segment has a row per distinct term.
+        let mut term = db.batch(
+            "INSERT INTO am_passage_terms(repository_id,segment,term,postings) VALUES",
+            4,
+            "",
+        );
         for (word, list) in &postings {
-            term.execute(params![repository, segment, *word, list.bytes])?;
+            term.push(params![repository, segment, *word, list.bytes])?;
         }
+        term.flush()?;
         Ok(())
     })
 }
@@ -684,18 +688,24 @@ pub(crate) fn merge_on(db: &Connection, repository: &str) -> Result<()> {
         "INSERT INTO am_passage_segments(repository_id,segment,format,files,passages,created_at) VALUES(?,1,?,?,?,?)",
         params![repository, FORMAT, files.len() as i64, passages, now()],
     )?;
-    let mut file = db.prepare_cached(
-        "INSERT INTO am_passage_files(repository_id,path,sha256,segment,ordinal,spans) VALUES(?,?,?,1,?,?)",
-    )?;
+    let mut file = db.batch(
+        "INSERT INTO am_passage_files(repository_id,path,sha256,segment,ordinal,spans) VALUES",
+        6,
+        "",
+    );
     for (ordinal, (path, sha, _, _, spans)) in files.iter().enumerate() {
-        file.execute(params![repository, path, sha, ordinal as i64, spans])?;
+        file.push(params![repository, path, sha, 1i64, ordinal as i64, spans])?;
     }
-    let mut term = db.prepare_cached(
-        "INSERT INTO am_passage_terms(repository_id,segment,term,postings) VALUES(?,1,?,?)",
-    )?;
+    file.flush()?;
+    let mut term = db.batch(
+        "INSERT INTO am_passage_terms(repository_id,segment,term,postings) VALUES",
+        4,
+        "",
+    );
     for (word, blob) in &merged {
-        term.execute(params![repository, word, blob])?;
+        term.push(params![repository, 1i64, word, blob])?;
     }
+    term.flush()?;
     Ok(())
 }
 
@@ -710,7 +720,7 @@ fn rows_files(db: &Connection, repository: &str) -> Result<Vec<FileRow>> {
         .query_map([repository], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
         })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .collect::<crate::db::Result<Vec<_>>>()?;
     Ok(found)
 }
 
@@ -768,7 +778,7 @@ pub fn coverage(
         db.prepare_cached("SELECT path,sha256 FROM am_passage_files WHERE repository_id=?")?;
     let indexed: HashMap<String, String> = statement
         .query_map([repository], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
+        .collect::<crate::db::Result<_>>()?;
     let mut coverage = Coverage {
         segments: segments.len(),
         stale_format: segments.iter().any(|(_, format, ..)| *format != FORMAT),

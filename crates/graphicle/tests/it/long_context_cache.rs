@@ -633,7 +633,7 @@ async fn a_key_saved_in_the_app_answers_ask_pack_and_plan() {
             .unwrap()
             .execute(
                 "INSERT INTO am_model_profiles VALUES(?,?,?,0,0)",
-                rusqlite::params![session.workspace, "saved", profile.to_string()],
+                graphicle_runtime::params![session.workspace, "saved", profile.to_string()],
             )
             .unwrap();
     }

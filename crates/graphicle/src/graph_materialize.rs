@@ -4,8 +4,8 @@
 //! blobs are verified and atomically replaced, and deleted paths disappear
 //! before extraction. The lock stays alive for the entire graph build. A busy
 //! cache uses an isolated temporary tree instead of racing another process.
+use crate::db::{Connection, params};
 use crate::{Error, Result, store::path};
-use rusqlite::{Connection, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -113,7 +113,7 @@ fn sync(
         let content: String = query
             .query_row(params![repository, expected], |row| row.get(0))
             .map_err(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => {
+                crate::db::Error::QueryReturnedNoRows => {
                     Error::conflict("Head references a missing source object")
                 }
                 other => other.into(),

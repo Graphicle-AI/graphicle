@@ -304,7 +304,7 @@ async fn atlassian_full_scan_keeps_comments_dates_and_handles_revocation() {
             assert!(texts.contains("Mira is vegetarian"));
             assert!(texts.contains("author-2"));
         }
-        let last_sync = |db: &rusqlite::Connection| -> Option<String> {
+        let last_sync = |db: &graphicle_runtime::db::Connection| -> Option<String> {
             db.query_row(
                 "SELECT last_sync FROM am_connectors WHERE id=?",
                 [s(&c, "id")],

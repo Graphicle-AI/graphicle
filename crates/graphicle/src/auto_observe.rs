@@ -22,12 +22,12 @@
 //! here buffer nothing: each one observes every unobserved source, and the
 //! decision after it re-counts all of them, so a tail that keeps the total at
 //! or above the threshold queues the next round at once.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result, integer, jobs, memory, model, observer,
     store::{Principal, Store, authorize_hash, decode, repo, rows, s},
     string,
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -105,7 +105,7 @@ impl Store {
             let db = self.connect()?;
             rows(
                 &db,
-                "SELECT c.id,c.repository_id,c.config,c.generation,p.workspace_id,w.capability_hash FROM am_connectors c JOIN repo_projects p ON p.id=c.repository_id JOIN workspaces w ON w.id=p.workspace_id WHERE c.state='active' AND json_type(c.config,'$.observe')='object' AND (?1 IS NULL OR c.id=?1) ORDER BY c.id",
+                "SELECT c.id,c.repository_id,c.config,c.generation,p.workspace_id,w.capability_hash FROM am_connectors c JOIN repo_projects p ON p.id=c.repository_id JOIN workspaces w ON w.id=p.workspace_id WHERE c.state='active' AND json_type(c.config,'$.observe')='object' AND (?1::text IS NULL OR c.id=?1) ORDER BY c.id",
                 [connector],
             )?
         };

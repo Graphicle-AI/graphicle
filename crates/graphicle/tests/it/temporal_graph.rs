@@ -4,12 +4,12 @@
 //! unit `git-ancestry-writes`) recorded in older stores are seeded
 //! directly, as those writers stored them.
 use graphicle::graph::Graph;
+use graphicle_runtime::db::params;
 use graphicle_runtime::{
     graph_projection,
     store::{Store, s},
     temporal_graph,
 };
-use rusqlite::params;
 use serde_json::{Value, json};
 
 struct Fixture {
@@ -44,8 +44,8 @@ impl Fixture {
     fn episode(&self, content: &str) -> String {
         self.store.transaction(|db| {
             let sha=graphicle_memory::text::sha256(content.as_bytes());
-            db.execute("INSERT OR IGNORE INTO repo_objects VALUES(?,?,?,?)",params![self.repo,sha,content,content.len() as i64])?;
-            db.execute("INSERT OR REPLACE INTO repo_heads VALUES(?,?,?)",params![self.repo,"a.py",sha])?;
+            db.execute("INSERT INTO repo_objects VALUES(?,?,?,?) ON CONFLICT DO NOTHING",params![self.repo,sha,content,content.len() as i64])?;
+            db.execute("INSERT INTO repo_heads VALUES(?,?,?) ON CONFLICT(repository_id,path) DO UPDATE SET sha256=excluded.sha256",params![self.repo,"a.py",sha])?;
             let episode=graph_projection::current_episode(db,&self.repo)?;
             let graph=Graph::from_node_link(&json!({"directed":true,"multigraph":true,"nodes":[{"id":"a","label":content,"stable_id":"a"},{"id":"b","label":"b","stable_id":"b"}],"links":[{"source":"a","target":"b","key":"calls","relation":"calls"}]}),"links")?;
             graph_projection::persist(db,&self.repo,&episode,&graph)?;Ok(episode)

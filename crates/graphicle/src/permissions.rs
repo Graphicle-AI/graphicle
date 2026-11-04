@@ -3,11 +3,11 @@
 //! when a document's provider permissions are missing, incomplete or older
 //! than the connector allows, for example in a store whose provider
 //! permissions no installed extension keeps current.
+use crate::db::{Connection, params};
 use crate::{
     Result,
     store::{Principal, rows, s},
 };
-use rusqlite::{Connection, params};
 use serde_json::Value;
 
 /// Whether `p` may read a document whose provider permissions are

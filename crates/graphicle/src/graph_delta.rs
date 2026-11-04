@@ -4,9 +4,9 @@
 //! record, including global normalization effects, then load/compare SQLite
 //! records only for groups that differ. SQL triggers invalidate fingerprints
 //! on every row mutation, so this is a cache rather than a second authority.
+use crate::db::{Connection, params};
 use crate::{Result, graph_projection::CanonicalRecord, store::ensure_column};
 use graphicle::{graph::Graph, record::Attributes};
-use rusqlite::{Connection, params};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -30,14 +30,14 @@ pub fn migrate(db: &Connection) -> Result<()> {
     let transaction = db.unchecked_transaction()?;
     let db = &*transaction;
     let existed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='gf_projection_groups')", [], |r| r.get(0))?;
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='gf_projection_groups')", [], |r| r.get(0))?;
     for table in ["gf_nodes", "gf_edges"] {
         ensure_column(db, table, "owner", "TEXT NOT NULL DEFAULT ''")?;
     }
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS gf_projection_groups (
             repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
-            owner TEXT NOT NULL, digest BLOB,
+            owner TEXT NOT NULL, digest BYTEA,
             PRIMARY KEY(repository_id,owner));
          CREATE INDEX IF NOT EXISTS gf_nodes_owner ON gf_nodes(repository_id,owner) WHERE valid_to_episode IS NULL;
          CREATE INDEX IF NOT EXISTS gf_edges_owner ON gf_edges(repository_id,owner) WHERE valid_to_episode IS NULL;"
@@ -49,8 +49,8 @@ pub fn migrate(db: &Connection) -> Result<()> {
                    WHEN json_type(attributes,'$.relpath')='text' THEN json_extract(attributes,'$.relpath')
                    WHEN json_type(attributes,'$.source_file')='text' THEN json_extract(attributes,'$.source_file')
                    ELSE '' END;
-                 INSERT OR IGNORE INTO gf_projection_groups(repository_id,owner)
-                   SELECT DISTINCT repository_id,owner FROM {table} WHERE valid_to_episode IS NULL;"))?;
+                 INSERT INTO gf_projection_groups(repository_id,owner)
+                   SELECT DISTINCT repository_id,owner FROM {table} WHERE valid_to_episode IS NULL ON CONFLICT DO NOTHING;"))?;
         }
     }
     install_triggers(db)?;
@@ -59,31 +59,46 @@ pub fn migrate(db: &Connection) -> Result<()> {
 }
 
 fn install_triggers(db: &Connection) -> Result<()> {
+    // One trigger function for both tables: a row written, changed or
+    // removed outside a projection marks its group's cached digest stale.
+    // A projection, which knows every group it changes, writes with
+    // `graphicle.projecting` set and is not slowed by them
+    // ([`ProjectionWrite`]).
+    db.execute_batch(
+        "CREATE OR REPLACE FUNCTION graphicle_group_dirty() RETURNS trigger LANGUAGE plpgsql AS $$
+         BEGIN
+           IF coalesce(current_setting('graphicle.projecting', true), '') = 'on' THEN
+             RETURN NULL;
+           END IF;
+           IF TG_OP IN ('UPDATE', 'DELETE') THEN
+             UPDATE gf_projection_groups SET digest = NULL
+              WHERE repository_id = OLD.repository_id AND owner = OLD.owner AND digest IS NOT NULL;
+           END IF;
+           IF TG_OP IN ('INSERT', 'UPDATE') THEN
+             INSERT INTO gf_projection_groups(repository_id, owner, digest) VALUES (NEW.repository_id, NEW.owner, NULL)
+               ON CONFLICT (repository_id, owner) DO UPDATE SET digest = NULL
+               WHERE gf_projection_groups.digest IS NOT NULL;
+           END IF;
+           RETURN NULL;
+         END $$",
+    )?;
     for table in ["gf_nodes", "gf_edges"] {
         db.execute_batch(&format!(
-            "CREATE TRIGGER IF NOT EXISTS {table}_group_insert AFTER INSERT ON {table} BEGIN
-                 INSERT INTO gf_projection_groups(repository_id,owner,digest) VALUES(NEW.repository_id,NEW.owner,NULL)
-                   ON CONFLICT(repository_id,owner) DO UPDATE SET digest=NULL WHERE digest IS NOT NULL;
-             END;
-             CREATE TRIGGER IF NOT EXISTS {table}_group_update AFTER UPDATE ON {table} BEGIN
-                 UPDATE gf_projection_groups SET digest=NULL WHERE repository_id=OLD.repository_id AND owner=OLD.owner AND digest IS NOT NULL;
-                 INSERT INTO gf_projection_groups(repository_id,owner,digest) VALUES(NEW.repository_id,NEW.owner,NULL)
-                   ON CONFLICT(repository_id,owner) DO UPDATE SET digest=NULL WHERE digest IS NOT NULL;
-             END;
-             CREATE TRIGGER IF NOT EXISTS {table}_group_delete AFTER DELETE ON {table} BEGIN
-                 UPDATE gf_projection_groups SET digest=NULL WHERE repository_id=OLD.repository_id AND owner=OLD.owner AND digest IS NOT NULL;
-             END;"))?;
+            "CREATE OR REPLACE TRIGGER {table}_group AFTER INSERT OR UPDATE OR DELETE ON {table}
+               FOR EACH ROW EXECUTE FUNCTION graphicle_group_dirty()"
+        ))?;
     }
     Ok(())
 }
 
 /// Keep the authoritative projection and its cache publication atomic.
 ///
-/// Row triggers impose a statement journal on every insert. The projector
-/// already knows every changed group, so temporarily remove its cache
-/// triggers inside a savepoint. SQLite serializes writers and transactionally
-/// restores the schema on rollback; other connections never see a committed
-/// state without the triggers. Unrelated SQL writes retain normal invalidation.
+/// Row triggers would cost a statement per inserted row. The projector
+/// already knows every changed group, so its writes run in a savepoint with
+/// `graphicle.projecting` set for the transaction, which the triggers skip.
+/// The setting ends with the savepoint (released or rolled back); other
+/// connections never see it. Unrelated SQL writes retain normal
+/// invalidation.
 pub struct ProjectionWrite<'a> {
     db: &'a Connection,
     committed: bool,
@@ -96,18 +111,14 @@ impl<'a> ProjectionWrite<'a> {
             db,
             committed: false,
         };
-        for table in ["gf_nodes", "gf_edges"] {
-            for action in ["insert", "update", "delete"] {
-                db.execute_batch(&format!("DROP TRIGGER IF EXISTS {table}_group_{action}"))?;
-            }
-        }
+        db.execute_batch("SET LOCAL graphicle.projecting = 'on'")?;
         Ok(write)
     }
 
     pub fn commit(mut self) -> Result<()> {
-        install_triggers(self.db)?;
-        self.db
-            .execute_batch("RELEASE graphicle_graph_projection")?;
+        self.db.execute_batch(
+            "SET LOCAL graphicle.projecting = 'off'; RELEASE graphicle_graph_projection",
+        )?;
         self.committed = true;
         Ok(())
     }
@@ -116,8 +127,9 @@ impl<'a> ProjectionWrite<'a> {
 impl Drop for ProjectionWrite<'_> {
     fn drop(&mut self) {
         if !self.committed && !self.db.is_autocommit() {
-            // A SQL error or panic must not leave partial rows or disabled
-            // triggers behind, even if the caller commits its outer transaction.
+            // A SQL error or panic must not leave partial rows or skipped
+            // triggers behind, even if the caller commits its outer
+            // transaction (the rollback also ends the setting).
             let _ = self.db.execute_batch(
                 "ROLLBACK TO graphicle_graph_projection; RELEASE graphicle_graph_projection",
             );

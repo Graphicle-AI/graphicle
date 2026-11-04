@@ -26,6 +26,7 @@
 //! help answers has not been measured; `true` follows them; `false` reads
 //! none. A store whose memories carry no code links reads nothing here, so
 //! its packets keep their evidence. A query only reads.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result,
     query::Snapshot,
@@ -33,7 +34,6 @@ use crate::{
     symbols::{self, Live},
 };
 use graphicle_memory::graph::span;
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 

@@ -25,10 +25,10 @@
 //! The plan comes first: [`plan`] changes nothing and ends with a hash;
 //! [`apply`] takes that hash and carries out exactly that plan, or refuses
 //! when anything in it changed.
+use crate::db::{Connection, TransactionBehavior};
 use crate::platform::CanonicalExt;
 use crate::store::{Principal, Store, one, rows, s};
 use crate::{Error, Result, digest, local};
-use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,7 +48,7 @@ pub const NOT_COVERED: &[&str] = &[
 ];
 
 /// Where `graphicle backup` without a path writes:
-/// `backups/graphicle-<UTC time>.sqlite3` in the data folder, which is
+/// `backups/graphicle-<UTC time>.backup` (a [`crate::archive`]) in the data folder, which is
 /// created private. A `backups` that is not a folder (a symbolic link
 /// included) is refused.
 pub fn backup_path(store: &Store) -> Result<PathBuf> {
@@ -72,7 +72,7 @@ pub fn backup_path(store: &Store) -> Result<PathBuf> {
         }
     }
     Ok(folder.join(format!(
-        "graphicle-{}.sqlite3",
+        "graphicle-{}.backup",
         chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
     )))
 }
@@ -171,19 +171,9 @@ fn file_sha256(path: &Path) -> Result<(String, u64)> {
 /// `repository_id` column.
 fn counts(db: &Connection, scope: &[String]) -> Result<BTreeMap<String, i64>> {
     let mut counts = BTreeMap::new();
-    for table in rows(
-        db,
-        "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name",
-        [],
-    )? {
-        let table = s(&table, "name");
-        let has = one(
-            db,
-            "SELECT 1 AS yes FROM pragma_table_info(?) WHERE name='repository_id'",
-            [table],
-        )?
-        .is_some();
-        if !has {
+    for table in crate::store::tables(db)? {
+        let table = table.as_str();
+        if !crate::store::column_exists(db, table, "repository_id")? {
             continue;
         }
         let sql = format!(
@@ -212,12 +202,7 @@ struct Held {
 
 fn held_in(db: &Connection, project: &str, scope: &[String], workspace: &str) -> Result<Held> {
     let mut ids = scope.to_vec();
-    let scratch = one(
-        db,
-        "SELECT 1 AS yes FROM sqlite_master WHERE type='table' AND name='repo_pr_scratch'",
-        [],
-    )?
-    .is_some();
+    let scratch = crate::store::table_exists(db, "repo_pr_scratch")?;
     if scratch {
         for row in rows(
             db,
@@ -249,24 +234,11 @@ fn held_in(db: &Connection, project: &str, scope: &[String], workspace: &str) ->
     })
 }
 
-/// [`held_in`] for a backup file, opened immutable so that reading it
-/// changes nothing; `None` when it is not a readable Graphicle store.
+/// [`held_in`] for a backup file, read into a scratch copy so that reading
+/// it changes nothing; `None` when it is not a readable Graphicle backup.
 fn held(path: &Path, project: &str, scope: &[String], workspace: &str) -> Option<Held> {
-    let mut uri = String::from("file:");
-    for c in path.to_str()?.chars() {
-        match c {
-            '%' => uri.push_str("%25"),
-            '?' => uri.push_str("%3f"),
-            '#' => uri.push_str("%23"),
-            c => uri.push(c),
-        }
-    }
-    uri.push_str("?immutable=1");
-    let db = Connection::open_with_flags(
-        &uri,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
-    )
-    .ok()?;
+    let scratch = crate::archive::open_scratch(path).ok()?;
+    let db = scratch.connect().ok()?;
     held_in(&db, project, scope, workspace).ok()
 }
 
@@ -587,13 +559,10 @@ fn scrub(
     if before != planned_sha256 {
         return Err(changed());
     }
-    let mut db = Connection::open_with_flags(
-        &path,
-        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-    )?;
-    db.busy_timeout(std::time::Duration::from_secs(10))?;
-    db.pragma_update(None, "foreign_keys", true)?;
-    db.pragma_update(None, "secure_delete", true)?;
+    // The backup is edited in a scratch copy, then written over the file
+    // whole once the copy is checked.
+    let copy = crate::archive::open_scratch(&path)?;
+    let mut db = copy.connect()?;
     let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let held = held_in(&transaction, project, scope, &p.workspace)?;
     if held.foreign {
@@ -624,11 +593,14 @@ fn scrub(
         [],
     )?;
     transaction.commit()?;
-    db.execute_batch("VACUUM;")?;
-    db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
-    let integrity: String = db.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
     let left = held_in(&db, project, scope, &p.workspace)?.ids.len();
+    crate::archive::replace(&db, &path, copy.tables.as_ref())?;
     drop(db);
+    drop(copy);
+    let integrity = match crate::archive::read(&path, |_, _| Ok(())) {
+        Ok(_) => "ok".to_string(),
+        Err(error) => error.message,
+    };
     let (after, bytes_after) = file_sha256(&path)?;
     let verified =
         integrity == "ok" && left == 0 && receipts.iter().all(|r| r["verified_local"] == true);

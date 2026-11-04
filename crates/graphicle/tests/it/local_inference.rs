@@ -331,7 +331,7 @@ mod cpu {
                 .unwrap()
                 .query_row(
                     "SELECT vector FROM am_vectors WHERE repository_id=? AND identity LIKE ?",
-                    rusqlite::params![rid, "%:tank:%"],
+                    graphicle_runtime::params![rid, "%:tank:%"],
                     |row| row.get(0),
                 )
                 .unwrap();

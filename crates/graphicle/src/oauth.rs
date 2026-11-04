@@ -1,4 +1,5 @@
 //! Authorization-code connections with one-use state, PKCE and encrypted tokens.
+use crate::db::params;
 use crate::{
     Error, Result, digest, id, local, model, now,
     store::{Store, authorize_hash, one, rows, s},
@@ -6,7 +7,6 @@ use crate::{
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::{RngCore, rngs::OsRng};
-use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -318,7 +318,7 @@ pub async fn callback(
     store.transaction(|db|{
         let principal=authorize_hash(db,workspace,s(&pending,"principal_hash"),"admin")?;
         db.execute("INSERT INTO am_oauth_accounts VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",params![identifier,workspace,name,external,email,display,token_secret,refresh_secret,expiry,token_metadata["scope"].as_str().unwrap_or(""),"active",now()])?;
-        db.execute("INSERT OR REPLACE INTO am_provider_identities VALUES(?,?,?,?,?)",params![workspace,name,external,principal.credential,now()])?;
+        db.execute("INSERT INTO am_provider_identities VALUES(?,?,?,?,?) ON CONFLICT(workspace_id,provider,external_id,credential_id) DO UPDATE SET verified_at=excluded.verified_at",params![workspace,name,external,principal.credential,now()])?;
         db.execute("DELETE FROM am_oauth_pending WHERE state_hash=?",[&state_hash])?;
         db.execute("DELETE FROM am_secrets WHERE id=?",[s(&pending,"verifier_secret")])?;
         Ok(json!({"connected":true,"provider":name,"account_id":identifier,"display_name":display,"credential_ref":format!("oauth:{identifier}")}))

@@ -26,6 +26,7 @@
 //! a refresh synced something or the data is stale. (`freshness` was taken:
 //! `context`, `status` and the graph replies already carry the reviewed
 //! memory's staleness under that name.)
+use crate::db::{Connection, params};
 use crate::platform::CanonicalExt;
 use crate::{
     Error, Result,
@@ -33,7 +34,6 @@ use crate::{
     model,
     store::{Store, one, s},
 };
-use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -495,7 +495,7 @@ fn converted_html(db: &Connection, project: &str) -> Result<(Vec<String>, usize)
     )?;
     let html: Vec<String> = statement
         .query_map([project], |row| row.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<String>>>()?
+        .collect::<crate::db::Result<Vec<String>>>()?
         .into_iter()
         .filter(|path| crate::documents::html(path))
         .collect();

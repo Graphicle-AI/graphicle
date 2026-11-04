@@ -919,7 +919,7 @@ fn sync_folder_with(
             for (path, parsed) in &binaries {
                 db.execute(
                     "INSERT INTO am_binary_heads VALUES(?,?,?,?,?)",
-                    rusqlite::params![
+                    crate::params![
                         repository,
                         path,
                         s(parsed, "text_sha256"),
@@ -1022,7 +1022,7 @@ fn store_originals(
     store.authorized(&session.workspace,&session.capability,"collect",|db,p|{
         crate::store::repo(db,p,repository)?;
         for (path,original,parsed) in originals {
-            db.execute("INSERT OR IGNORE INTO am_original_documents VALUES(?,NULL,?,?,?,?,?,?,?)",rusqlite::params![repository,format!("file:{path}"),s(parsed,"original_sha256"),path,s(parsed,"parser"),s(parsed,"text_sha256"),original,now()])?;
+            db.execute("INSERT INTO am_original_documents VALUES(?,NULL,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",crate::params![repository,format!("file:{path}"),s(parsed,"original_sha256"),path,s(parsed,"parser"),s(parsed,"text_sha256"),original,now()])?;
         }
         let size:i64=db.query_row("SELECT coalesce(sum(length(bytes)),0) FROM am_original_documents WHERE repository_id=?",[repository],|r|r.get(0))?;
         let cap=store.limits()?.retained_original_bytes;
@@ -1452,23 +1452,14 @@ pub fn open_url(url: &str) -> Result<()> {
 
 pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<Value> {
     #[cfg(unix)]
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    if directory.join("reviews.sqlite3").exists() {
+    use std::os::unix::fs::DirBuilderExt;
+    if crate::db::Database::exists(directory) {
         return Err(Error::bad(
             "Restore into a new --data-dir; an existing store cannot be replaced",
         ));
     }
-    let source =
-        rusqlite::Connection::open_with_flags(backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-    let integrity: String = source.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-    let schema: bool = source.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='repo_projects')",
-        [],
-        |r| r.get(0),
-    )?;
-    if integrity != "ok" || !schema {
-        return Err(Error::bad("This is not a valid Graphicle store backup"));
-    }
+    // The whole archive is checked before the data folder is made.
+    crate::archive::read(backup, |_, _| Ok(()))?;
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -1480,15 +1471,12 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
     {
         return Err(Error::bad("Store directory must not be a symlink"));
     }
-    let destination = directory.join("reviews.sqlite3");
-    let mut options = std::fs::OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    options.mode(0o600);
-    options.open(&destination)?;
-    if let Err(error) = source.backup(rusqlite::MAIN_DB, &destination, None) {
-        let _ = std::fs::remove_file(&destination);
-        return Err(error.into());
+    let store = Store::open(directory)?;
+    let loaded = crate::archive::load(&mut store.connect()?, backup);
+    if let Err(error) = loaded {
+        let _ = store.pool.drop_schema();
+        let _ = std::fs::remove_file(crate::db::schema_file(directory));
+        return Err(error);
     }
     Ok(
         json!({"restored":true,"data_dir":directory,"next":"Use graphicle login with your saved workspace access key. Reconnect source accounts and model API keys in Connections; device credentials are excluded from portable backups."}),

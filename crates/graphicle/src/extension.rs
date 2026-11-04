@@ -59,6 +59,7 @@
 //!   core does not define;
 //! - `authorize`: wherever a credential other than the owner capability is
 //!   authorized, at each place [`Access`] lists.
+use crate::db::Connection;
 use crate::{
     Error, Result,
     api::App,
@@ -67,7 +68,6 @@ use crate::{
     store::{Principal, Store},
 };
 use axum::{Router, http::StatusCode};
-use rusqlite::Connection;
 use serde_json::{Map, Value};
 use std::{
     borrow::Cow,

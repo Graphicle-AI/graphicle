@@ -1,7 +1,9 @@
 [Unit]
 Description=Graphicle source and memory service
 Wants=network-online.target
-After=network-online.target
+After=network-online.target postgresql.service
+# The store is in PostgreSQL (GRAPHICLE_DATABASE_URL in host.env, for
+# example "host=/var/run/postgresql dbname=graphicle user=graphicle").
 
 [Service]
 Type=exec

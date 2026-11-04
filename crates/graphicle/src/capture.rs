@@ -27,11 +27,11 @@
 //! Pausing it (`connector.state`) stops capture. Deleting it forgets every
 //! captured turn, but transcripts still on disk are captured again while the
 //! hooks stay installed — `session.forget` is the lasting way to forget.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result, id, now,
     store::{Store, one, repo, rows, s},
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -2162,12 +2162,14 @@ pub fn manifest(
         .and_then(|path| std::fs::read(path).ok())
         .map(|bytes| sha(&bytes));
     let store = app.worker.store.authorized_read(workspace, capability, "read", |db, _| {
+        // Each table with its column definitions, the PostgreSQL store's
+        // counterpart of the SQLite schema text this hashed before.
         let tables = rows(
             db,
-            "SELECT name,coalesce(sql,'') AS sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+            "SELECT t.table_name AS name, coalesce((SELECT string_agg(c.column_name||' '||c.data_type, ', ' ORDER BY c.ordinal_position) FROM information_schema.columns c WHERE c.table_schema=t.table_schema AND c.table_name=t.table_name),'') AS sql FROM information_schema.tables t WHERE t.table_schema=current_schema() AND t.table_type='BASE TABLE' ORDER BY t.table_name",
             [],
         )?;
-        let user_version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+        let user_version: i64 = 0;
         Ok(json!({"tables":tables.len(),"tables_sha256":sha(json!(tables).to_string().as_bytes()),
             "user_version":user_version}))
     })?;
@@ -2232,10 +2234,13 @@ fn mcp_in(
     request.get("id")?;
     let result: Result<Value> = (|| {
         match repository {
+            // A check that only reads: a snapshot, so a connection's every
+            // message does not wait for the write lock behind an indexing
+            // job.
             Some(repository) => {
                 app.worker
                     .store
-                    .authorized(workspace, capability, "read", |db, p| {
+                    .authorized_read(workspace, capability, "read", |db, p| {
                         repo(db, p, repository)?;
                         Ok(())
                     })?
@@ -2748,7 +2753,7 @@ async fn mcp_http(
     let (session, client) = mcp_http_session(&headers, &request);
     let reply = tokio::task::spawn_blocking(move || {
         // Keep transport-level authentication (including notifications) in
-        // the blocking job too: it may wait on a SQLite transaction.
+        // the blocking job too: it queries the store.
         app.worker.store.workspace(&workspace, &token)?;
         // The easy flow's freshness before every tool call, as in `graphicle mcp`.
         let fresh = (request["method"] == "tools/call")

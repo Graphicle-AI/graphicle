@@ -1,10 +1,10 @@
 //! Source removal and local backups share the same persistence boundary.
 //! Forgetting (connector.delete, source.forget) is implemented and verified in
 //! [`crate::deletion`].
+use crate::db::{Connection, params};
 use crate::deletion::{self, Scope};
 use crate::store::{self, Store, decode, one, repo, rows, s};
 use crate::{Error, Result, integer, now, string};
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, path::Path};
 
@@ -20,7 +20,7 @@ fn still_present(
     for key in keys {
         total += db.query_row(
             sql,
-            rusqlite::params_from_iter(std::iter::once(repository.to_string()).chain(key)),
+            crate::db::params_from_iter(std::iter::once(repository.to_string()).chain(key)),
             |r| r.get::<_, i64>(0),
         )?;
     }
@@ -301,39 +301,36 @@ impl Store {
         result["storage"] = deletion::checkpoint(self)?;
         Ok(result)
     }
+    /// Write a portable backup of the store to `path` ([`crate::archive`]):
+    /// a copy of one snapshot of every table, taken while writers go on,
+    /// scrubbed of what must not leave this device, then checked.
     pub fn backup(&self, path: &Path) -> Result<Value> {
-        #[cfg(unix)]
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let file = options.open(path)?;
-        drop(file);
-        let result = (|| {
-            self.connect()?.backup(rusqlite::MAIN_DB, path, None)?;
-            let backup = Connection::open(path)?;
-            // A portable source backup must not silently contain unusable encrypted
-            // credentials or require copying the device's master key beside it.
-            backup.execute_batch("PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; BEGIN IMMEDIATE; UPDATE am_connectors SET state='paused',last_sync=NULL,cursor=NULL,generation=generation+1 WHERE credential_env LIKE 'secret:%' OR credential_env LIKE 'oauth:%'; UPDATE am_projection_cleanup SET state='paused',lease_token=NULL,lease_until=NULL WHERE state!='complete'; UPDATE am_jobs SET state='cancelled' WHERE state IN ('queued','retry','running'); DELETE FROM am_secrets; COMMIT;")?;
-            // Sessions, provisioning tokens and paid entitlements are scrubbed
-            // on any store that has the team and commerce tables, whichever
-            // edition takes the backup; then installed extensions scrub their
-            // own tables, before the copy is compacted.
-            crate::store_compat::scrub_backup(&backup)?;
-            crate::extension::installed().scrub_backup(&backup)?;
-            backup.execute_batch("VACUUM;")?;
-            let check: String = backup.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-            if check != "ok" {
-                return Err(Error::bad("Backup integrity verification failed"));
-            }
-            Ok(
-                json!({"path":path,"created_at":now(),"integrity":"ok","contains_private_sources":true,"provider_credentials_included":false,"reconnect_accounts_after_restore":true}),
-            )
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(path);
+        if path.exists() || path.is_symlink() {
+            return Err(Error::bad(format!(
+                "{} already exists; name a new backup file",
+                path.display()
+            )));
         }
-        result
+        let scratch = crate::archive::Scratch::new()?;
+        crate::archive::snapshot_into(&mut self.connect()?, &scratch)?;
+        let backup = scratch.connect()?;
+        // A portable source backup must not silently contain unusable encrypted
+        // credentials or require copying the device's master key beside it.
+        backup.execute_batch("BEGIN; UPDATE am_connectors SET state='paused',last_sync=NULL,cursor=NULL,generation=generation+1 WHERE credential_env LIKE 'secret:%' OR credential_env LIKE 'oauth:%'; UPDATE am_projection_cleanup SET state='paused',lease_token=NULL,lease_until=NULL WHERE state!='complete'; UPDATE am_jobs SET state='cancelled' WHERE state IN ('queued','retry','running'); DELETE FROM am_secrets; COMMIT;")?;
+        // Sessions, provisioning tokens and paid entitlements are scrubbed
+        // on any store that has the team and commerce tables, whichever
+        // edition takes the backup; then installed extensions scrub their
+        // own tables.
+        crate::store_compat::scrub_backup(&backup)?;
+        crate::extension::installed().scrub_backup(&backup)?;
+        let written = crate::archive::write(&backup, path)?;
+        // Read back the whole file: what restores is what was checked.
+        crate::archive::read(path, |_, _| Ok(())).map_err(|_| {
+            let _ = std::fs::remove_file(path);
+            Error::bad("Backup integrity verification failed")
+        })?;
+        Ok(
+            json!({"path":path,"created_at":now(),"integrity":"ok","format":crate::archive::FORMAT,"tables":written["tables"],"rows":written["rows"],"sha256":written["sha256"],"contains_private_sources":true,"provider_credentials_included":false,"reconnect_accounts_after_restore":true}),
+        )
     }
 }

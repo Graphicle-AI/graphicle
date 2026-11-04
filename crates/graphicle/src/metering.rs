@@ -85,6 +85,7 @@
 //! ([`refusal`]). The owner capability is never asked. The local command line
 //! and capture hooks are counted, never refused for a quota. Core installs no
 //! extension, so it refuses and caps nothing.
+use crate::db::{Connection, TransactionBehavior, params};
 use crate::{
     Error, Result,
     extension::{Access, AccessRequest},
@@ -95,7 +96,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use rusqlite::{Connection, TransactionBehavior, params};
 use serde_json::{Value, json};
 use std::{
     borrow::Cow,
@@ -755,7 +755,7 @@ fn write(db: &Connection, batch: &Counts) -> Result<()> {
         "INSERT INTO am_served_usage(repository_id,workspace_id,day,credential_id,session,channel,kind,calls,tokens)
          SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9 WHERE EXISTS(SELECT 1 FROM repo_projects WHERE id=?1 AND workspace_id=?2)
          ON CONFLICT(repository_id,day,credential_id,session,channel,kind)
-         DO UPDATE SET calls=calls+excluded.calls,tokens=tokens+excluded.tokens",
+         DO UPDATE SET calls=am_served_usage.calls+excluded.calls,tokens=am_served_usage.tokens+excluded.tokens",
     )?;
     let mut workspaces = BTreeSet::new();
     for (key, count) in batch {
@@ -787,7 +787,7 @@ fn write(db: &Connection, batch: &Counts) -> Result<()> {
              FROM am_served_usage WHERE workspace_id=?1 AND day<?2 AND session<>''
              GROUP BY repository_id,workspace_id,day,credential_id,channel,kind
              ON CONFLICT(repository_id,day,credential_id,session,channel,kind)
-             DO UPDATE SET calls=calls+excluded.calls,tokens=tokens+excluded.tokens",
+             DO UPDATE SET calls=am_served_usage.calls+excluded.calls,tokens=am_served_usage.tokens+excluded.tokens",
             params![workspace, fold],
         )?;
         db.execute(
@@ -1310,12 +1310,12 @@ pub fn summary(db: &Connection, workspace: &str, from: &str, to: &str) -> Result
          CASE WHEN u.credential_id='owner' THEN 'owner' ELSE c.role END AS role,c.revoked_at,
          sum(u.calls) AS calls,sum(u.tokens) AS tokens
          FROM am_served_usage u LEFT JOIN credentials c ON c.id=u.credential_id AND c.workspace_id=u.workspace_id
-         WHERE u.workspace_id=? AND u.day>=? AND u.day<=? GROUP BY u.credential_id ORDER BY tokens DESC,u.credential_id LIMIT 200",
+         WHERE u.workspace_id=? AND u.day>=? AND u.day<=? GROUP BY u.credential_id,c.label,c.role,c.revoked_at ORDER BY tokens DESC,u.credential_id LIMIT 200",
         scope,
     )?;
     let by_session = rows(
         db,
-        "SELECT session,credential_id,group_concat(DISTINCT channel) AS channels,min(day) AS first_day,max(day) AS last_day,
+        "SELECT session,credential_id,string_agg(DISTINCT channel, ',') AS channels,min(day) AS first_day,max(day) AS last_day,
          sum(calls) AS calls,sum(tokens) AS tokens FROM am_served_usage
          WHERE workspace_id=? AND day>=? AND day<=? AND session<>'' GROUP BY session,credential_id ORDER BY tokens DESC,session LIMIT 50",
         scope,
@@ -1324,7 +1324,7 @@ pub fn summary(db: &Connection, workspace: &str, from: &str, to: &str) -> Result
         db,
         "SELECT u.repository_id,r.name,sum(u.calls) AS calls,sum(u.tokens) AS tokens FROM am_served_usage u
          JOIN repo_projects r ON r.id=u.repository_id WHERE u.workspace_id=? AND u.day>=? AND u.day<=?
-         GROUP BY u.repository_id ORDER BY tokens DESC,u.repository_id LIMIT 100",
+         GROUP BY u.repository_id,r.name ORDER BY tokens DESC,u.repository_id LIMIT 100",
         scope,
     )?;
     let daily = rows(
@@ -1353,7 +1353,7 @@ pub fn model_usage(db: &Connection, workspace: &str, from: &str, to: &str) -> Re
          LEFT JOIN am_jobs j ON j.id=c.job_id
          LEFT JOIN credentials cr ON cr.capability_hash=j.principal_hash AND cr.workspace_id=r.workspace_id
          WHERE r.workspace_id=? AND c.cached=0 AND c.created_at>=? AND c.created_at<?
-         GROUP BY 1 ORDER BY input_tokens+output_tokens DESC LIMIT 200",
+         GROUP BY 1 ORDER BY coalesce(sum(c.input_tokens),0)+coalesce(sum(c.output_tokens),0) DESC LIMIT 200",
         params![workspace, from, end],
     )?;
     let by_model = rows(
@@ -1361,7 +1361,7 @@ pub fn model_usage(db: &Connection, workspace: &str, from: &str, to: &str) -> Re
         "SELECT c.provider,c.model,count(*) AS calls,coalesce(sum(c.input_tokens),0) AS input_tokens,coalesce(sum(c.output_tokens),0) AS output_tokens
          FROM am_model_calls c JOIN repo_projects r ON r.id=c.repository_id
          WHERE r.workspace_id=? AND c.cached=0 AND c.created_at>=? AND c.created_at<?
-         GROUP BY c.provider,c.model ORDER BY input_tokens+output_tokens DESC,c.provider,c.model LIMIT 200",
+         GROUP BY c.provider,c.model ORDER BY coalesce(sum(c.input_tokens),0)+coalesce(sum(c.output_tokens),0) DESC,c.provider,c.model LIMIT 200",
         params![workspace, from, end],
     )?;
     Ok(json!({"by_credential":by_credential,"by_model":by_model}))

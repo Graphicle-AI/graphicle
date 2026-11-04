@@ -3,6 +3,71 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## Unreleased
+
+### The store is PostgreSQL
+
+The store is now a PostgreSQL 16 (or newer) database instead of
+`reviews.sqlite3`. Each data folder has its own schema, named in
+`postgres.json` in the data folder. `GRAPHICLE_DATABASE_URL` says which
+server to use (default: the local socket, database `graphicle`), and
+`GRAPHICLE_DATABASE_POOL` caps each process's connections (default 32).
+[docs/configuration.md](docs/configuration.md#the-store) has the settings and
+`deploy/` has a PostgreSQL configuration for a 12 GB host.
+
+This removes the SQLite WAL growth behind the 2026-11-03 outage. A SQLite
+checkpoint could not reset the WAL while readers were always in flight, so
+the WAL grew by everything written (8.3 GB). PostgreSQL recycles its WAL at
+its own checkpoints, whatever readers are doing; its size is bounded by
+`max_wal_size`.
+
+Commands, flags, the HTTP and MCP APIs, and their output are unchanged.
+Writers still take one write lock per store, as with SQLite. Readers use
+snapshots and never wait for it.
+
+### After upgrading
+
+- Create the database once: `createdb graphicle` (as a role that can
+  create schemas in it).
+- Copy each existing store once with `graphicle --data-dir DIR
+  import-sqlite`. It reads `DIR/reviews.sqlite3` (or the file you name)
+  read-only, checks it, and copies every row into a new PostgreSQL store for
+  the folder. The SQLite file is left as it was. Graphicle no longer reads
+  it, and refuses to open a data folder that has only a SQLite store.
+- Backups (`graphicle backup`, offboarding) are now `.backup` archives: a
+  JSON header, each table in PostgreSQL's COPY text format, and a SHA-256
+  trailer that restore checks. Backups made by 0.1.12 (SQLite files) can be
+  restored by importing them with `import-sqlite` into a new data folder.
+
+### Changed
+
+- Deleting a connector's data can no longer promise that deleted bytes are
+  overwritten on disk: PostgreSQL has no `secure_delete`. Receipts now say
+  `"secure_delete": false`. Deleted rows are vacuumed straight away, and the
+  space is reused.
+- The FTS5 table `repo_search` is gone. It was kept up to date but nothing
+  queried it.
+- Each connection's `application_name` is the Graphicle command that opened
+  it (`graphicle serve`, `graphicle sync`), so `pg_stat_activity` tells the
+  processes sharing a store apart.
+- An MCP message no longer takes the write lock to check that its project
+  exists, and neither do the `graph_as_of`, episode and cross-project edge
+  tools. They read a snapshot. Before, every MCP message on a project
+  connection queued for the lock behind indexing, and some failed with
+  "database is locked" after 10 s.
+- Each HTTP request's usage counters (the workspace's daily request count,
+  errors and time) are updated under their own row's lock instead of the
+  store's write lock. The monthly request budget is still checked against
+  every request before it. These two writes were most of the waits above.
+- `write_lock` in a project's status also counts waits for the lock of 2 s
+  or more (`slow_waits`, `longest_wait_seconds`, `longest_wait_at`).
+
+### Added
+
+- `bench/store-load/`: a load harness that indexes a large repository into a
+  store while 10 to 33 clients read from it over MCP. It records read latency
+  and failures, memory, WAL size and fsyncs.
+
 ## 0.1.13 - 2026-11-05
 
 Every crate is at 0.1.13, and `graphicle --version` prints

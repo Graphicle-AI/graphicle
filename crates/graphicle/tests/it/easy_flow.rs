@@ -605,7 +605,7 @@ fn the_easy_flow_from_setup_to_uninstall() {
         "{uninstall:#}"
     );
     assert!(uninstall.get("purged").is_none(), "{uninstall:#}");
-    assert!(flow.data.join("reviews.sqlite3").is_file());
+    assert!(flow.data.join("postgres.json").is_file());
     let readable = flow.text(&["uninstall"]);
     assert!(
         readable.contains("graphicle uninstall --purge deletes it"),

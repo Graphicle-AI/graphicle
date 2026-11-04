@@ -77,7 +77,7 @@ impl Fixture {
         self.store
             .enqueue(&self.workspace, &self.key, &args, &self.config)
     }
-    fn db(&self) -> rusqlite::Connection {
+    fn db(&self) -> graphicle_runtime::db::Connection {
         self.store.connect().unwrap()
     }
     fn row(&self, id: &str) -> Value {

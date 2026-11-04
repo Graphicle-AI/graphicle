@@ -138,7 +138,7 @@ impl Fixture {
         let app = App::new(self.store.clone(), model::Config::default(), vec![]).unwrap();
         graphicle_runtime::api::command(&app, &self.workspace, &self.key, "graph.impact", &args)
     }
-    fn db(&self) -> rusqlite::Connection {
+    fn db(&self) -> graphicle_runtime::db::Connection {
         self.store.connect().unwrap()
     }
     fn count(&self, sql: &str) -> i64 {

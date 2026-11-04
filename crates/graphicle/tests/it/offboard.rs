@@ -99,14 +99,14 @@ impl Fixture {
                 for row in store::rows(
                     db,
                     "SELECT * FROM gf_dependencies WHERE workspace=?1 AND (substr(source_id,1,length(?2))=?2 OR substr(dependent_id,1,length(?2))=?2) ORDER BY source_id,dependent_id",
-                    rusqlite::params![workspace, prefix],
+                    graphicle_runtime::params![workspace, prefix],
                 )? {
                     own.push(row.to_string());
                 }
                 for row in store::rows(
                     db,
                     "SELECT * FROM gf_episode_labels WHERE workspace=?1 AND repo=?2",
-                    rusqlite::params![workspace, project],
+                    graphicle_runtime::params![workspace, project],
                 )? {
                     own.push(row.to_string());
                 }
@@ -143,9 +143,10 @@ fn holds(path: &Path, text: &str) -> bool {
         .any(|window| window == text.as_bytes())
 }
 
-/// The projects a store file holds.
+/// The projects a backup holds.
 fn projects(path: &Path) -> Vec<String> {
-    let db = rusqlite::Connection::open(path).unwrap();
+    let backup = graphicle_runtime::archive::open_scratch(path).unwrap();
+    let db = backup.connect().unwrap();
     let mut statement = db
         .prepare("SELECT id FROM repo_projects ORDER BY id")
         .unwrap();
@@ -379,13 +380,12 @@ fn offboarding_a_backup_from_before_the_passage_index() {
         .backup(&offboard::backup_path(&f.store).unwrap())
         .unwrap();
     let kept = PathBuf::from(s(&backup, "path"));
-    {
-        let db = rusqlite::Connection::open(&kept).unwrap();
-        for table in graphicle_runtime::passage_index::TABLES {
-            db.execute_batch(&format!("DROP TABLE {table}")).unwrap();
-        }
-        db.execute_batch("VACUUM").unwrap();
-    }
+    // A backup of a store from before the passage index: without its
+    // tables.
+    graphicle_runtime::archive::retain_tables(&kept, |table| {
+        !graphicle_runtime::passage_index::TABLES.contains(&table)
+    })
+    .unwrap();
     let plan = offboard::plan(&f.store, &f.session, &a).unwrap();
     assert_eq!(paths(&plan["backups"]).len(), 1, "{plan:#}");
     let done = offboard::apply(&f.store, &f.session, &a, s(&plan, "plan_hash")).unwrap();
@@ -394,14 +394,12 @@ fn offboarding_a_backup_from_before_the_passage_index() {
     assert_eq!(projects(&kept), vec![b]);
     assert!(!holds(&kept, "zebracorn-alpha-7731"));
     assert!(holds(&kept, "quokka-beta-5512"));
-    let db = rusqlite::Connection::open(&kept).unwrap();
-    let tables: i64 = db
-        .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name LIKE 'am_passage%'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let mut tables = 0;
+    graphicle_runtime::archive::read(&kept, |section, _| {
+        tables += i64::from(section.table.starts_with("am_passage"));
+        Ok(())
+    })
+    .unwrap();
     assert_eq!(tables, 0);
 }
 

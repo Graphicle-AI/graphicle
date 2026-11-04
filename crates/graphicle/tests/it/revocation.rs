@@ -495,7 +495,7 @@ fn revocation_matches_credential_ids_exactly_not_as_substrings() {
     for (id, token) in [("cred-a", "token-a"), ("cred-ab", "token-ab")] {
         db.execute(
             "INSERT INTO credentials VALUES(?,?,?,?,?,?,NULL,NULL)",
-            rusqlite::params![
+            graphicle_runtime::params![
                 id,
                 f.workspace,
                 graphicle_memory::text::sha256(token.as_bytes()),
@@ -537,7 +537,7 @@ fn revocation_matches_credential_ids_exactly_not_as_substrings() {
         .unwrap();
     db.execute(
         "INSERT INTO am_source_permissions VALUES(?,?,?,?,1,?)",
-        rusqlite::params![
+        graphicle_runtime::params![
             f.connector,
             "plan",
             json!([{"type":"user","id":"U-AB"}]).to_string(),
@@ -548,7 +548,7 @@ fn revocation_matches_credential_ids_exactly_not_as_substrings() {
     .unwrap();
     db.execute(
         "INSERT INTO am_provider_identities VALUES(?,?,?,?,?)",
-        rusqlite::params![
+        graphicle_runtime::params![
             f.workspace,
             "jsonl",
             "U-AB",

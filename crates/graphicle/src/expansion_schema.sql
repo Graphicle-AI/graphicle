@@ -2,16 +2,16 @@ CREATE TABLE IF NOT EXISTS am_original_documents (
  repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
  connector_id TEXT REFERENCES am_connectors(id) ON DELETE CASCADE,
  source_id TEXT NOT NULL, sha256 TEXT NOT NULL, name TEXT NOT NULL, parser TEXT NOT NULL,
- text_sha256 TEXT NOT NULL, bytes BLOB NOT NULL, created_at TEXT NOT NULL,
+ text_sha256 TEXT NOT NULL, bytes BYTEA NOT NULL, created_at TEXT NOT NULL,
  PRIMARY KEY(repository_id,source_id,sha256));
 CREATE TABLE IF NOT EXISTS am_secrets (
  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
- name TEXT NOT NULL, ciphertext BLOB NOT NULL, nonce BLOB NOT NULL, updated_at TEXT NOT NULL);
+ name TEXT NOT NULL, ciphertext BYTEA NOT NULL, nonce BYTEA NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS am_oauth_pending (
  state_hash TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
  principal_hash TEXT NOT NULL, provider TEXT NOT NULL, redirect_uri TEXT NOT NULL,
  verifier_secret TEXT NOT NULL REFERENCES am_secrets(id) ON DELETE CASCADE,
- expires_at TEXT NOT NULL, used INTEGER NOT NULL DEFAULT 0);
+ expires_at TEXT NOT NULL, used BIGINT NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS am_oauth_accounts (
  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
  provider TEXT NOT NULL, external_id TEXT NOT NULL, email TEXT, display_name TEXT NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS am_provider_identities (
 CREATE TABLE IF NOT EXISTS am_source_permissions (
  connector_id TEXT NOT NULL REFERENCES am_connectors(id) ON DELETE CASCADE,
  source_id TEXT NOT NULL, principals TEXT NOT NULL, checked_at TEXT NOT NULL,
- complete INTEGER NOT NULL, generation INTEGER NOT NULL,
+ complete BIGINT NOT NULL, generation BIGINT NOT NULL,
  PRIMARY KEY(connector_id,source_id));
 CREATE TABLE IF NOT EXISTS am_language_servers (
  repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
@@ -37,7 +37,7 @@ CREATE TABLE IF NOT EXISTS am_binary_heads (
  PRIMARY KEY(repository_id,path));
 CREATE TABLE IF NOT EXISTS am_model_profiles (
  workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
- name TEXT NOT NULL, profile TEXT NOT NULL, is_default INTEGER NOT NULL, is_embedding INTEGER NOT NULL,
+ name TEXT NOT NULL, profile TEXT NOT NULL, is_default BIGINT NOT NULL, is_embedding BIGINT NOT NULL,
  PRIMARY KEY(workspace_id,name));
 CREATE TABLE IF NOT EXISTS am_backends (
  repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
