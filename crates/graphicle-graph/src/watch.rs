@@ -1832,7 +1832,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             .push("No code files found - nothing to rebuild.".into());
         return Ok(result);
     }
-    let sp = StoredSourcePaths::new(&existing, out, &project_root, &watch_root);
+    let sp = StoredSourcePaths::new(&existing, out, &project_root, &watch_root).with_scan(&code);
     let semantic = items_ref(&existing, "nodes")
         .iter()
         .filter(|n| {

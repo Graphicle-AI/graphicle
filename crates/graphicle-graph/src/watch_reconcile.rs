@@ -439,7 +439,8 @@ pub fn plan(
     o: &ReconcileOptions<'_>,
     mut ignored: impl FnMut(&Path, bool) -> bool,
 ) -> Plan {
-    let sp = StoredSourcePaths::new(existing, o.out, o.project_root, o.watch_root);
+    let sp = StoredSourcePaths::new(existing, o.out, o.project_root, o.watch_root)
+        .with_scan(o.code_files);
     let current = o
         .code_files
         .iter()
