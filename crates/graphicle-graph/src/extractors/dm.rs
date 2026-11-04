@@ -444,7 +444,9 @@ static GRID: LazyLock<regex::Regex> = LazyLock::new(|| {
 pub fn extract_dmm(path: &Path) -> Value {
     match std::fs::metadata(path) {
         Ok(m) if m.len() > 50 * 1024 * 1024 => {
-            return json!({"nodes":[],"edges":[],"error":"file too large (>50 MB)"});
+            return crate::extract::content_failure(
+                json!({"nodes":[],"edges":[],"error":"file too large (>50 MB)"}),
+            );
         }
         Err(e) => return read_failure(path, &e),
         _ => (),

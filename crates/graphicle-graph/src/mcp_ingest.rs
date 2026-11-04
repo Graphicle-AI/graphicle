@@ -60,6 +60,10 @@ pub fn detect_package_from_args(args: &[Value]) -> Option<String> {
 fn error(reason: impl Into<String>) -> Value {
     json!({"nodes":[],"edges":[],"error":reason.into()})
 }
+/// A failure the file's content decides ([`crate::extract::CONTENT_FAILURE`]).
+fn refused(reason: impl Into<String>) -> Value {
+    crate::extract::content_failure(error(reason))
+}
 fn utf8_error(bytes: &[u8], e: std::str::Utf8Error) -> String {
     let pos = e.valid_up_to();
     let len = e.error_len().unwrap_or(bytes.len() - pos);
@@ -157,18 +161,18 @@ pub fn extract_mcp_config(path: &Path) -> Value {
         ));
     }
     if raw.len() as u64 > MAX_BYTES {
-        return error("mcp config too large to index");
+        return refused("mcp config too large to index");
     }
     let text = match std::str::from_utf8(&raw) {
         Ok(text) => text,
-        Err(e) => return error(format!("mcp_ingest decode error: {}", utf8_error(&raw, e))),
+        Err(e) => return refused(format!("mcp_ingest decode error: {}", utf8_error(&raw, e))),
     };
     let doc: Value = match serde_json::from_str(text) {
         Ok(doc) => doc,
-        Err(e) => return error(format!("mcp_ingest json error: {e}")),
+        Err(e) => return refused(format!("mcp_ingest json error: {e}")),
     };
     let Some(doc) = doc.as_object() else {
-        return error("mcp_ingest: root is not an object");
+        return refused("mcp_ingest: root is not an object");
     };
     let servers = doc
         .get("mcpServers")
@@ -180,7 +184,7 @@ pub fn extract_mcp_config(path: &Path) -> Value {
                 .and_then(Value::as_object)
         });
     let Some(servers) = servers else {
-        return error("mcp_ingest: no mcpServers map");
+        return refused("mcp_ingest: no mcpServers map");
     };
     let source_file = fsutil::path_string(path);
     let file_id = make_id([source_file.as_str()]);

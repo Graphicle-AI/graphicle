@@ -37,8 +37,12 @@
 //! the snapshotted files changed within the time granularity before the
 //! snapshot (two seconds by default, as the extraction cache trusts a
 //! file's stats: a file system moves times in steps, so a later change
-//! could keep them), and when no file failed to extract (a failure may not
-//! happen again: the full rebuild retries it). The next full rebuild
+//! could keep them), and when no file failed to extract in a way a retry may
+//! pass (a read error, a cancelled parse, a panic: the full rebuild retries
+//! it). A failure the file's content decides (a parse failure, a size limit,
+//! an encoding the extractor refuses: `extract::CONTENT_FAILURE`) repeats on
+//! the same bytes, and the file's stats are recorded like any other's, so a
+//! change to it takes the full rebuild. The next full rebuild
 //! compares them before it extracts anything and stops early when all are
 //! the same; it then does what the full rebuild does when it finds nothing
 //! to change (`watch::stop_early`). The check trusts the recorded stats: a
@@ -501,17 +505,18 @@ pub struct Seen<'a> {
     pub graph: Option<FileStat>,
     /// manifest.json's stats when the rebuild wrote or checked it.
     pub manifest: Option<FileStat>,
-    /// Whether a file failed to extract.
-    pub failed: bool,
+    /// Whether a file failed to extract in a way a retry may pass: any
+    /// failure its content does not decide (`extract::CONTENT_FAILURE`).
+    pub retryable: bool,
 }
 
 /// Record a full rebuild of `detected` that found nothing to change, with
 /// `nodes` and `edges` in its graph, when what it saw still holds: no file
-/// failed, no snapshotted file changed shortly before the snapshot and each
-/// still has its stats, and graph.json and manifest.json are the files the
-/// rebuild read and wrote. Otherwise, or when the record cannot be written,
-/// any record is removed (the next rebuild is then a full one) and the
-/// error says why.
+/// failed in a way a retry may pass, no snapshotted file changed shortly
+/// before the snapshot and each still has its stats, and graph.json and
+/// manifest.json are the files the rebuild read and wrote. Otherwise, or
+/// when the record cannot be written, any record is removed (the next
+/// rebuild is then a full one) and the error says why.
 pub fn record(
     out: &Path,
     state: &State,
@@ -537,8 +542,8 @@ fn write_record(
 ) -> Result<(), Changed> {
     let graph = seen.graph.clone().ok_or("graph.json not read")?;
     let manifest = seen.manifest.clone().ok_or("manifest.json not written")?;
-    if seen.failed {
-        return Err("a file failed to extract");
+    if seen.retryable {
+        return Err("a file failed to extract and may pass on a retry");
     }
     if FileStat::of(&out.join("graph.json")).as_ref() != Some(&graph) {
         return Err("graph.json changed since it was read");
@@ -751,8 +756,8 @@ mod tests {
     /// A rebuild records only what still holds when it records: a file that
     /// changed after the scan (while the rebuild extracted), a graph.json or
     /// manifest.json another command wrote after the rebuild read or wrote
-    /// it, or a file that failed to extract keeps it from recording, and
-    /// removes an older record.
+    /// it, or a file that failed to extract in a way a retry may pass keeps
+    /// it from recording, and removes an older record.
     #[test]
     fn a_rebuild_records_only_what_still_holds() {
         let temp = tempfile::tempdir().unwrap();
@@ -767,12 +772,12 @@ mod tests {
         let detected = json!({"files": {"code": [source.to_string_lossy()]}});
         let state = state();
         let recorded = || out.join(STATE_FILE).is_file();
-        let run = |snapshot: &Snapshot, graph_seen, manifest_seen, failed| {
+        let run = |snapshot: &Snapshot, graph_seen, manifest_seen, retryable| {
             let seen = Seen {
                 snapshot,
                 graph: graph_seen,
                 manifest: manifest_seen,
-                failed,
+                retryable,
             };
             let made = record(&out, &state, &detected, &seen, 1, 0);
             assert_eq!(made.is_ok(), recorded());
@@ -806,9 +811,12 @@ mod tests {
             run(&snapshot, FileStat::of(&graph), manifest_seen, false),
             Err("manifest.json changed since it was written")
         );
-        // A file that failed to extract.
+        // A file that failed to extract in a way a retry may pass.
         let (g, m) = both();
-        assert_eq!(run(&snapshot, g, m, true), Err("a file failed to extract"));
+        assert_eq!(
+            run(&snapshot, g, m, true),
+            Err("a file failed to extract and may pass on a retry")
+        );
         let (g, m) = both();
         assert_eq!(run(&snapshot, g, m, false), Ok(()));
         // Without a graph.json read, nothing is vouched for.
@@ -839,7 +847,7 @@ mod tests {
                 snapshot: &snapshot,
                 graph: FileStat::of(&out.join("graph.json")),
                 manifest: FileStat::of(&out.join("manifest.json")),
-                failed: false,
+                retryable: false,
             };
             record(&out, &state, &detected, &seen, 1, 0)
         };
@@ -891,7 +899,7 @@ mod tests {
             snapshot: &snapshot,
             graph: FileStat::of(&out.join("graph.json")),
             manifest: FileStat::of(&out.join("manifest.json")),
-            failed: false,
+            retryable: false,
         };
         assert_eq!(record(&out, &state, &detected, &seen, 0, 0), Ok(()));
         let check = || {

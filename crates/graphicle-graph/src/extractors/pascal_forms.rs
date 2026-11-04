@@ -115,7 +115,9 @@ pub fn extract_delphi_form(path: &Path) -> Value {
     if bytes.starts_with(&[0xff, 0x0a]) {
         let parts = crate::path_syntax::posix_parts(&fsutil::path_string(path));
         let name = crate::path_syntax::posix_name(&parts);
-        return json!({"nodes":[],"edges":[],"error":format!("binary DFM (convert to text in Delphi IDE to index): {name}")});
+        return crate::extract::content_failure(
+            json!({"nodes":[],"edges":[],"error":format!("binary DFM (convert to text in Delphi IDE to index): {name}")}),
+        );
     }
     parse(path, &String::from_utf8_lossy(&bytes))
 }

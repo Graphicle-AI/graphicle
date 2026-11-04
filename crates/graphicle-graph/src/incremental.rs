@@ -21,14 +21,16 @@ use std::{
 };
 
 // v11: the private owner/shared keys below were renamed with the product.
-const SCHEMA: &str = "resolution-files-v11";
+// v12: the extraction lists content_failed_sources.
+const SCHEMA: &str = "resolution-files-v12";
 const OWNER: &str = "__graphicle_private_resolution_owner";
 const SHARED: &str = "__graphicle_private_shared_resolution_node";
-const ARRAYS: [&str; 6] = [
+const ARRAYS: [&str; 7] = [
     "nodes",
     "edges",
     "unresolved_calls",
     "failed_sources",
+    "content_failed_sources",
     "skipped_sources",
     "extracted_sources",
 ];
@@ -361,7 +363,7 @@ fn keys(
         .collect())
 }
 fn empty(receiver: bool) -> Value {
-    let mut output = json!({"nodes":[],"edges":[],"input_tokens":0,"output_tokens":0,"failed_sources":[],"skipped_sources":[],"extracted_sources":[]});
+    let mut output = json!({"nodes":[],"edges":[],"input_tokens":0,"output_tokens":0,"failed_sources":[],"content_failed_sources":[],"skipped_sources":[],"extracted_sources":[]});
     if receiver {
         output["unresolved_calls"] = json!([]);
     }
@@ -464,7 +466,7 @@ fn partition(
         }
         let owner = if matches!(
             key,
-            "failed_sources" | "skipped_sources" | "extracted_sources"
+            "failed_sources" | "content_failed_sources" | "skipped_sources" | "extracted_sources"
         ) {
             source_owner(item.as_str()?, root, &owners)
         } else {
@@ -527,7 +529,12 @@ fn partition(
 // Relocate only explicit source-list paths. Legacy dangling IDs and user
 // documentation can also contain root-like strings; those must stay intact.
 fn relocate(output: &mut Value, from: &Path, to: &Path) {
-    for key in ["failed_sources", "skipped_sources", "extracted_sources"] {
+    for key in [
+        "failed_sources",
+        "content_failed_sources",
+        "skipped_sources",
+        "extracted_sources",
+    ] {
         for value in output
             .get_mut(key)
             .and_then(Value::as_array_mut)
@@ -598,7 +605,10 @@ fn save(
                 .filter(|(k, _)| {
                     !matches!(
                         k.as_str(),
-                        "extracted_sources" | "failed_sources" | "skipped_sources"
+                        "extracted_sources"
+                            | "failed_sources"
+                            | "content_failed_sources"
+                            | "skipped_sources"
                     )
                 })
                 .any(|(_, v)| sensitive(v, &root_text, &id_prefix)),
@@ -975,7 +985,11 @@ pub fn extract(
         }
     }
     output["extracted_sources"] = json!(input_paths);
-    for key in ["failed_sources", "skipped_sources"] {
+    for key in [
+        "failed_sources",
+        "content_failed_sources",
+        "skipped_sources",
+    ] {
         for value in output[key].as_array_mut().into_iter().flatten() {
             if let Some(source) = value.as_str()
                 && let Some(i) = paths.iter().position(|p| p == Path::new(source))

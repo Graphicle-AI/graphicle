@@ -2088,6 +2088,13 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
+    // A failure that the file's content does not decide may pass on a retry,
+    // which a record would skip (`watch_gate::record`).
+    let content_failed = items_ref(&extraction, "content_failed_sources")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let retryable = failed.iter().any(|f| !content_failed.contains(f.as_str()));
     // An error loading the ignore rules surfaces here, after extraction.
     ignore_states?;
     if graph_path.exists()
@@ -2205,7 +2212,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 snapshot,
                 graph: graph_seen,
                 manifest: manifest_seen,
-                failed: !failed.is_empty(),
+                retryable,
             };
             let made =
                 crate::watch_gate::record(out, state, &detected, &seen, result.nodes, result.edges);
@@ -2243,7 +2250,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 snapshot,
                 graph: graph_seen,
                 manifest: manifest_seen,
-                failed: !failed.is_empty(),
+                retryable,
             };
             let made =
                 crate::watch_gate::record(out, state, &detected, &seen, result.nodes, result.edges);
@@ -2471,7 +2478,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             snapshot,
             graph: graph_seen,
             manifest: manifest_seen,
-            failed: !failed.is_empty(),
+            retryable,
         };
         let made =
             crate::watch_gate::record(out, state, &detected, &seen, graph_nodes, graph_edges);

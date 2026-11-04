@@ -6,8 +6,9 @@
 //! renamed file, an option or setting that changes the output, another
 //! build, a graph.json written by another command, a configuration file
 //! above the project) takes the full update again. A file that fails to
-//! extract, or a JavaScript workspace above the project, keeps it from ever
-//! stopping early.
+//! extract in a way a retry may pass (it cannot be read), or a JavaScript
+//! workspace above the project, keeps it from ever stopping early; a file
+//! its content fails (a parse error, a size limit) does not.
 //!
 //! The updates here trust a file's stats at once
 //! (`GRAPHICLE_MTIME_GRANULARITY_MS=0`): by default a file changed in the
@@ -360,24 +361,68 @@ fn an_update_right_after_a_change_is_not_recorded() {
     assert!(early.contains(EARLY), "{early}");
 }
 
-/// A file that fails to extract is tried again by every full update (a
-/// failure may not repeat), so an update with one is never recorded.
+/// A file that fails to extract because of its content (a JSON file over the
+/// extractor's 1 MiB limit, a YAML file the parser refuses) fails the same
+/// way on every update: the update records it with the other files, stops
+/// early on the second update with nothing changed, and takes the full
+/// update again once the file changes.
 #[test]
-fn a_failed_file_is_never_recorded() {
+fn a_file_its_content_fails_stops_early_until_it_changes() {
     let project = Project::new();
-    // A JSON file over the extractor's 1 MiB limit fails to extract.
-    let big = format!("{{\"data\": \"{}\"}}\n", "x".repeat(1_100_000));
-    std::fs::write(project.root.join("big.json"), big).unwrap();
-    for run in 0..3 {
+    let big = project.root.join("big.json");
+    let json = |fill: &str| format!("{{\"data\": \"{}\"}}\n", fill.repeat(1_100_000));
+    std::fs::write(&big, json("x")).unwrap();
+    std::fs::write(project.root.join("tabbed.yaml"), "a:\n\tb: 1\n").unwrap();
+    project.full_then_early("files their content fails");
+    // Neither file extracted: the manifest stamps neither.
+    let manifest = std::fs::read_to_string(project.out.join("manifest.json")).unwrap();
+    assert!(
+        !manifest.contains("big.json") && !manifest.contains("tabbed.yaml"),
+        "{manifest}"
+    );
+    std::fs::write(&big, json("y")).unwrap();
+    let changed = project.update();
+    assert!(
+        !changed.contains(EARLY) && changed.contains("no early stop: file"),
+        "{changed}"
+    );
+    assert!(!changed.contains("not recorded"), "{changed}");
+    let early = project.update();
+    assert!(early.contains(EARLY), "{early}");
+}
+
+/// A file that cannot be read fails in a way a retry may pass: while it
+/// fails, no update is recorded; once it reads again, the full update takes
+/// it in and the update after the next stops early. A process that reads
+/// files without read permission (root) cannot fail that way: the test then
+/// says so and checks nothing.
+#[cfg(unix)]
+#[test]
+fn a_file_that_cannot_be_read_keeps_the_record_away() {
+    use std::os::unix::fs::PermissionsExt;
+    let project = Project::new();
+    project.full_then_early("first update");
+    let locked = project.root.join("pkg/locked.py");
+    std::fs::write(&locked, "def locked_helper():\n    return 1\n").unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::read(&locked).is_ok() {
+        eprintln!("skipped: this process reads files without read permission");
+        return;
+    }
+    for run in 0..2 {
         let update = project.update();
         assert!(!update.contains(EARLY), "run {run}: {update}");
         assert!(!project.out.join(RECORD).exists(), "run {run}: recorded");
     }
     let last = project.update();
     assert!(
-        last.contains("not recorded: a file failed to extract"),
+        last.contains("not recorded: a file failed to extract and may pass on a retry"),
         "{last}"
     );
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o644)).unwrap();
+    project.full_then_early("the file reads again");
+    let graph = std::fs::read_to_string(project.out.join("graph.json")).unwrap();
+    assert!(graph.contains("locked_helper"), "{graph}");
 }
 
 /// A JavaScript workspace root above the project: resolution reads its

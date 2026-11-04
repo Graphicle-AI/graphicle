@@ -436,7 +436,9 @@ pub fn extract_package_manifest(path: &Path) -> Result<Value> {
         }
     };
     if metadata.len() > MAX_MANIFEST_BYTES {
-        return Ok(error("manifest too large to index"));
+        return Ok(crate::extract::content_failure(error(
+            "manifest too large to index",
+        )));
     }
     let text = match fsutil::read_text_lossy(path) {
         Ok(t) => t,
@@ -451,13 +453,19 @@ pub fn extract_package_manifest(path: &Path) -> Result<Value> {
         .ok_or_else(|| format!("Unsupported manifest filename: {}", path.display()))?;
     let info = match parse_manifest(ecosystem, &text) {
         Ok(info) => info,
-        Err(e) => return Ok(error(format!("manifest parse error: {e}"))),
+        Err(e) => {
+            return Ok(crate::extract::content_failure(error(format!(
+                "manifest parse error: {e}"
+            ))));
+        }
     };
     if truth(&info["skipped"]) {
         return Ok(json!({"nodes":[],"edges":[],"skipped":info["skipped"].clone()}));
     }
     if !truth(&info) || !truth(&info["name"]) {
-        return Ok(json!({"nodes":[],"edges":[]}));
+        return Ok(crate::extract::content_failure(
+            json!({"nodes":[],"edges":[]}),
+        ));
     }
     let name = info["name"]
         .as_str()

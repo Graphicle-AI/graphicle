@@ -61,8 +61,28 @@ pub struct ExtractOptions {
 /// dumps the raw extraction as graph.json (`--no-cluster`) leaves them out:
 /// they put the checkout path and user name into the graph and differ between
 /// a first build and a rebuild of the same tree (Graphify 0.9.80).
-pub const RUN_ONLY_EXTRACTION_KEYS: [&str; 3] =
-    ["extracted_sources", "failed_sources", "skipped_sources"];
+pub const RUN_ONLY_EXTRACTION_KEYS: [&str; 4] = [
+    "extracted_sources",
+    "failed_sources",
+    "content_failed_sources",
+    "skipped_sources",
+];
+/// The key that marks a file's failed extraction as decided by the file's
+/// content: a parse failure, a file over a size limit, an encoding the
+/// extractor refuses, or a file the extractor reads and finds nothing in.
+/// The same bytes fail the same way on every run, so the early stop of
+/// `update` may record such a file (`watch_gate`). A failure without the mark
+/// (a read or permission error, a cancelled parse, a grammar that did not
+/// load, an extractor's error or panic) may pass on a retry.
+pub const CONTENT_FAILURE: &str = "content_failure";
+/// `result`, a file's failed extraction, marked as decided by the file's
+/// content ([`CONTENT_FAILURE`]).
+pub fn content_failure(mut result: Value) -> Value {
+    if let Some(object) = result.as_object_mut() {
+        object.insert(CONTENT_FAILURE.into(), Value::Bool(true));
+    }
+    result
+}
 /// Opt-in precise mode (`--precise` / `GRAPHICLE_PRECISE=1`): resolution passes
 /// beyond the upstream port's, which change the graph and so are off by default.
 pub static PRECISE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1213,14 +1233,24 @@ pub(crate) fn assemble_with_corpus(
     assemble_list(paths, PerList::Values(per), root, options, corpus_paths)
 }
 
+/// The sources of a run that failed, in input order.
+struct Failed {
+    /// Every source that failed: an error, or zero nodes from a wired
+    /// extractor.
+    all: Vec<String>,
+    /// Those whose failure their content decides ([`CONTENT_FAILURE`]), every
+    /// time they are listed.
+    content: Vec<String>,
+}
 /// The failed sources of a run (and a warning per file with syntax errors).
 /// The sources that failed (an error, or zero nodes from a wired extractor)
 /// and those the extractor declined by design (`skipped`, Graphify 0.9.94,
 /// #2879): stamped, yet with zero nodes, which the manifest marks `ast_empty`
 /// so an incremental build stops re-queuing them.
-fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> (Vec<String>, Vec<String>) {
+fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> (Failed, Vec<String>) {
     let mut failed = vec![];
     let mut failed_seen = BTreeSet::new();
+    let mut retryable = BTreeSet::new();
     let mut skipped = vec![];
     let mut skipped_seen = BTreeSet::new();
     for (r, p) in per.iter().zip(paths) {
@@ -1229,6 +1259,9 @@ fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> (Vec<String>, Vec
             || (empty && !crate::build::truthy(r.at("skipped")) && get_extractor(p).is_some())
         {
             let sf = p.to_string_lossy().into_owned();
+            if !crate::build::truthy(r.at(CONTENT_FAILURE)) {
+                retryable.insert(sf.clone());
+            }
             if failed_seen.insert(sf.clone()) {
                 failed.push(sf);
             }
@@ -1247,7 +1280,18 @@ fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> (Vec<String>, Vec
             );
         }
     }
-    (failed, skipped)
+    let content = failed
+        .iter()
+        .filter(|sf| !retryable.contains(*sf))
+        .cloned()
+        .collect();
+    (
+        Failed {
+            all: failed,
+            content,
+        },
+        skipped,
+    )
 }
 
 /// Copy every per-file node into `nodes` and move (with the intermediate
@@ -1909,7 +1953,8 @@ fn assemble_records(
     result.insert("edges".into(), Value::Array(Vec::new()));
     result.insert("input_tokens".into(), json!(0));
     result.insert("output_tokens".into(), json!(0));
-    result.insert("failed_sources".into(), json!(failed));
+    result.insert("failed_sources".into(), json!(failed.all));
+    result.insert("content_failed_sources".into(), json!(failed.content));
     result.insert("skipped_sources".into(), json!(skipped));
     result.insert("extracted_sources".into(), json!(paths));
     let mut result = Value::Object(result);
@@ -2919,5 +2964,69 @@ mod tests {
             );
         }
         assert_eq!(near, far);
+    }
+
+    /// The failed sources whose failure their content decides: a JSON file
+    /// over the 1 MiB limit, a YAML file the parser refuses, a pyproject.toml
+    /// without a package name. A file that cannot be read (here it is gone
+    /// when it is extracted) fails in a way a retry may pass, and a file that
+    /// extracts is in neither list.
+    #[test]
+    fn content_failures_are_told_from_failures_a_retry_may_pass() {
+        let _serial = extractors::parse_cache::test_serial();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let write = |name: &str, text: &str| {
+            let path = root.join(name);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, text).unwrap();
+            path
+        };
+        let big = write(
+            "big.json",
+            &format!("{{\"data\": \"{}\"}}\n", "x".repeat(1_100_000)),
+        );
+        let tabbed = write("tabbed.yaml", "a:\n\tb: 1\n");
+        let nameless = write("tools/pyproject.toml", "[tool.black]\nline-length = 100\n");
+        let good = write("app.py", "def run():\n    return 1\n");
+        let gone = root.join("gone.py");
+        let paths = [
+            big.clone(),
+            tabbed.clone(),
+            nameless.clone(),
+            good,
+            gone.clone(),
+        ];
+        let spelled = |paths: &[&PathBuf]| {
+            let mut paths = paths
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            paths.sort();
+            json!(paths)
+        };
+        let sorted = |value: &Value| {
+            let mut paths = value.as_array().unwrap().clone();
+            paths.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+            json!(paths)
+        };
+        let out = extract(
+            &paths,
+            &ExtractOptions {
+                root: Some(root.clone()),
+                parallel: false,
+                use_cache: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            sorted(&out["failed_sources"]),
+            spelled(&[&big, &tabbed, &nameless, &gone])
+        );
+        assert_eq!(
+            sorted(&out["content_failed_sources"]),
+            spelled(&[&big, &tabbed, &nameless])
+        );
     }
 }

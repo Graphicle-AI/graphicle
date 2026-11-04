@@ -359,29 +359,27 @@ pub fn extract_yaml(path: &Path) -> Value {
     if let Err(error) = read {
         return empty("error", io_compat::read_error(&error, path));
     }
+    // The failures below are the content's: the same bytes fail the same way.
+    let refused = |reason: String| crate::extract::content_failure(empty("error", reason));
     if raw.len() > YAML_MAX_BYTES {
-        return empty("error", "yaml file too large to index");
+        return refused("yaml file too large to index".into());
     }
     let text = decode_ignoring_errors(&raw);
     if let Some(c) = non_printable(&text) {
-        return empty(
-            "error",
-            format!(
-                "unacceptable character #x{:04x}: special characters are not allowed",
-                c as u32
-            ),
-        );
+        return refused(format!(
+            "unacceptable character #x{:04x}: special characters are not allowed",
+            c as u32
+        ));
     }
     if let Some(line) = leading_tab_line(&text) {
-        return empty(
-            "error",
-            format!("found character '\\t' that cannot start any token (line {line})"),
-        );
+        return refused(format!(
+            "found character '\\t' that cannot start any token (line {line})"
+        ));
     }
     // PyYAML's scanner skips a byte-order mark at the very start of the stream.
     let docs = match yaml_frontmatter::parse_all(text.strip_prefix('\u{feff}').unwrap_or(&text)) {
         Ok(docs) => docs,
-        Err(error) => return empty("error", error.to_string()),
+        Err(error) => return refused(error.to_string()),
     };
     let structured_docs = docs
         .iter()
