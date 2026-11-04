@@ -93,7 +93,7 @@ impl<'tree> Extractor<'tree, '_> {
                             .join(norm),
                     )
                     .map_err(crate::Error::from)?;
-                    let exists = resolved.exists();
+                    let exists = crate::inputs::exists(&resolved);
                     let target = if exists {
                         make_id([fsutil::path_string(&resolved).as_str()])
                     } else {

@@ -413,7 +413,7 @@ pub fn normalize_ids<P: PerFile>(
             continue;
         }
         if !full.starts_with(root) {
-            if full.is_file() {
+            if crate::inputs::is_file(&full) {
                 let new = make_id(["ext", portable_spelling(&full, root, converted).as_str()]);
                 for p in [&full, &original] {
                     let old = make_id([p.to_string_lossy().as_ref()]);
@@ -424,7 +424,7 @@ pub fn normalize_ids<P: PerFile>(
             }
             continue;
         }
-        if full.is_file() {
+        if crate::inputs::is_file(&full) {
             remap_paths.push(full.clone());
             if original != full {
                 seen.insert(original.clone());

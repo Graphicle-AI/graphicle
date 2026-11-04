@@ -361,7 +361,7 @@ impl<'a, 't> Engine<'a, 't> {
             // A relative specifier with no file behind it resolves to the
             // attempted absolute path; minting an id from that bakes the
             // checkout location into the graph (0.9.78, #4155).
-            if path.as_ref().is_some_and(|p| !p.is_file()) {
+            if path.as_ref().is_some_and(|p| !crate::inputs::is_file(p)) {
                 target = make_id(["ref", raw]);
                 path = None;
             }

@@ -1807,7 +1807,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     // changes while this rebuild runs keeps it from being recorded.
     let snapshot = state
         .as_ref()
-        .map(|_| crate::watch_gate::Snapshot::take(&detected));
+        .map(|_| crate::watch_gate::Snapshot::begin(&detected));
     // The equality skips below compare parsed data, not layout: a multi-line
     // graph.json is still rewritten in the compact layout (0.9.86, #3413).
     let legacy_layout = graph_path.exists() && !paths::is_single_line(&graph_path).unwrap_or(false);

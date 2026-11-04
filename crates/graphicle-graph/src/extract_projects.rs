@@ -480,10 +480,11 @@ pub fn codebehind_path(path: &Path) -> Option<PathBuf> {
         "{}.cs",
         path.extension().unwrap_or_default().to_string_lossy()
     ));
-    if expected.exists() {
+    if crate::inputs::exists(&expected) {
         return Some(expected);
     }
     let name = expected.file_name()?.to_string_lossy().to_lowercase();
+    crate::inputs::listing(path.parent().unwrap_or(Path::new(".")));
     std::fs::read_dir(path.parent().unwrap_or(Path::new(".")))
         .ok()?
         .flatten()
@@ -599,6 +600,7 @@ pub fn inferred_viewmodels(view: &str) -> Vec<String> {
 pub fn project_root(path: &Path, boundary: Option<&Path>) -> PathBuf {
     let mut root = path.parent().unwrap_or(Path::new(".")).to_path_buf();
     for dir in root.clone().ancestors() {
+        crate::inputs::listing(dir);
         if std::fs::read_dir(dir).is_ok_and(|es| {
             es.flatten().any(|e| {
                 [".csproj", ".fsproj", ".vbproj", ".sln", ".slnx"]
@@ -618,6 +620,8 @@ pub fn project_root(path: &Path, boundary: Option<&Path>) -> PathBuf {
     root
 }
 pub fn csharp_viewmodels(path: &Path, boundary: Option<&Path>) -> BTreeMap<String, Vec<Value>> {
+    // A walk of the C# project that does not apply the scan ignore rules.
+    crate::inputs::uncovered("C# view models are looked up over the whole project");
     let root = project_root(path, boundary);
     let mut warnings = crate::detect_ignore::EncodingWarnings::default();
     let patterns =

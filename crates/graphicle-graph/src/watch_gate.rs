@@ -28,40 +28,60 @@
 //!   (`go.mod`, `go.work`, `package.json`, `jsconfig.json`, `tsconfig*.json`,
 //!   `pnpm-workspace.yaml`, with their content) and whether those folders
 //!   hold `.git`, `.hg` or `.svn`;
+//! - the paths extraction read outside the scan, with their stats or their
+//!   absence ([`crate::inputs`]): a quoted C, C++ or Objective-C include
+//!   resolved beside its file, a Python, JavaScript, TypeScript, Lua, shell
+//!   or Markdown target probed by name, a `tsconfig` alias target, a Sphinx
+//!   `conf.py` above a `.txt` page, a `go.mod`, a folder listed for C#
+//!   project files, and every `target_file` a result names, among them a
+//!   header in an ignored or pruned folder (which the scan lists only as a
+//!   folder) and paths above the root. A path the scan covers is left out: a
+//!   scanned file, and a file probed (or a folder listed) in a folder the
+//!   scan walked, whose files it lists;
 //! - graph.json's stats when the rebuild read it, and manifest.json's when
 //!   it wrote it.
 //!
-//! The record holds digests, counts and file stats, never a path or a
-//! setting's value. A rebuild records only when the snapshotted files,
-//! graph.json and manifest.json still have the stats it saw, when none of
-//! the snapshotted files changed within the time granularity before the
-//! snapshot (two seconds by default, as the extraction cache trusts a
-//! file's stats: a file system moves times in steps, so a later change
-//! could keep them), and when no file failed to extract in a way a retry may
-//! pass (a read error, a cancelled parse, a panic: the full rebuild retries
-//! it). A failure the file's content decides (a parse failure, a size limit,
-//! an encoding the extractor refuses: `extract::CONTENT_FAILURE`) repeats on
-//! the same bytes, and the file's stats are recorded like any other's, so a
-//! change to it takes the full rebuild. The next full rebuild
-//! compares them before it extracts anything and stops early when all are
-//! the same; it then does what the full rebuild does when it finds nothing
-//! to change (`watch::stop_early`). The check trusts the recorded stats: a
-//! file whose content changed while its size, times and inode stayed (a
-//! change no file system makes on its own) is not seen. Anything else it
-//! cannot prove the same takes the full rebuild. A rebuild that reads
-//! beyond these never stops early and records nothing: `--precise` (SCIP
-//! indexes, runtime traces, installed packages), and a JavaScript workspace
-//! in a folder above the root (its member packages beside the project).
+//! The record holds digests, counts, file stats and the paths read outside
+//! the scan, never a setting's value. A rebuild records only when the
+//! snapshotted files, graph.json and manifest.json still have the stats it
+//! saw, when none of the snapshotted files changed within the time
+//! granularity before the snapshot (two seconds by default, as the
+//! extraction cache trusts a file's stats: a file system moves times in
+//! steps, so a later change could keep them), and when no file failed to
+//! extract in a way a retry may pass (a read error, a cancelled parse, a
+//! panic: the full rebuild retries it). A failure the file's content
+//! decides (a parse failure, a size limit, an encoding the extractor
+//! refuses: `extract::CONTENT_FAILURE`) repeats on the same bytes, and the
+//! file's stats are recorded like any other's, so a change to it takes the
+//! full rebuild. The next full rebuild compares them before it extracts
+//! anything and stops early when all are the same; it then does what the
+//! full rebuild does when it finds nothing to change (`watch::stop_early`).
+//! The check trusts the recorded stats: a file whose content changed while
+//! its size, times and inode stayed (a change no file system makes on its
+//! own) is not seen. Anything else it cannot prove the same takes the full
+//! rebuild. A path read outside the scan is noted with its stats before the
+//! reader looks, so one that changes while the rebuild runs, or shortly
+//! before it, keeps the rebuild from recording. A file's cached extraction
+//! is replayed as the full rebuild replays it: its only input outside the
+//! file is whether each file it resolved still exists (a header added where
+//! an include found none is seen by neither). A rebuild that reads beyond
+//! these never stops early and records nothing: `--precise` (SCIP indexes,
+//! runtime traces, installed packages), a JavaScript workspace in a folder
+//! above the root (its member packages beside the project), and a rebuild
+//! that extracted a file with a reader whose inputs are not listed (Pascal
+//! units and C# view models, looked up over the whole project without the
+//! ignore rules; the next rebuild, which replays the cached result,
+//! records).
 use crate::{detect_manifest, paths, rcfile, serve_socket::FORWARDED_ENV, watch::RebuildOptions};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 /// The record of the last full rebuild, in the output folder.
 pub const STATE_FILE: &str = ".graphicle_build_state.json";
 /// The record's layout; another layout is never read as a match.
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 /// Settings that change how fast or how verbosely a rebuild runs, never
 /// what it writes: the worker count (`cli/tests/same_graph.rs`), the timing,
 /// profile, log and socket switches, the resource limits, the hooks' own
@@ -428,8 +448,20 @@ pub struct Snapshot {
     /// extraction cache reads it).
     taken_ns: u64,
     granularity_ns: u64,
+    /// What extraction reads besides these files, while the rebuild runs.
+    inputs: Option<crate::inputs::Session>,
 }
 impl Snapshot {
+    /// The snapshot of a full rebuild that may record: it also notes what
+    /// extraction reads besides the scanned files until it is dropped
+    /// ([`crate::inputs`]).
+    pub fn begin(detected: &Value) -> Snapshot {
+        let mut snapshot = Snapshot::take(detected);
+        snapshot.inputs = Some(crate::inputs::Session::begin(&snapshot.files));
+        // A Sphinx page's `conf.py` is read again for this rebuild.
+        crate::extractors::rst::forget_sphinx_folders();
+        snapshot
+    }
     pub fn take(detected: &Value) -> Snapshot {
         let granularity = crate::cache::mtime_granularity(
             std::env::var("GRAPHICLE_MTIME_GRANULARITY_MS")
@@ -454,6 +486,7 @@ impl Snapshot {
             digest,
             taken_ns,
             granularity_ns,
+            inputs: None,
         }
     }
     /// Whether every file still has the stats it had.
@@ -465,12 +498,102 @@ impl Snapshot {
     /// system moves times in steps, up to the granularity): its stats then
     /// prove nothing, as the extraction cache treats them (`stat_fresh`).
     fn recent(&self) -> bool {
-        self.stats.iter().flatten().any(|stat| {
-            stat.modified_ns
-                .max(stat.changed_ns)
-                .saturating_add(self.granularity_ns)
-                > self.taken_ns
-        })
+        self.stats
+            .iter()
+            .flatten()
+            .any(|stat| self.moved_since(stat))
+    }
+    /// Whether `stat` changed after, or within the granularity before, the
+    /// snapshot.
+    fn moved_since(&self, stat: &FileStat) -> bool {
+        stat.modified_ns
+            .max(stat.changed_ns)
+            .saturating_add(self.granularity_ns)
+            > self.taken_ns
+    }
+    /// The paths extraction read that the scan does not cover, with their
+    /// stats (`None`: absent), when they still hold: each has the stats it
+    /// had before a reader looked and none changed shortly before the
+    /// snapshot. A path is covered when it is a scanned file, or when only
+    /// its being a file, or a folder's list of files, was read in a folder
+    /// the scan walked (a folder holding a scanned file): the scan lists
+    /// every file there, so an added or removed one changes the scan.
+    fn outside(&self) -> Result<Vec<(String, Option<FileStat>)>, Changed> {
+        let Some(session) = &self.inputs else {
+            return Ok(vec![]);
+        };
+        let noted = session.noted();
+        if noted.overlapped {
+            return Err("another rebuild ran in this process at the same time");
+        }
+        if let Some(reader) = noted.uncovered {
+            return Err(reader);
+        }
+        let files = self
+            .files
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let walked = self
+            .files
+            .iter()
+            .filter_map(|file| Path::new(file).parent())
+            .collect::<HashSet<_>>();
+        let plain = |path: &Path| {
+            !path.components().any(|c| {
+                matches!(
+                    c,
+                    std::path::Component::ParentDir | std::path::Component::CurDir
+                )
+            })
+        };
+        let mut kept = vec![];
+        for (path, entry) in noted.entries {
+            let spelled = path.to_string_lossy().into_owned();
+            if files.contains(spelled.as_str()) {
+                continue;
+            }
+            let covered = plain(&path)
+                && match entry.kind {
+                    crate::inputs::Kind::File => {
+                        path.parent().is_some_and(|dir| walked.contains(dir))
+                            && path.file_name().is_some_and(|name| {
+                                !crate::detect_types::contains(
+                                    "_SKIP_FILES",
+                                    &name.to_string_lossy(),
+                                )
+                            })
+                    }
+                    crate::inputs::Kind::Listing => walked.contains(path.as_path()),
+                    _ => false,
+                };
+            if covered {
+                continue;
+            }
+            let now = FileStat::of(&path);
+            if now != entry.stat {
+                return Err("a file read outside the scan changed during the rebuild");
+            }
+            if entry
+                .stat
+                .as_ref()
+                .is_some_and(|stat| self.moved_since(stat))
+            {
+                return Err("a file read outside the scan changed just before the scan");
+            }
+            // Noted after the reader looked: a file removed (or added) in
+            // between moves its folder's times.
+            if entry.after
+                && path
+                    .parent()
+                    .and_then(FileStat::of)
+                    .is_some_and(|stat| self.moved_since(&stat))
+            {
+                return Err("a file read outside the scan changed during the rebuild");
+            }
+            kept.push((spelled, entry.stat));
+        }
+        Ok(kept)
     }
 }
 fn stats_of(files: &[String]) -> Vec<Option<FileStat>> {
@@ -491,6 +614,9 @@ struct Record {
     above: String,
     scan: String,
     files: String,
+    /// The paths extraction read that the scan does not cover, with their
+    /// stats (`None`: absent).
+    outside: Vec<(String, Option<FileStat>)>,
     graph: FileStat,
     manifest: FileStat,
     nodes: usize,
@@ -557,6 +683,7 @@ fn write_record(
     if !seen.snapshot.unchanged() {
         return Err("a file changed during the rebuild");
     }
+    let outside = seen.snapshot.outside()?;
     let record = Record {
         schema: SCHEMA,
         build: state.build.clone(),
@@ -564,6 +691,7 @@ fn write_record(
         above: state.above.clone(),
         scan: scan(detected),
         files: seen.snapshot.digest.clone(),
+        outside,
         graph,
         manifest,
         nodes,
@@ -655,6 +783,22 @@ impl Pending {
         }
         if Snapshot::take(detected).digest != self.record.files {
             return Err("file stats");
+        }
+        let paths = self
+            .record
+            .outside
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<Vec<_>>();
+        let now = stats_of(&paths);
+        if self
+            .record
+            .outside
+            .iter()
+            .zip(&now)
+            .any(|((_, recorded), now)| recorded != now)
+        {
+            return Err("files read outside the scan");
         }
         Ok(Unchanged {
             nodes: self.record.nodes,

@@ -2334,7 +2334,7 @@ pub fn resolve(
             root.join(source)
         };
         let file = lexical(&path);
-        if language(&path).is_some() && !in_run.contains(&file) && path.is_file() {
+        if language(&path).is_some() && !in_run.contains(&file) && crate::inputs::is_file(&path) {
             others.push((path, file));
         }
     }

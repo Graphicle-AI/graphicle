@@ -800,7 +800,7 @@ pub fn extract_dart(path: &Path) -> Result<Value> {
         if parent.ends_with(".dart")
             && let Ok(parent) =
                 fsutil::resolve_missing(&path.parent().unwrap_or(Path::new(".")).join(parent))
-            && parent.exists()
+            && crate::inputs::exists(&parent)
         {
             stem = file_stem(&parent);
             file_id = make_id([fsutil::path_string(&parent).as_str()]);

@@ -130,6 +130,7 @@ pub fn build_link_index(root: &Path) -> crate::Result<LinkIndex> {
         ignored: &mut crate::detect_ignore::IgnoreState,
         warnings: &mut crate::detect_ignore::EncodingWarnings,
     ) -> crate::Result<()> {
+        crate::inputs::listing(dir);
         let Ok(entries) = std::fs::read_dir(dir) else {
             return Ok(());
         };
@@ -293,7 +294,7 @@ fn percent_decoded(target: &str, source_dir: &Path) -> String {
     } else {
         target.to_owned()
     };
-    if source_dir.join(literal).is_file() {
+    if crate::inputs::is_file(&source_dir.join(literal)) {
         return target.to_owned();
     }
     decoded
@@ -343,14 +344,14 @@ pub fn resolve_markdown_link(
         // indexes itself (`[[pic.png]]` beside `pic.png.md`) keeps precedence
         // (#3904).
         let literal = normpath(&source_dir.join(&target));
-        if literal.is_file() && crate::detect::classify_file(&literal).is_some() {
+        if crate::inputs::is_file(&literal) && crate::detect::classify_file(&literal).is_some() {
             return Ok(None);
         }
         return Ok(
             resolve_markdown_link(&format!("{target}.md"), source_dir, true)
                 .ok()
                 .flatten()
-                .filter(|hit| hit.is_file()),
+                .filter(|hit| crate::inputs::is_file(hit)),
         );
     }
     let relative = !Path::new(&target).is_absolute();
@@ -362,7 +363,7 @@ pub fn resolve_markdown_link(
     let resolved = normpath(&candidate);
     if wikilink
         && relative
-        && !resolved.is_file()
+        && !crate::inputs::is_file(&resolved)
         && let Some(root) = active_scan_root()
         && let Some(hit) = vault_lookup(&target, &root)?
     {
@@ -446,7 +447,7 @@ impl Extraction {
             let file = fsutil::path_string(&resolved);
             let target = make_id([file.as_str()]);
             if target != file_id && self.links.insert(target.clone()) {
-                let target_file = resolved.is_file().then_some(file);
+                let target_file = crate::inputs::is_file(&resolved).then_some(file);
                 self.add_edge(file_id, &target, "references", line, target_file);
             }
         }

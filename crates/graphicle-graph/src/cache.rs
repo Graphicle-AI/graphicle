@@ -109,6 +109,15 @@ pub fn target_file_present(target: &str, root: &Path) -> bool {
         root.join(candidate).is_file()
     }
 }
+/// The path a `target_file` stamp names (relative ones under `root`).
+pub fn target_file_path(target: &str, root: &Path) -> std::path::PathBuf {
+    let candidate = Path::new(target);
+    if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        root.join(candidate)
+    }
+}
 /// `_present_target_files`: the edges' `target_file` stamps that name an
 /// existing file, sorted and distinct.
 pub fn present_target_files(result: &Value, root: &Path) -> Vec<String> {
@@ -912,7 +921,7 @@ impl ExtractionCache {
                 && !targets
                     .iter()
                     .filter_map(Value::as_str)
-                    .all(|t| target_file_present(t, &options.root))
+                    .all(|t| crate::inputs::is_file(&target_file_path(t, &options.root)))
             {
                 return Ok(LocatedEntry::Miss);
             }

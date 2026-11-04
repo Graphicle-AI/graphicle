@@ -80,7 +80,7 @@ pub fn absolute_import_alias_files(
             }
             let package = *packages
                 .entry(ancestor.to_path_buf())
-                .or_insert_with(|| ancestor.join("__init__.py").is_file());
+                .or_insert_with(|| crate::inputs::is_file(&ancestor.join("__init__.py")));
             if !package {
                 roots.push(ancestor.to_path_buf());
             }
@@ -138,7 +138,7 @@ pub fn scan_paths(paths: &[PathBuf], context_nodes: &[Value], root: &Path) -> Ve
         } else {
             root.join(path)
         };
-        if path.is_file() {
+        if crate::inputs::is_file(&path) {
             out.push(path);
         }
     }
@@ -200,8 +200,8 @@ fn loose_sibling(edge: &Value, module: &str, files: &ModuleFiles, root: &Path) -
         return false;
     };
     target_dir == dir
-        && !dir.join("__init__.py").is_file()
-        && !dir.join("__init__.pyi").is_file()
+        && !crate::inputs::is_file(&dir.join("__init__.py"))
+        && !crate::inputs::is_file(&dir.join("__init__.pyi"))
         && candidates.iter().any(|c| resolved(Path::new(c)) == target)
 }
 

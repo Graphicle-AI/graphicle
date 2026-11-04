@@ -913,6 +913,15 @@ fn records_in(
         let profiled = crate::profile::enabled().then(std::time::Instant::now);
         let _corpus = extractors::resolution_js::enter_source_corpus(corpus.clone());
         let mut value = extract_file(path, Some(&root));
+        // The files the result names as resolved, for the early stop
+        // (`inputs`): a cache hit checks them again (`ExtractionCache`).
+        for edge in value["edges"].as_array().into_iter().flatten() {
+            if let Some(target) = edge.get("target_file").and_then(Value::as_str)
+                && !target.is_empty()
+            {
+                crate::inputs::resolved(&cache::target_file_path(target, &root));
+            }
+        }
         if !compact {
             tighten(&mut value);
         }

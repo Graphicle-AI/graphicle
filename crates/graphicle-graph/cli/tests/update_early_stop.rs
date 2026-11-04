@@ -5,7 +5,9 @@
 //! and any change (a file's content, size or times, an added, deleted or
 //! renamed file, an option or setting that changes the output, another
 //! build, a graph.json written by another command, a configuration file
-//! above the project) takes the full update again. A file that fails to
+//! above the project, a file extraction read outside the scan such as a
+//! header in an ignored folder or a Sphinx `conf.py` above the project)
+//! takes the full update again. A file that fails to
 //! extract in a way a retry may pass (it cannot be read), or a JavaScript
 //! workspace above the project, keeps it from ever stopping early; a file
 //! its content fails (a parse error, a size limit) does not.
@@ -512,4 +514,77 @@ fn home_counts_and_hook_change_lists_do_not() {
         !moved.contains(EARLY) && moved.contains("no early stop: settings"),
         "{moved}"
     );
+}
+
+/// The update after a change takes the full rebuild and writes what a full
+/// rebuild writes: another update forced past the check leaves the same
+/// outputs.
+fn full_and_same(project: &Project, case: &str, env: &[(&str, &str)]) {
+    let update = project.update_with(&[], env);
+    assert!(!update.contains(EARLY), "{case}: no early stop:\n{update}");
+    let written = project.outputs();
+    let forced = project.update_with(&["--force"], env);
+    assert!(!forced.contains(EARLY), "{case}: {forced}");
+    assert!(
+        project.outputs() == written,
+        "{case}: the update wrote other outputs than a full rebuild"
+    );
+}
+
+/// A quoted C include that resolves to a header the scan does not cover (in
+/// an ignored folder, listed only as a folder): the record keeps the
+/// header's stats, so removing it takes the full update, whose graph no
+/// longer resolves the include to it.
+#[test]
+fn a_header_outside_the_scan_takes_the_full_update() {
+    let project = Project::new();
+    let root = &project.root;
+    std::fs::create_dir_all(root.join("generated")).unwrap();
+    std::fs::write(root.join(".gitignore"), "generated/\n").unwrap();
+    std::fs::write(root.join("generated/config.h"), "#define LEVEL 1\n").unwrap();
+    std::fs::write(
+        root.join("main.c"),
+        "#include \"generated/config.h\"\n\nint level(void) { return LEVEL; }\n",
+    )
+    .unwrap();
+    project.full_then_early("a header in an ignored folder");
+    let graph = || std::fs::read_to_string(project.out.join("graph.json")).unwrap();
+    let before = graph();
+    std::fs::remove_file(root.join("generated/config.h")).unwrap();
+    full_and_same(&project, "the header removed", &[]);
+    assert_ne!(graph(), before, "the include no longer resolves");
+    // A header added where an include found none: the full update replays
+    // the cached result that found none, and so does the early stop.
+    let early = project.update();
+    assert!(early.contains(EARLY), "without the header: {early}");
+    std::fs::write(root.join("generated/config.h"), "#define LEVEL 2\n").unwrap();
+    project.update();
+    let written = project.outputs();
+    project.update_with(&["--force"], &[]);
+    assert!(project.outputs() == written, "the header back");
+}
+
+/// A Sphinx `conf.py` in a folder above the project decides whether its
+/// `.txt` files are pages (`--docs`): adding one takes the full update,
+/// whose graph then holds the page.
+#[test]
+fn a_sphinx_configuration_above_the_project_takes_the_full_update() {
+    let project = Project::new();
+    let docs = [("GRAPHICLE_DOCS", "1")];
+    std::fs::create_dir_all(project.root.join("docs")).unwrap();
+    std::fs::write(
+        project.root.join("docs/intro.txt"),
+        "Introduction\n============\n\nCall :func:`parse_all` first.\n",
+    )
+    .unwrap();
+    project.full_then_early_with("no Sphinx project", &[], &docs);
+    let graph = || std::fs::read_to_string(project.out.join("graph.json")).unwrap();
+    assert!(!graph().contains("Introduction"), "{}", graph());
+    std::fs::write(
+        project.base.join("conf.py"),
+        "source_suffix = ['.rst', '.txt']\n",
+    )
+    .unwrap();
+    full_and_same(&project, "conf.py added above the root", &docs);
+    assert!(graph().contains("Introduction"), "{}", graph());
 }

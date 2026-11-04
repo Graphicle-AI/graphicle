@@ -671,7 +671,7 @@ fn apply_pass_facts(
             .get(&r)
             .map(|&i| paths[i].clone())
             .unwrap_or_else(|| resolved.to_path_buf());
-        if !resolved.is_file()
+        if !crate::inputs::is_file(resolved)
             && let Ok(relative) = resolved.strip_prefix(root)
         {
             let identity = relative.to_string_lossy().replace('\\', "/");

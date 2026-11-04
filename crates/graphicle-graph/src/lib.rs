@@ -79,6 +79,7 @@ pub mod ids;
 pub mod incremental;
 pub mod ingest;
 mod ingest_api;
+mod inputs;
 pub mod install;
 mod install_fs;
 mod install_platforms;
