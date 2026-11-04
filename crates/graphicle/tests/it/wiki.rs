@@ -9,9 +9,10 @@
 //! a draft for the memory and edits no file; one call suggests articles for
 //! the areas with no doc; a run over `--max-cost` sends nothing; a wiki kept
 //! in a synced folder is not an input to itself; a reply cut at the output
-//! limit is billed and counted; files the wiki did not write are never
-//! replaced, and the wiki keeps its settings; `hook on` and `hook off` add
-//! and remove the post-commit block by the rules of the freshness hooks.
+//! limit is billed and counted, and a reply with no usage at its worst
+//! case; files the wiki did not write are never replaced, and the wiki
+//! keeps its settings; `hook on` and `hook off` add and remove the
+//! post-commit block by the rules of the freshness hooks.
 use axum::{Json, Router, extract::State, response::IntoResponse, routing::post};
 use graphicle_runtime::store::s;
 use serde_json::{Value, json};
@@ -30,6 +31,8 @@ struct Mock {
     requests: Arc<Mutex<Vec<Value>>>,
     /// Articles are cut at the output limit (and billed).
     cut: Arc<AtomicBool>,
+    /// Replies carry no usage, as from a server that reports none.
+    no_usage: Arc<AtomicBool>,
 }
 
 /// The first `path:line` the text gives after `marker`.
@@ -108,10 +111,14 @@ async fn responses(State(mock): State<Mock>, Json(request): Json<Value>) -> impl
                 "output_tokens":4_000,"output_tokens_details":{"reasoning_tokens":4_000}},
             "output":[]}));
     }
-    Json(json!({"status":"completed","model":"muse-spark-1.3",
+    let mut reply = json!({"status":"completed","model":"muse-spark-1.3",
         "usage":{"input_tokens":prompt.len() / 4,"input_tokens_details":{"cached_tokens":0},
             "output_tokens":200,"output_tokens_details":{"reasoning_tokens":0}},
-        "output":[{"type":"message","content":[{"type":"output_text","text":text}]}]}))
+        "output":[{"type":"message","content":[{"type":"output_text","text":text}]}]});
+    if mock.no_usage.load(Ordering::SeqCst) {
+        reply.as_object_mut().unwrap().remove("usage");
+    }
+    Json(reply)
 }
 
 async fn serve(mock: Mock) -> (String, tokio::task::JoinHandle<()>) {
@@ -665,6 +672,62 @@ async fn a_reply_cut_at_the_output_limit_is_counted_against_the_cap() {
     .unwrap();
     assert_eq!(entry["status"], "max_output_tokens", "{entry}");
     assert!((entry["cost_usd"].as_f64().unwrap() - cost).abs() < 1e-9);
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_reply_with_no_usage_is_counted_at_its_worst_case() {
+    let mock = Mock::default();
+    mock.no_usage.store(true, Ordering::SeqCst);
+    let (url, server) = serve(mock.clone()).await;
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    models(root, &url);
+    let project = repository(root);
+    let synced = run(root, &project, &["sync", project.to_str().unwrap()]).await;
+    assert!(synced.status.success());
+    // The cap is a fifth above the larger of the two articles' planned
+    // worst cases: the first call fits, and counted at its worst case (each
+    // is at least 0.017 US dollars, 4,000 output tokens at 4.25 per
+    // million) it leaves no room for the second. Counted at no cost, both
+    // would be written.
+    let plan = printed(
+        &run(
+            root,
+            &project,
+            &["wiki", "build", "--dry-run", "--json", "--budget", "1000"],
+        )
+        .await,
+    );
+    let worst: Vec<f64> = plan["articles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["worst_cost_usd"].as_f64().unwrap())
+        .collect();
+    assert_eq!(worst.len(), 2, "{plan}");
+    let cap = 1.2 * worst.iter().copied().fold(0.0, f64::max);
+    assert!(cap < 0.034, "{plan}");
+    let built = printed(
+        &run(
+            root,
+            &project,
+            &[
+                "wiki",
+                "build",
+                "--json",
+                "--budget",
+                "1000",
+                "--max-cost",
+                &cap.to_string(),
+            ],
+        )
+        .await,
+    );
+    assert_eq!(built["result"], "stopped", "{built}");
+    assert_eq!(mock.requests.lock().unwrap().len(), 1, "{built}");
+    assert_eq!(built["written"].as_array().unwrap().len(), 1, "{built}");
+    assert!(built["cost_usd"].as_f64().unwrap() > 0.017, "{built}");
     server.abort();
 }
 

@@ -36,7 +36,7 @@ use crate::{
 use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// The options of `wiki check`.
@@ -362,6 +362,31 @@ enum Asked {
     Refused(String),
 }
 
+/// The file name of the patch proposed for `path` from line `first`: the
+/// path as a file name, and a short hash of the whole path, so two paths
+/// that spell the same name (`a/b.md` and `a__b.md`, or two long paths cut
+/// at the same length) never share one.
+pub fn proposal_name(path: &str, first: usize) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = format!("{:x}", Sha256::digest(path.as_bytes()));
+    format!(
+        "{}-{}-L{first}.patch",
+        graphicle::wiki::safe_filename(&path.replace('/', "__"), 120),
+        &hash[..8]
+    )
+}
+
+/// Write the patch `text` proposed for `path` from line `first` in the
+/// folder `proposals`; its path. It goes through a new file renamed into
+/// place, so a symbolic link committed at its name is replaced, never
+/// followed.
+pub fn write_proposal(proposals: &Path, path: &str, first: usize, text: &str) -> Result<PathBuf> {
+    std::fs::create_dir_all(proposals)?;
+    let file = proposals.join(proposal_name(path, first));
+    project_wiki::write_atomic(&file, text)?;
+    Ok(file)
+}
+
 /// One check call.
 #[allow(clippy::too_many_arguments)]
 async fn ask(
@@ -409,7 +434,7 @@ async fn ask(
     };
     match result {
         Ok(done) => {
-            budget.add(&done);
+            budget.add(&done, worst);
             match long_context::json_in(&done.text) {
                 Ok(reply) if reply.is_object() => Asked::Reply(reply),
                 _ => Asked::Failed("The model's reply is not a JSON object".into()),
@@ -589,13 +614,8 @@ async fn model_pass(
                 item["citations"] = json!(cites.iter().map(cite).collect::<Vec<_>>());
                 let corrected = s(&reply, "corrected_text").trim();
                 if reply["verdict"] == "outdated" && !corrected.is_empty() && !cites.is_empty() {
-                    std::fs::create_dir_all(&proposals)?;
-                    let file = proposals.join(format!(
-                        "{}-L{first}.patch",
-                        graphicle::wiki::safe_filename(&path.replace('/', "__"), 120)
-                    ));
-                    std::fs::write(&file, patch(path, &doc, first, last, corrected))?;
-                    item["patch"] = json!(file);
+                    let diff = patch(path, &doc, first, last, corrected);
+                    item["patch"] = json!(write_proposal(&proposals, path, first, &diff)?);
                 } else if reply["verdict"] == "outdated" {
                     item["note"] = json!("no correction kept: it cited no code that holds");
                 }
@@ -1002,6 +1022,45 @@ pub fn text(report: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_at_a_proposal_s_name_is_replaced_not_followed() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let proposals = dir.path().join("proposals");
+        std::fs::create_dir_all(&proposals).unwrap();
+        let hook = dir.path().join("post-commit");
+        std::fs::write(&hook, "#!/bin/sh\nexit 0\n").unwrap();
+        let name = proposals.join(proposal_name("docs/guide.md", 3));
+        std::os::unix::fs::symlink(&hook, &name).unwrap();
+        let file = write_proposal(&proposals, "docs/guide.md", 3, "--- a/x\n").unwrap();
+        assert_eq!(file, name);
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), "#!/bin/sh\nexit 0\n");
+        assert!(!std::fs::symlink_metadata(&file).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "--- a/x\n");
+        // A link at the temporary file's name is not written through either.
+        let temporary = proposals.join(format!(
+            ".{}.{}.tmp",
+            proposal_name("docs/other.md", 1),
+            std::process::id()
+        ));
+        std::os::unix::fs::symlink(&hook, &temporary).unwrap();
+        write_proposal(&proposals, "docs/other.md", 1, "--- b\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), "#!/bin/sh\nexit 0\n");
+    }
+
+    #[test]
+    fn two_paths_never_share_a_proposal() {
+        let long = |tail: &str| format!("{}/{tail}.md", "d".repeat(130));
+        for (a, b) in [
+            ("a/b.md".to_string(), "a__b.md".to_string()),
+            (long("x"), long("y")),
+        ] {
+            assert_ne!(proposal_name(&a, 1), proposal_name(&b, 1), "{a} {b}");
+        }
+        assert_ne!(proposal_name("a.md", 1), proposal_name("a.md", 2));
+        assert_eq!(proposal_name("a.md", 1), proposal_name("a.md", 1));
+    }
 
     #[test]
     fn a_passage_is_its_run_of_lines_and_its_patch_applies_with_context() {

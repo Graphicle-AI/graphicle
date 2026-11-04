@@ -531,7 +531,7 @@ pub fn assign_slugs(areas: &mut [Area], manifest: &Manifest) {
         }
     }
     for k in pending {
-        let base = graphicle::wiki::safe_filename(&areas[k].hub, 80);
+        let base = slug_of(&areas[k].hub);
         let mut slug = base.clone();
         let mut n = 2;
         while used.contains(&slug.to_lowercase()) {
@@ -540,6 +540,23 @@ pub fn assign_slugs(areas: &mut [Area], manifest: &Manifest) {
         }
         used.insert(slug.to_lowercase());
         areas[k].slug = slug;
+    }
+}
+
+/// A new article's name from `hub` that [`valid_slug`] accepts: its file
+/// name of at most 80 characters, with no `..` and, once cut, no `.` at
+/// either end.
+fn slug_of(hub: &str) -> String {
+    let mut slug = graphicle::wiki::safe_filename(hub, 80);
+    while slug.contains("..") {
+        slug = slug.replace("..", ".");
+    }
+    let slug = slug.trim_matches(['.', ' ']);
+    // The index keeps its name: the caller numbers an area named after it.
+    if valid_slug(slug) || slug.eq_ignore_ascii_case("index") {
+        slug.to_string()
+    } else {
+        "area".to_string()
     }
 }
 
@@ -750,15 +767,37 @@ impl Manifest {
     }
 }
 
-/// Write `text` to `path` through a temporary file beside it.
-fn write_atomic(path: &Path, text: &str) -> Result<()> {
+/// Write `text` to `path` through a new temporary file beside it, renamed
+/// into place: a symbolic link at `path` is replaced, never followed.
+pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    use std::io::Write;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "file".into());
     let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, text)?;
-    std::fs::rename(&temporary, path)?;
+    let create = || {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+    };
+    // A file left by an earlier run with the same process id, or a link
+    // put there, is removed (the link itself, not what it names) rather
+    // than written through.
+    let mut file = match create() {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::remove_file(&temporary)?;
+            create()?
+        }
+        other => other?,
+    };
+    let written = file.write_all(text.as_bytes()).and_then(|()| file.sync_all());
+    drop(file);
+    if let Err(error) = written.and_then(|()| std::fs::rename(&temporary, path)) {
+        let _ = std::fs::remove_file(&temporary);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -773,8 +812,12 @@ fn write_if_changed(path: &Path, text: &str) -> Result<bool> {
 
 /// Whether `text` is a file of the wiki this program wrote: an article or
 /// the index, which start with the same front matter.
+/// A checkout that converts line ends (`core.autocrlf`) gives it `\r\n`.
 pub fn is_article(text: &str) -> bool {
-    text.starts_with(&format!("---\n{MARK}: "))
+    text.strip_prefix("---")
+        .map(|rest| rest.strip_prefix('\r').unwrap_or(rest))
+        .and_then(|rest| rest.strip_prefix('\n'))
+        .is_some_and(|rest| rest.starts_with(&format!("{MARK}: ")))
 }
 
 /// Whether this program may write `path`: it does not exist, or it is a
@@ -787,14 +830,21 @@ pub fn ours(path: &Path) -> bool {
 }
 
 /// The lock of a run that writes the wiki in `dir`, held until it is
-/// dropped; `None` when another run holds it.
+/// dropped; `None` when another run holds it. A symbolic link at the lock's
+/// path is refused, not followed.
 pub fn lock(dir: &Path) -> Result<Option<std::fs::File>> {
-    let file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(dir.join(LOCK))?;
+    let path = dir.join(LOCK);
+    if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
+        return Err(Error::bad(format!(
+            "{} is a symbolic link: remove it",
+            path.display()
+        )));
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+    let file = options.open(&path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
@@ -804,7 +854,7 @@ pub fn lock(dir: &Path) -> Result<Option<std::fs::File>> {
 
 /// Model text made safe to render as Markdown prose: `\\`, `[`, `]`, `(`,
 /// `)`, `<` and `>` are escaped outside code spans, so a reply cannot add
-/// links, images or HTML.
+/// Markdown links, images or HTML.
 pub fn escape_markdown(text: &str) -> String {
     let parts: Vec<&str> = text.split('`').collect();
     // An odd count of backticks leaves the last one unpaired: its text is
@@ -1287,15 +1337,19 @@ impl Budget {
         self.spent += entry["cost_usd"].as_f64().unwrap_or(worst);
     }
 
-    /// Count a finished call by its usage.
-    pub fn add(&mut self, done: &model::Completion) {
-        if let Some(price) = &self.price {
-            self.spent += price.cost(
-                done.input_tokens.unwrap_or(0),
-                done.cached_tokens.unwrap_or(0),
-                done.output_tokens.unwrap_or(0),
-            );
-        }
+    /// Count a finished call by its usage, or at `worst`, its worst case,
+    /// when the server reported no usage (not every OpenAI-compatible
+    /// server does).
+    pub fn add(&mut self, done: &model::Completion, worst: f64) {
+        let Some(price) = &self.price else {
+            return;
+        };
+        self.spent += match (done.input_tokens, done.output_tokens) {
+            (Some(input), Some(output)) => {
+                price.cost(input, done.cached_tokens.unwrap_or(0), output)
+            }
+            _ => worst,
+        };
     }
 }
 
@@ -1322,6 +1376,9 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
     let _lock = if args.dry_run {
         None
     } else {
+        // A manifest this program would refuse stops the run before it
+        // creates the folder or the lock.
+        Manifest::load(&dir)?;
         std::fs::create_dir_all(&dir)?;
         match lock(&dir)? {
             Some(file) => Some(file),
@@ -1524,7 +1581,7 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
         };
         let reply = match result {
             Ok(done) => {
-                budget.add(&done);
+                budget.add(&done, worst);
                 match long_context::json_in(&done.text) {
                     Ok(reply) if reply.is_object() => Ok((done, reply)),
                     _ => Err("The model's article is not a JSON object".to_string()),
@@ -2315,6 +2372,85 @@ mod tests {
         manifest.save(dir.path(), "p").unwrap();
         let loaded = Manifest::load(dir.path()).unwrap().unwrap();
         assert_eq!(loaded.settings["max_articles"], 3);
+    }
+
+    #[test]
+    fn a_new_article_name_is_always_one_the_manifest_takes() {
+        // Cut at 80 characters the first ends in "."; the second keeps "..".
+        let hubs = [
+            format!("{}.rest", "a".repeat(79)),
+            "Reader..read".to_string(),
+            "..".to_string(),
+            "index".to_string(),
+        ];
+        let mut areas: Vec<Area> = hubs
+            .iter()
+            .enumerate()
+            .map(|(i, hub)| area(hub, &[&format!("f{i}.py")]))
+            .collect();
+        assign_slugs(&mut areas, &Manifest::default());
+        let mut manifest = Manifest::default();
+        for area in &areas {
+            assert!(valid_slug(&area.slug), "{:?}", area.slug);
+            manifest
+                .articles
+                .insert(area.slug.clone(), json!({"files":area.files}));
+        }
+        assert_eq!(manifest.articles.len(), hubs.len());
+        let dir = tempfile::TempDir::new().unwrap();
+        manifest.save(dir.path(), "p").unwrap();
+        let loaded = Manifest::load(dir.path()).unwrap().unwrap();
+        assert_eq!(loaded.articles.len(), hubs.len());
+    }
+
+    #[test]
+    fn an_article_checked_out_with_crlf_line_ends_is_ours() {
+        let text = render("a", &json!({"reply":{}}), &[]);
+        let crlf = text.replace('\n', "\r\n");
+        assert!(is_article(&text));
+        assert!(is_article(&crlf));
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("a.md");
+        std::fs::write(&path, &crlf).unwrap();
+        assert!(ours(&path));
+        assert!(!is_article("---\r\r\ngraphicle_wiki: 1\n"));
+        assert!(!is_article("---\ntitle: x\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_lock_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let elsewhere = dir.path().join("elsewhere");
+        std::os::unix::fs::symlink(&elsewhere, dir.path().join(LOCK)).unwrap();
+        assert!(lock(dir.path()).is_err());
+        assert!(!elsewhere.exists());
+    }
+
+    #[test]
+    fn a_finished_call_with_no_usage_counts_at_its_worst_case() {
+        let profile: model::Profile = serde_json::from_value(json!({"protocol":"chat",
+            "base_url":"https://api.example.com/v1","model":"m","input_limit":8000,"output_limit":4000,
+            "price":{"input":1.0,"output":2.0}}))
+        .unwrap();
+        let mut budget = Budget::new("m", &profile, 1.0).unwrap();
+        let done = |input: Option<u64>, output: Option<u64>| model::Completion {
+            text: String::new(),
+            input_tokens: input,
+            output_tokens: output,
+            cached_tokens: None,
+            reasoning_tokens: None,
+            elapsed_ms: 0,
+            model: "m".into(),
+        };
+        budget.add(&done(None, None), 0.4);
+        assert!((budget.spent - 0.4).abs() < 1e-12);
+        budget.add(&done(Some(100_000), None), 0.4);
+        assert!((budget.spent - 0.8).abs() < 1e-12);
+        assert!(!budget.fits(0.4));
+        // Reported usage counts at its price: 0.1 + 0.02.
+        budget.add(&done(Some(100_000), Some(10_000)), 0.4);
+        assert!((budget.spent - 0.92).abs() < 1e-12);
     }
 
     #[test]
