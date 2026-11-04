@@ -70,8 +70,10 @@ pub const PRODUCER: &str = "core";
 /// The extraction and resolution rules. Rows computed under other rules
 /// are recomputed by the next `link` job, which opening the store queues
 /// ([`migrate`]). `doc-links/2`: rows keep what they depend on, and the
-/// SDK's conversation sessions are not read.
-pub const RULES: &str = "doc-links/2";
+/// SDK's conversation sessions are not read. `doc-links/3`: rows say whether
+/// the definition a mention names changed after its passage did
+/// ([`crate::doc_stale`]).
+pub const RULES: &str = "doc-links/3";
 /// Mentions recorded per document; the rest are counted as omitted.
 pub const MAX_MENTIONS: usize = 2000;
 /// Longest mention text kept (an identifier, a dotted name or a path).
@@ -95,7 +97,8 @@ CREATE TABLE IF NOT EXISTS gf_doc_links (
     target_repository_id TEXT REFERENCES repo_projects(id) ON DELETE CASCADE,
     stable_id TEXT, target_relpath TEXT, target_sha256 TEXT,
     target_start INTEGER, target_end INTEGER, target TEXT NOT NULL DEFAULT '{}',
-    rung TEXT NOT NULL, producer TEXT NOT NULL, created_at TEXT NOT NULL);
+    rung TEXT NOT NULL, producer TEXT NOT NULL, created_at TEXT NOT NULL,
+    stale TEXT, baseline TEXT);
 CREATE INDEX IF NOT EXISTS gf_doc_links_document ON gf_doc_links(repository_id,document_id);
 CREATE INDEX IF NOT EXISTS gf_doc_links_file ON gf_doc_links(target_repository_id,target_relpath)
     WHERE state='linked';
@@ -135,6 +138,11 @@ pub fn migrate(db: &Connection) -> Result<()> {
         "dependencies",
         "TEXT NOT NULL DEFAULT '{}'",
     )?;
+    // Stale mentions: each row's flag and the baseline it was judged
+    // against, and the baselines themselves.
+    crate::store::ensure_column(db, "gf_doc_links", "stale", "TEXT")?;
+    crate::store::ensure_column(db, "gf_doc_links", "baseline", "TEXT")?;
+    db.execute_batch(crate::doc_stale::SCHEMA)?;
     for row in rows(
         db,
         "SELECT w.id FROM workspaces w WHERE NOT EXISTS \
@@ -1223,6 +1231,8 @@ struct Row {
     outcome: Outcome,
     /// The target's file and bytes, when its source is stored.
     window: Option<Window>,
+    /// The mention's passage key ([`crate::doc_stale::keys`]).
+    passage: String,
 }
 
 struct Computed {
@@ -1763,9 +1773,20 @@ fn compute_one(
             _ => {}
         }
     }
+    let spans: Vec<(usize, usize, &str)> = mentions
+        .iter()
+        .map(|m| {
+            (
+                m.byte_start,
+                m.byte_end,
+                content.get(m.byte_start..m.byte_end).unwrap_or(""),
+            )
+        })
+        .collect();
+    let passages = crate::doc_stale::keys(&content, &spans);
     let mut found = Vec::with_capacity(mentions.len());
     let (mut linked, mut ambiguous, mut unresolved, mut elsewhere) = (0, 0, 0, 0);
-    for (mention, outcome) in mentions.into_iter().zip(own) {
+    for ((mention, outcome), passage) in mentions.into_iter().zip(own).zip(passages) {
         let outcome = outcome.unwrap_or_else(|| resolve_elsewhere(&mention, &others));
         let window = match &outcome {
             Outcome::Linked(target, scope) => {
@@ -1808,6 +1829,7 @@ fn compute_one(
             mention,
             outcome,
             window,
+            passage,
         });
     }
     Ok(Some(Computed {
@@ -1897,8 +1919,10 @@ fn write(db: &Connection, computed: &Computed) -> Result<usize> {
     let mut insert = db.prepare_cached(
         "INSERT INTO gf_doc_links(repository_id,document_id,document_sha256,source_kind,byte_start,byte_end,\
          mention,mark,state,scope,candidates,target_repository_id,stable_id,target_relpath,target_sha256,\
-         target_start,target_end,target,rung,producer,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+         target_start,target_end,target,rung,producer,created_at,stale,baseline) \
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
     )?;
+    let mut baselines = crate::doc_stale::Baselines::load(db, &document.project, &document.id)?;
     for row in &computed.rows {
         let (state, scope, candidates, target) = match &row.outcome {
             Outcome::Linked(target, scope) => {
@@ -1918,6 +1942,12 @@ fn write(db: &Connection, computed: &Computed) -> Result<usize> {
             facts
         });
         let window = row.window.as_ref();
+        let current = target.map(|t| {
+            json!({"repository_id":t.repository,"stable_id":t.stable_id,"revision":t.revision,
+                "qualified_name":t.qualified_name,"kind":t.kind,"relpath":t.relpath,
+                "line":facts["line"],"episode":t.episode})
+        });
+        let flag = baselines.judge(&row.passage, &row.text, state, current.as_ref(), &stamp);
         insert.execute(params![
             document.project,
             document.id,
@@ -1939,9 +1969,12 @@ fn write(db: &Connection, computed: &Computed) -> Result<usize> {
             facts.to_string(),
             RUNG,
             PRODUCER,
-            stamp
+            stamp,
+            flag.as_ref().map(|(state, _)| *state),
+            flag.as_ref().map(|(_, baseline)| baseline.to_string())
         ])?;
     }
+    baselines.save(db, &document.project, &document.id)?;
     db.execute(
         "INSERT INTO gf_doc_link_sources(repository_id,document_id,source_kind,document_sha256,input,counts,updated_at,dependencies) \
          VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(repository_id,document_id) DO UPDATE SET source_kind=excluded.source_kind,\
@@ -2182,6 +2215,7 @@ fn write_all(
                     "DELETE FROM gf_doc_link_sources WHERE repository_id=? AND document_id=?",
                     params![project, document],
                 )?;
+                crate::doc_stale::forget(db, project, document)?;
                 let kind = if document.starts_with("file:") {
                     "repository_file"
                 } else {
@@ -2489,6 +2523,53 @@ impl<'a> Lookup<'a> {
              AND producer IN (SELECT value FROM json_each(?5)) ORDER BY document_id,byte_start,id",
             params![self.repository, relpath, a as i64, b as i64, self.producers],
         )
+    }
+    /// The flagged mentions ([`crate::doc_stale`]) inside `[a, b)` of the
+    /// project's `document` at its bytes `sha256` whose baseline definition
+    /// is in this project (a flag about another project's code is not said
+    /// here), as recall's note names them.
+    pub fn stale_in(
+        &self,
+        document: &str,
+        sha256: &str,
+        a: usize,
+        b: usize,
+    ) -> Result<Vec<crate::doc_stale::Flagged>> {
+        let found = rows(
+            self.db,
+            "SELECT mention,state,stale,baseline,target_repository_id,target_relpath FROM gf_doc_links \
+             WHERE repository_id=?1 AND document_id=?2 AND document_sha256=?3 AND stale IS NOT NULL \
+             AND producer=?4 AND byte_start>=?5 AND byte_end<=?6 ORDER BY byte_start,id",
+            params![
+                self.repository,
+                document,
+                sha256,
+                PRODUCER,
+                a as i64,
+                b as i64
+            ],
+        )?;
+        Ok(found
+            .iter()
+            .filter_map(|row| {
+                let flag = crate::doc_stale::view(row)?;
+                let was = flag["was"]["repository_id"]
+                    .as_str()
+                    .unwrap_or(&self.repository);
+                if was != self.repository {
+                    return None;
+                }
+                let relpath = (s(row, "state") == "linked"
+                    && s(row, "target_repository_id") == self.repository)
+                    .then(|| s(row, "target_relpath").to_string())
+                    .filter(|path| !path.is_empty());
+                Some(crate::doc_stale::Flagged {
+                    mention: s(row, "mention").to_string(),
+                    state: s(&flag, "state").to_string(),
+                    relpath,
+                })
+            })
+            .collect())
     }
     /// Whether the links of `document` were computed for its current bytes.
     fn computed_for(&self, document: &str, sha: &str) -> Result<bool> {
@@ -2971,6 +3052,195 @@ impl<'a> Readable<'a> {
     }
 }
 
+/// A stored row's stale flag ([`crate::doc_stale::view`]) as this reader
+/// may see it: `changed` on a row the reader sees linked, `missing` on one
+/// no longer linked, and only when the reader may read the project the
+/// baseline's definition was in (every project, for a definition in
+/// another project, as for any outcome across projects).
+fn stale_flag(
+    readable: &mut Readable<'_>,
+    project: &str,
+    link: &Value,
+    state: &str,
+) -> Result<Option<Value>> {
+    let Some(flag) = crate::doc_stale::view(link) else {
+        return Ok(None);
+    };
+    let fits = match s(&flag, "state") {
+        crate::doc_stale::CHANGED => state == "linked",
+        _ => state == "unresolved",
+    };
+    let was = flag["was"]["repository_id"].as_str().unwrap_or(project);
+    let visible = fits && (was == project || (readable.every()? && readable.project(was)?));
+    Ok(visible.then_some(flag))
+}
+
+/// The text of a document the reader may read, for line numbers.
+fn document_text(db: &Connection, project: &str, document: &str, sha: &str) -> Result<String> {
+    let found = if document.starts_with("file:") {
+        object(db, project, sha)?
+    } else {
+        let mut parts = document.splitn(3, ':');
+        let (_, connector, id) = (parts.next(), parts.next(), parts.next());
+        match (connector, id) {
+            (Some(connector), Some(id)) => one(
+                db,
+                "SELECT content FROM am_connector_docs WHERE connector_id=? AND id=? AND sha256=?",
+                params![connector, id, sha],
+            )?
+            .map(|row| s(&row, "content").to_string()),
+            _ => None,
+        }
+    };
+    Ok(found.unwrap_or_default())
+}
+
+/// The project's flagged mentions ([`crate::doc_stale`]) in the documents
+/// the reader may read now, at most `limit`: each with its document, line,
+/// flag and, for a changed definition, where it is now. Rows computed for
+/// other bytes are pending and left out.
+fn stale_listing(
+    db: &Connection,
+    project: &str,
+    readable: &mut Readable<'_>,
+    limit: usize,
+) -> Result<Value> {
+    let mut out = Vec::new();
+    let mut total = 0usize;
+    let mut texts: HashMap<String, String> = HashMap::new();
+    for link in rows(
+        db,
+        "SELECT * FROM gf_doc_links WHERE repository_id=? AND stale IS NOT NULL AND producer=? \
+         ORDER BY document_id,byte_start,id",
+        params![project, PRODUCER],
+    )? {
+        let document = s(&link, "document_id").to_string();
+        let Some(listed) = readable.document(project, &document)? else {
+            continue;
+        };
+        if listed.sha != s(&link, "document_sha256") {
+            continue;
+        }
+        let state = readable.state(&link)?;
+        let Some(flag) = stale_flag(readable, project, &link, state)? else {
+            continue;
+        };
+        total += 1;
+        if out.len() >= limit {
+            continue;
+        }
+        if !texts.contains_key(&document) {
+            let text = document_text(db, project, &document, &listed.sha)?;
+            texts.insert(document.clone(), text);
+        }
+        let at = link["byte_start"].as_u64().unwrap_or(0) as usize;
+        let mut item = json!({"document_id":document,"source_kind":link["source_kind"],
+            "mention":link["mention"],"line":line_of(&texts[&document], at),
+            "byte_start":link["byte_start"],"byte_end":link["byte_end"],
+            "state":flag["state"],"since":flag["since"],"was":flag["was"]});
+        if state == "linked" {
+            let facts: Value = serde_json::from_str(s(&link, "target")).unwrap_or(Value::Null);
+            item["now"] = json!({"repository_id":link["target_repository_id"],"stable_id":link["stable_id"],
+                "relpath":link["target_relpath"],"qualified_name":facts["qualified_name"],
+                "revision":facts["revision"],"line":facts["line"],"end_line":facts["end_line"]});
+        }
+        out.push(item);
+    }
+    Ok(json!({"repository_id":project,"stale":out,"count":total,"rules":RULES}))
+}
+
+/// The flagged mentions of a project as [`read`] lists them with `stale:
+/// true`, for a caller that holds the store (`graphicle wiki check`).
+pub fn stale_mentions(
+    store: &Store,
+    workspace: &str,
+    token: &str,
+    project: &str,
+    limit: usize,
+) -> Result<Value> {
+    store.authorized_read(workspace, token, "read", |db, p| {
+        let repository = crate::store::repo(db, p, project)?;
+        let mut readable = Readable::new(db, p);
+        stale_listing(db, s(&repository, "id"), &mut readable, limit)
+    })
+}
+
+/// Passages of the project's own repository documents, at their current
+/// bytes, that name one of `stable_ids` (a linked mention), at most
+/// `limit`, each once: `{document_id, path, line, mentions, text, stale}`
+/// with the passage's text cut at `chars` characters. Connector documents
+/// and captured sessions are left out (`graphicle wiki` sends these to a
+/// model).
+pub fn passages_naming(
+    db: &Connection,
+    project: &str,
+    stable_ids: &BTreeSet<String>,
+    limit: usize,
+    chars: usize,
+) -> Result<Vec<Value>> {
+    let heads = crate::store::heads(db, project)?;
+    let mut out: Vec<Value> = Vec::new();
+    let mut texts: HashMap<String, Option<String>> = HashMap::new();
+    let mut seen: HashMap<(String, usize), usize> = HashMap::new();
+    for link in rows(
+        db,
+        "SELECT document_id,document_sha256,byte_start,mention,stable_id,stale FROM gf_doc_links \
+         WHERE repository_id=?1 AND state='linked' AND producer=?2 AND target_repository_id=?1 \
+         AND document_id LIKE 'file:%' ORDER BY document_id,byte_start,id",
+        params![project, PRODUCER],
+    )? {
+        if !stable_ids.contains(s(&link, "stable_id")) {
+            continue;
+        }
+        let document = s(&link, "document_id").to_string();
+        let path = document.trim_start_matches("file:").to_string();
+        let sha = s(&link, "document_sha256").to_string();
+        if heads.get(&path) != Some(&sha) {
+            continue;
+        }
+        if !texts.contains_key(&document) {
+            texts.insert(document.clone(), object(db, project, &sha)?);
+        }
+        let Some(content) = texts[&document].as_deref() else {
+            continue;
+        };
+        let at = link["byte_start"].as_u64().unwrap_or(0) as usize;
+        let spans = crate::doc_stale::passages(content);
+        let Some((a, b)) = crate::doc_stale::passage_at(&spans, at) else {
+            continue;
+        };
+        let mention = s(&link, "mention").to_string();
+        let stale = link["stale"].as_str().is_some_and(|v| !v.is_empty());
+        if let Some(&i) = seen.get(&(document.clone(), a)) {
+            let item = &mut out[i];
+            if let Some(list) = item["mentions"].as_array_mut()
+                && !list.iter().any(|m| m == &json!(mention))
+            {
+                list.push(json!(mention));
+            }
+            if stale {
+                item["stale"] = json!(true);
+            }
+            continue;
+        }
+        if out.len() >= limit {
+            continue;
+        }
+        let text: String = content
+            .get(a..b)
+            .unwrap_or("")
+            .chars()
+            .take(chars)
+            .collect();
+        seen.insert((document.clone(), a), out.len());
+        out.push(
+            json!({"document_id":document,"path":path,"line":line_of(content, a),
+            "mentions":[mention],"text":text,"stale":stale}),
+        );
+    }
+    Ok(out)
+}
+
 /// `graph.doc_links` (read): the documents that mention a definition
 /// (`stable_id`, over the workspace's projects), the mentions of one of the
 /// project's documents (`document_id`), or, with neither, the project's link
@@ -2988,6 +3258,11 @@ pub fn read(store: &Store, workspace: &str, token: &str, args: &Value) -> Result
         let mut readable = Readable::new(db, p);
         let producers = json!(producers()).to_string();
         let limit = crate::integer(args, "limit", 200, 2000)?.max(1);
+        match args.get("stale") {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => {}
+            Some(Value::Bool(true)) => return stale_listing(db, &project, &mut readable, limit),
+            Some(_) => return Err(Error::bad("stale must be true or false")),
+        }
         if let Some(stable) = args.get("stable_id").filter(|v| !v.is_null()) {
             let stable = stable
                 .as_str()
@@ -3027,6 +3302,9 @@ pub fn read(store: &Store, workspace: &str, token: &str, args: &Value) -> Result
                         "end_line":facts["end_line"],"episode":facts["episode"],"scope":link["scope"]});
                 } else if state == "ambiguous" {
                     item["candidates"] = link["candidates"].clone();
+                }
+                if let Some(flag) = stale_flag(&mut readable, &project, &link, state)? {
+                    item["stale"] = flag;
                 }
                 if out.len() < limit {
                     out.push(item);
@@ -3194,7 +3472,7 @@ fn coverage(
     let mut rungs: BTreeMap<String, u64> = BTreeMap::new();
     for link in rows(
         db,
-        "SELECT document_id,document_sha256,state,scope,target_repository_id,rung FROM gf_doc_links \
+        "SELECT document_id,document_sha256,state,scope,target_repository_id,rung,stale,baseline FROM gf_doc_links \
          WHERE repository_id=? AND producer IN (SELECT value FROM json_each(?))",
         params![project, producers],
     )? {
@@ -3209,6 +3487,9 @@ fn coverage(
         *mentions.entry(document.to_string()).or_default() += 1;
         let state = readable.state(&link)?;
         bump(&mut kinds, kind, state, 1);
+        if let Some(flag) = stale_flag(readable, project, &link, state)? {
+            bump(&mut kinds, kind, &format!("stale_{}", s(&flag, "state")), 1);
+        }
         if state == "linked" {
             *rungs.entry(s(&link, "rung").to_string()).or_default() += 1;
             if s(&link, "target_repository_id") != project {

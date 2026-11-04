@@ -81,6 +81,7 @@ mod scale_bounds;
 mod see;
 mod selective_integration;
 mod service_gaps;
+mod stale_mentions;
 mod store_compat;
 mod structured_memory;
 mod symbol_links;

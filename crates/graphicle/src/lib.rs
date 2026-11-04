@@ -21,6 +21,7 @@ pub mod deletion;
 pub mod disconnect;
 pub mod distributed;
 pub mod doc_links;
+pub mod doc_stale;
 pub mod documents;
 pub mod embedding_cache;
 pub mod evidence;

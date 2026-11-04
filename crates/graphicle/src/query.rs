@@ -1848,6 +1848,14 @@ fn context_impl(
         Some(_) => json!({"status":"disabled"}),
         None => json!({"status":"not_requested"}),
     };
+    // Document excerpts whose passage names code that changed after it was
+    // written ([`crate::doc_stale`]): one note each. A failed read leaves the
+    // packet as it was and says so.
+    let stale_mentions = match doc_links {
+        Some(lookup) => crate::doc_stale::annotate(lookup, &mut hits)
+            .unwrap_or_else(|error| json!({"status":"error","error":error.message})),
+        None => json!({"status":"not_requested"}),
+    };
     // Memories lifted through links follow the selected ones.
     let pack_memories: Vec<&Value> = selected_memories.iter().chain(&linked_memories).collect();
     // The packer centres excerpts on the query's words; the packet names the
@@ -2072,6 +2080,7 @@ fn context_impl(
     packet["code_first"] = code_first_report;
     packet["query_focus"] = focus.report;
     packet["source_age"] = source_age;
+    packet["stale_mentions"] = stale_mentions;
     notes_report["defaulted"] = json!(notes_first_defaulted);
     packet[crate::notes_first::FIELD] = notes_report;
     if let Some(stemmer) = ranked.get("stemmer") {
