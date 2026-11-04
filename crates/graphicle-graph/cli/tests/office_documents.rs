@@ -96,3 +96,43 @@ fn a_deleted_document_takes_its_nodes_with_it() {
         assert!(graph.contains("parse_all"), "{setting:?}: {graph}");
     }
 }
+
+/// `extract` after `update`, with an absolute output folder beside the
+/// project or more than three folders up: the graph names the document by
+/// the file name of its sidecar, which the scan lists, so no source left
+/// the scan corpus and `extract` warns of none.
+#[test]
+fn extract_after_update_names_no_kept_source_for_a_converted_document() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let home = base.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let project = base.join("a/b/c/d/project");
+    let source = project.to_string_lossy().into_owned();
+    for out in [base.join("a/b/c/d/beside"), base.join("far")] {
+        let setting = out.to_string_lossy().into_owned();
+        let setting = Some(setting.as_str());
+        let _ = std::fs::remove_dir_all(&project);
+        let _ = std::fs::remove_dir_all(&out);
+        write_project(&project);
+        run(
+            &home,
+            setting,
+            &["extract", &source, "--code-only", "--force"],
+        );
+        run(&home, setting, &["update", &source]);
+        let graph = std::fs::read_to_string(out.join("graph.json")).unwrap();
+        assert!(graph.contains("ext_notes_"), "{setting:?}: {graph}");
+        for args in [
+            ["extract", &source, "--code-only"].as_slice(),
+            ["extract", &source, "--code-only", "--force"].as_slice(),
+        ] {
+            let output = run(&home, setting, args);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !stderr.contains("fail-closed"),
+                "{args:?} {setting:?}: {stderr}"
+            );
+        }
+    }
+}

@@ -147,6 +147,8 @@ pub fn stale_sources_in(
             .parent()
             .unwrap_or(Path::new(".")),
     );
+    // Where the scan converts Office documents (`<output>/converted`).
+    let converted = graph.parent().unwrap_or(Path::new(".")).join("converted");
     let seen = seen.iter().map(|s| paths::nfc(s)).collect::<BTreeSet<_>>();
     let basenames = seen
         .iter()
@@ -184,6 +186,16 @@ pub fn stale_sources_in(
             continue;
         }
         let p = Path::new(sf);
+        // A converted Office document outside the scan root is stored by the
+        // file name of its sidecar (`extract_normalize::portable_spelling`),
+        // unless the root holds a file of that name: while the scan lists the
+        // sidecar, the document is in the corpus and nothing left it.
+        if !p.is_absolute() && !sf.contains(['/', '\\']) && !root.join(sf).exists() {
+            let sidecar = crate::detect_ignore::absolute_lexical(&converted.join(sf));
+            if seen.contains(&npath(&sidecar)) || seen.contains(&npath(&resolve(&sidecar))) {
+                continue;
+            }
+        }
         let candidates = if p.is_absolute() {
             vec![p.into()]
         } else {
