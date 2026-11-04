@@ -24,7 +24,8 @@ graphicle wiki check --max-cost 0.5     # and proposed corrections, for your app
 graphicle wiki hook on --max-cost 0.25  # update after each commit (off by default)
 ```
 
-It needs a synced project (`graphicle sync .`) and a model profile, for
+It needs a synced project (`graphicle sync .`), run in its folder so that
+citations can be checked against the working tree, and a model profile, for
 example `graphicle config set model meta` ([configuration](configuration.md)).
 Any configured chat profile works, including one on this machine (Ollama or
 another local server).
@@ -35,7 +36,11 @@ The areas are the communities of the project's code graph, the same
 clustering the graph tools read, largest first. An area needs at least four
 code symbols; a smaller community joins the area it has the most graph edges
 with, and one with none is left out and counted in the index.
-`--max-articles` (default 30) caps the number of articles.
+`--max-articles` (default 30) caps the number of articles: an area that
+already has an article keeps it while the area exists, and new areas are
+added, largest first, until the cap. The wiki keeps `--max-articles` and
+`--budget` in its manifest, so later runs that name neither, such as the
+commit hook's, cover the same areas with the same budget.
 
 For each area the model gets:
 
@@ -44,8 +49,8 @@ For each area the model gets:
 - the area's files, its most connected symbols and the areas it connects to,
   by graph edges between them;
 - the passages of the project's own documents that name the area's code
-  (repository files only), each marked when the code it names changed after
-  it was written;
+  (repository files only, never the wiki's own articles), each marked when
+  the code it names changed after it was written;
 - the reviewed, current memories linked to the area's symbols or files
   (retained answers among them).
 
@@ -55,9 +60,13 @@ reviewed and may hold private text.
 The model returns a title, a one-line summary, and paragraphs on what the
 area does, its key parts, how it connects to other areas, and what the docs
 and memories say, each paragraph with the `path:line` citations it rests on,
-plus open questions. Graphicle checks every citation against the working
-tree: a citation that does not hold is dropped, and a paragraph left with
-none is dropped. The run reports both counts.
+plus open questions. Graphicle checks every citation: it must fall in the
+lines the request showed the model (the pack's excerpts and the doc
+passages) and those lines must exist in the working tree. A citation that
+does not hold is dropped, and a paragraph left with none is dropped. The run
+reports both counts. The check says that the cited lines were in front of
+the model, not that they prove the paragraph. Text from the model is
+escaped so that it cannot add links, images or HTML to the page.
 
 Each article starts with its provenance: the model, the profile, the time,
 the commit and a digest of its sources. A line under the title says a model
@@ -75,21 +84,36 @@ does not exist, `wiki build` writes a short one that points to
 `written/index.md`. The engine's `graphicle graph export wiki`, which writes
 an article per community with no model, replaces the `.md` files at the top
 of `.graphicle/wiki/` and never touches `written/`, so the two do not
-overwrite each other.
+overwrite each other. The export does replace that short
+`.graphicle/wiki/index.md` with its own index, which does not point to
+`written/`: open `written/index.md` directly, or delete the export's
+`index.md` and run `graphicle wiki update` to write the pointer again.
 
 `--out DIR` writes the wiki elsewhere, for example `docs/wiki` to keep it in
 the repository. In a folder that `graphicle sync` reads, the articles are
 also sources of recall: an excerpt of an article carries the note "written
 by a model (graphicle wiki): read the code it cites before relying on it"
-and comes after the code and docs. `.graphicle/` itself is not synced.
+and comes after the code and docs. The articles are never sources of the
+wiki itself: they are not doc passages of an area, they do not close a
+knowledge gap, and they are never listed as stale docs. The wiki's
+`manifest.json` and `proposals/` are not areas of the code either.
+`.graphicle/` itself is not synced.
+
+Each article and the index start with front matter that marks them as
+written by `graphicle wiki`. A file in the wiki's folder without it, such as
+your own `index.md` or a file with an article's name, is never replaced or
+removed: the run reports it and goes on. One run at a time writes a wiki
+folder: a second run that finds `.graphicle-wiki.lock` held stops.
 
 ## Keeping it current
 
 `graphicle wiki update` computes each area's sources again (its files'
 contents, the doc passages and the memories) and compares their digest with
 the one each article was written from. It writes again only the articles
-whose sources changed, removes the articles of areas that are gone, and
-leaves every other article byte-identical. An area keeps its article's name
+whose sources changed and removes the articles of areas that are gone.
+Every other article keeps the text the model wrote; only its "Listed by
+Graphicle" section is rendered again from the graph, so it keeps its bytes
+unless, for example, its connected areas changed. An area keeps its article's name
 while it shares at least half of its files with it, so a new clustering
 does not rename articles. Each article's files are also recorded as its
 sources in Graphicle's dependency index, so a sync marks the article stale.
@@ -101,15 +125,21 @@ or because you stopped it, goes on where it ended the next time.
 ## What it costs
 
 Before each call Graphicle works out its worst case: the request's input
-tokens (the pack and the area's text), none of them cached, and the output
-limit (at most 4,000 tokens an article), at the profile's configured price.
-The run stops before a call whose worst case would bring it over
-`--max-cost` (default 1 US dollar). The profile's own caps
-(`max_cost_per_call`, `max_cost_per_day`) apply too, and every call goes in
-the spend log (`graphicle usage`), without prompts or answers.
-`--dry-run` prints the articles to write and the worst case of their cost
-and calls nothing. A profile without a price runs only when its endpoint is
-on this machine.
+tokens (the pack and the area's text, estimated, times the profile's
+calibration from earlier calls, plus a 10% margin), none of them cached, and
+the output limit, at the profile's configured price. The output limit is
+4,000 tokens an article, or 16,000 for a profile that sets
+`reasoning_effort`, since reasoning tokens count as output; never more than
+the profile's own `output_limit`. The run stops before a call whose worst
+case would bring it over `--max-cost` (default 1 US dollar). A call that
+fails is counted too: at its cost in the spend log when the provider
+reported usage (a reply cut at the output limit is billed), else at its
+worst case. Three failed calls in a row stop the run. The profile's own
+caps (`max_cost_per_call`, `max_cost_per_day`) apply too, and every call
+goes in the spend log (`graphicle usage`), without prompts or answers.
+`--dry-run` prints the articles to write and the worst case of their cost,
+by the same formula, and calls nothing. A profile without a price runs only
+when its endpoint is on this machine (`localhost` or a loopback address).
 
 As a rough guide, an article's request is about `--budget` tokens plus a few
 thousand for the area's text; at 12,000 tokens of pack and a price of 1.25
@@ -141,15 +171,22 @@ dollar) and at most `--max-items` (default 20) stale doc mentions and as
 many stale memories. For each, the model reads the passage or the memory and
 the current code it names, and answers that it still holds, that it is
 outdated (with a corrected text and the code lines it cites), or that it
-cannot tell. The results are proposals; Graphicle never changes your files:
+cannot tell. A passage that names several changed definitions is one call.
+Only files whose bytes are the ones last synced are read and sent: a file
+the sync leaves out, or one changed since, is skipped (sync first). The
+pass counts failed calls as `build` does. The results are proposals;
+Graphicle never changes your files:
 
 - a doc's correction is written as a patch in `proposals/` in the wiki's
-  folder, which you can read and apply with `git apply`;
+  folder, which you can read and apply with `git apply` (it keeps CRLF line
+  ends and a last line without a line end; a later check replaces the patch
+  for the same passage);
 - a memory's correction becomes a draft memory in the approval queue of
   `graphicle open`, citing the code lines it rests on, for a member to
   review.
 
-A correction that cites no code line that holds is not kept. One more call
+A correction that cites no code line that holds, among the lines its
+request showed, is not kept. One more call
 suggests articles and questions for the knowledge gaps. There is no web
 search.
 
@@ -159,8 +196,15 @@ search.
 
 `graphicle wiki hook on --max-cost 0.25` adds a block to the repository's
 post-commit hook that runs `graphicle wiki update` in the background after
-each commit, with that cap per run. It is off until you turn it on, and
-`graphicle wiki hook off` removes the block; the rest of the hook is kept.
+each commit, with that cap per run: ten commits can spend ten times as
+much. To cap a day, set the profile's `max_cost_per_day`
+([configuration](configuration.md)). A run that finds another one writing
+the wiki stops. It is off until you turn it on, and `graphicle wiki hook
+off` removes the block; the rest of the hook is kept, and a hook left with
+nothing else is removed. The block follows the rules of the freshness hooks
+that `graphicle setup` adds: it goes before a final `exit` or `exec` line,
+and a hook in another language (Python, for one) is left alone, with the
+line to add yourself.
 
 ## What is sent to the model
 
