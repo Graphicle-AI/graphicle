@@ -2403,7 +2403,7 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
     // `references` edge; INFERRED for the typed-receiver arms.
     let mut emit_call = |raw: &'a P::R,
                          target: Option<&'a str>,
-                         inferred: bool,
+                         inferred_call: bool,
                          added: &mut Vec<Value>| {
         let caller = rs(raw, "caller_nid");
         let Some(target) = target.filter(|t| !t.is_empty() && *t != caller) else {
@@ -2471,8 +2471,8 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             "target": target,
             "relation": if attr_read { "references" } else { "calls" },
             "context": if attr_read { "property_read" } else { "call" },
-            "confidence": if inferred { "INFERRED" } else { "EXTRACTED" },
-            "confidence_score": if inferred { 0.85 } else { 1.0 },
+            "confidence": if inferred_call { "INFERRED" } else { "EXTRACTED" },
+            "confidence_score": if inferred_call { 0.85 } else { 1.0 },
             "source_file": rs(raw, "source_file"),
             "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
             "weight": 1.0,
