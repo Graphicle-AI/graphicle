@@ -668,9 +668,89 @@ pub fn score_query(
         per_term,
     )
 }
+/// Score multiplier of a test, document, configuration file or node with no
+/// source file in `query` seeding (Graphify 0.9.102).
+pub const QUERY_DEMOTE_WEIGHT: f64 = 0.3;
+const QUERY_TEST_WORDS: [&str; 5] = ["test", "tests", "testing", "testcase", "unittest"];
+const QUERY_DOC_WORDS: [&str; 4] = ["doc", "docs", "documentation", "readme"];
+const QUERY_DOC_SUFFIXES: [&str; 9] = [
+    ".md", ".rst", ".txt", ".yml", ".yaml", ".toml", ".cfg", ".ini", ".json",
+];
+const QUERY_DOC_DIRS: [&str; 4] = ["doc", "docs", "example", "examples"];
+/// `_query_path_weight` (Graphify 0.9.102): `query` prefers source code over
+/// tests and docs. A test named after a bug repeats the question's words, so
+/// it won the exact tier and took the seed slots of the source it tests.
+/// Tests, documents, configuration files and nodes with no source file count
+/// [`QUERY_DEMOTE_WEIGHT`], unless the question itself asks about tests (or
+/// docs); everything else counts 1. Only `query` applies it.
+pub fn query_path_weight<'a>(g: &'a Graph, terms: &[String]) -> impl Fn(usize) -> f64 + 'a {
+    let words: BTreeSet<String> = terms.iter().flat_map(|t| tokens(t)).collect();
+    let keep_tests = QUERY_TEST_WORDS.iter().any(|w| words.contains(*w));
+    let keep_docs = QUERY_DOC_WORDS.iter().any(|w| words.contains(*w));
+    move |i: usize| {
+        let attributes = &g.nodes[i].attributes;
+        let path = attributes
+            .get("source_file")
+            .filter(|v| crate::build::truthy(v))
+            .map(crate::python_compat::string)
+            .unwrap_or_default()
+            .replace('\\', "/");
+        let lower = path.to_lowercase();
+        let parts: Vec<&str> = lower.split('/').collect();
+        let (last, dirs) = parts.split_last().map_or(("", &[][..]), |(l, d)| (*l, d));
+        if !keep_tests
+            && (crate::paths::is_test_path(&path)
+                || dirs.contains(&"testing")
+                || last == "conftest.py")
+        {
+            return QUERY_DEMOTE_WEIGHT;
+        }
+        if !keep_docs
+            && (path.is_empty()
+                || matches!(
+                    attributes.get("file_type").and_then(Value::as_str),
+                    Some("document" | "paper")
+                )
+                || QUERY_DOC_SUFFIXES.iter().any(|s| last.ends_with(s))
+                || dirs.iter().any(|d| QUERY_DOC_DIRS.contains(d)))
+        {
+            return QUERY_DEMOTE_WEIGHT;
+        }
+        1.0
+    }
+}
+/// [`score_query`] with `query`'s per-node path weight (Graphify 0.9.102): it
+/// scales the combined score and each per-term singleton alike, so the
+/// per-term seed guarantee still holds but prefers a source node per term.
+pub fn score_query_weighted(
+    g: &Graph,
+    index: &SearchIndex,
+    terms: &[String],
+    per_term: bool,
+    weight: &dyn Fn(usize) -> f64,
+) -> QueryScores {
+    score_on_weighted(
+        &Resident {
+            g,
+            index,
+            degrees: degrees(g),
+        },
+        terms,
+        per_term,
+        Some(weight),
+    )
+}
 /// [`score_query`] over any [`ScoreSource`]: the same ranking, per-term
 /// winners and term order for the same strings, degrees and postings.
 pub fn score_on(source: &impl ScoreSource, terms: &[String], per_term: bool) -> QueryScores {
+    score_on_weighted(source, terms, per_term, None)
+}
+fn score_on_weighted(
+    source: &impl ScoreSource,
+    terms: &[String],
+    per_term: bool,
+    weight: Option<&dyn Fn(usize) -> f64>,
+) -> QueryScores {
     let mut seen = BTreeSet::new();
     let terms = terms
         .iter()
@@ -699,6 +779,7 @@ pub fn score_on(source: &impl ScoreSource, terms: &[String], per_term: bool) -> 
         let rationale = node.rationale;
         let (an, at) = (node.attr_norm, node.attr_tokens);
         let nid = node.id_lower;
+        let node_weight = weight.map_or(1.0, |w| w(i));
         let mut score = 0.0;
         if !joined.is_empty() {
             if [norm, bare, lt, nid].contains(&joined.as_str()) {
@@ -745,6 +826,7 @@ pub fn score_on(source: &impl ScoreSource, terms: &[String], per_term: bool) -> 
                     0.0
                 };
                 singleton += tier + substr + source + rationale_value + attr;
+                singleton *= node_weight;
                 let len = node.len;
                 if singleton > 0.0
                     && best.get(t).is_none_or(|old| {
@@ -763,6 +845,7 @@ pub fn score_on(source: &impl ScoreSource, terms: &[String], per_term: bool) -> 
         if tiered != 0.0 {
             score += tiered * (matched as f64 / terms.len() as f64).powi(2);
         }
+        score *= node_weight;
         if score > 0.0 {
             result.ranked.push((score, i));
         }

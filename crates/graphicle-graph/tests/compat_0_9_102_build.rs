@@ -130,7 +130,7 @@ fn edges_missing_relation_are_dropped() {
     let mut d = graphicle::build::Diagnostics::default();
     let g = graphicle::build::build_from_json(&mut extraction.clone(), true, None, &mut d).unwrap();
     assert_eq!(g.edge_count(), 1);
-    assert!(d.stderr.iter().any(|l| l.contains("dropped 1 schema-invalid edge(s) missing required field relation")), "{:?}", d.stderr);
+    assert!(d.stderr.iter().any(|l| l.contains("dropped 1 schema-invalid edge(s) missing required field 'relation'")), "{:?}", d.stderr);
     let mut raw = extraction;
     assert_eq!(graphicle::build::finalize_raw_graph_endpoints(&mut raw), 1);
     assert_eq!(raw["edges"].as_array().unwrap().len(), 1);

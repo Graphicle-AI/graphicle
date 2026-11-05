@@ -190,3 +190,98 @@ fn lone_help_after_query_or_explain_prints_usage() {
         }
     }
 }
+
+fn validators_graph(dir: &std::path::Path) -> String {
+    let graph = dir.join("graph.json");
+    std::fs::write(
+        &graph,
+        json!({
+            "directed": false, "multigraph": false, "graph": {},
+            "nodes": [
+                {"id": "src", "label": "validate_username()", "source_file": "pkg/auth/validators.py", "source_location": "L10"},
+                {"id": "tst", "label": "validate_username()", "source_file": "tests/auth/test_validators.py", "source_location": "L5"},
+                {"id": "doc", "label": "validate_username", "source_file": "docs/auth.md", "source_location": "L1"},
+                {"id": "cfg", "label": "username", "source_file": "pkg/settings.yml", "source_location": "L1"},
+                {"id": "ext", "label": "username"}
+            ],
+            "links": [{"source": "tst", "target": "src", "relation": "calls", "confidence": "EXTRACTED"}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    graph.to_string_lossy().into_owned()
+}
+
+fn node_sources(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| l.starts_with("NODE "))
+        .map(|l| {
+            l.split(" [src=")
+                .nth(1)
+                .unwrap()
+                .split(' ')
+                .next()
+                .unwrap()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn query_answer_leads_with_source_not_test() {
+    // test_query_source_first.py (Graphify 0.9.102): tests, docs, config
+    // and source-less nodes weigh less unless the question asks for them.
+    let dir = tempfile::tempdir().unwrap();
+    let graph = validators_graph(dir.path());
+    let r = run(&[
+        "query",
+        "validate_username allows a trailing newline",
+        "--graph",
+        &graph,
+        "--depth",
+        "1",
+    ]);
+    assert_eq!(r.exit_code, 0, "{}", r.stderr);
+    assert_eq!(
+        node_sources(&r.stdout)[0],
+        "pkg/auth/validators.py",
+        "{}",
+        r.stdout
+    );
+    assert!(r.stdout.contains("depth=1"), "{}", r.stdout);
+}
+
+#[test]
+fn query_depth_and_budget_come_from_options_then_project_settings() {
+    // test_query_cli.py (Graphify 0.9.102): --depth 1-6, the project
+    // .graphiclerc query_depth/query_budget, then 2 and 2000.
+    let q = "how does validate_username work";
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join(".graphicle");
+    std::fs::create_dir_all(&out).unwrap();
+    let graph = validators_graph(&out);
+    let r = run(&["query", q, "--graph", &graph]);
+    assert!(r.stdout.contains("depth=2"), "{}", r.stdout);
+    std::fs::write(
+        dir.path().join(".graphiclerc"),
+        "query_depth=3\nquery_budget=50\n",
+    )
+    .unwrap();
+    let r = run(&["query", q, "--graph", &graph]);
+    assert!(r.stdout.contains("depth=3"), "{}", r.stdout);
+    let r = run(&["query", q, "--graph", &graph, "--depth=4"]);
+    assert!(r.stdout.contains("depth=4"), "{}", r.stdout);
+    for bad in ["0", "7", "x"] {
+        let r = run(&["query", q, "--graph", &graph, "--depth", bad]);
+        assert_ne!(r.exit_code, 0, "{bad}");
+        assert!(
+            r.stderr.contains("--depth must be an integer from 1 to 6"),
+            "{}",
+            r.stderr
+        );
+    }
+    std::fs::write(dir.path().join(".graphiclerc"), "query_depth=9\n").unwrap();
+    let r = run(&["query", q, "--graph", &graph]);
+    assert!(r.stderr.contains("ignoring project settings"), "{}", r.stderr);
+    assert!(r.stdout.contains("depth=2"), "{}", r.stdout);
+}

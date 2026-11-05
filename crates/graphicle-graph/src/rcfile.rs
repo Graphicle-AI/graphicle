@@ -5,6 +5,9 @@
 //! One `key=value` per line, `#` comments, blank lines ignored. Keys:
 //!
 //! - `viz_node_limit=<int>`: baked into the generated git hooks.
+//! - `query_budget=<positive int>` and `query_depth=<int 1-6>`: project
+//!   defaults for the `query` command; explicit options override them, and
+//!   without them the budget is 2000 and the depth 2 (Graphify 0.9.102).
 //! - `language.<ext>=<language | .ext>`: treat files with extension `<ext>` as
 //!   the named language for classification, extractor dispatch and cross-file
 //!   resolution (#2961). `<ext>` may be written with or without its leading
@@ -94,6 +97,8 @@ pub type LanguageOverrides = BTreeMap<String, String>;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RcConfig {
     pub viz_node_limit: Option<i64>,
+    pub query_budget: Option<i64>,
+    pub query_depth: Option<i64>,
     pub languages: Vec<(String, String)>,
 }
 
@@ -107,6 +112,12 @@ impl RcConfig {
         let mut out = Map::new();
         if let Some(limit) = self.viz_node_limit {
             out.insert("viz_node_limit".into(), json!(limit));
+        }
+        if let Some(budget) = self.query_budget {
+            out.insert("query_budget".into(), json!(budget));
+        }
+        if let Some(depth) = self.query_depth {
+            out.insert("query_depth".into(), json!(depth));
         }
         if !self.languages.is_empty() {
             let languages: Map<String, Value> = self
@@ -262,6 +273,26 @@ pub fn load_rc_file(root: &Path) -> Result<RcConfig> {
                 ))
             })?;
             config.viz_node_limit = Some(parsed);
+        } else if key == "query_budget" || key == "query_depth" {
+            let depth = key == "query_depth";
+            let requirement = if depth {
+                "an integer from 1 to 6"
+            } else {
+                "a positive integer"
+            };
+            let parsed = python_int(val)
+                .filter(|n| *n > 0 && (!depth || *n <= 6))
+                .ok_or_else(|| {
+                    crate::Error::invalid(format!(
+                        "Invalid {key} in {shown_path} at line {line_num}: {}. Must be {requirement}.",
+                        crate::python_compat::repr_string(val)
+                    ))
+                })?;
+            if depth {
+                config.query_depth = Some(parsed);
+            } else {
+                config.query_budget = Some(parsed);
+            }
         } else if let Some(ext_part) = key.strip_prefix("language.") {
             let ext_part = py_strip(ext_part);
             if ext_part.is_empty() || ext_part.chars().any(whitespace) {

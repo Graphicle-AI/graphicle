@@ -91,7 +91,33 @@ fn query_loaded(
         "query" => {
             a.require(0, QUERY_USAGE)?;
             let mode = if a.flag("dfs") { "dfs" } else { "bfs" };
-            let budget = a.number("budget", 2000)?;
+            // `--depth` (1-6) and the project's `.graphiclerc` defaults
+            // `query_budget`/`query_depth`; explicit options win (Graphify
+            // 0.9.102).
+            let depth = match a.get("depth") {
+                None => None,
+                Some(raw) => Some(
+                    raw.trim()
+                        .parse::<i64>()
+                        .ok()
+                        .filter(|d| (1..=6).contains(d))
+                        .ok_or_else(|| "--depth must be an integer from 1 to 6".to_string())?,
+                ),
+            };
+            let budget = a.get("budget").map(|_| a.number("budget", 2000)).transpose()?;
+            let graph_root = graph_root_for(&gp);
+            let settings = match crate::rcfile::load_rc_file(&graph_root) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    out.warn(format!(
+                        "warning: ignoring project settings in {}: {e}",
+                        graph_root.join(crate::rcfile::RC_FILENAME).display()
+                    ));
+                    Default::default()
+                }
+            };
+            let budget = budget.or(settings.query_budget).unwrap_or(2000);
+            let depth = depth.or(settings.query_depth).unwrap_or(2);
             let seeds = a.all("seed");
             let start = Instant::now();
             let result = crate::serve_text::query_text(
@@ -100,17 +126,17 @@ fn query_loaded(
                 q,
                 crate::serve_text::QueryOptions {
                     mode,
-                    depth: 2,
+                    depth,
                     budget,
                     filters: &a.all("context"),
                     path: gp.to_str(),
                     seeds: Some(&seeds),
                     // The root `affected` derives (#2706): <root>/.graphicle/graph.json.
-                    seed_root: graph_root_for(&gp),
+                    seed_root: Some(&graph_root),
                 },
             )?;
             crate::querylog::log_query(
-                &json!({"kind":"query","question":q,"corpus":gp,"result":result,"duration_ms":start.elapsed().as_secs_f64()*1000.0,"extra":{"mode":mode,"depth":2,"token_budget":budget,"seeds":(!seeds.is_empty()).then_some(&seeds)}}),
+                &json!({"kind":"query","question":q,"corpus":gp,"result":result,"duration_ms":start.elapsed().as_secs_f64()*1000.0,"extra":{"mode":mode,"depth":depth,"token_budget":budget,"seeds":(!seeds.is_empty()).then_some(&seeds)}}),
             );
             crate::cli_guard::touch_query(&gp);
             out.line(&result);
@@ -301,6 +327,7 @@ fn query_loaded(
             a.require(0, "affected <node> [--graph PATH]")?;
             let g = crate::serve_socket::shared_graph(&gp)?;
             let root = graph_root_for(&gp);
+            let root = Some(root.as_path());
             let mut rels = a.all("relation");
             if rels.is_empty() {
                 rels = crate::affected::DEFAULT_AFFECTED_RELATIONS
@@ -342,18 +369,51 @@ fn query_loaded(
     }
     Ok(())
 }
-/// The analysed repository root of a graph file: `<root>/.graphicle/graph.json`,
-/// else the file's own directory (Graphify 0.9.88 `_graph_root_for`, as
-/// `affected` derived it, #2706).
-fn graph_root_for(gp: &Path) -> Option<&Path> {
-    if gp.parent().is_some_and(|p| {
-        p.file_name()
-            .is_some_and(|n| n == paths::OUT_DIR_NAME.as_str())
-    }) {
-        gp.parent().and_then(Path::parent)
-    } else {
-        gp.parent()
+/// `_graph_root_for` (Graphify 0.9.102): the project of a graph file, never
+/// read through the working directory. An absolute `.graphicle_root` marker
+/// beside it that names a folder wins (shared output); otherwise an exact,
+/// relative output-folder suffix without `..` is stripped
+/// (`<root>/.graphicle/graph.json`), else the file's own folder.
+fn graph_root_for(gp: &Path) -> std::path::PathBuf {
+    let parent = gp.parent().unwrap_or(Path::new(""));
+    if let Ok(bytes) = std::fs::read(parent.join(".graphicle_root"))
+        && let Ok(text) = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
+    {
+        let text = text.trim();
+        if !text.is_empty() {
+            let root = Path::new(text);
+            if root.is_absolute()
+                && let Ok(resolved) = crate::fsutil::resolve_missing(root)
+                && resolved.is_dir()
+            {
+                return resolved;
+            }
+        }
     }
+    let output = Path::new(paths::OUT_DIR.as_str());
+    let parts: Vec<_> = output
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    if !parts.is_empty()
+        && !output.is_absolute()
+        && !parts
+            .iter()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        let mine: Vec<_> = parent
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect();
+        if mine.len() >= parts.len() && mine[mine.len() - parts.len()..] == parts[..] {
+            let mut root = parent;
+            for _ in 0..parts.len() {
+                root = root.parent().unwrap_or(Path::new(""));
+            }
+            return root.to_path_buf();
+        }
+    }
+    parent.to_path_buf()
 }
 pub fn install(command: &str, a: &Args, out: &mut Output) -> Result<()> {
     let generic = ["install", "uninstall"].contains(&command);
