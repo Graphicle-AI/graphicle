@@ -355,3 +355,38 @@ fn affected_sets_the_documented_exit_codes() {
     assert_eq!(r.exit_code, 0, "{}", r.stderr);
     assert!(r.stdout.contains("main()"), "{}", r.stdout);
 }
+
+#[test]
+fn path_reports_the_weakest_of_equal_length_routes() {
+    // test_path_confidence.py (Graphify 0.9.99, #4881): of two two-hop routes
+    // A -> C, the reported confidence is the weaker route's, and says so; a
+    // unique route carries no such note.
+    let dir = tempfile::tempdir().unwrap();
+    let graph = dir.path().join("graph.json");
+    let node = |id: &str| json!({"id": id, "label": id, "file_type": "code", "source_file": "m.py"});
+    std::fs::write(
+        &graph,
+        json!({
+            "directed": true, "multigraph": false, "graph": {},
+            "nodes": [node("A"), node("B1"), node("C"), node("B2"), node("D")],
+            "links": [
+                {"source": "A", "target": "B1", "relation": "calls", "confidence": "EXTRACTED", "source_file": "m.py"},
+                {"source": "B1", "target": "C", "relation": "calls", "confidence": "EXTRACTED", "source_file": "m.py"},
+                {"source": "A", "target": "B2", "relation": "calls", "confidence": "EXTRACTED", "source_file": "m.py"},
+                {"source": "B2", "target": "C", "relation": "dispatches_to", "confidence": "AMBIGUOUS", "confidence_score": 0.3, "source_file": "m.py"},
+                {"source": "C", "target": "D", "relation": "calls", "confidence": "EXTRACTED", "source_file": "m.py"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let g = graph.to_str().unwrap();
+    let r = run(&["path", "A", "C", "--graph", g]);
+    assert_eq!(r.exit_code, 0, "{}", r.stderr);
+    let last = r.stdout.trim_end().lines().last().unwrap_or_default().to_owned();
+    assert!(last.contains("AMBIGUOUS"), "{}", r.stdout);
+    assert!(last.contains("weakest of 2 equal-length routes"), "{}", r.stdout);
+    let r = run(&["path", "C", "D", "--graph", g]);
+    assert_eq!(r.exit_code, 0, "{}", r.stderr);
+    assert!(!r.stdout.contains("equal-length routes"), "{}", r.stdout);
+}

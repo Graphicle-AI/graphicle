@@ -732,7 +732,7 @@ fn shortest_path_with(
             }
         }
     }
-    let Some(meeting) = meeting else {
+    if meeting.is_none() {
         let source_label = if cli {
             source.to_string()
         } else {
@@ -759,17 +759,11 @@ fn shortest_path_with(
         } else {
             message
         }));
-    };
-    let mut path = vec![meeting];
-    while *path.last().unwrap() != src {
-        path.push(parents[path.last().unwrap()]);
     }
-    path.reverse();
-    let mut node = meeting;
-    while node != tgt {
-        node = successors[&node];
-        path.push(node);
-    }
+    // Among every shortest route, the one whose weakest hop is weakest, so
+    // the confidence never overstates the connection (Graphify 0.9.99,
+    // #4881).
+    let (path, routes, capped) = weakest_shortest_path(g, adj, src, tgt);
     let hops = path.len() - 1;
     let max = args["max_hops"].as_i64().unwrap_or(8);
     if hops as i64 > max {
@@ -780,19 +774,7 @@ fn shortest_path_with(
     let mut segments = vec![label(g, src)];
     let mut hop_datas: Vec<Vec<&crate::record::Attributes>> = Vec::new();
     for pair in path.windows(2) {
-        let (u, v) = (pair[0], pair[1]);
-        let (mut fwd, mut bwd) = (vec![], vec![]);
-        for (a, b) in [(u, v), (v, u)] {
-            for e in g.edges_between(&g.nodes[a].id, &g.nodes[b].id) {
-                if e.attributes.get("_src").unwrap_or(&g.nodes[a].id) == &g.nodes[u].id {
-                    fwd.push(e);
-                } else {
-                    bwd.push(e);
-                }
-            }
-        }
-        let forward = !fwd.is_empty();
-        let data = if forward { fwd } else { bwd };
+        let (v, (forward, data)) = (pair[1], hop_edges(g, pair[0], pair[1]));
         hop_datas.push(data.iter().map(|e| &e.attributes).collect());
         let terms = |k| {
             data.iter()
@@ -839,7 +821,15 @@ fn shortest_path_with(
     };
     // The path's confidence is that of its weakest hop (Graphify 0.9.98,
     // #4885).
-    let summary = path_confidence_line(&hop_datas);
+    let mut summary = path_confidence_line(&hop_datas);
+    if !summary.is_empty() && routes > 1 {
+        let routes = if capped {
+            format!("{MAX_SHORTEST_PATHS}+")
+        } else {
+            routes.to_string()
+        };
+        summary.push_str(&format!(" (weakest of {routes} equal-length routes)"));
+    }
     Ok(PathAnswer {
         text: format!(
             "{prefix}Shortest path ({hops} hops):\n  {}{}",
@@ -857,16 +847,17 @@ fn shortest_path_with(
 /// The rank of a hop in [`path_weakest`]: confidence tier, scoredness,
 /// score and hop index.
 type WeakestRank = (u8, bool, f64, usize);
+/// [`path_weakest`]'s answer: `(rank, hop, relation, confidence or None for
+/// no recognised tag, score)`.
+type Weakest = (WeakestRank, usize, String, Option<String>, Option<f64>);
 /// `_path_weakest` (Graphify 0.9.98-0.9.99, #4885): the weakest hop of a
 /// path, ranked by the weakest evidence it carries (confidence tier, then the
 /// lowest score; a missing score never counts as weaker than a present one,
 /// and EXTRACTED's score is neither ranked nor printed). Returns `(hop,
 /// relation, confidence or None for no recognised tag, score)`.
-fn path_weakest(
-    hop_datas: &[Vec<&crate::record::Attributes>],
-) -> Option<(usize, String, Option<String>, Option<f64>)> {
+fn path_weakest(hop_datas: &[Vec<&crate::record::Attributes>]) -> Option<Weakest> {
     let empty = crate::record::Attributes::new();
-    let mut weakest: Option<(WeakestRank, usize, String, Option<String>, Option<f64>)> = None;
+    let mut weakest: Option<Weakest> = None;
     for (index, datas) in hop_datas.iter().enumerate() {
         let hop = index + 1;
         let datas: Vec<&crate::record::Attributes> = if datas.is_empty() {
@@ -890,14 +881,9 @@ fn path_weakest(
                     _ => 0,
                 };
                 let key = (rank, score.is_none(), score.unwrap_or(0.0), hop);
-                let weaker = weakest.as_ref().is_none_or(|(old, ..)| {
-                    key.0
-                        .cmp(&old.0)
-                        .then(key.1.cmp(&old.1))
-                        .then(key.2.total_cmp(&old.2))
-                        .then(key.3.cmp(&old.3))
-                        .is_lt()
-                });
+                let weaker = weakest
+                    .as_ref()
+                    .is_none_or(|(old, ..)| rank_cmp(&key, old).is_lt());
                 if weaker {
                     let relation = d
                         .get("relation")
@@ -910,12 +896,143 @@ fn path_weakest(
             }
         }
     }
-    weakest.map(|(_, hop, relation, conf, score)| (hop, relation, conf, score))
+    weakest
+}
+fn rank_cmp(a: &WeakestRank, b: &WeakestRank) -> std::cmp::Ordering {
+    a.0.cmp(&b.0)
+        .then(a.1.cmp(&b.1))
+        .then(a.2.total_cmp(&b.2))
+        .then(a.3.cmp(&b.3))
+}
+/// `_path_confidence_key`: a path's weakest-first sort key; a path with no
+/// confidence evidence at all (`None`) sorts below any tagged one.
+fn path_confidence_key(hop_datas: &[Vec<&crate::record::Attributes>]) -> Option<WeakestRank> {
+    path_weakest(hop_datas).map(|(key, ..)| key)
+}
+/// The edges of one hop `u -> v` and whether they run that way: the
+/// `_src`-marked direction (#2309) as the path renderer reads it, else the
+/// reverse edges (`_path_hop_datas`).
+fn hop_edges(g: &Graph, u: usize, v: usize) -> (bool, Vec<&crate::graph::Edge>) {
+    let (mut fwd, mut bwd) = (vec![], vec![]);
+    for (a, b) in [(u, v), (v, u)] {
+        for e in g.edges_between(&g.nodes[a].id, &g.nodes[b].id) {
+            if e.attributes.get("_src").unwrap_or(&g.nodes[a].id) == &g.nodes[u].id {
+                fwd.push(e);
+            } else {
+                bwd.push(e);
+            }
+        }
+    }
+    if fwd.is_empty() {
+        (false, bwd)
+    } else {
+        (true, fwd)
+    }
+}
+/// Enough equal-length routes to find the weakest among them without letting
+/// a pathological graph enumerate exponentially many (#4881).
+const MAX_SHORTEST_PATHS: usize = 256;
+/// `_weakest_shortest_path`: NetworkX's `all_shortest_paths` over the search
+/// adjacency (`predecessor`, then `_build_paths_from_predecessors`, in their
+/// order), bounded at [`MAX_SHORTEST_PATHS`], and the first route with the
+/// weakest [`path_confidence_key`]. Returns `(route, routes, capped)`; the
+/// caller has already found that a route exists.
+fn weakest_shortest_path(
+    g: &Graph,
+    adj: &[Vec<usize>],
+    src: usize,
+    tgt: usize,
+) -> (Vec<usize>, usize, bool) {
+    // nx.predecessor: breadth first, every same-level parent in visit order.
+    let mut level_of: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::from([(src, 0)]);
+    let mut pred: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::from([(src, vec![])]);
+    let mut next_level = vec![src];
+    let mut level = 0;
+    while !next_level.is_empty() {
+        level += 1;
+        for v in std::mem::take(&mut next_level) {
+            for &w in &adj[v] {
+                match level_of.get(&w) {
+                    None => {
+                        level_of.insert(w, level);
+                        pred.insert(w, vec![v]);
+                        next_level.push(w);
+                    }
+                    Some(&l) if l == level => pred.entry(w).or_default().push(v),
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    // _build_paths_from_predecessors({src}, tgt, pred), stopping one past
+    // the cap as upstream does.
+    let mut paths: Vec<Vec<usize>> = vec![];
+    let mut seen = std::collections::HashSet::from([tgt]);
+    let mut stack: Vec<(usize, usize)> = vec![(tgt, 0)];
+    let mut top: isize = 0;
+    while top >= 0 {
+        let t = top as usize;
+        let (node, i) = stack[t];
+        if node == src {
+            paths.push(stack[..=t].iter().rev().map(|(n, _)| *n).collect());
+            if paths.len() > MAX_SHORTEST_PATHS {
+                break;
+            }
+        }
+        let preds = pred.get(&node).map_or(&[][..], Vec::as_slice);
+        if preds.len() > i {
+            stack[t].1 = i + 1;
+            let next = preds[i];
+            if !seen.insert(next) {
+                continue;
+            }
+            top += 1;
+            let t = top as usize;
+            if t == stack.len() {
+                stack.push((next, 0));
+            } else {
+                stack[t] = (next, 0);
+            }
+        } else {
+            seen.remove(&node);
+            top -= 1;
+        }
+    }
+    let capped = paths.len() > MAX_SHORTEST_PATHS;
+    paths.truncate(MAX_SHORTEST_PATHS);
+    let routes = paths.len();
+    let mut best: Option<(Option<WeakestRank>, usize)> = None;
+    for (i, path) in paths.iter().enumerate() {
+        let hop_datas = path
+            .windows(2)
+            .map(|pair| {
+                hop_edges(g, pair[0], pair[1])
+                    .1
+                    .into_iter()
+                    .map(|e| &e.attributes)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let key = path_confidence_key(&hop_datas);
+        let weaker = best.as_ref().is_none_or(|(old, _)| match (&key, old) {
+            (None, None) => false,
+            (None, Some(_)) => true,
+            (Some(_), None) => false,
+            (Some(a), Some(b)) => rank_cmp(a, b).is_lt(),
+        });
+        if weaker {
+            best = Some((key, i));
+        }
+    }
+    let chosen = best.map_or(0, |(_, i)| i);
+    (paths.swap_remove(chosen), routes, capped)
 }
 /// `_path_confidence_line`: `Path confidence: <tier> (weakest hop N: rel,
 /// score S)`, or `unknown` when the weakest hop has no recognised tag.
 fn path_confidence_line(hop_datas: &[Vec<&crate::record::Attributes>]) -> String {
-    let Some((hop, relation, conf, score)) = path_weakest(hop_datas) else {
+    let Some((_, hop, relation, conf, score)) = path_weakest(hop_datas) else {
         return String::new();
     };
     match conf {
