@@ -1952,7 +1952,8 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     // the engine build, the settings, the configuration above the root or
     // the manifest's writer changed since the last rebuild, this stays the
     // full rebuild, and so does `--force`. A derived rebuild is incremental:
-    // it records no early stop.
+    // it records no early stop. An empty change set takes the full update
+    // too, which finds nothing to change and records the early stop.
     let mut derived = None;
     if o.incremental && o.changed_paths.is_none() && !o.force {
         let baseline = base_state
@@ -1988,16 +1989,24 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                     .flat_map(|buckets| buckets.values())
                     .map(|bucket| bucket.as_array().map_or(0, Vec::len))
                     .sum();
-                result.messages.push(if changed.is_empty() {
-                    format!("Incremental: none of the {scanned} scanned files differ from the last build.")
+                if changed.is_empty() {
+                    // Nothing differs from the manifest: the full update runs,
+                    // finds nothing to change and records the early stop, so
+                    // the next update stops before scanning extraction at all
+                    // (Graphicle's early stop, kept beside #4740).
+                    if timer.enabled {
+                        eprintln!(
+                            "[graphicle timing] full update: none of the {scanned} scanned files differ from the manifest"
+                        );
+                    }
                 } else {
-                    format!(
+                    result.messages.push(format!(
                         "Incremental: re-extracting {} of {scanned} scanned files that changed since the last build.",
                         changed.len()
-                    )
-                });
-                derived = Some(changed);
-                state = None;
+                    ));
+                    derived = Some(changed);
+                    state = None;
+                }
             }
             Ok(()) => {}
             Err(why) => {
