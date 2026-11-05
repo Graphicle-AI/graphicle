@@ -2550,6 +2550,177 @@ fn call_site(value: Option<&Value>) -> Option<CallSite> {
         _ => None,
     }
 }
+/// `_resolve_jvm_references` (Graphify 0.9.100, #4874): Java and Kotlin share
+/// one package and type namespace. Index the sourced type nodes of both by
+/// fully qualified name, and repoint an `imports`, `inherits`, `extends`,
+/// `implements` or `references` edge of a JVM file when its written FQN (or
+/// its simple name through the file's imports or package) names exactly one.
+/// A bare import with no target node keeps its file-level edge and gains the
+/// class edge. Runs before the Kotlin import pass and call evidence.
+pub fn jvm_references<P: PerFile>(
+    per: &[P],
+    paths: &[std::path::PathBuf],
+    nodes: &[Value],
+    edges: &mut Vec<Value>,
+) {
+    static PACKAGE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?m)^\s*package\s+([\w.]+)\s*;").unwrap()
+    });
+    static IMPORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?m)^\s*import\s+(?:static\s+)?([\w.]+)\s*;").unwrap()
+    });
+    fn set(imports: &mut Vec<(String, String)>, simple: &str, fqn: &str) {
+        match imports.iter_mut().find(|(s, _)| s == simple) {
+            Some(entry) => entry.1 = fqn.to_string(),
+            None => imports.push((simple.to_string(), fqn.to_string())),
+        }
+    }
+    let mut packages: FxHashMap<String, String> = FxHashMap::default();
+    let mut imports: FxHashMap<String, Vec<(String, String)>> = FxHashMap::default();
+    let mut kotlin_files: FxHashSet<String> = FxHashSet::default();
+    for (path, r) in paths.iter().zip(per) {
+        let suffix = crate::rcfile::effective_suffix(path).to_lowercase();
+        let kotlin = suffix == ".kt" || suffix == ".kts";
+        if !kotlin && suffix != ".java" {
+            continue;
+        }
+        let source_file = r
+            .nodes()
+            .into_iter()
+            .flatten()
+            .map(|n| rs(n, "source_file"))
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let mut file_imports = vec![];
+        let package = if kotlin {
+            kotlin_files.insert(source_file.clone());
+            r.key("kotlin_package")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        } else {
+            let text = crate::extractors::base::read_source_text(path, false).unwrap_or_default();
+            for m in IMPORT.captures_iter(&text) {
+                let body = m[1].trim();
+                if body.ends_with(".*") || !body.contains('.') {
+                    continue;
+                }
+                let simple = body.rsplit('.').next().unwrap_or("");
+                if simple.chars().next().is_some_and(char::is_uppercase) {
+                    set(&mut file_imports, simple, body);
+                }
+            }
+            PACKAGE
+                .captures(&text)
+                .map(|m| m[1].to_string())
+                .unwrap_or_default()
+        };
+        packages.insert(source_file.clone(), package);
+        imports.insert(source_file, file_imports);
+    }
+    if packages.is_empty() {
+        return;
+    }
+    // A Kotlin file's imports are its `imports` edges with a written FQN.
+    for e in edges.iter() {
+        let sf = s(e, "source_file");
+        if s(e, "relation") != "imports" || !kotlin_files.contains(sf) {
+            continue;
+        }
+        let fqn = s(&e["metadata"], "target_fqn");
+        if !fqn.is_empty()
+            && let Some(file_imports) = imports.get_mut(sf)
+        {
+            set(file_imports, fqn.rsplit('.').next().unwrap_or(""), fqn);
+        }
+    }
+    let mut by_fqn: FxHashMap<String, Vec<&str>> = FxHashMap::default();
+    for n in nodes {
+        let Some(package) = packages.get(s(n, "source_file")) else {
+            continue;
+        };
+        let label = s(n, "label").trim();
+        if label.is_empty() || !crate::extractors::resolution::is_type_like_definition(n) {
+            continue;
+        }
+        let fqn = if package.is_empty() {
+            label.to_string()
+        } else {
+            format!("{package}.{label}")
+        };
+        by_fqn.entry(fqn).or_default().push(s(n, "id"));
+    }
+    if by_fqn.is_empty() {
+        return;
+    }
+    let by_id = nodes
+        .iter()
+        .filter(|n| !s(n, "id").is_empty())
+        .map(|n| (s(n, "id"), n))
+        .collect::<FxHashMap<_, _>>();
+    let mut added = vec![];
+    for e in edges.iter_mut() {
+        if !matches!(
+            s(e, "relation"),
+            "imports" | "inherits" | "extends" | "implements" | "references"
+        ) {
+            continue;
+        }
+        let sf = s(e, "source_file").to_string();
+        if !matches!(
+            crate::rcfile::effective_suffix(&sf).to_lowercase().as_str(),
+            ".java" | ".kt" | ".kts"
+        ) {
+            continue;
+        }
+        let target = s(e, "target").to_string();
+        if target.is_empty() {
+            continue;
+        }
+        let target_node = by_id.get(target.as_str()).copied();
+        let mut fqn = s(&e["metadata"], "target_fqn").to_string();
+        if fqn.is_empty() {
+            let label = target_node.map_or("", |n| s(n, "label"));
+            let sourced = target_node.is_some_and(|n| truthy(&n["source_file"]));
+            let file_imports = imports.get(&sf).map(Vec::as_slice).unwrap_or_default();
+            let mut simple = String::new();
+            if target_node.is_some() && !sourced && label.contains('.') {
+                fqn = label.to_string();
+            } else if !label.is_empty() && !sourced {
+                simple = label.to_string();
+            } else if let Some((name, _)) = file_imports
+                .iter()
+                .find(|(name, _)| crate::ids::make_id([name.as_str()]) == target)
+            {
+                simple = name.clone();
+            }
+            if fqn.is_empty() && !simple.is_empty() {
+                fqn = match file_imports.iter().find(|(name, _)| *name == simple) {
+                    Some((_, written)) => written.clone(),
+                    None => match packages.get(&sf).filter(|p| !p.is_empty()) {
+                        Some(package) => format!("{package}.{simple}"),
+                        None => simple,
+                    },
+                };
+            }
+        }
+        let Some([candidate]) = by_fqn.get(&fqn).map(Vec::as_slice) else {
+            continue;
+        };
+        if *candidate == target {
+            continue;
+        }
+        if s(e, "relation") == "imports" && target_node.is_none() {
+            let mut resolved = e.clone();
+            resolved["target"] = json!(candidate);
+            added.push(resolved);
+        } else {
+            e["target"] = json!(candidate);
+        }
+    }
+    edges.extend(added);
+}
 pub fn kotlin_imports<P: PerFile>(per: &[P], edges: &mut [Value]) {
     let mut symbols: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     for r in per {
@@ -2744,11 +2915,9 @@ pub fn kotlin_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
     let mut types: Index = BTreeMap::new();
     let mut methods: Index = BTreeMap::new();
     for n in nodes_ro {
-        if n["_callable_class"] == true
-            && [".kt", ".kts"]
-                .iter()
-                .any(|su| s(n, "source_file").ends_with(su))
-        {
+        // Any JVM class: a Kotlin call binds a Java method too (Graphify
+        // 0.9.100, #4874).
+        if n["_callable_class"] == true && family(s(n, "source_file")) == Some("jvm") {
             types
                 .entry(s(n, "label").into())
                 .or_default()

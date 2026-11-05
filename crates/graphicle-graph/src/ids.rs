@@ -97,6 +97,8 @@ pub struct DeclIdRegistry {
     owners: std::collections::HashMap<String, (String, String)>,
     by_name: std::collections::HashMap<(String, String), std::collections::BTreeSet<String>>,
     salted: std::collections::HashSet<String>,
+    /// The name each id was first claimed by (Graphify 0.9.100, #4904).
+    spelled: std::collections::HashMap<String, String>,
 }
 
 impl DeclIdRegistry {
@@ -120,6 +122,7 @@ impl DeclIdRegistry {
         if owner.is_none() && !taken(nid) {
             self.owners.insert(nid.to_string(), key.clone());
             self.assigned.insert(key, nid.to_string());
+            self.spelled.insert(nid.to_string(), name.to_string());
             self.by_name
                 .entry((kind.to_string(), normalize_id(name)))
                 .or_default()
@@ -131,9 +134,14 @@ impl DeclIdRegistry {
         }
         // An id a real declaration already uses is a duplicate reference to
         // it (a prototype owner, a re-declared name). Only a salted id, whose
-        // owner took the spelling from this declaration, forces a counter.
+        // owner took the spelling from this declaration, forces a counter. A
+        // different kind is a duplicate only when spelled the same (TS `class
+        // Foo` + `namespace Foo`); `class Foo` + `function foo` are two
+        // (Graphify 0.9.100, #4904).
         if taken(nid)
-            && owner.as_ref().is_some_and(|(k, _)| k != "file")
+            && owner
+                .as_ref()
+                .is_some_and(|(k, _)| k != "file" && (k == kind || self.spelled.get(nid).map(String::as_str) == Some(name)))
             && !self.salted.contains(nid)
         {
             return nid.to_string();

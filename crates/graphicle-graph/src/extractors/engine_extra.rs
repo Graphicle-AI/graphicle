@@ -15,6 +15,38 @@ use super::{
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::Node;
+/// `_scala_extension_receiver_name` (Graphify 0.9.100, #2044): the type an
+/// `extension_definition` extends, from the single parameter of its first
+/// non-`using` clause; a generic or qualified receiver binds its type name,
+/// and one typed by a type parameter in scope extends every type (`None`).
+fn scala_extension_receiver_name(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let clause = children(node).into_iter().find(|c| {
+        c.kind_name() == "parameters" && !children(*c).iter().any(|cc| cc.kind_name() == "using")
+    })?;
+    let param = children(clause)
+        .into_iter()
+        .find(|c| c.kind_name() == "parameter")?;
+    let mut ty = children(param).into_iter().find(|c| {
+        matches!(
+            c.kind_name(),
+            "type_identifier" | "generic_type" | "stable_type_identifier"
+        )
+    });
+    if let Some(generic) = ty.filter(|t| t.kind_name() == "generic_type") {
+        ty = children(generic)
+            .into_iter()
+            .find(|c| matches!(c.kind_name(), "type_identifier" | "stable_type_identifier"));
+    }
+    if let Some(stable) = ty.filter(|t| t.kind_name() == "stable_type_identifier") {
+        ty = children(stable)
+            .into_iter()
+            .rev()
+            .find(|c| c.kind_name() == "type_identifier");
+    }
+    let name = super::base::read_text(ty?, source).trim().to_string();
+    (!name.is_empty() && !scala_type_parameters_in_scope(node, source).contains(&name))
+        .then_some(name)
+}
 /// Whether [`Engine::js_closures`] would find a closure in `value`, with no
 /// side effect: a declaration id is only claimed for a value that has one.
 fn js_has_closures(value: Node<'_>) -> bool {
@@ -535,6 +567,21 @@ impl<'a, 't> Engine<'a, 't> {
                     self.add_node(&id, &name, line, None, Value::Null);
                     self.edge(parent, &id, "case_of", line, None, Value::Null);
                 }
+            }
+            return true;
+        }
+        // `extension (p: Point) def flip` adds `flip` to `Point`: its methods
+        // are walked under the receiver type, resolved like a type reference
+        // (Graphify 0.9.100, #2044).
+        if self.is("scala") && t == "extension_definition" {
+            let Some(receiver) = scala_extension_receiver_name(n, self.source) else {
+                return false;
+            };
+            let receiver = self.ensure(&receiver, true);
+            let mut cursor = n.walk();
+            let members = n.children_by_field_name("body", &mut cursor).collect::<Vec<_>>();
+            for member in members {
+                self.walk(member, Some(&receiver));
             }
             return true;
         }

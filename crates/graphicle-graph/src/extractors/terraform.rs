@@ -132,11 +132,21 @@ pub fn scope_id(directory: &str) -> String {
 pub fn prepare_terraform(result: &mut Value, path: &Path, root: &Path) -> Result<()> {
     let directory = fsutil::resolve_missing(path.parent().unwrap_or(Path::new(".")))
         .map_err(crate::Error::from)?;
+    // The scope the ids were minted under, recorded by the extractor, so a
+    // cached result keeps its ids after the project moves; consumed even
+    // outside the root (Graphify 0.9.100, #4858).
+    let recorded = result
+        .as_object_mut()
+        .and_then(|r| r.shift_remove("_terraform_scope"));
     let Ok(relative) = directory.strip_prefix(root) else {
         return Ok(());
     };
     let relative = fsutil::path_string(relative);
-    let old = scope_id(&fsutil::path_string(&directory));
+    let old = recorded
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| scope_id(&fsutil::path_string(&directory)));
     let new = scope_id(&relative);
     let prefix = format!("{old}_");
     if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut) {
@@ -663,7 +673,7 @@ pub fn extract_terraform(path: &Path) -> Result<Value> {
         seen_edges: HashSet::new(),
     };
     extractor.extract(tree.root_node(), path_syntax::suffix(name) == ".tf")?;
-    Ok(json!({"nodes":extractor.nodes,"edges":extractor.edges}))
+    Ok(json!({"nodes":extractor.nodes,"edges":extractor.edges,"_terraform_scope":extractor.scope}))
 }
 
 pub fn dispatch(request: &Value) -> Result<Value> {

@@ -1565,6 +1565,9 @@ fn language_passes<P: PerFile>(
         restore(per, sh_idx, sh);
         edges.extend(added?);
     }
+    // Java and Kotlin share one namespace (Graphify 0.9.100, #4874): before
+    // the Kotlin-only resolver and before call evidence is built.
+    members::jvm_references(&*per, paths, nodes, edges);
     members::kotlin_imports(&*per, edges);
     // Quoted C/C++/ObjC includes outside the including file's directory, to
     // their header file nodes (#4354): after the id remaps, before the

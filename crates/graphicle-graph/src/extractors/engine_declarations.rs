@@ -882,6 +882,11 @@ impl<'a, 't> Engine<'a, 't> {
             {
                 self.refs(owner, ty, line, "field", false);
             }
+            if self.is("php") {
+                // A parameter default's `Scope::MEMBER` (Graphify 0.9.100).
+                let source = parent.unwrap_or(id).to_string();
+                self.php_const_refs(p, &source);
+            }
             if self.is("swift") {
                 let mut refs = vec![];
                 swift_collect_type_refs(ty, self.source, false, &mut refs);
@@ -966,9 +971,51 @@ impl<'a, 't> Engine<'a, 't> {
             }
         }
     }
+    /// `_php_const_ref_target` (Graphify 0.9.100, #4648): the real local node
+    /// a `Scope::MEMBER` scope names; `self::`/`static::`/`parent::` and an
+    /// unknown scope name none, and a qualified scope is its class segment.
+    fn php_const_ref_target(&self, access: Node<'_>) -> Option<String> {
+        let first = named(access).into_iter().next()?;
+        if !matches!(first.kind_name(), "name" | "qualified_name") {
+            return None;
+        }
+        let mut name = self.text(first);
+        if first.kind_name() == "qualified_name" {
+            name = name.rsplit('\\').next().unwrap_or("").to_string();
+        }
+        if let Some(declared) = self.decl.lookup(&name) {
+            return Some(declared);
+        }
+        let nid = make_id([self.stem.as_str(), self.namespace.join(".").as_str(), name.as_str()]);
+        (self.seen.contains(&nid) && nid != self.file).then_some(nid)
+    }
+    /// The `references_constant` edges of the `Scope::MEMBER` accesses under
+    /// `node`, which sit outside any function body: a class-level
+    /// initializer or a parameter default (Graphify 0.9.100, #4648).
+    pub(crate) fn php_const_refs(&mut self, node: Node<'t>, source: &str) {
+        let mut seen_here = BTreeSet::new();
+        let mut stack = children(node);
+        while let Some(sub) = stack.pop() {
+            if sub.kind_name() == "class_constant_access_expression"
+                && let Some(target) = self.php_const_ref_target(sub)
+                && target != source
+                && seen_here.insert(target.clone())
+            {
+                let line = sub.start_position().row + 1;
+                self.edge(source, &target, "references_constant", line, None, Value::Null);
+            }
+            stack.extend(children(sub));
+        }
+    }
     pub(crate) fn field(&mut self, n: Node<'t>, parent: Option<&str>) -> bool {
         let t = n.kind_name();
         let line = n.start_position().row + 1;
+        if self.is("php")
+            && let Some(owner) = parent
+            && matches!(t, "const_declaration" | "property_declaration")
+        {
+            self.php_const_refs(n, owner);
+        }
         if self.is("kotlin") && t == "property_declaration" {
             if let Some(p) = parent {
                 self.refs(p, kotlin_property_type_node(n), line, "field", false);

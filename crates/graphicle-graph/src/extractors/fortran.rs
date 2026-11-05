@@ -277,14 +277,25 @@ impl<'tree> Extractor<'_, 'tree> {
             return;
         }
         if node.kind() == "derived_type_definition" {
-            if let Some(name) = children(node)
-                .find(|n| n.kind() == "derived_type_statement")
-                .and_then(|n| children(n).find(|n| n.kind() == "type_name"))
+            let statement = children(node).find(|n| n.kind() == "derived_type_statement");
+            if let Some(statement) = statement
+                && let Some(name) = children(statement).find(|n| n.kind() == "type_name")
             {
                 let name = read_text(name, self.source).to_lowercase();
                 let id = make_id([self.stem.as_str(), name.as_str()]);
                 self.node(&id, &name, line);
                 self.edge(scope, &id, "defines", line, None);
+                // `type, extends(base) :: derived` (Graphify 0.9.100).
+                if let Some(base) = children(statement)
+                    .find(|n| n.kind() == "base_type_specifier")
+                    .and_then(|b| children(b).find(|n| n.kind() == "identifier"))
+                {
+                    let base = read_text(base, self.source).to_lowercase();
+                    let base = self.named(&base, line);
+                    if base != id {
+                        self.edge(&id, &base, "inherits", line, None);
+                    }
+                }
                 if let Some(procedures) =
                     children(node).find(|n| n.kind() == "derived_type_procedures")
                 {
