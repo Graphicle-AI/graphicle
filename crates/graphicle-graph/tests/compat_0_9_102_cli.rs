@@ -322,3 +322,36 @@ fn path_reports_its_weakest_hop_and_scored_tags() {
         r.stdout
     );
 }
+
+#[test]
+fn affected_sets_the_documented_exit_codes() {
+    // test_affected_seed_reference_forms.py (Graphify 0.9.100, #4792): an
+    // ambiguous name exits 3, no match exits 4, as explain does.
+    let dir = tempfile::tempdir().unwrap();
+    let graph = dir.path().join("graph.json");
+    std::fs::write(
+        &graph,
+        json!({
+            "directed": true, "multigraph": false, "graph": {},
+            "nodes": [
+                {"id": "a_run", "label": "run()", "source_file": "a.py", "source_location": "L1"},
+                {"id": "b_run", "label": "run()", "source_file": "b.py", "source_location": "L1"},
+                {"id": "main", "label": "main()", "source_file": "c.py", "source_location": "L1"}
+            ],
+            "links": [
+                {"source": "main", "target": "a_run", "relation": "calls", "confidence": "EXTRACTED"}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let g = graph.to_str().unwrap();
+    let r = run(&["affected", "run()", "--graph", g]);
+    assert_eq!(r.exit_code, 3, "{} {}", r.stdout, r.stderr);
+    let r = run(&["affected", "nothing_like_this", "--graph", g]);
+    assert_eq!(r.exit_code, 4, "{} {}", r.stdout, r.stderr);
+    assert!(r.stderr.contains("No unique node match for nothing_like_this"), "{}", r.stderr);
+    let r = run(&["affected", "a_run", "--graph", g]);
+    assert_eq!(r.exit_code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains("main()"), "{}", r.stdout);
+}

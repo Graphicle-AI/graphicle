@@ -329,6 +329,23 @@ fn query_loaded(
             let g = crate::serve_socket::shared_graph(&gp)?;
             let root = graph_root_for(&gp);
             let root = Some(root.as_path());
+            // An unresolvable seed sets the documented exit code, as
+            // `explain` does: 3 for an ambiguous name, 4 for no match
+            // (Graphify 0.9.100, #4792).
+            if crate::affected::resolve_seed(&g, q, root)?.is_none() {
+                let trimmed = q.trim_end_matches(['/', '\\']);
+                let normalized = if trimmed.is_empty() { q } else { trimmed };
+                let index = crate::serve_search::SearchIndex::new(&g);
+                let rivals = crate::serve_find::ambiguity(&g, &index, normalized);
+                if rivals.is_empty() {
+                    out.warn(format!("No unique node match for {q}"));
+                    out.exit_code = crate::cli::EXIT_NOT_FOUND;
+                } else {
+                    out.warn(crate::serve_find::ambiguity_message(&g, q, &rivals));
+                    out.exit_code = crate::cli::EXIT_AMBIGUOUS;
+                }
+                return Ok(());
+            }
             let mut rels = a.all("relation");
             if rels.is_empty() {
                 rels = crate::affected::DEFAULT_AFFECTED_RELATIONS
