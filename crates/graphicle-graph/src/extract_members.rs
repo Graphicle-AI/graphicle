@@ -2206,6 +2206,14 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
         (here.len() == 1).then(|| here[0])
     };
     let mut seen: Seen<&'a str> = pairs(edges, false);
+    // Only an edge saying the caller reaches the target pre-empts a
+    // dispatch-table value; an `imports` edge to it does not (Graphify
+    // 0.9.99, #1566).
+    let mut call_like: FxHashSet<(&'a str, &'a str)> = edges
+        .iter()
+        .filter(|e| matches!(rs(*e, "relation"), "calls" | "indirect_call"))
+        .map(|e| (rs(e, "source"), rs(e, "target")))
+        .collect();
     let mut added = vec![];
     // The targets each exact Python call site resolved to, recorded before
     // the pair dedupe, for the factory receivers (Graphify 0.9.96).
@@ -2224,6 +2232,33 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             // external modules carry no file (Graphify 0.9.96).
             let target_file = by_id.get(target).map_or("", |n| s(n, "source_file"));
             if !target_file.is_empty() && !is_python_file(target_file) {
+                return;
+            }
+            if raw.rec_get("indirect").is_some_and(truthy) {
+                // `module.func` in a dispatch table is referenced, not invoked:
+                // an INFERRED `indirect_call`, only to a real callable, never a
+                // class used as a value (Graphify 0.9.99, #1566, #2137).
+                let node = by_id.get(target).copied().unwrap_or(&Value::Null);
+                if call_like.contains(&(caller, target))
+                    || !node.get("_callable").is_some_and(truthy)
+                    || node.get("_callable_class").is_some_and(truthy)
+                {
+                    return;
+                }
+                call_like.insert((caller, target));
+                seen.insert(caller, target);
+                let context = rs(raw, "context");
+                added.push(json!({
+                    "source": caller,
+                    "target": target,
+                    "relation": "indirect_call",
+                    "context": if context.is_empty() { "collection" } else { context },
+                    "confidence": "INFERRED",
+                    "confidence_score": 0.85,
+                    "source_file": rs(raw, "source_file"),
+                    "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
+                    "weight": 1.0,
+                }));
                 return;
             }
             let attr_read = raw.rec_get("_python_attr_read").is_some_and(truthy);
@@ -2247,6 +2282,9 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
                 return;
             }
             seen.insert(caller, target);
+            if !attr_read {
+                call_like.insert((caller, target));
+            }
             added.push(json!({
                 "source": caller,
                 "target": target,
@@ -2260,7 +2298,13 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             }));
         };
     let mut factory_receivers = vec![];
-    for raw in raw_calls_of(per) {
+    // Dispatch-table values go last, so a direct call to the same target
+    // claims the pair as `calls` (Graphify 0.9.99); each half keeps its order.
+    let is_indirect = |raw: &&'a P::R| raw.rec_get("indirect").is_some_and(truthy);
+    let ordered = raw_calls_of(per)
+        .filter(|r| !is_indirect(r))
+        .chain(raw_calls_of(per).filter(is_indirect));
+    for raw in ordered {
         // The receiver is bound by an ambiguous absolute import (#3729).
         if raw.rec_get("_ambiguous_python_import").is_some_and(truthy)
             || raw.rec_get("is_member_call") != Some(&Value::Bool(true))
@@ -2275,7 +2319,15 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             rs(raw, "callee"),
             rs(raw, "caller_nid"),
         );
-        if matches!(receiver, "self" | "cls" | "super")
+        // A dispatch-table `module.func` takes the module arm only.
+        let indirect = raw.rec_get("indirect").is_some_and(truthy);
+        if indirect
+            && (receiver.is_empty() || callee.is_empty() || caller.is_empty() || upper(receiver))
+        {
+            continue;
+        }
+        if !indirect
+            && matches!(receiver, "self" | "cls" | "super")
             && !callee.is_empty()
             && !caller.is_empty()
             && !raw.rec_get("_python_super_args").is_some_and(truthy)
@@ -2286,7 +2338,7 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             continue;
         }
         let attr_type = rs(raw, "_python_self_attr_type");
-        if !attr_type.is_empty() && !callee.is_empty() && !caller.is_empty() {
+        if !attr_type.is_empty() && !callee.is_empty() && !caller.is_empty() && !indirect {
             // `self.X.m()` with X bound to one class (#2860): a unique class
             // the caller's own file defines or imports, owning `m`.
             let class = classes
@@ -2387,7 +2439,12 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             // The caller's file through its enclosing scopes: `mod.func()`
             // from a method or a nested function reads its file's imports
             // too (0.9.91, #2447).
-            let Some(file) = file_node(caller) else {
+            // A module-level dispatch table: the caller is the file.
+            let file = file_node(caller).or_else(|| {
+                (indirect && imports.contains_key(caller) && !files.contains_key(caller))
+                    .then_some(caller)
+            });
+            let Some(file) = file else {
                 continue;
             };
             let rkey = pkey(receiver);
@@ -2781,10 +2838,24 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
     }
     let mut defs: FxHashMap<String, Vec<String>> = FxHashMap::default();
     let mut methods: FxHashMap<(String, String), Vec<String>> = FxHashMap::default();
+    // A struct's fields by struct id, from the file node that declares it
+    // (Graphify 0.9.99, #3368); an id two files declare has no one answer.
+    let mut fields_by_type: FxHashMap<String, Vec<serde_json::Map<String, Value>>> =
+        FxHashMap::default();
     {
         let mut by_id: FxHashMap<&str, &Value> = FxHashMap::default();
         for n in nodes.iter() {
             by_id.insert(s(n, "id"), n);
+            if let Some(go_fields) = n["_go_fields"].as_object() {
+                for (id, fields) in go_fields {
+                    if let Some(fields) = fields.as_object() {
+                        fields_by_type
+                            .entry(id.clone())
+                            .or_default()
+                            .push(fields.clone());
+                    }
+                }
+            }
             // Only Go declarations: a same-named class of another language
             // must neither answer a Go receiver nor hide that nothing here
             // declares it.
@@ -2822,11 +2893,25 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
                 .and_then(Value::as_str)
                 .unwrap_or("");
         }
+        let owner = rs(rc, "field_owner");
+        if ty.is_empty() && !owner.is_empty() {
+            if let Some([def]) = defs.get(&java_key(owner)).map(Vec::as_slice)
+                && let Some([declared]) = fields_by_type.get(def).map(Vec::as_slice)
+            {
+                ty = declared.get(receiver).and_then(Value::as_str).unwrap_or("");
+            }
+        }
         if ty.is_empty() || is_language_builtin(ty) {
             continue;
         }
+        // A method value (`routing.Wrap(s.Handle)`) hands the method over to
+        // be called later: an `indirect_call`, never parked, since `f(x.y)`
+        // may as well pass a field (Graphify 0.9.99, #1566).
+        let indirect = truthy(at(rc, "indirect"));
         let Some(found) = defs.get(&java_key(ty)).filter(|d| !d.is_empty()) else {
-            parked.push((caller.to_string(), callee.to_string(), ty.to_string(), rc));
+            if !indirect {
+                parked.push((caller.to_string(), callee.to_string(), ty.to_string(), rc));
+            }
             continue;
         };
         if found.len() != 1 {
@@ -2836,7 +2921,14 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
             continue;
         };
         if targets.len() == 1 {
-            emit(&mut added, &mut seen, rc, &targets[0], "calls", false);
+            let before = added.len();
+            let relation = if indirect { "indirect_call" } else { "calls" };
+            emit(&mut added, &mut seen, rc, &targets[0], relation, false);
+            if indirect && added.len() > before {
+                let context = rs(rc, "context");
+                added[before]["context"] =
+                    json!(if context.is_empty() { "argument" } else { context });
+            }
         }
     }
     drop(seen);

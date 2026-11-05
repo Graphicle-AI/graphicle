@@ -6,7 +6,7 @@ use crate::{fsutil, io_compat, path_syntax};
 use serde_json::{Map, Value, json};
 use sha1::{Digest, Sha1};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     path::Path,
 };
 use tree_sitter::Node;
@@ -230,6 +230,46 @@ fn inferred_composite_bindings<'t>(
                 .or_insert_with(|| json!(type_name));
         }
     }
+}
+/// `_go_struct_field_types` (Graphify 0.9.99, #3368): `struct -> {field ->
+/// TypeName}` for every struct the file declares, by the rule of the flat
+/// receiver table, keyed by the struct.
+fn struct_field_types(root: Node<'_>, source: &[u8]) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut by_struct = BTreeMap::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "function_declaration" | "method_declaration") {
+            continue;
+        }
+        if n.kind() == "type_spec" {
+            if let (Some(name), Some(body)) =
+                (n.child_by_field_name("name"), n.child_by_field_name("type"))
+                && body.kind() == "struct_type"
+            {
+                let mut fields = BTreeMap::new();
+                for list in children(body).filter(|c| c.kind() == "field_declaration_list") {
+                    for field in children(list).filter(|c| c.kind() == "field_declaration") {
+                        let Some(type_name) =
+                            single_type_name(field.child_by_field_name("type"), source)
+                        else {
+                            continue;
+                        };
+                        for c in children(field).filter(|c| c.kind() == "field_identifier") {
+                            fields
+                                .entry(read_text(c, source))
+                                .or_insert_with(|| type_name.clone());
+                        }
+                    }
+                }
+                if !fields.is_empty() {
+                    by_struct.insert(read_text(name, source), fields);
+                }
+            }
+            continue;
+        }
+        stack.extend(children(n));
+    }
+    by_struct
 }
 /// A function body to walk for calls: the caller, the body, the method's
 /// receiver name and type, and the function's own-scope type table.
@@ -662,6 +702,20 @@ impl<'tree> Extractor<'_, 'tree> {
                 }
                 return;
             }
+            // A package-level `var` initialiser runs at package init: its
+            // calls, closures included, are the file's (Graphify 0.9.99,
+            // #2360).
+            "var_declaration" if node.parent().is_some_and(|p| p.kind() == "source_file") => {
+                let scope_types = receiver_type_table(node, self.source);
+                self.bodies.push(Body {
+                    caller: self.file.clone(),
+                    body: node,
+                    self_name: None,
+                    self_type: None,
+                    scope_types,
+                });
+                return;
+            }
             "import_declaration" => {
                 for n in children(node) {
                     if n.kind() == "import_spec_list" {
@@ -711,6 +765,7 @@ impl<'tree> Extractor<'_, 'tree> {
             let mut receiver = None;
             let mut member_receiver = None;
             let mut member_receiver_type = None;
+            let mut field_owner: Option<String> = None;
             let mut import_path = None;
             if let Some(function) = node.child_by_field_name("function") {
                 if function.kind() == "identifier" {
@@ -761,6 +816,9 @@ impl<'tree> Extractor<'_, 'tree> {
                                         .map(|f| read_text(f, self.source))
                                         .unwrap_or_default(),
                                 );
+                                // The struct whose field it is, possibly declared
+                                // in a sibling file (Graphify 0.9.99, #3368).
+                                field_owner = scope.self_type.clone();
                             }
                         }
                     }
@@ -796,7 +854,41 @@ impl<'tree> Extractor<'_, 'tree> {
                     // `member_receiver` is a key of its own: `receiver` means
                     // "imported package" here, and other languages' member
                     // resolvers read `receiver`.
-                    self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":member,"language":"go","receiver":receiver,"member_receiver":member_receiver,"receiver_type":member_receiver_type,"import_path":import_path,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
+                    self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":member,"language":"go","receiver":receiver,"member_receiver":member_receiver,"receiver_type":member_receiver_type,"field_owner":field_owner,"import_path":import_path,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
+                }
+            }
+            // A method value passed as an argument (`routing.Wrap(s.Handle)`)
+            // registers a handler: an indirect member call through the
+            // receiver's type (Graphify 0.9.99, #1566).
+            if let Some(args) = node.child_by_field_name("arguments") {
+                for arg in children(args).filter(|a| a.kind() == "selector_expression") {
+                    let (Some(operand), Some(field)) = (
+                        arg.child_by_field_name("operand"),
+                        arg.child_by_field_name("field"),
+                    ) else {
+                        continue;
+                    };
+                    if operand.kind() != "identifier" {
+                        continue;
+                    }
+                    let name = read_text(operand, self.source);
+                    if self.imports.contains_key(&name) {
+                        continue;
+                    }
+                    let receiver_type = if scope
+                        .self_name
+                        .as_deref()
+                        .is_some_and(|n| !n.is_empty() && n == name)
+                    {
+                        scope.self_type.clone()
+                    } else {
+                        scope
+                            .scope_types
+                            .get(&name)
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    };
+                    self.raw_calls.push(json!({"caller_nid":caller,"callee":read_text(field, self.source),"is_member_call":true,"indirect":true,"context":"argument","language":"go","receiver":null,"member_receiver":name,"receiver_type":receiver_type,"import_path":null,"source_file":self.path,"source_location":format!("L{}",arg.start_position().row+1)}));
                 }
             }
         }
@@ -864,6 +956,18 @@ pub fn extract_go(path: &Path) -> Value {
                 n["_callable_class"] = json!(true);
             }
         }
+    }
+    // The field types of the structs this file declares ride on the file
+    // node, keyed by struct id, so a method in a sibling file can type
+    // `s.field` (Graphify 0.9.99, #3368).
+    let mut struct_fields = BTreeMap::new();
+    for (name, fields) in struct_field_types(tree.root_node(), &source) {
+        struct_fields.insert(ex.type_symbol(&name), fields);
+    }
+    if !struct_fields.is_empty()
+        && let Some(file_node) = ex.nodes.iter_mut().find(|n| n["id"] == file.as_str())
+    {
+        file_node["_go_fields"] = json!(struct_fields);
     }
     let type_table = receiver_type_table(tree.root_node(), &source);
     ex.labels = ex

@@ -66,6 +66,29 @@ fn python_values(n: Node<'_>) -> Vec<Node<'_>> {
             .collect()
     }
 }
+/// `_python_dispatch_value_attrs` (Graphify 0.9.99, #1566): the
+/// `module.func` values of a dict/list/set/tuple literal, at the value
+/// positions of [`python_values`]; only a bare-name receiver qualifies.
+fn python_value_attrs(n: Node<'_>) -> Vec<Node<'_>> {
+    let values: Vec<Node<'_>> = if n.kind_name() == "dictionary" {
+        children(n)
+            .into_iter()
+            .filter(|c| c.kind_name() == "pair")
+            .filter_map(|p| p.child_by_field_name("value"))
+            .collect()
+    } else {
+        children(n)
+    };
+    values
+        .into_iter()
+        .filter(|v| v.kind_name() == "attribute")
+        .filter(|v| {
+            v.child_by_field_name("object")
+                .is_some_and(|o| o.kind_name() == "identifier")
+                && v.child_by_field_name("attribute").is_some()
+        })
+        .collect()
+}
 fn ref_values(n: Option<Node<'_>>) -> Vec<Node<'_>> {
     match n {
         Some(n) if n.kind_name() == "identifier" => vec![n],
@@ -906,6 +929,38 @@ impl<'a, 't> Engine<'a, 't> {
         e["confidence"] = json!("INFERRED");
         e["confidence_score"] = json!(0.85);
     }
+    /// `_emit_indirect_member_ref` (Graphify 0.9.99, #1566): `module.func` in
+    /// a dispatch table goes to the Python member resolver as an `indirect`
+    /// member raw call; a receiver bound as a local (or `self`/`cls`) names a
+    /// value, not a module.
+    fn indirect_member(
+        &mut self,
+        attr: Node<'t>,
+        caller: &str,
+        locals: &BTreeSet<String>,
+        context: &str,
+    ) {
+        let (Some(object), Some(attribute)) = (
+            attr.child_by_field_name("object"),
+            attr.child_by_field_name("attribute"),
+        ) else {
+            return;
+        };
+        let receiver = self.text(object);
+        if locals.contains(&receiver) || receiver == "self" || receiver == "cls" {
+            return;
+        }
+        self.raw.push(json!({
+            "caller_nid": caller,
+            "callee": self.text(attribute),
+            "is_member_call": true,
+            "receiver": receiver,
+            "indirect": true,
+            "context": context,
+            "source_file": self.path,
+            "source_location": format!("L{}", attr.start_position().row + 1),
+        }));
+    }
     fn indirect(
         &mut self,
         n: Option<Node<'t>>,
@@ -1436,6 +1491,11 @@ impl<'a, 't> Engine<'a, 't> {
         for v in vals {
             self.indirect(Some(v), caller, &locals, "collection");
         }
+        if python && ["dictionary", "list", "set", "tuple"].contains(&kind) {
+            for attr in python_value_attrs(n) {
+                self.indirect_member(attr, caller, &locals, "collection");
+            }
+        }
         if python {
             let (v, ctx) = if kind == "assignment" {
                 (n.child_by_field_name("right"), "assignment")
@@ -1572,6 +1632,11 @@ impl<'a, 't> Engine<'a, 't> {
         };
         for v in vals {
             self.indirect(Some(v), caller, locals, "collection");
+        }
+        if self.is("python") && ["dictionary", "list", "set", "tuple"].contains(&n.kind_name()) {
+            for attr in python_value_attrs(n) {
+                self.indirect_member(attr, caller, locals, "collection");
+            }
         }
         if self.is("python") {
             if n.kind_name() == "assignment" {
