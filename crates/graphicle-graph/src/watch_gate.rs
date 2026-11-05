@@ -191,6 +191,7 @@ impl FileStat {
 
 /// What a rebuild's output depends on besides the scanned files: the
 /// engine build, the settings and the files above the root.
+#[derive(Clone)]
 pub struct State {
     build: String,
     settings: String,
@@ -1122,4 +1123,69 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(check(), Err("file stats"));
     }
+}
+
+/// The baseline of the incremental `update` (Graphify 0.9.102, #4740): the
+/// engine build, settings and files above the root of the rebuild that last
+/// wrote manifest.json, with manifest.json's stats then. `update` re-extracts
+/// only the files whose content differs from the manifest when this matches:
+/// another engine build, other settings, other configuration above the root
+/// or a manifest another command wrote take the full rebuild, since the
+/// manifest then says nothing about what extraction would produce.
+pub const BASE_FILE: &str = ".graphicle_update_base.json";
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+struct Base {
+    schema: u32,
+    build: String,
+    settings: String,
+    above: String,
+    manifest: FileStat,
+}
+
+/// Note the baseline after a rebuild stamped manifest.json, or remove it
+/// when the rebuild has no [`State`] (`--precise`, a workspace above the
+/// root) or the manifest cannot be read.
+pub fn note_base(out: &Path, state: Option<&State>) {
+    let manifest = FileStat::of(&out.join("manifest.json"));
+    let (Some(state), Some(manifest)) = (state, manifest) else {
+        let _ = std::fs::remove_file(out.join(BASE_FILE));
+        return;
+    };
+    let base = Base {
+        schema: SCHEMA,
+        build: state.build.clone(),
+        settings: state.settings.clone(),
+        above: state.above.clone(),
+        manifest,
+    };
+    let written = serde_json::to_string(&base)
+        .ok()
+        .is_some_and(|text| paths::write_text_atomic(&out.join(BASE_FILE), &(text + "\n")).is_ok());
+    if !written {
+        let _ = std::fs::remove_file(out.join(BASE_FILE));
+    }
+}
+
+/// Whether the manifest can stand for what a full rebuild would extract
+/// (see [`BASE_FILE`]); the error says why not.
+pub fn base_matches(out: &Path, state: &State) -> Result<(), Changed> {
+    let text = std::fs::read_to_string(out.join(BASE_FILE)).map_err(|_| "no update baseline")?;
+    let base: Base = serde_json::from_str(&text).map_err(|_| "an unreadable update baseline")?;
+    if base.schema != SCHEMA {
+        return Err("another baseline layout");
+    }
+    if base.build != state.build {
+        return Err("another engine build");
+    }
+    if base.settings != state.settings {
+        return Err("other settings");
+    }
+    if base.above != state.above {
+        return Err("other configuration above the root");
+    }
+    if FileStat::of(&out.join("manifest.json")).as_ref() != Some(&base.manifest) {
+        return Err("manifest.json written by another command");
+    }
+    Ok(())
 }

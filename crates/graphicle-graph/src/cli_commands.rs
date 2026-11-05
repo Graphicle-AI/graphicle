@@ -567,12 +567,17 @@ pub fn update(a: &Args, out: &mut Output) -> Result<()> {
         return Err(format!("path not found: {}", path.display()).into());
     }
     out.line(format!(
-        "Re-extracting code files in {} (no LLM needed)...",
+        "Updating code graph in {} (no LLM needed)...",
         path.display()
     ));
+    // Graphify 0.9.102 (#4740): re-extract only the files whose content
+    // differs from the manifest, once the early stop has found something
+    // changed; `--force` and a manifest the baseline cannot vouch for keep
+    // the full rebuild (see `watch::RebuildOptions::incremental`).
     let r = crate::watch::rebuild(
         &path,
         &crate::watch::RebuildOptions {
+            incremental: true,
             force: crate::cli::force(a),
             no_cluster: a.flag("no-cluster"),
             follow_symlinks: a.flag("follow-symlinks"),
