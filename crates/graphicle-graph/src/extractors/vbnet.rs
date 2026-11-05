@@ -272,7 +272,8 @@ impl<'t> Extractor<'t, '_> {
                     }
                     continue;
                 }
-                "method_declaration" | "constructor_declaration" => {}
+                // An operator is a method member (Graphify 0.9.97).
+                "method_declaration" | "constructor_declaration" | "operator_declaration" => {}
                 _ => continue,
             }
             let (method_name, method_kind) = if member.kind() == "constructor_declaration" {
@@ -281,7 +282,12 @@ impl<'t> Extractor<'t, '_> {
                 let Some(name_node) = member.child_by_field_name("name") else {
                     continue;
                 };
-                (self.text(name_node), "method")
+                let kind = if member.kind() == "operator_declaration" {
+                    "operator"
+                } else {
+                    "method"
+                };
+                (self.text(name_node), kind)
             };
             let parameters = member
                 .child_by_field_name("parameters")
@@ -472,7 +478,10 @@ pub fn extract_vbnet(path: &Path) -> Value {
             if node.id() != body.id()
                 && matches!(
                     node.kind(),
-                    "method_declaration" | "constructor_declaration" | "property_declaration"
+                    "method_declaration"
+                        | "constructor_declaration"
+                        | "property_declaration"
+                        | "operator_declaration"
                 )
             {
                 continue;

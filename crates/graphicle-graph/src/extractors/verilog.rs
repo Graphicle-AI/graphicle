@@ -90,7 +90,9 @@ struct Patterns {
     implements: fancy_regex::Regex,
     type_param: fancy_regex::Regex,
     remove_function: fancy_regex::Regex,
+    remove_task: fancy_regex::Regex,
     function: fancy_regex::Regex,
+    task: fancy_regex::Regex,
     field: regex::Regex,
     param: regex::Regex,
     head: regex::Regex,
@@ -109,6 +111,10 @@ static P: LazyLock<Patterns> = LazyLock::new(|| {
         implements: fancy(r"(?<!\w)implements\s+([^;{]+)"),
         type_param: fancy(r"(?<!\w)type\s+(\w+)"),
         remove_function: fancy(r"(?s)(?<!\w)function(?!\w).*?(?<!\w)endfunction(?!\w)"),
+        // A class method declared `task`: no return type, otherwise the
+        // header of a function (Graphify 0.9.97).
+        remove_task: fancy(r"(?s)(?<!\w)task(?!\w).*?(?<!\w)endtask(?!\w)"),
+        task: fancy(&format!(r"(?m)(?<!\w)task\s+(\w+)\s*\(({inner})\)\s*;")),
         function: fancy(&format!(
             r"(?m)(?<!\w)function\s+([A-Za-z_]\w*(?:\s*#\s*{parens})?)\s+(\w+)\s*\(({inner})\)\s*;"
         )),
@@ -382,6 +388,17 @@ impl Extractor<'_> {
                 start = m.end();
             }
             fields.push_str(&body[start..]);
+            // A task's body is stripped like a function's, so its locals do
+            // not read as fields (Graphify 0.9.97).
+            let without_functions = std::mem::take(&mut fields);
+            let mut start = 0;
+            for m in P.remove_task.find_iter(&without_functions) {
+                let m = m.map_err(crate::Error::from)?;
+                fields.push_str(&without_functions[start..m.start()]);
+                fields.push_str(&"\n".repeat(m.as_str().bytes().filter(|b| *b == b'\n').count()));
+                start = m.end();
+            }
+            fields.push_str(&without_functions[start..]);
             for field in P.field.captures_iter(&fields) {
                 let field_line = line
                     + fields[..field.get(1).unwrap().start()]
@@ -434,6 +451,35 @@ impl Extractor<'_> {
                                 &name,
                                 "references",
                                 function_line,
+                                Some(if role == "generic_arg" {
+                                    "generic_arg"
+                                } else {
+                                    "parameter_type"
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+            for tm in P.task.captures_iter(body) {
+                let tm = tm.map_err(crate::Error::from)?;
+                let name = &tm[1];
+                let task_line = line
+                    + body[..tm.get(0).unwrap().start()]
+                        .bytes()
+                        .filter(|b| *b == b'\n')
+                        .count();
+                let task = make_id([id.as_str(), name]);
+                self.augmented_node(&task, name, task_line);
+                self.edge(&id, &task, "method", task_line, None);
+                for param in split_type_list(&tm[2]) {
+                    if let Some(pm) = P.param.captures(&param) {
+                        for (name, role) in collect_type_refs(&pm[1], false, &skip) {
+                            self.typed_edge(
+                                &task,
+                                &name,
+                                "references",
+                                task_line,
                                 Some(if role == "generic_arg" {
                                     "generic_arg"
                                 } else {

@@ -27,16 +27,16 @@ pattern!(
 pattern!(USES, r"(?is)\buses\b\s*([^;]+);");
 pattern!(
     TYPE,
-    r"(?i)\b(?P<name>[A-Za-z_]\w*)(?:\s*<[^>]+>)?\s*=\s*(?:packed\s+)?(?P<kind>class|interface)\b(?:\s*\(\s*(?P<bases>[^)]*)\s*\))?"
+    r"(?i)\b(?P<name>[A-Za-z_]\w*)(?:\s*<[^>]+>)?\s*=\s*(?:packed\s+)?(?P<kind>class|interface|record)\b(?:\s*\(\s*(?P<bases>[^)]*)\s*\))?"
 );
 pattern!(END, r"(?i)\bend\s*;");
 pattern!(
     METHOD,
-    r"(?i)\b(?:procedure|function|constructor|destructor)\s+(?P<name>[A-Za-z_]\w*)(?:\s*\([^)]*\))?(?:\s*:\s*[\w<>,\s.]+)?\s*;"
+    r"(?i)\b(?:procedure|function|constructor|destructor|operator)\s+(?P<name>[A-Za-z_]\w*)(?:\s*\([^)]*\))?(?:\s*:\s*[\w<>,\s.]+)?\s*;"
 );
 pattern!(
     IMPL,
-    r"(?i)\b(?:procedure|function|constructor|destructor)\s+(?P<qual>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\s*<[^>]+>)?(?:\s*\([^)]*\))?(?:\s*:\s*[\w<>,\s.]+)?\s*;"
+    r"(?i)\b(?:procedure|function|constructor|destructor|operator)\s+(?P<qual>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\s*<[^>]+>)?(?:\s*\([^)]*\))?(?:\s*:\s*[\w<>,\s.]+)?\s*;"
 );
 pattern!(BLOCK, r"(?i)\b(begin|end|case|try|asm|record)\b");
 pattern!(BEGIN, r"(?i)\bbegin\b");
@@ -89,6 +89,7 @@ const KEYWORDS: &[&str] = &[
     "function",
     "constructor",
     "destructor",
+    "operator",
     "class",
     "record",
     "object",

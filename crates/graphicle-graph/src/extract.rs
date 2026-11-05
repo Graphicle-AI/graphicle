@@ -201,6 +201,24 @@ pub fn header_kind(path: &Path, objc: bool) -> bool {
     };
     markers.iter().any(|m| source.contains(m))
 }
+/// `_redact_rationale_labels` (Graphify 0.9.97): credential shapes are
+/// redacted from every rationale label, on every extractor's output and
+/// before it is cached, not only where an extractor redacts its own.
+fn redact_rationale_labels(mut result: Value) -> Value {
+    if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut) {
+        for node in nodes {
+            if node["file_type"] == "rationale"
+                && let Some(label) = node["label"].as_str()
+            {
+                let redacted = crate::security::redact_secrets(label);
+                if redacted != label {
+                    node["label"] = Value::String(redacted);
+                }
+            }
+        }
+    }
+    result
+}
 pub fn extract_file(path: &Path, root: Option<&Path>) -> Value {
     let _markdown_root = extractors::markdown::enter_scan_root(root);
     let _python_root = extractors::engine::enter_scan_root(root);
@@ -226,7 +244,7 @@ pub fn extract_file(path: &Path, root: Option<&Path>) -> Value {
         }
     }));
     match result {
-        Ok(Ok(value)) => value,
+        Ok(Ok(value)) => redact_rationale_labels(value),
         Ok(Err(e)) => {
             log::warn!("skipped {}: {e}", path.display());
             json!({"nodes":[],"edges":[],"error":e})

@@ -819,17 +819,17 @@ impl<'a, 't> Engine<'a, 't> {
                         js_local_bound_names(target, self.source)
                     };
                     self.locals.insert(id.clone(), locals);
-                    if self.is("python") {
-                        self.parents.insert(id.clone(), parent.into());
-                        self.lexical
-                            .entry(parent.into())
-                            .or_default()
-                            .insert(name.clone(), id.clone());
-                        self.lexical
-                            .entry(id.clone())
-                            .or_default()
-                            .insert(name, id.clone());
-                    }
+                    // The nesting, so a call binds the nearest `inner` in
+                    // scope (#3405); JS/TS too since Graphify 0.9.97.
+                    self.parents.insert(id.clone(), parent.into());
+                    self.lexical
+                        .entry(parent.into())
+                        .or_default()
+                        .insert(name.clone(), id.clone());
+                    self.lexical
+                        .entry(id.clone())
+                        .or_default()
+                        .insert(name, id.clone());
                     if let Some(b) = find_body(target, self.config) {
                         self.bodies.push((id.clone(), b));
                         self.nested(b, &id);

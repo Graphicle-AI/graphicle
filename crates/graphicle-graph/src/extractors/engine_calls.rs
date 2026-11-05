@@ -859,7 +859,21 @@ impl<'a, 't> Engine<'a, 't> {
         c
     }
     fn indirect_name(&mut self, name: &str, n: Node<'t>, caller: &str, context: &str) {
-        let target = self.labels.get(name).cloned();
+        // JS/TS: a nested function in scope wins over the file-wide map
+        // (Graphify 0.9.97).
+        let mut target = None;
+        if self.js() {
+            let mut scope = Some(caller.to_string());
+            let mut seen = BTreeSet::new();
+            while let Some(s) = scope.filter(|s| !s.is_empty() && seen.insert(s.clone())) {
+                if let Some(id) = self.lexical.get(&s).and_then(|m| m.get(name)) {
+                    target = Some(id.clone());
+                    break;
+                }
+                scope = self.parents.get(&s).cloned();
+            }
+        }
+        let target = target.or_else(|| self.labels.get(name).cloned());
         let external = target.as_ref().is_none_or(|id| {
             !self.callable.contains(id)
                 && !self
@@ -1118,7 +1132,7 @@ impl<'a, 't> Engine<'a, 't> {
                             && !js_factory_sibling);
                     let mut target = None;
                     if !defer {
-                        if self.is("python") && !call.member {
+                        if (self.is("python") || self.js()) && !call.member {
                             let mut scope = Some(caller.to_string());
                             let mut seen = BTreeSet::new();
                             while let Some(s) = scope {
@@ -1144,7 +1158,7 @@ impl<'a, 't> Engine<'a, 't> {
                                 None
                             }
                         });
-                        if self.is("python") && !call.member {
+                        if (self.is("python") || self.js()) && !call.member {
                             if target.is_none() {
                                 target = self.labels.get(name).cloned();
                             }
@@ -1617,7 +1631,12 @@ impl<'a, 't> Engine<'a, 't> {
                     self.lua_self_table.insert(id.clone(), table.to_string());
                 }
             }
-            if self.parents.contains_key(&id) {
+            if self.parents.contains_key(&id) && self.js() {
+                // A JS/TS nested function is visible only inside its parent,
+                // where the scoped lookup finds it: a same-named call
+                // elsewhere never binds to it (Graphify 0.9.97).
+                continue;
+            } else if self.parents.contains_key(&id) {
                 self.labels.entry(label.clone()).or_insert(id.clone());
                 self.labels_ci.entry(label.to_lowercase()).or_insert(id);
             } else {

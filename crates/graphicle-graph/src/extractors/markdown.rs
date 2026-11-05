@@ -35,7 +35,36 @@ static CODE: LazyLock<FancyRegex> = LazyLock::new(|| fancy(r"(?<!`)(`+)(?!`)(.+?
 static REF: LazyLock<FancyRegex> = LazyLock::new(|| {
     fancy(r#"^\s{0,3}\[[^\]]+\]:\s*(?:<([^<>\n]+)>(?=\s*(?:["'(]|$))|<?([^\s>]+)>?)"#)
 });
-static HEADING: LazyLock<Regex> = LazyLock::new(|| regex_compat::compile(r"^(#{1,6})\s+(.+)"));
+// An ATX heading per CommonMark (Graphify 0.9.97, #4790): up to three
+// spaces of indent, 1-6 `#`, whitespace and the text; a closing run of `#`
+// after whitespace is not part of the text (`## Setup ##` is "Setup", while
+// `## C#` keeps its `#`).
+static HEADING: LazyLock<Regex> =
+    LazyLock::new(|| regex_compat::compile(r"^ {0,3}(#{1,6})[ \t]+(.+)$"));
+static HEADING_CLOSE: LazyLock<Regex> =
+    LazyLock::new(|| regex_compat::compile(r"(?:^|[ \t]+)#+[ \t]*$"));
+// A fenced code block line (Graphify 0.9.97, #4787): a run of 3+ backticks
+// or tildes, then the rest of the line.
+static FENCE: LazyLock<Regex> = LazyLock::new(|| regex_compat::compile(r"^\s*(`{3,}|~{3,})(.*)$"));
+/// `_fence_open`: `(fence char, run length)` when `line` opens a fenced
+/// block. A backtick fence's info string holds no backtick, so a line that
+/// starts with an inline code span is prose.
+fn fence_open(line: &str) -> Option<(char, usize)> {
+    let c = FENCE.captures(line)?;
+    let (run, rest) = (&c[1], &c[2]);
+    let mark = run.chars().next()?;
+    if mark == '`' && rest.contains('`') {
+        return None;
+    }
+    Some((mark, run.len()))
+}
+/// `_fence_closes`: a run of the opener's character, at least as long, with
+/// nothing but whitespace after it.
+fn fence_closes(line: &str, fence: (char, usize)) -> bool {
+    FENCE.captures(line).is_some_and(|c| {
+        c[1].starts_with(fence.0) && c[1].len() >= fence.1 && strip(&c[2]).is_empty()
+    })
+}
 static PATH_MENTION: LazyLock<Regex> = LazyLock::new(|| {
     regex_compat::compile(
         r"^([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+)::([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)(?:\(\))?$",
@@ -525,14 +554,18 @@ pub fn extract_markdown(path: &Path) -> crate::Result<Value> {
     // Same-page heading anchors are resolved after the walk: the heading a
     // `[[#Setup]]` names may be declared further down (upstream PR #3450).
     let mut pending_anchors: Vec<(String, usize, String)> = Vec::new();
-    let mut in_code = false;
+    // The open fence, by CommonMark rules (Graphify 0.9.97, #4787).
+    let mut fence: Option<(char, usize)> = None;
     for (offset, text) in lines.into_iter().enumerate() {
         let line = offset + 1;
-        if strip(text).starts_with("```") {
-            in_code = !in_code;
+        if let Some(open) = fence {
+            if fence_closes(text, open) {
+                fence = None;
+            }
             continue;
         }
-        if in_code {
+        if let Some(open) = fence_open(text) {
+            fence = Some(open);
             continue;
         }
         // Each backtracking pattern needs a literal the line may not have: an
@@ -568,9 +601,12 @@ pub fn extract_markdown(path: &Path) -> crate::Result<Value> {
         if offset < body_start {
             continue;
         }
-        if let Some(c) = HEADING.captures(text) {
-            let level = c[1].len();
-            let title = strip(&c[2]);
+        let heading = HEADING.captures(text).and_then(|c| {
+            let title = HEADING_CLOSE.replace(strip(&c[2]), "").into_owned();
+            (!title.is_empty()).then(|| (c[1].len(), title))
+        });
+        if let Some((level, title)) = heading {
+            let title = title.as_str();
             let mut id = make_id([stem.as_str(), title]);
             if out.ids.contains(&id) {
                 id = make_id([stem.as_str(), title, &line.to_string()]);

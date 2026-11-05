@@ -268,7 +268,11 @@ impl<'tree> Extractor<'tree, '_> {
             let text = text.trim_matches('"');
             if !text.is_empty() {
                 let id = cl_id([owner, "rationale"]);
-                let label: String = text.chars().take(120).collect();
+                // Redacted before the cut (Graphify 0.9.97).
+                let label: String = crate::security::redact_secrets(text)
+                    .chars()
+                    .take(120)
+                    .collect();
                 let line = doc.start_position().row + 1;
                 self.node(&id, &label, line, "rationale");
                 self.edge(&id, owner, "rationale_for", line);

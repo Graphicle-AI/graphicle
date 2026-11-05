@@ -123,6 +123,56 @@ impl Extractor<'_> {
             }
         }
     }
+    /// One `class_binding` of a class definition (#3838): the class, its
+    /// `method` members and instance variables.
+    fn class_binding(&mut self, binding: Node<'_>, container: &str) {
+        let Some(class) = self
+            .named_text(binding, "class_name")
+            .filter(|s| !s.is_empty())
+        else {
+            return;
+        };
+        let id = make_id([self.stem.as_str(), class.as_str()]);
+        self.define(container, &id, &class, binding.start_position().row + 1);
+        if let Some(body) = object_body(binding) {
+            for member in children(body) {
+                match member.kind() {
+                    "method_definition" | "method_specification" => {
+                        let Some(method) = self
+                            .named_text(member, "method_name")
+                            .filter(|s| !s.is_empty())
+                        else {
+                            continue;
+                        };
+                        let member_line = member.start_position().row + 1;
+                        let method_id =
+                            make_id([self.stem.as_str(), class.as_str(), method.as_str()]);
+                        self.node(&method_id, &method, member_line);
+                        self.edge(&id, &method_id, "method", member_line, false);
+                        // Methods are only reachable as `obj#m`, so they are
+                        // not registered as bare local definitions.
+                        for child in children(member) {
+                            self.walk(child, &id, &method_id);
+                        }
+                    }
+                    "instance_variable_definition" | "instance_variable_specification" => {
+                        let Some(variable) = self
+                            .named_text(member, "instance_variable_name")
+                            .filter(|s| !s.is_empty())
+                        else {
+                            continue;
+                        };
+                        let member_line = member.start_position().row + 1;
+                        let variable_id =
+                            make_id([self.stem.as_str(), class.as_str(), variable.as_str()]);
+                        self.node(&variable_id, &variable, member_line);
+                        self.edge(&id, &variable_id, "contains", member_line, false);
+                    }
+                    _ => (),
+                }
+            }
+        }
+    }
     fn walk(&mut self, node: Node<'_>, container: &str, enclosing: &str) {
         let line = node.start_position().row + 1;
         if node.kind() == "open_module" {
@@ -136,17 +186,22 @@ impl Extractor<'_> {
             }
             return;
         }
-        if node.kind() == "module_definition"
-            && let Some(binding) = children(node).find(|n| n.kind() == "module_binding")
-            && let Some(name) = self
-                .named_text(binding, "module_name")
-                .filter(|s| !s.is_empty())
-        {
-            let id = make_id([self.stem.as_str(), name.as_str()]);
-            self.define(container, &id, &name, line);
-            self.modules.insert(name);
-            for child in children(binding) {
-                self.walk(child, &id, enclosing);
+        // `module A = ... and B = ...` nests every binding under the one
+        // definition: each is walked, on its own line (Graphify 0.9.97).
+        if node.kind() == "module_definition" {
+            for binding in children(node).filter(|n| n.kind() == "module_binding") {
+                let Some(name) = self
+                    .named_text(binding, "module_name")
+                    .filter(|s| !s.is_empty())
+                else {
+                    continue;
+                };
+                let id = make_id([self.stem.as_str(), name.as_str()]);
+                self.define(container, &id, &name, binding.start_position().row + 1);
+                self.modules.insert(name);
+                for child in children(binding) {
+                    self.walk(child, &id, enclosing);
+                }
             }
             return;
         }
@@ -201,51 +256,11 @@ impl Extractor<'_> {
         }
         // #3838: `class c = object ... end` (.ml) and `class c : object ... end`
         // (.mli) define the class, its `method` members and instance variables.
-        if node.kind() == "class_definition"
-            && let Some(binding) = children(node).find(|n| n.kind() == "class_binding")
-            && let Some(class) = self
-                .named_text(binding, "class_name")
-                .filter(|s| !s.is_empty())
-        {
-            let id = make_id([self.stem.as_str(), class.as_str()]);
-            self.define(container, &id, &class, line);
-            if let Some(body) = object_body(binding) {
-                for member in children(body) {
-                    match member.kind() {
-                        "method_definition" | "method_specification" => {
-                            let Some(method) = self
-                                .named_text(member, "method_name")
-                                .filter(|s| !s.is_empty())
-                            else {
-                                continue;
-                            };
-                            let member_line = member.start_position().row + 1;
-                            let method_id =
-                                make_id([self.stem.as_str(), class.as_str(), method.as_str()]);
-                            self.node(&method_id, &method, member_line);
-                            self.edge(&id, &method_id, "method", member_line, false);
-                            // Methods are only reachable as `obj#m`, so they are
-                            // not registered as bare local definitions.
-                            for child in children(member) {
-                                self.walk(child, &id, &method_id);
-                            }
-                        }
-                        "instance_variable_definition" | "instance_variable_specification" => {
-                            let Some(variable) = self
-                                .named_text(member, "instance_variable_name")
-                                .filter(|s| !s.is_empty())
-                            else {
-                                continue;
-                            };
-                            let member_line = member.start_position().row + 1;
-                            let variable_id =
-                                make_id([self.stem.as_str(), class.as_str(), variable.as_str()]);
-                            self.node(&variable_id, &variable, member_line);
-                            self.edge(&id, &variable_id, "contains", member_line, false);
-                        }
-                        _ => (),
-                    }
-                }
+        // `class a = ... and b = ...`: every binding, each on its own line
+        // (Graphify 0.9.97).
+        if node.kind() == "class_definition" {
+            for binding in children(node).filter(|n| n.kind() == "class_binding") {
+                self.class_binding(binding, container);
             }
             return;
         }
