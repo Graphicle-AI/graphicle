@@ -2401,85 +2401,87 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
     // `_emit_call`: an attribute read only runs a property getter, and only
     // the one it spells (`_key()` folds `_items` into `items`), as a
     // `references` edge; INFERRED for the typed-receiver arms.
-    let mut emit_call = |raw: &'a P::R,
-                         target: Option<&'a str>,
-                         inferred_call: bool,
-                         added: &mut Vec<Value>| {
-        let caller = rs(raw, "caller_nid");
-        let Some(target) = target.filter(|t| !t.is_empty() && *t != caller) else {
-            return;
-        };
-        // Python callers bind Python definitions only; stubs and
-        // external modules carry no file (Graphify 0.9.96).
-        let target_file = by_id.get(target).map_or("", |n| s(n, "source_file"));
-        if !target_file.is_empty() && !is_python_file(target_file) {
-            return;
-        }
-        if raw.rec_get("indirect").is_some_and(truthy) {
-            // `module.func` in a dispatch table is referenced, not invoked:
-            // an INFERRED `indirect_call`, only to a real callable, never a
-            // class used as a value (Graphify 0.9.99, #1566, #2137).
-            let node = by_id.get(target).copied().unwrap_or(&Value::Null);
-            if call_like.contains(&(caller, target))
-                || !node.get("_callable").is_some_and(truthy)
-                || node.get("_callable_class").is_some_and(truthy)
-            {
+    let mut emit_call =
+        |raw: &'a P::R, target: Option<&'a str>, inferred_call: bool, added: &mut Vec<Value>| {
+            let caller = rs(raw, "caller_nid");
+            let Some(target) = target.filter(|t| !t.is_empty() && *t != caller) else {
+                return;
+            };
+            // Python callers bind Python definitions only; stubs and
+            // external modules carry no file (Graphify 0.9.96).
+            let target_file = by_id.get(target).map_or("", |n| s(n, "source_file"));
+            if !target_file.is_empty() && !is_python_file(target_file) {
                 return;
             }
-            call_like.insert((caller, target));
+            if raw.rec_get("indirect").is_some_and(truthy) {
+                // `module.func` in a dispatch table is referenced, not invoked:
+                // an INFERRED `indirect_call`, only to a real callable, never a
+                // class used as a value (Graphify 0.9.99, #1566, #2137).
+                let node = by_id.get(target).copied().unwrap_or(&Value::Null);
+                if call_like.contains(&(caller, target))
+                    || !node.get("_callable").is_some_and(truthy)
+                    || node.get("_callable_class").is_some_and(truthy)
+                {
+                    return;
+                }
+                call_like.insert((caller, target));
+                seen.insert(caller, target);
+                let context = rs(raw, "context");
+                let context = if context.is_empty() {
+                    "collection"
+                } else {
+                    context
+                };
+                let location = raw.rec_get("source_location").cloned();
+                added.push(json!({
+                    "source": caller,
+                    "target": target,
+                    "relation": "indirect_call",
+                    "context": context,
+                    "confidence": "INFERRED",
+                    "confidence_score": 0.85,
+                    "source_file": rs(raw, "source_file"),
+                    "source_location": location.unwrap_or(Value::Null),
+                    "weight": 1.0,
+                }));
+                return;
+            }
+            let attr_read = raw.rec_get("_python_attr_read").is_some_and(truthy);
+            if attr_read {
+                let node = by_id.get(target).copied().unwrap_or(&Value::Null);
+                let label = py_strip(s(node, "label")).trim_start_matches('.');
+                let label = label.strip_suffix("()").unwrap_or(label);
+                if !node.get("_py_property").is_some_and(truthy) || label != rs(raw, "callee") {
+                    return;
+                }
+            } else if let Some(site) = call_site(raw.rec_get("_python_call_site")) {
+                // The precise producer, before the pair dedupe: a same-line
+                // argument call never stands in for the assigned factory.
+                resolved_sites
+                    .borrow_mut()
+                    .entry((caller, site))
+                    .or_default()
+                    .insert(target);
+            }
+            if seen.contains(caller, target) {
+                return;
+            }
             seen.insert(caller, target);
-            let context = rs(raw, "context");
-            let context = if context.is_empty() { "collection" } else { context };
-            let location = raw.rec_get("source_location").cloned();
+            if !attr_read {
+                call_like.insert((caller, target));
+            }
             added.push(json!({
                 "source": caller,
                 "target": target,
-                "relation": "indirect_call",
-                "context": context,
-                "confidence": "INFERRED",
-                "confidence_score": 0.85,
+                "relation": if attr_read { "references" } else { "calls" },
+                "context": if attr_read { "property_read" } else { "call" },
+                "confidence": if inferred_call { "INFERRED" } else { "EXTRACTED" },
+                "confidence_score": if inferred_call { 0.85 } else { 1.0 },
                 "source_file": rs(raw, "source_file"),
-                "source_location": location.unwrap_or(Value::Null),
+                "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
                 "weight": 1.0,
             }));
-            return;
-        }
-        let attr_read = raw.rec_get("_python_attr_read").is_some_and(truthy);
-        if attr_read {
-            let node = by_id.get(target).copied().unwrap_or(&Value::Null);
-            let label = py_strip(s(node, "label")).trim_start_matches('.');
-            let label = label.strip_suffix("()").unwrap_or(label);
-            if !node.get("_py_property").is_some_and(truthy) || label != rs(raw, "callee") {
-                return;
-            }
-        } else if let Some(site) = call_site(raw.rec_get("_python_call_site")) {
-            // The precise producer, before the pair dedupe: a same-line
-            // argument call never stands in for the assigned factory.
-            resolved_sites
-                .borrow_mut()
-                .entry((caller, site))
-                .or_default()
-                .insert(target);
-        }
-        if seen.contains(caller, target) {
-            return;
-        }
-        seen.insert(caller, target);
-        if !attr_read {
-            call_like.insert((caller, target));
-        }
-        added.push(json!({
-            "source": caller,
-            "target": target,
-            "relation": if attr_read { "references" } else { "calls" },
-            "context": if attr_read { "property_read" } else { "call" },
-            "confidence": if inferred_call { "INFERRED" } else { "EXTRACTED" },
-            "confidence_score": if inferred_call { 0.85 } else { 1.0 },
-            "source_file": rs(raw, "source_file"),
-            "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
-            "weight": 1.0,
-        }));
-    };
+        };
     let mut factory_receivers = vec![];
     // Dispatch-table values go last, so a direct call to the same target
     // claims the pair as `calls` (Graphify 0.9.99); each half keeps its order.
