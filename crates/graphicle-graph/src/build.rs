@@ -207,9 +207,21 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) -> usize {
                 Some((node.get("id")?.as_str()?, node))
             }),
     );
-    for (alias, canonical) in index {
-        norm_to_id.entry(alias).or_insert(canonical);
-    }
+    // Kept apart from norm_to_id and gated on language family, as the
+    // clustered build does (Graphify 0.9.101, #4941).
+    let alias_to_id: FxHashMap<String, String> = index;
+    let node_files: FxHashMap<String, Value> = data["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| {
+            let node = n.as_object()?;
+            Some((
+                node.get("id")?.as_str()?.to_owned(),
+                node.get("source_file").cloned().unwrap_or(Value::Null),
+            ))
+        })
+        .collect();
     let declared: std::collections::HashSet<String> = declared.into_iter().collect();
     // Repoint every endpoint that has a canonical form before stubbing, so an
     // import that names a real file is not frozen onto a stub minted for its
@@ -226,10 +238,22 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) -> usize {
             } else {
                 alias
             };
-            if let Some(endpoint) = object.get(field).and_then(Value::as_str)
-                && !declared.contains(endpoint)
-                && let Some(canonical) = norm_to_id.get(&ids::normalize_id(endpoint))
-            {
+            let Some(endpoint) = object.get(field).and_then(Value::as_str) else {
+                continue;
+            };
+            if declared.contains(endpoint) {
+                continue;
+            }
+            let norm = ids::normalize_id(endpoint);
+            let canonical = norm_to_id.get(&norm).cloned().or_else(|| {
+                alias_to_id
+                    .get(&norm)
+                    .filter(|target| {
+                        alias_lang_compatible(object.get("source_file"), node_files.get(*target))
+                    })
+                    .cloned()
+            });
+            if let Some(canonical) = canonical {
                 object.insert(field.into(), json!(canonical));
             }
         }
@@ -312,6 +336,22 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) -> usize {
         });
     }
     dropped_schema_edges
+}
+/// `_alias_lang_compatible` (Graphify 0.9.101, #4941): an old-stem alias
+/// binds an edge endpoint unless the edge's own file and the alias target's
+/// file are both in a known, different language family. The alias index
+/// only guards two same-stem files of one language; a Dart `PunchType`
+/// reference must not bind to an unrelated `PunchType.java`.
+pub fn alias_lang_compatible(edge_source_file: Option<&Value>, alias_source_file: Option<&Value>) -> bool {
+    let family = |value: Option<&Value>| {
+        value
+            .filter(|v| truthy(v))
+            .and_then(|v| crate::extract_merge::family(&python_compat::string(v)))
+    };
+    match (family(edge_source_file), family(alias_source_file)) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    }
 }
 /// The normalized method name of an AST `.name()` label (#3705).
 fn method_name(label: &str) -> String {
@@ -1002,7 +1042,7 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
     }
     drop(profiled);
     let profiled = crate::profile::span("build.core.ghosts_aliases");
-    let norm_to_id = ghosts_and_aliases(&mut graph, dedup)?;
+    let (norm_to_id, alias_to_id) = ghosts_and_aliases(&mut graph, dedup)?;
     drop(profiled);
     let profiled = crate::profile::span("build.core.edges");
     let edges = if consume {
@@ -1013,7 +1053,7 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
     add_edges(
         &mut graph,
         edges,
-        &norm_to_id,
+        (&norm_to_id, &alias_to_id),
         directed,
         multigraph,
         root,
@@ -1068,7 +1108,10 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
 /// Fold semantic ghosts into the AST nodes they shadow (removing them from
 /// `graph`), and the table edge endpoints resolve through: normalized ids,
 /// ghost ids and file-stem aliases, each to its canonical node id.
-fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String, String>> {
+/// The normalized-id map (ghost remaps included) and, apart from it, the
+/// old-stem alias index (Graphify 0.9.101, #4941).
+type EndpointMaps = (FxHashMap<String, String>, FxHashMap<String, String>);
+fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<EndpointMaps> {
     // Node indices are stable until `remove_nodes_from` below, so the
     // sorted pass can address attributes directly instead of re-hashing ids.
     let mut sorted_nodes = graph
@@ -1237,10 +1280,11 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
             .iter()
             .filter_map(|node| Some((node.id.as_str()?, &node.attributes))),
     );
-    for (alias, canonical) in index {
-        norm_to_id.entry(alias).or_insert(canonical);
-    }
-    Ok(norm_to_id)
+    // Kept apart from norm_to_id, not merged into it: the uniqueness check
+    // of the alias index only guards two same-stem files of one language,
+    // never a same-named node in another language (#4941).
+    let alias_to_id: FxHashMap<String, String> = index;
+    Ok((norm_to_id, alias_to_id))
 }
 /// The fields an edge is ordered by: source, target and relation, an
 /// endpoint read from its alias (`from`, `to`) when absent.
@@ -1314,7 +1358,7 @@ fn indices<K>(keyed: &[(K, usize)]) -> Vec<usize> {
 fn add_edges<R: Record, E: EdgeItem<Record = R>>(
     graph: &mut Graph,
     mut edges: Vec<E>,
-    norm_to_id: &FxHashMap<String, String>,
+    (norm_to_id, alias_to_id): (&FxHashMap<String, String>, &FxHashMap<String, String>),
     directed: bool,
     multigraph: bool,
     root: Option<&Path>,
@@ -1352,7 +1396,21 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
         for (endpoint, index) in [(&mut src, &mut u), (&mut tgt, &mut v)] {
             if index.is_none() {
                 let id = endpoint.as_str().ok_or("Expected string edge endpoint")?;
-                if let Some(new) = norm_to_id.get(&ids::normalize_id(id)) {
+                let norm = ids::normalize_id(id);
+                let new = norm_to_id.get(&norm).cloned().or_else(|| {
+                    alias_to_id
+                        .get(&norm)
+                        .filter(|target| {
+                            alias_lang_compatible(
+                                attrs.get("source_file"),
+                                graph
+                                    .node_index(&json!(target))
+                                    .and_then(|i| graph.nodes[i].attributes.get("source_file")),
+                            )
+                        })
+                        .cloned()
+                });
+                if let Some(new) = new {
                     *endpoint = json!(new);
                     *index = graph.node_index(endpoint);
                 }
