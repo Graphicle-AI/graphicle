@@ -206,6 +206,17 @@ Every figure is labelled, and [docs/benchmarks.md](docs/benchmarks.md) has the f
 
 - **Time per question** (0.1.8, the chart above). On kubernetes at `ca8a2a9e4` (a shallow clone, 30,315 files), over the 22 questions of issue #8, the median `graphicle context` call took 1.34 s with 0.1.8 against 2.99 s with 0.1.7 on 16 cores of our Linux server, 1.38 s against 3.89 s on 4 cores, and 1.90 s against 4.55 s on 4 cores with the file cache dropped before each call; 8 lookups took 0.96 s against 2.52 s on 16 cores. Each call was a new process, as the prompt hook runs it. On the same store, both releases gave the same packet for every question, and the peak memory of a call fell from 3.5 GB to 0.6 GB ([method and rounds](docs/benchmarks.md#our-own-run-on-kubernetes-017-and-018)).
 
+### Update with nothing to change (0.1.13)
+
+`graphicle-graph update` stops early when nothing changed since a full update that changed nothing, and keeps the graph as it is ([how it decides](docs/configuration.md)).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/early-stop-0113-dark.png">
+    <img src="assets/early-stop-0113-light.png" alt="Bar chart of an update with nothing to change, Graphicle 0.1.12's full update against 0.1.13's early stop, on one cloud machine with 8 CPUs and 8 workers; medians of 3 runs for 0.1.12 and 5 for 0.1.13; the outputs were the same. kubernetes v1.37.1: 164.8 s against 15.7 s, 10.5 times less time; react v19.3.0: 22.6 s against 1.02 s, 22.2 times less time; redis 8.10.2: 3.40 s against 0.25 s, 13.7 times less time. 0.1.13 took 10.5 to 22.2 times less time." width="860">
+  </picture>
+</p>
+
 ### Speed and memory of 0.1.11 against Graphify 0.9.100
 
 Graphicle 0.1.11, built from its release source, against Graphify 0.9.100 on one cloud Linux machine (AMD EPYC 9V84), measured runs one at a time, alternating between the programs; the picture at the top and the two charts below show the results ([method and every measurement](docs/benchmarks.md#graphicle-0111-against-graphify-09100)).
