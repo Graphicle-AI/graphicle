@@ -1283,8 +1283,17 @@ fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> (Failed, Vec<Stri
         if let Some(errors) = r.key("parse_errors")
             && (r.node_count().is_none_or(|n| n <= 1) || errors["multiline_error"] == true)
         {
+            // The error region's line, else the first error's (Graphify
+            // 0.9.96, #4711).
+            let line = errors["lossy_error_line"]
+                .as_u64()
+                .or_else(|| errors["first_error_line"].as_u64());
+            let place = line.map_or_else(
+                || "syntax error".to_string(),
+                |l| format!("error region at line {l}"),
+            );
             log::warn!(
-                "{} has syntax errors; extracted symbols may be incomplete",
+                "{} has syntax errors ({place}); extracted symbols may be incomplete",
                 p.display()
             );
         }
@@ -1466,7 +1475,15 @@ fn language_passes<P: PerFile>(
             if !extract_python::is_identifier(name) || fresh.contains(target) {
                 continue;
             }
-            let stub = json!({"id":target,"label":name,"file_type":"code","source_file":""});
+            // `crate`: the `use` names this crate (Graphify 0.9.96, #4699).
+            let stub = json!({
+                "id": target,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "origin_file": e.get("source_file").cloned().unwrap_or(Value::Null),
+                "_rust_use_roots": ["crate"],
+            });
             match use_stub_index.get(target) {
                 Some(&i) => use_stubs[i] = stub,
                 None => {
@@ -1482,7 +1499,13 @@ fn language_passes<P: PerFile>(
             .collect::<Vec<_>>();
         drop(fresh);
         let lent = use_stubs.iter().chain(context).collect::<Vec<_>>();
-        merge::rewire_unique_stubs_with(nodes, &lent, edges);
+        merge::rewire_unique_stubs_with(nodes, &lent, edges, Some(root));
+        // The rewire's scoping markers (Graphify 0.9.96, #4699).
+        for n in nodes.iter_mut() {
+            if let Some(n) = n.as_object_mut() {
+                n.shift_remove("_rust_use_roots");
+            }
+        }
     }
     drop(profiled);
     let profiled = crate::profile::span("assemble.java_csharp_bash_kotlin");
@@ -1997,6 +2020,7 @@ fn drop_rust_use_groups<E: Rec>(edges: &mut Vec<E>) {
         let group = e.rec_shift_remove("_rust_use_group");
         e.rec_shift_remove("_rust_use_binding");
         e.rec_shift_remove("_rust_use_name");
+        e.rec_shift_remove("_rust_pub_use");
         !group.is_some_and(|g| crate::build::truthy(&g))
     });
 }

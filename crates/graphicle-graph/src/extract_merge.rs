@@ -129,14 +129,21 @@ pub fn canonicalize_namespaces(nodes: &mut Vec<Value>, edges: &mut [Value]) {
 /// definition with its label, rewire the edges, and drop the stubs no edge
 /// names any more.
 pub fn rewire_unique_stubs(nodes: &mut Vec<Value>, edges: &mut [Value]) {
-    rewire_unique_stubs_with(nodes, &[], edges);
+    rewire_unique_stubs_with(nodes, &[], edges, None);
 }
 /// [`rewire_unique_stubs`] over `nodes` followed by `lent` candidates that
 /// are never kept: the unchanged files' nodes of an incremental build, and
 /// a stub for each Rust `use` of this crate whose name nothing declares
 /// (#4439). `nodes` keeps exactly what the rewire over the whole view keeps.
-pub fn rewire_unique_stubs_with(nodes: &mut Vec<Value>, lent: &[&Value], edges: &mut [Value]) {
-    let map = rewire_unique_stub_edges_with(nodes, lent, edges);
+/// `root` bounds the walk up to a Rust file's `Cargo.toml` (Graphify 0.9.96,
+/// #4699).
+pub fn rewire_unique_stubs_with(
+    nodes: &mut Vec<Value>,
+    lent: &[&Value],
+    edges: &mut [Value],
+    root: Option<&Path>,
+) {
+    let map = rewire_unique_stub_edges_with(nodes, lent, edges, root);
     if map.is_empty() {
         return;
     }
@@ -150,14 +157,182 @@ pub fn rewire_unique_stubs_with(nodes: &mut Vec<Value>, lent: &[&Value], edges: 
 /// Python member resolver runs it on copies of the `inherits` edges). Returns
 /// the stub -> definition map.
 pub fn rewire_unique_stub_edges(nodes: &[Value], edges: &mut [Value]) -> FxHashMap<String, String> {
-    rewire_unique_stub_edges_with(nodes, &[], edges)
+    rewire_unique_stub_edges_with(nodes, &[], edges, None)
+}
+/// The crate each Rust file belongs to (Graphify 0.9.96, #4699): the
+/// package name of its nearest `Cargo.toml`, looking no higher than the scan
+/// root. A file under none has no crate.
+struct RustCrates {
+    root: Option<PathBuf>,
+    by_dir: std::cell::RefCell<FxHashMap<PathBuf, Option<String>>>,
+}
+impl RustCrates {
+    fn of(&self, source_file: &str) -> Option<String> {
+        if source_file.is_empty() {
+            return None;
+        }
+        let mut path = PathBuf::from(source_file);
+        if !path.is_absolute()
+            && let Some(root) = &self.root
+        {
+            path = root.join(path);
+        }
+        let mut directory = path.parent()?.to_path_buf();
+        let mut walked = vec![];
+        let mut found = None;
+        loop {
+            let cached = self.by_dir.borrow().get(&directory).cloned();
+            if let Some(cached) = cached {
+                found = cached;
+                break;
+            }
+            walked.push(directory.clone());
+            let manifest = directory.join("Cargo.toml");
+            if crate::inputs::is_file(&manifest)
+                && let Some(name) = crate::cargo_introspect::package_name(&manifest)
+            {
+                found = Some(name);
+                break;
+            }
+            if self.root.as_deref() == Some(directory.as_path()) {
+                break;
+            }
+            match directory.parent() {
+                Some(parent) if parent != directory => directory = parent.to_path_buf(),
+                _ => break,
+            }
+        }
+        // Every directory below a hit shares its crate.
+        let mut by_dir = self.by_dir.borrow_mut();
+        for seen in walked {
+            by_dir.insert(seen, found.clone());
+        }
+        found
+    }
+}
+/// The crate scope of the Rust stub rewire (Graphify 0.9.96, #4699).
+struct RustScope {
+    crates: RustCrates,
+    workspace: BTreeSet<String>,
+    reexports: BTreeMap<(String, String), BTreeSet<String>>,
+}
+impl RustScope {
+    /// The candidates in a crate the stub's `use` names (`_rust_use_roots`,
+    /// `crate` for its own file's crate). A stub or candidate with no
+    /// `Cargo.toml` above it keeps the label-only binding. The named crate
+    /// wins when it has the definition; a crate it re-exports from counts
+    /// after it.
+    fn in_stub_crate<'v>(&self, stub: &Value, candidates: Vec<&'v Value>) -> Vec<&'v Value> {
+        let origin = s(stub, "origin_file");
+        if !origin.ends_with(".rs") {
+            return candidates;
+        }
+        let Some(own) = self.crates.of(origin) else {
+            return candidates;
+        };
+        let mut roots = stub
+            .get("_rust_use_roots")
+            .and_then(Value::as_array)
+            .map(|roots| roots.iter().map(string).collect::<Vec<_>>())
+            .unwrap_or_default();
+        if roots.is_empty() {
+            roots.push("crate".into());
+        }
+        let label = string(stub.get("label").unwrap_or(&Value::Null));
+        let named = roots
+            .into_iter()
+            .map(|root| if root == "crate" { own.clone() } else { root })
+            .filter(|c| self.workspace.contains(c))
+            .collect::<BTreeSet<_>>();
+        let mut allowed = named.clone();
+        for root in &named {
+            if let Some(more) = self.reexports.get(&(root.clone(), label.clone())) {
+                allowed.extend(more.iter().cloned());
+            }
+        }
+        let keep = |scope: &BTreeSet<String>| {
+            candidates
+                .iter()
+                .copied()
+                .filter(|c| {
+                    let sf = s(c, "source_file");
+                    !sf.ends_with(".rs") || self.crates.of(sf).is_none_or(|k| scope.contains(&k))
+                })
+                .collect::<Vec<_>>()
+        };
+        let scoped = keep(&named);
+        if scoped.len() == 1 {
+            scoped
+        } else {
+            keep(&allowed)
+        }
+    }
 }
 fn rewire_unique_stub_edges_with(
     nodes: &[Value],
     lent: &[&Value],
     edges: &mut [Value],
+    root: Option<&Path>,
 ) -> FxHashMap<String, String> {
     let view = || nodes.iter().chain(lent.iter().copied());
+    // Rust (Graphify 0.9.96, #4699): the crates the corpus contains; a `use`
+    // naming any other is a dependency outside the scan.
+    let crates = RustCrates {
+        root: root.map(Path::to_path_buf),
+        by_dir: Default::default(),
+    };
+    let workspace = view()
+        .filter(|n| s(n, "source_file").ends_with(".rs"))
+        .filter_map(|n| crates.of(s(n, "source_file")))
+        .collect::<BTreeSet<_>>();
+    // A crate can re-export another crate's item (`pub use core::Thing;`),
+    // so an import naming the re-exporting crate reaches the defining one:
+    // (re-exporting crate, label) -> the crates it re-exports from, with
+    // `pub use` chains across crates followed.
+    let mut reexports: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
+    for e in edges.iter() {
+        let Some(info) = e.get("_rust_pub_use").filter(|v| v.is_object()) else {
+            continue;
+        };
+        let Some(owner) = crates.of(s(e, "source_file")) else {
+            continue;
+        };
+        let root = string(info.get("root").unwrap_or(&Value::Null));
+        if root != "crate" {
+            reexports
+                .entry((owner, string(info.get("label").unwrap_or(&Value::Null))))
+                .or_default()
+                .insert(root);
+        }
+    }
+    for _ in 0..workspace.len() {
+        let mut changed = false;
+        for key in reexports.keys().cloned().collect::<Vec<_>>() {
+            let more = reexports[&key]
+                .iter()
+                .flat_map(|root| {
+                    reexports
+                        .get(&(root.clone(), key.1.clone()))
+                        .into_iter()
+                        .flatten()
+                        .cloned()
+                })
+                .collect::<BTreeSet<_>>();
+            let targets = reexports.get_mut(&key).unwrap();
+            if !more.is_subset(targets) {
+                targets.extend(more);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    let scope = RustScope {
+        crates,
+        workspace,
+        reexports,
+    };
     // Every table here is only looked up, never iterated, so hash tables give
     // the same result as ordered maps without the string comparisons.
     let mut defs: FxHashMap<String, Vec<&Value>> = FxHashMap::default();
@@ -209,10 +384,12 @@ fn rewire_unique_stub_edges_with(
         if id.is_empty() {
             continue;
         }
-        let mut candidates = defs
-            .get(&node_label_key(s(n, "label"), false))
-            .unwrap_or(&empty)
-            .clone();
+        let mut candidates = scope.in_stub_crate(
+            n,
+            defs.get(&node_label_key(s(n, "label"), false))
+                .unwrap_or(&empty)
+                .clone(),
+        );
         // #4283: a Rust type with `impl` blocks in other files has one node
         // per file, but only its declaration carries `_rust_declaration_count`.
         // Exactly one declaration in total is one type; anything else (or a
@@ -232,15 +409,21 @@ fn rewire_unique_stub_edges_with(
             }
         }
         if candidates.len() != 1 {
-            candidates = ci
-                .get(&node_label_key(s(n, "label"), true))
-                .unwrap_or(&empty)
-                .clone();
+            candidates = scope.in_stub_crate(
+                n,
+                ci.get(&node_label_key(s(n, "label"), true))
+                    .unwrap_or(&empty)
+                    .clone(),
+            );
         }
         if candidates.len() != 1 {
-            let f = funcs
-                .get(&node_label_key(s(n, "label"), false))
-                .unwrap_or(&empty);
+            let f = &scope.in_stub_crate(
+                n,
+                funcs
+                    .get(&node_label_key(s(n, "label"), false))
+                    .unwrap_or(&empty)
+                    .clone(),
+            );
             if f.len() == 1 && !supers.contains(id) {
                 let allowed = fams.get(id);
                 if allowed.is_none_or(BTreeSet::is_empty)
@@ -304,6 +487,33 @@ fn rewire_unique_stub_edges_with(
         }
     }
     let by_id = view().map(|n| (s(n, "id"), n)).collect::<FxHashMap<_, _>>();
+    // A Rust stub bound by its label alone is a guess: no `use` naming this
+    // crate or a scanned one vouches for it, so its rewired edges are
+    // INFERRED (Graphify 0.9.96, #4699).
+    let by_name_only = {
+        let use_targets = edges
+            .iter()
+            .filter(|e| e.get("_rust_use_name").is_some_and(truthy))
+            .map(|e| s(e, "target"))
+            .collect::<FxHashSet<_>>();
+        map.keys()
+            .filter(|id| !use_targets.contains(id.as_str()))
+            .filter(|id| {
+                by_id.get(id.as_str()).is_some_and(|n| {
+                    s(n, "origin_file").ends_with(".rs")
+                        && !n
+                            .get("_rust_use_roots")
+                            .and_then(Value::as_array)
+                            .is_some_and(|roots| {
+                                roots.iter().any(|r| {
+                                    r == "crate" || r.as_str().is_some_and(|r| scope.workspace.contains(r))
+                                })
+                            })
+                })
+            })
+            .cloned()
+            .collect::<FxHashSet<String>>()
+    };
     for e in edges.iter_mut() {
         let sf = s(e, "source_file").to_string();
         let scoped = is_dotnet_source_file(&e["source_file"])
@@ -349,7 +559,11 @@ fn rewire_unique_stub_edges_with(
             {
                 continue;
             }
+            let guessed = endpoint == "target" && by_name_only.contains(old);
             e[endpoint] = json!(new);
+            if guessed {
+                e["confidence"] = json!("INFERRED");
+            }
         }
     }
     map

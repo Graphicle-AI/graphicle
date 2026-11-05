@@ -99,14 +99,21 @@ impl<'t> Extractor<'t, '_> {
             item.insert("id".into(), json!(id));
             item.insert("label".into(), json!(label));
             item.insert("file_type".into(), json!("code"));
+            // A stub for an external namespace or type is sourceless: empty
+            // file and location (Graphify 0.9.96, #4725).
+            item.insert(
+                "source_file".into(),
+                json!(if source_backed { self.path.as_str() } else { "" }),
+            );
             item.insert(
                 "source_location".into(),
-                json!(format!("L{}", node.start_position().row + 1)),
+                json!(if source_backed {
+                    format!("L{}", node.start_position().row + 1)
+                } else {
+                    String::new()
+                }),
             );
             item.insert("metadata".into(), Value::Object(details));
-            if source_backed {
-                item.insert("source_file".into(), json!(self.path));
-            }
             if callable {
                 item.insert("_callable".into(), json!(true));
             }

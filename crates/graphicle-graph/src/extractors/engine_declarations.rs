@@ -3,7 +3,7 @@
 //! Class, field and signature traversal for the shared engine.
 use super::{
     base::make_id,
-    engine::{Engine, decorator_name},
+    engine::{Engine, ts_decorator_name},
     engine_scope::*,
     engine_types::*,
 };
@@ -1397,7 +1397,7 @@ impl<'a, 't> Engine<'a, 't> {
             }
         }
         for (d, owner) in work {
-            if let Some(name) = decorator_name(d, self.source) {
+            if let Some(name) = ts_decorator_name(d, self.source) {
                 let target = self.ensure(&name, true);
                 if target != owner {
                     self.edge(

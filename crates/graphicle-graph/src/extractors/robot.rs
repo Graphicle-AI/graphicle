@@ -245,6 +245,9 @@ struct Unit {
     line: usize,
     test: bool,
     body: Vec<Statement>,
+    /// A test case whose name another test case of the file shares: its id
+    /// is salted with its line (Graphify 0.9.96).
+    duplicate: bool,
 }
 enum Entry {
     Setting(Statement, String),
@@ -431,7 +434,15 @@ impl Builder {
         if unit.name.is_empty() {
             return;
         }
-        let id = if unit.test {
+        let id = if unit.test && unit.duplicate {
+            // Robot only warns on two test cases of one name; each keeps its
+            // own node, salted by its line (Graphify 0.9.96).
+            make_id([
+                self.stem.as_str(),
+                unit.name.as_str(),
+                &format!("L{}", unit.line),
+            ])
+        } else if unit.test {
             make_id([self.stem.as_str(), unit.name.as_str()])
         } else {
             kw_id(&unit.name)
@@ -617,6 +628,7 @@ pub fn extract_source(path: &Path, source: &str) -> Value {
                     line: row.line,
                     test: section == Section::Tests,
                     body: vec![],
+                    duplicate: false,
                 });
             } else {
                 while cells.first().is_some_and(String::is_empty) {
@@ -672,6 +684,20 @@ pub fn extract_source(path: &Path, source: &str) -> Value {
                     template = row.cells.get(1).is_some_and(|v| !v.is_empty())
                 }
             }
+        }
+    }
+    let mut test_names: BTreeMap<String, usize> = BTreeMap::new();
+    for entry in &entries {
+        if let Entry::Unit(unit) = entry
+            && unit.test
+            && !unit.name.is_empty()
+        {
+            *test_names.entry(unit.name.clone()).or_default() += 1;
+        }
+    }
+    for entry in &mut entries {
+        if let Entry::Unit(unit) = entry {
+            unit.duplicate = unit.test && test_names.get(&unit.name).is_some_and(|&n| n >= 2);
         }
     }
     for (i, entry) in entries.into_iter().enumerate() {

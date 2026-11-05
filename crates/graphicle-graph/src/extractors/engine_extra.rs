@@ -319,7 +319,11 @@ impl<'a, 't> Engine<'a, 't> {
                             value,
                         );
                         found = true;
-                    } else if !js_value_is_require(value, self.source)
+                    } else if !(js_value_is_require(value, self.source)
+                        // Only a require that resolves to a corpus file: an
+                        // external package keeps its binding node (Graphify
+                        // 0.9.96, #4688).
+                        && js_require_resolves_locally(value, self.source, &self.path))
                         && ((exported
                             && name.kind_name() == "identifier"
                             && !crate::ids::normalize_id(&name_text).is_empty())

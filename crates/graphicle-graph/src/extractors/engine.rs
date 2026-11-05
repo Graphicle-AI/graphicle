@@ -108,6 +108,9 @@ pub(crate) struct Engine<'a, 't> {
     /// per class, `self.X -> class` (0.9.80).
     pub python_var_types: BTreeMap<String, PythonBindings>,
     pub python_attr_types: BTreeMap<String, PythonBindings>,
+    /// Python: per function, locals bound to a member-call result, by that
+    /// call's byte span (Graphify 0.9.96).
+    pub python_factory_bindings: BTreeMap<String, PythonFactories>,
     /// C#: plain method id -> `(signature, id, metadata)` of the overloads of
     /// one name on one type, in declaration order (0.9.95, #4584).
     pub csharp_overloads: BTreeMap<String, Vec<(String, String, Value)>>,
@@ -871,6 +874,45 @@ pub fn decorator_name(n: Node<'_>, s: &[u8]) -> Option<String> {
         _ => None,
     }
 }
+/// `_ts_decorator_name` (Graphify 0.9.96, #4711): the symbol a TS
+/// decorator applies, which is the outermost call's name. `@(Link().toMany())`
+/// is a call chain the grammar cannot parse in decorator position: `Link().`
+/// lands in an ERROR and `toMany()` beside it, so the applied decorator is
+/// the last named call inside the parentheses.
+pub fn ts_decorator_name(n: Node<'_>, s: &[u8]) -> Option<String> {
+    ts_decorator_target(named(n).into_iter().next()?, s)
+}
+fn ts_decorator_target(expr: Node<'_>, s: &[u8]) -> Option<String> {
+    let property = |n: Node<'_>| n.child_by_field_name("property").map(|p| read_text(p, s));
+    match expr.kind_name() {
+        "parenthesized_expression" => {
+            let inner = named(expr);
+            if let Some(call) = inner
+                .iter()
+                .rev()
+                .find(|c| c.kind_name() == "call_expression")
+            {
+                return ts_decorator_target(*call, s);
+            }
+            // A recovered non-call (`@(A, B)`) names no decorator.
+            if inner.iter().any(|c| c.kind_name() == "ERROR") {
+                return None;
+            }
+            ts_decorator_target(*inner.first()?, s)
+        }
+        "call_expression" => {
+            let function = expr.child_by_field_name("function")?;
+            match function.kind_name() {
+                "member_expression" => property(function),
+                "identifier" => Some(read_text(function, s)),
+                _ => None,
+            }
+        }
+        "member_expression" => property(expr),
+        "identifier" => Some(read_text(expr, s)),
+        _ => None,
+    }
+}
 pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8]>) -> Value {
     let loaded;
     let from_file = source.is_none();
@@ -966,6 +1008,7 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         lexical_bases: BTreeMap::new(),
         python_var_types: BTreeMap::new(),
         python_attr_types: BTreeMap::new(),
+        python_factory_bindings: BTreeMap::new(),
         csharp_overloads: BTreeMap::new(),
         python_fixture_params: BTreeMap::new(),
         js_factory_scope: Table::new(),

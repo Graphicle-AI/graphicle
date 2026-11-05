@@ -144,7 +144,9 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     typedef_line: compile(r"^\s*typedef\b"),
     // `re.fullmatch(r"([\w.]+)\s*(?:<.*>)?\s*\??", target, re.DOTALL)`.
     typedef_target: compile(&format!(r"(?s)^([{}.]+)\s*(?:<.*>)?\s*\??\z", word_chars())),
-    extension: compile(r"(?m)^\s{0,4}extension\s+(\w+)?(?:<[^>]+>)?\s+on\s+(\w+)"),
+    // The name, its generics and the space after them are one optional group,
+    // so `extension on String` matches too (Graphify 0.9.96).
+    extension: compile(r"(?m)^\s{0,4}extension\s+(?:(\w+)\s*(?:<[^>]+>)?\s+)?on\s+(\w+)"),
     variable: compile(
         r"(?m)^\s{0,2}(?:late\s+)?(?:(?:final|const|var)\s+)?(?:\([^)]+\)\s+|([a-zA-Z0-9_<>,.?]+(?:\s+[a-zA-Z0-9_<>,.?]+){0,3})\s+)?(?:(\w+)|(?:\w+\s*)?\(([^)]+)\))\s*(?:=|$|;)",
     ),

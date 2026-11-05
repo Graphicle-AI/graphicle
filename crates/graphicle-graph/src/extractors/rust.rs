@@ -220,6 +220,16 @@ pub fn use_name(written: &str, path: &str) -> Option<String> {
 /// (`mod item; pub use item::Invoice;`), unless it starts with `::`, which
 /// always names a crate. An inline `mod` block is a scope of its own.
 pub fn use_name_in(written: &str, path: &str, scope_mods: &HashSet<String>) -> Option<String> {
+    use_root_in(written, path, scope_mods).0
+}
+/// [`use_name_in`] and the root the `use` names (Graphify 0.9.96, #4699):
+/// `crate` for a path of this crate, else its first segment (`serde_json`,
+/// or a workspace crate's name).
+fn use_root_in(
+    written: &str,
+    path: &str,
+    scope_mods: &HashSet<String>,
+) -> (Option<String>, String) {
     let head = trim(
         path.trim_start_matches([':', ' '])
             .split("::")
@@ -235,8 +245,14 @@ pub fn use_name_in(written: &str, path: &str, scope_mods: &HashSet<String>) -> O
     let local_mod = !ident.is_empty()
         && scope_mods.contains(ident)
         && !path.trim_start_matches(python_space).starts_with("::");
-    (matches!(head, "crate" | "self" | "super") || local_mod)
-        .then(|| trim(written.split(" as ").next().unwrap_or("")).to_string())
+    if matches!(head, "crate" | "self" | "super") || local_mod {
+        (
+            Some(trim(written.split(" as ").next().unwrap_or("")).to_string()),
+            "crate".into(),
+        )
+    } else {
+        (None, head.to_string())
+    }
 }
 /// Python's `str.isspace`.
 fn python_space(c: char) -> bool {
@@ -461,8 +477,27 @@ struct Extractor<'source, 'tree> {
     declared_types: HashMap<String, HashSet<String>>,
     /// The bare type name each `impl` block names, by its start byte.
     impl_bare: HashMap<usize, String>,
+    /// Where each imported name comes from: `crate`, or the first segment of
+    /// the `use` path (Graphify 0.9.96, #4699). A sourceless stub of such a
+    /// name carries it, so the corpus rewire can scope the binding.
+    use_roots: HashMap<String, BTreeSet<String>>,
 }
 impl<'tree> Extractor<'_, 'tree> {
+    /// `name_use`: mark the last edge with the name as written (#4439) for a
+    /// path of this crate, record where the bound name comes from, and mark
+    /// a plain `pub use` of another crate's item as a re-export (Graphify
+    /// 0.9.96, #4699).
+    fn name_use(&mut self, written: &str, path: &str, scope_mods: &HashSet<String>, reexport: bool) {
+        let bound = trim(written.rsplit(" as ").next().unwrap_or("")).to_string();
+        let (used, root) = use_root_in(written, path, scope_mods);
+        let edge = self.edges.last_mut().unwrap();
+        if let Some(used) = used {
+            edge["_rust_use_name"] = json!(used);
+        } else if reexport && crate::extract_python::is_identifier(&bound) {
+            edge["_rust_pub_use"] = json!({"label": bound, "root": root});
+        }
+        self.use_roots.entry(bound).or_default().insert(root);
+    }
     fn node(&mut self, id: &str, label: &str, line: usize) {
         if self.seen.insert(id.into()) {
             self.nodes.push(json!({"id":id,"label":label,"file_type":"code","source_file":self.path,"source_location":format!("L{line}")}));
@@ -844,6 +879,12 @@ impl<'tree> Extractor<'_, 'tree> {
                                 .collect::<HashSet<_>>()
                         })
                         .unwrap_or_default();
+                    // A bare `pub use` re-exports the item from the crate its
+                    // path starts with; `pub(crate)` and `pub(super)` do not
+                    // leave this crate (Graphify 0.9.96, #4699).
+                    let reexport = children(node)
+                        .find(|c| c.kind() == "visibility_modifier")
+                        .is_some_and(|v| trim(&read_text(v, self.source)) == "pub");
                     let written = read_text(argument, self.source);
                     let name = use_module(&written);
                     let grouped = matches!(argument.kind(), "use_list" | "scoped_use_list");
@@ -855,9 +896,7 @@ impl<'tree> Extractor<'_, 'tree> {
                             line,
                             Some("import"),
                         );
-                        if let Some(used) = use_name_in(&name, &written, &scope_mods) {
-                            self.edges.last_mut().unwrap()["_rust_use_name"] = json!(used);
-                        }
+                        self.name_use(&name, &written, &scope_mods, reexport);
                         if grouped {
                             // Call evidence as before; resolution drops it later.
                             self.edges.last_mut().unwrap()["_rust_use_group"] = json!(true);
@@ -876,9 +915,7 @@ impl<'tree> Extractor<'_, 'tree> {
                                     line,
                                     Some("import"),
                                 );
-                                if let Some(used) = use_name_in(&name, &binding, &scope_mods) {
-                                    self.edges.last_mut().unwrap()["_rust_use_name"] = json!(used);
-                                }
+                                self.name_use(&name, &binding, &scope_mods, reexport);
                                 self.edges.last_mut().unwrap()["_rust_use_binding"] = json!(true);
                             }
                         }
@@ -1143,6 +1180,7 @@ pub fn extract_rust(path: &Path) -> Value {
         file_items: HashMap::new(),
         declared_types: HashMap::new(),
         impl_bare: HashMap::new(),
+        use_roots: HashMap::new(),
     };
     scan_local_types(tree.root_node(), &source, &mut ex.local_types);
     ex.node(&file, &name, 1);
@@ -1204,6 +1242,13 @@ pub fn extract_rust(path: &Path) -> Value {
             body.typ.as_deref(),
             body.key.as_deref(),
         );
+    }
+    for n in &mut ex.nodes {
+        if n["source_file"].as_str().is_some_and(str::is_empty)
+            && let Some(roots) = n["label"].as_str().and_then(|l| ex.use_roots.get(l))
+        {
+            n["_rust_use_roots"] = json!(roots);
+        }
     }
     ex.edges.retain(|e| {
         e["source"].as_str().is_some_and(|s| ex.seen.contains(s))

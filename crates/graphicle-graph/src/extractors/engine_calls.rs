@@ -243,6 +243,14 @@ impl<'a, 't> Engine<'a, 't> {
                 .and_then(|table| table.get(receiver))
             {
                 raw["receiver_type"] = json!(class);
+            } else if let Some(site) = self
+                .python_factory_bindings
+                .get(caller)
+                .and_then(|table| table.get(receiver))
+            {
+                // A member-call result: the resolver types it from the
+                // producer's return annotation (Graphify 0.9.96).
+                raw["_python_receiver_factory"] = json!(site);
             } else if self
                 .python_fixture_params
                 .get(caller)
@@ -1244,6 +1252,11 @@ impl<'a, 't> Engine<'a, 't> {
                         if python && call.member {
                             self.python_member_stamps(n, caller, &call, &mut raw);
                         }
+                        if python {
+                            // The exact call, so the resolver links a factory
+                            // receiver to its own producer (Graphify 0.9.96).
+                            raw["_python_call_site"] = json!([n.start_byte(), n.end_byte()]);
+                        }
                         // The stub may stand in for a definition in another
                         // file; extract() binds it only with evidence (#3888).
                         if external {
@@ -1693,14 +1706,23 @@ impl<'a, 't> Engine<'a, 't> {
             }
         }
         if self.is("python") {
-            // `self.X` per class from the bindings in its methods (#2860);
-            // conflicting or untypable bindings poison the field.
+            // Typed parameters and locals per function (#4198), and locals
+            // bound to a member-call result (Graphify 0.9.96); then `self.X`
+            // per class from the bindings in its methods (#2860), where an
+            // unchanged typed local carries its class. Conflicting or
+            // untypable bindings poison the field.
             for (caller, body) in &self.bodies {
+                let (bindings, factories) = python_local_class_bindings(*body, self.source);
+                self.python_var_types.insert(caller.clone(), bindings);
+                self.python_factory_bindings
+                    .insert(caller.clone(), factories);
                 let Some(owner) = self.method_owner.get(caller) else {
                     continue;
                 };
                 let fields = self.python_attr_types.entry(owner.clone()).or_default();
-                for (attr, class) in python_self_attr_bindings(*body, self.source) {
+                for (attr, class) in
+                    python_self_attr_bindings(*body, self.source, self.python_var_types.get(caller))
+                {
                     let kept = match fields.get(&attr) {
                         Some(previous) if *previous != class => None,
                         _ => class,
@@ -1708,19 +1730,28 @@ impl<'a, 't> Engine<'a, 't> {
                     fields.insert(attr, kept);
                 }
             }
-            // Typed parameters and locals per function (#4198); `@property`
-            // readers are marked for the attribute-read pass (#4337).
+            // `@property` readers are marked for the attribute-read pass
+            // (#4337), and a scalar class return annotation for the factory
+            // receivers (Graphify 0.9.96).
             let mut properties = BTreeSet::new();
+            let mut return_types: BTreeMap<String, String> = BTreeMap::new();
             // pytest fixtures (0.9.92, #4332): what each fixture returns, and
             // the parameters of tests and fixtures pytest fills, in test
             // modules and `conftest.py` only.
             let test_module = python_is_test_module(&self.path);
             let mut fixtures: BTreeMap<String, String> = BTreeMap::new();
+            let mut fixture_params: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
             for (caller, body) in &self.bodies {
-                let bindings = python_local_class_bindings(*body, self.source);
+                let empty = PythonBindings::new();
+                let bindings = self.python_var_types.get(caller).unwrap_or(&empty);
                 let func = body
                     .parent()
                     .filter(|f| f.kind_name() == "function_definition");
+                if let Some(class) = func.and_then(|f| {
+                    python_class_ref(f.child_by_field_name("return_type"), self.source)
+                }) {
+                    return_types.insert(caller.clone(), class);
+                }
                 if func.is_some_and(|f| python_is_property(f, self.source)) {
                     properties.insert(caller.clone());
                 }
@@ -1729,7 +1760,7 @@ impl<'a, 't> Engine<'a, 't> {
                     if fixture {
                         fixtures.insert(
                             caller.clone(),
-                            python_fixture_type(func, self.source, &bindings),
+                            python_fixture_type(func, self.source, bindings),
                         );
                     }
                     if fixture
@@ -1737,13 +1768,16 @@ impl<'a, 't> Engine<'a, 't> {
                             .child_by_field_name("name")
                             .is_some_and(|n| self.text(n).starts_with("test"))
                     {
-                        self.python_fixture_params
+                        fixture_params
                             .insert(caller.clone(), python_untouched_params(func, self.source));
                     }
                 }
-                self.python_var_types.insert(caller.clone(), bindings);
             }
+            self.python_fixture_params.extend(fixture_params);
             for n in &mut self.nodes {
+                if let Some(class) = n["id"].as_str().and_then(|id| return_types.get(id)) {
+                    n["_py_return_type"] = json!(class);
+                }
                 if n["id"].as_str().is_some_and(|id| properties.contains(id)) {
                     n["_py_property"] = json!(true);
                 }
@@ -1950,12 +1984,23 @@ impl<'a, 't> Engine<'a, 't> {
                 first_error = child;
             }
             let mut stack = vec![root];
-            let mut multiline = false;
+            // The first ERROR spanning lines: the region the warning gate
+            // selects on, not an earlier fully recovered one (Graphify
+            // 0.9.96, #4711).
+            let mut lossy: Option<Node<'_>> = None;
             while let Some(n) = stack.pop() {
-                multiline |= n.is_error() && n.end_position().row > n.start_position().row;
+                if n.is_error()
+                    && n.end_position().row > n.start_position().row
+                    && lossy.is_none_or(|b| n.start_byte() < b.start_byte())
+                {
+                    lossy = Some(n);
+                }
                 stack.extend(children(n).into_iter().rev());
             }
-            out["parse_errors"] = json!({"first_error_line":first_error.start_position().row + 1,"multiline_error":multiline});
+            out["parse_errors"] = json!({"first_error_line":first_error.start_position().row + 1,"multiline_error":lossy.is_some()});
+            if let Some(lossy) = lossy {
+                out["parse_errors"]["lossy_error_line"] = json!(lossy.start_position().row + 1);
+            }
         }
         if self.is("kotlin")
             && let Some(p) = children(root)

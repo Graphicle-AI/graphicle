@@ -197,15 +197,17 @@ impl<'tree> Extractor<'tree, '_> {
             let name = read_text(function, self.source);
             let callee = name.rsplit('.').next().unwrap_or("");
             let member = name.contains('.');
-            let labels = [format!("{callee}()"), format!(".{callee}()")];
+            // A dotted call names a method, never a free function, and a bare
+            // call a free function, never a method (Graphify 0.9.96).
+            let wanted = if member {
+                format!(".{callee}()")
+            } else {
+                format!("{callee}()")
+            };
             let target = self
                 .nodes
                 .iter()
-                .find(|n| {
-                    n["label"]
-                        .as_str()
-                        .is_some_and(|s| labels.iter().any(|label| s == label))
-                })
+                .find(|n| n["label"].as_str() == Some(wanted.as_str()))
                 .and_then(|n| n["id"].as_str())
                 .map(str::to_string);
             if let Some(target) = target.filter(|id| !id.is_empty() && id != caller) {

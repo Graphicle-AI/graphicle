@@ -260,6 +260,17 @@ fn upper_initial(s: &str) -> bool {
 /// Python class bindings of one scope: `name -> Some(Class)` when every
 /// binding names that one class, `None` when the name is bound otherwise.
 pub type PythonBindings = BTreeMap<String, Option<String>>;
+/// Python locals bound to a member-call result (`task = svc.make()`), by the
+/// exact byte span of that call (Graphify 0.9.96): the corpus resolver types
+/// them from the resolved method's return annotation.
+pub type PythonFactories = BTreeMap<String, [usize; 2]>;
+/// One binding of [`python_local_class_bindings`]: a class, or the span of
+/// the member call whose result the name holds.
+#[derive(Clone, PartialEq)]
+enum PyBound {
+    Class(String),
+    Site([usize; 2]),
+}
 /// `_python_self_attr` (0.9.80, #2860): `X` when `node` is `self.X`.
 pub fn python_self_attr(node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
     let node = node.filter(|n| n.kind_name() == "attribute")?;
@@ -271,8 +282,13 @@ pub fn python_self_attr(node: Option<Node<'_>>, source: &[u8]) -> Option<String>
 /// `self.attr = ...` in a method body. The class is the annotation
 /// (`self.attr: T = ...`) or the bare class of `self.attr = Ctor(...)`, and
 /// None for any other value so the caller can poison the field;
-/// `self.attr = None` binds nothing.
-pub fn python_self_attr_bindings(body: Node<'_>, source: &[u8]) -> Vec<(String, Option<String>)> {
+/// `self.attr = None` binds nothing. An unchanged typed parameter or local
+/// carries its class through `self.attr = value` (Graphify 0.9.96).
+pub fn python_self_attr_bindings(
+    body: Node<'_>,
+    source: &[u8],
+    local_types: Option<&PythonBindings>,
+) -> Vec<(String, Option<String>)> {
     let mut out = vec![];
     let mut stack = named(body);
     while let Some(node) = stack.pop() {
@@ -290,11 +306,18 @@ pub fn python_self_attr_bindings(body: Node<'_>, source: &[u8]) -> Vec<(String, 
             continue;
         };
         let mut value = node.child_by_field_name("type");
+        let mut bound_type = None;
         if value.is_none()
             && let Some(right) = node.child_by_field_name("right")
         {
             if right.kind_name() == "none" {
                 continue;
+            }
+            if right.kind_name() == "identifier" {
+                bound_type = local_types
+                    .and_then(|types| types.get(&read_text(right, source)))
+                    .cloned()
+                    .flatten();
             }
             value = if right.kind_name() == "call" {
                 right.child_by_field_name("function")
@@ -302,7 +325,10 @@ pub fn python_self_attr_bindings(body: Node<'_>, source: &[u8]) -> Vec<(String, 
                 None
             };
         }
-        let name = value.map(|v| read_text(v, source)).unwrap_or_default();
+        let name = value
+            .map(|v| read_text(v, source))
+            .or(bound_type)
+            .unwrap_or_default();
         let typed = crate::extract_python::is_identifier(&name) && upper_initial(&name);
         // Only a whole-target assignment types the field; every element of a
         // tuple unpacking is poisoned.
@@ -321,11 +347,16 @@ pub fn python_self_attr_bindings(body: Node<'_>, source: &[u8]) -> Vec<(String, 
 /// constructor call or a `with Ctor(...) as name`. The table is
 /// flow-insensitive, so a name bound to anything else anywhere in the
 /// function maps to None; names bound inside a lambda or a nested class body
-/// are poisoned, never typed.
-pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindings {
+/// are poisoned, never typed. A local assigned a member-call result
+/// (`task = svc.make()`) is kept apart, by that call's byte span, under the
+/// same poison rules (Graphify 0.9.96).
+pub fn python_local_class_bindings(
+    body: Node<'_>,
+    source: &[u8],
+) -> (PythonBindings, PythonFactories) {
     struct Scan<'s> {
         source: &'s [u8],
-        bindings: PythonBindings,
+        bindings: BTreeMap<String, Option<PyBound>>,
         poison_only: bool,
     }
     impl Scan<'_> {
@@ -333,6 +364,9 @@ pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindi
             read_text(n, self.source)
         }
         fn bind(&mut self, name: String, class: Option<String>) {
+            self.bind_to(name, class.map(PyBound::Class));
+        }
+        fn bind_to(&mut self, name: String, class: Option<PyBound>) {
             match class {
                 Some(class)
                     if !self.poison_only
@@ -408,11 +442,16 @@ pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindi
                                 } else if let Some(right) =
                                     right.filter(|r| r.kind_name() == "call")
                                 {
-                                    let class = python_class_ref(
-                                        right.child_by_field_name("function"),
-                                        self.source,
-                                    );
-                                    self.bind(name, class);
+                                    let function = right.child_by_field_name("function");
+                                    let class = python_class_ref(function, self.source);
+                                    if class.is_none()
+                                        && function.is_some_and(|f| f.kind_name() == "attribute")
+                                    {
+                                        let site = [right.start_byte(), right.end_byte()];
+                                        self.bind_to(name, Some(PyBound::Site(site)));
+                                    } else {
+                                        self.bind(name, class);
+                                    }
                                 } else {
                                     self.bindings.insert(name, None);
                                 }
@@ -494,7 +533,20 @@ pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindi
         }
     }
     scan.visit(body);
-    scan.bindings
+    let mut factories = PythonFactories::new();
+    let bindings = scan
+        .bindings
+        .into_iter()
+        .map(|(name, bound)| match bound {
+            Some(PyBound::Class(class)) => (name, Some(class)),
+            Some(PyBound::Site(site)) => {
+                factories.insert(name.clone(), site);
+                (name, None)
+            }
+            None => (name, None),
+        })
+        .collect();
+    (bindings, factories)
 }
 /// `_python_is_property` (0.9.87, #4337): `@property`, `@cached_property` or
 /// `@x.getter`; reading the attribute runs the function.
@@ -1954,6 +2006,27 @@ pub fn js_value_is_require(value: Node<'_>, source: &[u8]) -> bool {
     find_require_call(Some(value))
         .and_then(|call| call.child_by_field_name("function"))
         .is_some_and(|function| read_text(function, source) == "require")
+}
+/// `_js_require_resolves_locally` (Graphify 0.9.96, #4688): the string
+/// argument of a `require(...)` binding resolves to a file in the corpus. A
+/// require of an external package has no file to redirect `new X()` or
+/// `extends X` to, so its binding node stays.
+pub fn js_require_resolves_locally(value: Node<'_>, source: &[u8], path: &str) -> bool {
+    let Some(args) = find_require_call(Some(value)).and_then(|c| c.child_by_field_name("arguments"))
+    else {
+        return false;
+    };
+    let raw = children(args)
+        .into_iter()
+        .filter(|a| a.kind_name() == "string")
+        .map(|a| {
+            read_text(a, source)
+                .trim_matches(['\'', '"', '`', ' '])
+                .to_string()
+        })
+        .find(|raw| !raw.is_empty());
+    raw.and_then(|raw| super::resolution_js::resolve_js_import_target(&raw, path))
+        .is_some_and(|(_, resolved)| resolved.is_some())
 }
 pub fn find_require_call(node: Option<Node<'_>>) -> Option<Node<'_>> {
     let n = node?;
