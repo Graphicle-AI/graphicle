@@ -362,6 +362,49 @@ impl<'tree> Extractor<'_, 'tree> {
             }
         }
     }
+    /// `emit_go_package_var_type_refs` (Graphify 0.9.101, #2360): the types a
+    /// package-level `var` names, in its declared type, a composite literal
+    /// or a type argument (`new(*pkg.T)`), are referenced by the file; a
+    /// closure body is left to the call walk.
+    fn package_var_type_refs(&mut self, var_decl: Node<'_>) {
+        const TYPE_NODES: [&str; 9] = [
+            "type_identifier",
+            "qualified_type",
+            "pointer_type",
+            "generic_type",
+            "slice_type",
+            "array_type",
+            "map_type",
+            "channel_type",
+            "parenthesized_type",
+        ];
+        let file = self.file.clone();
+        let mut stack = vec![var_decl];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "func_literal" {
+                continue;
+            }
+            let mut type_nodes = vec![];
+            if matches!(n.kind(), "var_spec" | "composite_literal") {
+                type_nodes.extend(n.child_by_field_name("type"));
+            } else if n.kind() == "argument_list" {
+                type_nodes.extend(children(n).filter(|c| TYPE_NODES.contains(&c.kind())));
+            }
+            for type_node in &type_nodes {
+                let line = type_node.start_position().row + 1;
+                for (name, role) in self.type_refs(Some(*type_node), &HashSet::new()) {
+                    let target = self.named(&name);
+                    let context = if role == "generic_arg" {
+                        "generic_arg"
+                    } else {
+                        "variable_type"
+                    };
+                    self.edge(&file, &target, "references", line, Some(context));
+                }
+            }
+            stack.extend(children(n).filter(|c| !type_nodes.iter().any(|t| t.id() == c.id())));
+        }
+    }
     /// Parameter and return type references of a signature. Its own generic
     /// type parameters (and those of the receiver, or of an enclosing generic
     /// interface given in `type_params`) are bindings: a `[T any]` signature
@@ -706,6 +749,7 @@ impl<'tree> Extractor<'_, 'tree> {
             // calls, closures included, are the file's (Graphify 0.9.99,
             // #2360).
             "var_declaration" if node.parent().is_some_and(|p| p.kind() == "source_file") => {
+                self.package_var_type_refs(node);
                 let scope_types = receiver_type_table(node, self.source);
                 self.bodies.push(Body {
                     caller: self.file.clone(),
@@ -868,27 +912,43 @@ impl<'tree> Extractor<'_, 'tree> {
                     ) else {
                         continue;
                     };
-                    if operand.kind() != "identifier" {
-                        continue;
-                    }
-                    let name = read_text(operand, self.source);
-                    if self.imports.contains_key(&name) {
-                        continue;
-                    }
-                    let receiver_type = if scope
-                        .self_name
-                        .as_deref()
-                        .is_some_and(|n| !n.is_empty() && n == name)
-                    {
-                        scope.self_type.clone()
+                    let self_name = scope.self_name.as_deref().filter(|n| !n.is_empty());
+                    let (name, receiver_type, field_owner) = if operand.kind() == "identifier" {
+                        let name = read_text(operand, self.source);
+                        if self.imports.contains_key(&name) {
+                            continue;
+                        }
+                        let receiver_type = if self_name == Some(name.as_str()) {
+                            scope.self_type.clone()
+                        } else {
+                            scope
+                                .scope_types
+                                .get(&name)
+                                .and_then(Value::as_str)
+                                .map(str::to_string)
+                        };
+                        (name, receiver_type, None)
+                    } else if operand.kind() == "selector_expression" {
+                        // `s.field.Handle`, typed through the field only when
+                        // `s` is this method's receiver (Graphify 0.9.101).
+                        let inner = operand.child_by_field_name("operand");
+                        if !(self_name.is_some()
+                            && inner.is_some_and(|i| {
+                                i.kind() == "identifier"
+                                    && Some(read_text(i, self.source).as_str()) == self_name
+                            }))
+                        {
+                            continue;
+                        }
+                        let name = operand
+                            .child_by_field_name("field")
+                            .map(|f| read_text(f, self.source))
+                            .unwrap_or_default();
+                        (name, None, scope.self_type.clone())
                     } else {
-                        scope
-                            .scope_types
-                            .get(&name)
-                            .and_then(Value::as_str)
-                            .map(str::to_string)
+                        continue;
                     };
-                    self.raw_calls.push(json!({"caller_nid":caller,"callee":read_text(field, self.source),"is_member_call":true,"indirect":true,"context":"argument","language":"go","receiver":null,"member_receiver":name,"receiver_type":receiver_type,"import_path":null,"source_file":self.path,"source_location":format!("L{}",arg.start_position().row+1)}));
+                    self.raw_calls.push(json!({"caller_nid":caller,"callee":read_text(field, self.source),"is_member_call":true,"indirect":true,"context":"argument","language":"go","receiver":null,"member_receiver":name,"receiver_type":receiver_type,"field_owner":field_owner,"import_path":null,"source_file":self.path,"source_location":format!("L{}",arg.start_position().row+1)}));
                 }
             }
         }

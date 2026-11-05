@@ -125,6 +125,19 @@ pub fn canonicalize_namespaces(nodes: &mut Vec<Value>, edges: &mut [Value]) {
         keep
     });
 }
+/// `_namespace_src_module_parts` (Graphify 0.9.101): the module path of a
+/// file in a PEP 420 namespace package under a `src/` root, the parts after
+/// the nearest `src` directory, when the module sits at least one directory
+/// below it and its top is no stdlib module name (#4261).
+fn namespace_src_module_parts<'a, 'p>(
+    parts: &'a [std::path::Component<'p>],
+) -> Option<&'a [std::path::Component<'p>]> {
+    let dirs = &parts[..parts.len().saturating_sub(1)];
+    let src = dirs.iter().rposition(|c| c.as_os_str() == "src")?;
+    let after = &parts[src + 1..];
+    (after.len() >= 2 && !is_python_stdlib_module(&after[0].as_os_str().to_string_lossy()))
+        .then_some(after)
+}
 /// `_rewire_unique_stub_nodes`: map each sourceless stub to the unique real
 /// definition with its label, rewire the edges, and drop the stubs no edge
 /// names any more.
@@ -1034,10 +1047,15 @@ pub fn repoint_python_imports(
             dir = dir.parent().unwrap_or(&dir).to_path_buf();
         }
         let file = file_node_id(rel);
-        if levels > 0 && levels + 1 < parts.len() {
-            let module = parts[parts.len() - levels - 1..]
-                .iter()
-                .collect::<PathBuf>();
+        // No initializer above the file: a PEP 420 namespace package under a
+        // `src/` root imports from that root (Graphify 0.9.101).
+        let module_parts = if levels > 0 {
+            Some(&parts[parts.len() - levels - 1..])
+        } else {
+            namespace_src_module_parts(&parts)
+        };
+        if let Some(module_parts) = module_parts.filter(|m| m.len() < parts.len()) {
+            let module = module_parts.iter().collect::<PathBuf>();
             aliases
                 .entry(file_node_id(&module))
                 .or_default()

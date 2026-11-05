@@ -189,6 +189,68 @@ pub fn type_last_segment(text: &str) -> String {
 /// `_rust_qualifier_type`: the type a `Type::f()` call is qualified by
 /// (`Foo`, `crate::a::Foo`, `Foo::<T>`, `i32`; `Self` as written), or `None`
 /// for a module path (`fs::read`, `self::helper`) or `<T as Trait>`.
+/// `_RUST_EXPRESSION_MACROS` (Graphify 0.9.101): the standard macros whose
+/// arguments are expressions; a call written inside them is a call. Other
+/// macros (`quote!`, `html!`) mean something else by `name(...)`.
+const EXPRESSION_MACROS: [&str; 25] = [
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "debug_assert",
+    "debug_assert_eq",
+    "debug_assert_ne",
+    "dbg",
+    "eprint",
+    "eprintln",
+    "format",
+    "format_args",
+    "panic",
+    "print",
+    "println",
+    "todo",
+    "unimplemented",
+    "unreachable",
+    "vec",
+    "write",
+    "writeln",
+    "debug",
+    "error",
+    "info",
+    "trace",
+    "warn",
+];
+/// `_rust_macro_arg_calls` (Graphify 0.9.101): the bare `f(...)` calls in a
+/// macro's token tree, by line: an identifier followed by a `(` token tree,
+/// not after `.`, `::`, `fn`, `$` or `#`.
+fn macro_arg_calls(token_tree: Node<'_>, source: &[u8]) -> Vec<(String, usize)> {
+    let mut found = vec![];
+    let mut stack = vec![token_tree];
+    while let Some(tree) = stack.pop() {
+        let kids = children(tree).collect::<Vec<_>>();
+        for (i, child) in kids.iter().enumerate() {
+            if child.kind() == "token_tree" {
+                stack.push(*child);
+                continue;
+            }
+            if child.kind() != "identifier" || i + 1 >= kids.len() {
+                continue;
+            }
+            let next = kids[i + 1];
+            if next.kind() != "token_tree" || next.child(0).is_none_or(|c| c.kind() != "(") {
+                continue;
+            }
+            if i > 0 && matches!(kids[i - 1].kind(), "." | "::" | "fn" | "$" | "#") {
+                continue;
+            }
+            let name = read_text(*child, source);
+            if !name.is_empty() {
+                found.push((name, child.start_position().row + 1));
+            }
+        }
+    }
+    found.sort_by_key(|(_, line)| *line);
+    found
+}
 fn qualifier_type(path: Option<Node<'_>>, source: &[u8]) -> Option<String> {
     let last = type_last_segment(&read_text(path?, source));
     (last.chars().next().is_some_and(char::is_uppercase)
@@ -483,6 +545,12 @@ struct Extractor<'source, 'tree> {
     use_roots: HashMap<String, BTreeSet<String>>,
     /// Unique declaration ids, the file id reserved (Graphify 0.9.98, #4854).
     decl: crate::ids::DeclIdRegistry,
+    /// `mod m { .. }` blocks declared in this file: a `m::f()` binds in-file
+    /// only for one of them (Graphify 0.9.101).
+    inline_mods: HashSet<String>,
+    /// In-file calls written inside macro arguments, added after the parsed
+    /// calls so a parsed call to the same target wins (Graphify 0.9.101).
+    macro_arg_edges: Vec<Value>,
 }
 impl<'tree> Extractor<'_, 'tree> {
     /// `name_use`: mark the last edge with the name as written (#4439) for a
@@ -970,6 +1038,41 @@ impl<'tree> Extractor<'_, 'tree> {
                 Some("call"),
             );
         }
+        // A call inside an expression macro's arguments is only a token
+        // pattern: bound in-file as INFERRED, or handed to the cross-file pass
+        // (Graphify 0.9.101).
+        if node.kind() == "macro_invocation" {
+            let macro_node = node.child_by_field_name("macro");
+            let invoked = match macro_node {
+                Some(m) if m.kind() == "scoped_identifier" => m.child_by_field_name("name"),
+                other => other,
+            };
+            let args = children(node).find(|c| c.kind() == "token_tree");
+            if let (Some(args), Some(invoked)) = (args, invoked)
+                && EXPRESSION_MACROS.contains(&read_text(invoked, self.source).as_str())
+            {
+                for (callee, line) in macro_arg_calls(args, self.source) {
+                    if callee.chars().next().is_some_and(char::is_uppercase)
+                        || is_language_builtin(&callee)
+                        || RUST_BUILTIN_TYPES.contains(&callee.as_str())
+                        || TRAIT_METHOD_BLOCKLIST.contains(&callee.to_lowercase().as_str())
+                    {
+                        continue;
+                    }
+                    let target = self.labels.get(&callee).cloned();
+                    if target.as_ref().is_some_and(|t| self.type_ids.contains(t)) {
+                        continue;
+                    }
+                    if let Some(target) = target.filter(|t| !t.is_empty()) {
+                        if target != caller {
+                            self.macro_arg_edges.push(json!({"source":caller,"target":target,"relation":"calls","context":"macro_argument_call","confidence":"INFERRED","confidence_score":0.85,"source_file":self.path,"source_location":format!("L{line}"),"weight":1.0}));
+                        }
+                        continue;
+                    }
+                    self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":false,"source_file":self.path,"source_location":format!("L{line}")}));
+                }
+            }
+        }
         if node.kind() == "call_expression" {
             let mut name = None;
             let mut member = false;
@@ -1036,6 +1139,19 @@ impl<'tree> Extractor<'_, 'tree> {
                     target
                 } else if member {
                     self.method_labels.get(&name).cloned()
+                } else if scoped {
+                    // `m::f()` names module m: in this file only for
+                    // `self::f()` or an inline `mod m { .. }` declared here
+                    // (Graphify 0.9.101).
+                    let path = node
+                        .child_by_field_name("function")
+                        .and_then(|f| f.child_by_field_name("path"))
+                        .map(|p| read_text(p, self.source))
+                        .unwrap_or_default();
+                    let head = trim(path.rsplit("::").next().unwrap_or(""));
+                    (path == "self" || self.inline_mods.contains(head))
+                        .then(|| self.labels.get(&name).cloned())
+                        .flatten()
                 } else {
                     self.labels.get(&name).cloned()
                 };
@@ -1051,8 +1167,34 @@ impl<'tree> Extractor<'_, 'tree> {
                             Some(if constructor { "constructor" } else { "call" }),
                         );
                     }
-                } else if !scoped && !TRAIT_METHOD_BLOCKLIST.contains(&name.to_lowercase().as_str())
-                {
+                } else if scoped {
+                    // A module-qualified call goes to the cross-file pass with
+                    // its qualifier, unless the `use` binding its first
+                    // segment names another crate (`use std::fs; fs::read()`,
+                    // Graphify 0.9.101).
+                    let qualifier = node
+                        .child_by_field_name("function")
+                        .and_then(|f| f.child_by_field_name("path"))
+                        .map(|p| read_text(p, self.source))
+                        .unwrap_or_default();
+                    let first = trim(
+                        qualifier
+                            .split("::")
+                            .next()
+                            .unwrap_or("")
+                            .split('<')
+                            .next()
+                            .unwrap_or(""),
+                    );
+                    let local = self.use_roots.get(first).is_none_or(|roots| {
+                        roots
+                            .iter()
+                            .all(|r| matches!(r.as_str(), "crate" | "super" | "self"))
+                    });
+                    if local && !qualifier.is_empty() {
+                        self.raw_calls.push(json!({"caller_nid":caller,"callee":name,"is_member_call":false,"is_scoped_call":true,"scope_qualifier":qualifier,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
+                    }
+                } else if !TRAIT_METHOD_BLOCKLIST.contains(&name.to_lowercase().as_str()) {
                     let mut call = json!({"caller_nid":caller,"callee":name,"is_member_call":member,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)});
                     if let Some(typ) = self_type.filter(|s| is_self && !s.is_empty()) {
                         call["rust_self_type"] = json!(typ);
@@ -1191,7 +1333,19 @@ pub fn extract_rust(path: &Path) -> Value {
         impl_bare: HashMap::new(),
         use_roots: HashMap::new(),
         decl: crate::ids::DeclIdRegistry::new([file.as_str()]),
+        inline_mods: HashSet::new(),
+        macro_arg_edges: vec![],
     };
+    let mut mods = vec![tree.root_node()];
+    while let Some(n) = mods.pop() {
+        if n.kind() == "mod_item"
+            && n.child_by_field_name("body").is_some()
+            && let Some(name) = n.child_by_field_name("name")
+        {
+            ex.inline_mods.insert(read_text(name, &source));
+        }
+        mods.extend(children(n));
+    }
     scan_local_types(tree.root_node(), &source, &mut ex.local_types);
     ex.node(&file, &name, 1);
     let mut items: HashMap<String, HashSet<(bool, String)>> = HashMap::new();
@@ -1252,6 +1406,15 @@ pub fn extract_rust(path: &Path) -> Value {
             body.typ.as_deref(),
             body.key.as_deref(),
         );
+    }
+    for edge in std::mem::take(&mut ex.macro_arg_edges) {
+        let pair = (
+            edge["source"].as_str().unwrap_or("").to_string(),
+            edge["target"].as_str().unwrap_or("").to_string(),
+        );
+        if ex.pairs.insert(pair) {
+            ex.edges.push(edge);
+        }
     }
     for n in &mut ex.nodes {
         if n["source_file"].as_str().is_some_and(str::is_empty)

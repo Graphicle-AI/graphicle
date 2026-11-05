@@ -2268,6 +2268,32 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         {
             continue;
         }
+        if rc.rec_get("is_scoped_call").is_some_and(crate::build::truthy) {
+            // A Rust `module::function()` binds only through its verified
+            // qualifier, EXTRACTED, and never falls through to the bare-name
+            // tie-breakers (Graphify 0.9.101, #908).
+            let source_of = |id: &str| id_source.get(id).copied().unwrap_or("").to_string();
+            let label_of = |id: &str| id_label.get(id).copied().unwrap_or("").to_string();
+            let survivors = crate::symbol_resolution::rust_scoped_call_survivors(
+                rs(rc, "scope_qualifier").trim(),
+                labels.get(callee).map(Vec::as_slice).unwrap_or_default(),
+                &source_of,
+                sf,
+                Some(&label_of),
+            );
+            let caller = rs(rc, "caller_nid");
+            if let [target] = survivors.as_slice()
+                && target != caller
+                && existing.insert(pair_ids.pair(caller, target))
+            {
+                let edge = json!({"source":caller,"target":target,"relation":"calls","context":"call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":sf,"source_location":rc.rec_get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0});
+                let Value::Object(edge) = edge else {
+                    unreachable!("an edge literal is an object")
+                };
+                added.push(E::from_object(edge));
+            }
+            continue;
+        }
         let mut cs = labels.get(callee).cloned().unwrap_or_default();
         if cs.is_empty() && merge::case_insensitive(sf) {
             cs = ci.get(&callee.to_lowercase()).cloned().unwrap_or_default();
