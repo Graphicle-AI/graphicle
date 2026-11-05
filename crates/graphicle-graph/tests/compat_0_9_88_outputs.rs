@@ -1157,7 +1157,7 @@ fn old_install(directory: &Path, body: &str, entry: bool) -> (PathBuf, PathBuf) 
 }
 
 fn refresh(dir: &Path, home: &Path, loads: bool) -> Vec<String> {
-    graphicle::install::refresh_opencode_plugins_in(&[dir.to_path_buf()], home, || loads)
+    graphicle::install::refresh_opencode_plugins_in(&[dir.join(".opencode")], home, || loads)
 }
 
 #[test]
@@ -1247,7 +1247,7 @@ fn a_stale_entry_beside_a_current_plugin_is_dropped() {
     let before = fs::metadata(&plugin).unwrap().modified().unwrap();
     // OpenCode is only asked when an old plugin is found.
     let messages = graphicle::install::refresh_opencode_plugins_in(
-        std::slice::from_ref(&project),
+        &[project.join(".opencode")],
         &home,
         || panic!("no old plugin here, the version does not matter"),
     );
@@ -1477,4 +1477,29 @@ fn benchmark_counts_the_real_query_answer() {
             .is_err()
         );
     }
+}
+
+#[test]
+fn a_global_opencode_install_writes_the_plugin_to_the_config_dir() {
+    // test_install.py (Graphify 0.9.96, #3398): a global install puts the
+    // plugin in ~/.config/opencode/plugins, never in the working directory,
+    // and a project install keeps it in the project; uninstall removes both.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = dir.path().join("proj");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    let mut o = options(&home, &project);
+    o.project = false;
+    graphicle::install::install("opencode", &o).unwrap();
+    let global = home.join(".config/opencode/plugins/graphicle.js");
+    assert!(fs::read_to_string(&global).unwrap().contains("tool.execute.before"));
+    assert!(!project.join(".opencode").exists());
+    assert!(!home.join(".config/opencode/.opencode").exists());
+    graphicle::install::uninstall_all(&o, false).unwrap();
+    assert!(!global.exists());
+    let o = options(&home, &project);
+    graphicle::install::install("opencode", &o).unwrap();
+    assert!(project.join(".opencode/plugins/graphicle.js").is_file());
+    assert!(!global.exists());
 }

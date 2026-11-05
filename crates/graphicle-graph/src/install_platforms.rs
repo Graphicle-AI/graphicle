@@ -129,13 +129,14 @@ pub fn hook(name: &str, o: &Options, remove: bool) -> Result<()> {
     }
     Ok(())
 }
-/// Write (or remove) a project's plugin file. The OpenCode plugin is written
-/// atomically into `.opencode/plugins/`, where OpenCode discovers it, and the
+/// Write (or remove) a plugin file. For OpenCode, `project` is the config
+/// dir ([`opencode_dir`], Graphify 0.9.96, #3398): the plugin is written
+/// atomically into its `plugins/`, where OpenCode discovers it, and the
 /// bare-path entry older releases put in opencode.json is dropped, never
 /// written (0.9.84, #3554/#3732). Returns the lines asking for a manual edit.
 pub fn plugin(name: &str, project: &Path, remove: bool) -> Result<Vec<String>> {
     if name == "opencode" {
-        let file = project.join(OPENCODE_PLUGIN_PATH);
+        let file = project.join(OPENCODE_PLUGIN_FILE);
         if remove {
             f::remove(&file)?;
         } else {
@@ -266,7 +267,9 @@ pub fn configure(name: &str, o: &Options, remove: bool) -> Result<Vec<String>> {
             if name == "codex" {
                 hook(name, o, remove)?;
             }
-            if ["opencode", "kilo"].contains(&name) {
+            if name == "opencode" {
+                messages.extend(plugin(name, &opencode_dir(true, p, &o.home), remove)?);
+            } else if name == "kilo" {
                 messages.extend(plugin(name, p, remove)?);
             }
         }
@@ -400,7 +403,11 @@ pub fn install(name: &str, o: &Options) -> Result<Vec<String>> {
             messages.extend(configure(name, &actual, false)?);
         }
     } else if name == "opencode" {
-        messages.extend(plugin(name, &o.project_dir, false)?);
+        messages.extend(plugin(
+            name,
+            &opencode_dir(o.project, &o.project_dir, &o.home),
+            false,
+        )?);
     }
     if o.project {
         messages.push(format!(
@@ -476,6 +483,12 @@ pub fn uninstall_all(o: &Options, purge: bool) -> Result<Vec<String>> {
     for name in platforms() {
         messages.extend(uninstall(&name, o)?);
     }
+    // A global `install --platform opencode` writes the plugin here (#3398).
+    messages.extend(plugin(
+        "opencode",
+        &opencode_dir(false, &o.project_dir, &o.home),
+        true,
+    )?);
     if !o.project
         && let Ok(result) = crate::hooks::uninstall(&o.project_dir)
     {
