@@ -83,6 +83,189 @@ pub fn python_qualified(g: &Graph, index: &SearchIndex, label: &str) -> Vec<usiz
     }
     vec![]
 }
+/// Owner to member relations a `Type.Member` query walks: `method` for
+/// methods, `defines` for fields and in-class declarations, `contains` for
+/// nested types (Graphify 0.9.99, #4884).
+const TYPE_MEMBER_RELATIONS: [&str; 3] = ["method", "defines", "contains"];
+/// `Type.Member`, `Outer.Inner.Member` or `Type.Member()`.
+static QUALIFIED_MEMBER: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)(?:\(\))?$").unwrap()
+});
+/// `_symbol_name`: a node's label folded to its bare name, so the member
+/// `.Build()` reads `build`.
+fn symbol_name(g: &Graph, i: usize) -> String {
+    let nl = norm_label(g, i);
+    let nl = nl.trim();
+    let nl = nl.strip_prefix('.').unwrap_or(nl);
+    nl.strip_suffix("()").unwrap_or(nl).to_owned()
+}
+/// `_split_qualified_member`: the folded `(owner chain, member)` of a
+/// `Type.Member` query, or `None` for another form.
+fn split_qualified_member(label: &str) -> Option<(Vec<String>, String)> {
+    let qualified = QUALIFIED_MEMBER.captures(label.trim())?;
+    let owners = qualified[1]
+        .split('.')
+        .map(|p| fold(p).to_lowercase())
+        .collect();
+    Some((owners, fold(&qualified[2]).to_lowercase()))
+}
+fn named_nodes(g: &Graph, index: &SearchIndex, name: &str) -> Vec<usize> {
+    index
+        .candidates(&[name.to_owned()], 0.1)
+        .unwrap_or_else(|| (0..g.nodes.len()).collect())
+        .into_iter()
+        .filter(|&i| symbol_name(g, i) == name)
+        .collect()
+}
+/// `_membership_neighbors`: the members of `node` (`members`) or the nodes
+/// that own it. Direction comes from the edge's `_src`/`_tgt` markers, else
+/// the stored arc of a directed graph; an undirected edge without markers
+/// says nothing about which end owns the other and is skipped.
+fn membership_neighbors(g: &Graph, node: usize, members: bool) -> Vec<usize> {
+    let mut found: Vec<usize> = vec![];
+    let mut visit = |u: usize, v: usize, e: &crate::graph::Edge| {
+        let relation = e.attributes.get("relation").and_then(Value::as_str);
+        if !relation.is_some_and(|r| TYPE_MEMBER_RELATIONS.contains(&r)) {
+            return;
+        }
+        let (owner, member) = match (e.attributes.get("_src"), e.attributes.get("_tgt")) {
+            (Some(a), Some(b)) => (g.node_index(a), g.node_index(b)),
+            _ if g.is_directed() => (Some(u), Some(v)),
+            _ => return,
+        };
+        let (Some(owner), Some(member)) = (owner, member) else {
+            return;
+        };
+        if (if members { owner } else { member }) != node {
+            return;
+        }
+        let other = if members { member } else { owner };
+        if other != node && !found.contains(&other) {
+            found.push(other);
+        }
+    };
+    let me = &g.nodes[node].id;
+    let mut outs: Vec<usize> = g.neighbor_indices(node, false).collect();
+    outs.dedup();
+    for w in outs {
+        for e in g.edges_between(me, &g.nodes[w].id) {
+            visit(node, w, e);
+        }
+    }
+    if g.is_directed() {
+        let mut ins: Vec<usize> = g.neighbor_indices(node, true).collect();
+        ins.dedup();
+        for w in ins {
+            for e in g.edges_between(&g.nodes[w].id, me) {
+                visit(w, node, e);
+            }
+        }
+    }
+    found
+}
+/// `_enclosed_by`: is `node` nested in types named by `outer`, outermost
+/// first?
+fn enclosed_by(g: &Graph, node: usize, outer: &[String]) -> bool {
+    let Some((last, rest)) = outer.split_last() else {
+        return true;
+    };
+    membership_neighbors(g, node, false)
+        .into_iter()
+        .any(|parent| symbol_name(g, parent) == *last && enclosed_by(g, parent, rest))
+}
+/// `_qualified_member_owners`: nodes named `qualifiers[-1]` that own
+/// members, nested as the rest of the chain says.
+fn qualified_member_owners(g: &Graph, index: &SearchIndex, qualifiers: &[String]) -> Vec<usize> {
+    let Some((last, outer)) = qualifiers.split_last() else {
+        return vec![];
+    };
+    named_nodes(g, index, last)
+        .into_iter()
+        .filter(|&owner| {
+            !membership_neighbors(g, owner, true).is_empty() && enclosed_by(g, owner, outer)
+        })
+        .collect()
+}
+fn members_named(g: &Graph, owners: &[usize], member: &str) -> Vec<usize> {
+    let mut hits: Vec<usize> = vec![];
+    for &owner in owners {
+        for i in membership_neighbors(g, owner, true) {
+            if symbol_name(g, i) == member && !hits.contains(&i) {
+                hits.push(i);
+            }
+        }
+    }
+    hits
+}
+/// `_names_source_file`: is `label` a file name (`utils.py`) or path some
+/// node was extracted from? Case-insensitive, like the source-path tier.
+fn names_source_file(g: &Graph, label: &str) -> bool {
+    let fold_path = |t: &str| fold(&t.trim().replace('\\', "/")).to_lowercase();
+    let query = fold_path(label);
+    let suffix = format!("/{query}");
+    (0..g.nodes.len()).any(|i| {
+        let source = fold_path(&text(field(g, i, "source_file")));
+        !source.is_empty() && (source == query || source.ends_with(&suffix))
+    })
+}
+/// `_resolve_qualified_member` (Graphify 0.9.99, #4884): member nodes named
+/// by `Type.Member` through their declaring type. A file name such as
+/// `config.json` has the same shape and names the file, so it resolves
+/// nothing; neither does a namespace qualifier, since the file, not the
+/// namespace node, owns the type.
+pub fn resolve_qualified_member(g: &Graph, index: &SearchIndex, label: &str) -> Vec<usize> {
+    let Some((qualifiers, member)) = split_qualified_member(label) else {
+        return vec![];
+    };
+    if names_source_file(g, label) {
+        return vec![];
+    }
+    members_named(g, &qualified_member_owners(g, index, &qualifiers), &member)
+}
+/// `_no_member_match_message` (Graphify 0.9.99, #4884): the refusal for a
+/// `Type.Member` endpoint whose type declares no such member, since scoring
+/// it would land on the type. `None` when the query is a node's own id or
+/// label, a file name, or no type of that name owns members. Same-named
+/// members of a type with that bare name are listed for a retry.
+pub fn no_member_match_message(g: &Graph, index: &SearchIndex, label: &str) -> Option<String> {
+    let (qualifiers, member) = split_qualified_member(label)?;
+    let term = tokens(label).join(" ");
+    let nq = fold(label).to_lowercase().trim().to_string();
+    if literal_exact(g, index, &term, &nq) || names_source_file(g, label) {
+        return None;
+    }
+    let bare_owners = qualified_member_owners(g, index, &qualifiers[qualifiers.len() - 1..]);
+    if bare_owners.is_empty() {
+        return None;
+    }
+    let trimmed = label.trim();
+    let trimmed = trimmed.strip_suffix("()").unwrap_or(trimmed);
+    let (owner_text, member_text) = trimmed.rsplit_once('.').unwrap_or(("", trimmed));
+    let sanitize = |t: &str| crate::security::sanitize_label(&Value::String(t.to_owned()));
+    let mut message = format!(
+        "No node matching '{}' found; no type '{}' declares '{}'.",
+        sanitize(label),
+        sanitize(owner_text),
+        sanitize(member_text)
+    );
+    let near = members_named(g, &bare_owners, &member);
+    if !near.is_empty() {
+        let listing = near
+            .iter()
+            .map(|&n| {
+                let shown = [field(g, n, "source_file"), field(g, n, "label")]
+                    .into_iter()
+                    .find(|v| crate::build::truthy(v))
+                    .map(string)
+                    .unwrap_or_else(|| id(g, n));
+                format!("  {shown}\n    id: {}", id(g, n))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        message.push_str(&format!("\n{listing}\nRetry with the full node id."));
+    }
+    Some(message)
+}
 pub fn tiers(g: &Graph, index: &SearchIndex, query: &str) -> [Vec<usize>; 4] {
     let term = tokens(query).join(" ");
     let nq = fold(query).to_lowercase().trim().to_string();
@@ -131,6 +314,18 @@ pub fn tiers(g: &Graph, index: &SearchIndex, query: &str) -> [Vec<usize>; 4] {
             out[2].push(i);
         } else if nl.contains(&term) || lt.contains(&term) || nl.contains(&nq) {
             out[3].push(i);
+        }
+    }
+    // `Type.Member` names a member through its declaring type (Graphify
+    // 0.9.99, #4884). The member's own label is `.Build()`, so no tier above
+    // matched it and scoring picked the type. Tried only once no node's own
+    // id, label or source path matched exactly, so those keep precedence.
+    // Returned as the exact tier, so several members under that name are
+    // refused with their candidates rather than one of them guessed.
+    if out[0].is_empty() && out[1].is_empty() {
+        let members = resolve_qualified_member(g, index, query);
+        if !members.is_empty() {
+            return [vec![], members, vec![], vec![]];
         }
     }
     // The tiers fold case, so in a case-sensitive language `Run` and `run`
@@ -504,6 +699,12 @@ pub fn resolve_path_endpoint(
             vec![],
             Some(no_scoped_match_message(g, strip(path), strip(symbol))),
         );
+    }
+    // Likewise a `Type.Member` endpoint whose type exists but declares no
+    // such member: scoring resolves it to the type, and the route printed to
+    // the type reads as a route to the member (#4884).
+    if let Some(message) = no_member_match_message(g, index, query) {
+        return (None, vec![], Some(message));
     }
     let terms = query
         .split_whitespace()

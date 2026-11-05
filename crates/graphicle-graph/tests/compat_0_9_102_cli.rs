@@ -390,3 +390,50 @@ fn path_reports_the_weakest_of_equal_length_routes() {
     assert_eq!(r.exit_code, 0, "{}", r.stderr);
     assert!(!r.stdout.contains("equal-length routes"), "{}", r.stdout);
 }
+
+#[test]
+fn type_member_endpoints_name_the_member_not_the_type() {
+    // test_path_type_member.py (Graphify 0.9.99, #4884): `Type.Member`
+    // resolves through the type's membership edges, and a type that declares
+    // no such member fails closed instead of scoring its way to the type.
+    let dir = tempfile::tempdir().unwrap();
+    let graph = dir.path().join("graph.json");
+    let node = |id: &str, label: &str| json!({"id": id, "label": label, "source_file": "src/Report.cs"});
+    let edge = |a: &str, b: &str, rel: &str| json!({"source": a, "target": b, "relation": rel, "confidence": "EXTRACTED"});
+    std::fs::write(
+        &graph,
+        json!({
+            "directed": true, "multigraph": false, "graph": {},
+            "nodes": [
+                node("report_cs", "Report.cs"), node("pdfreport", "PdfReport"),
+                node("pdf_build", ".Build()"), node("exporter", "Exporter"),
+                node("run", ".Run()")
+            ],
+            "links": [
+                edge("report_cs", "pdfreport", "contains"),
+                edge("report_cs", "exporter", "contains"),
+                edge("pdfreport", "pdf_build", "method"),
+                edge("exporter", "run", "method"),
+                edge("run", "pdf_build", "calls")
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let g = graph.to_str().unwrap();
+    for source in ["Exporter.Run", "Exporter.Run()"] {
+        let r = run(&["path", source, "PdfReport.Build", "--graph", g]);
+        assert_eq!(r.exit_code, 0, "{}", r.stderr);
+        assert!(r.stdout.contains("Shortest path (1 hops):"), "{}", r.stdout);
+        assert!(r.stdout.contains(".Run() --calls [EXTRACTED]--> .Build()"), "{}", r.stdout);
+    }
+    let r = run(&["path", "Exporter.Run", "PdfReport.Missing", "--graph", g]);
+    assert_ne!(r.exit_code, 0, "{}", r.stdout);
+    assert!(!r.stdout.contains("Shortest path"), "{}", r.stdout);
+    assert!(
+        format!("{}{}", r.stdout, r.stderr).contains("no type 'PdfReport' declares 'Missing'"),
+        "{}{}",
+        r.stdout,
+        r.stderr
+    );
+}
