@@ -854,6 +854,9 @@ fn shortest_path_with(
         hops: Some(hops),
     })
 }
+/// The rank of a hop in [`path_weakest`]: confidence tier, scoredness,
+/// score and hop index.
+type WeakestRank = (u8, bool, f64, usize);
 /// `_path_weakest` (Graphify 0.9.98-0.9.99, #4885): the weakest hop of a
 /// path, ranked by the weakest evidence it carries (confidence tier, then the
 /// lowest score; a missing score never counts as weaker than a present one,
@@ -863,8 +866,7 @@ fn path_weakest(
     hop_datas: &[Vec<&crate::record::Attributes>],
 ) -> Option<(usize, String, Option<String>, Option<f64>)> {
     let empty = crate::record::Attributes::new();
-    let mut weakest: Option<((u8, bool, f64, usize), usize, String, Option<String>, Option<f64>)> =
-        None;
+    let mut weakest: Option<(WeakestRank, usize, String, Option<String>, Option<f64>)> = None;
     for (index, datas) in hop_datas.iter().enumerate() {
         let hop = index + 1;
         let datas: Vec<&crate::record::Attributes> = if datas.is_empty() {

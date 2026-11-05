@@ -6,7 +6,7 @@
 //! CLI, query, install, export, build and dedup changes ported from
 //! Graphify 0.9.96-0.9.102 (port part b). Cases follow the upstream tests
 //! named in each comment.
-use serde_json::{Value, json};
+use serde_json::json;
 
 #[test]
 fn unfinished_check_run_statuses_are_pending() {
@@ -102,7 +102,7 @@ fn scanned(root: &std::path::Path) -> Vec<String> {
         .unwrap()
         .values()
         .flat_map(|v| v.as_array().unwrap().iter())
-        .map(|f| f.as_str().unwrap().replace(\, "/"))
+        .map(|f| f.as_str().unwrap().replace('\\', "/"))
         .collect()
 }
 

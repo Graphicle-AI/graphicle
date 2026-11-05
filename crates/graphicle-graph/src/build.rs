@@ -1248,8 +1248,8 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<EndpointMaps> {
         let own_file = value_string(attributes, "source_file");
         if matches.len() == 1
             && !has_independent_semantic_evidence(attributes)
-            && !(!own_file.is_empty()
-                && crate::build_labels::is_file_node_label_str(&label, &own_file))
+            && (own_file.is_empty()
+                || !crate::build_labels::is_file_node_label_str(&label, &own_file))
         {
             ghosts.insert(nid.clone(), matches.into_iter().next().unwrap());
         }

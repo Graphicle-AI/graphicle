@@ -1286,7 +1286,7 @@
     },
     {
       "name": "shortest_path",
-      "description": "Find the shortest path between two concepts in the knowledge graph. Follows stored edge direction by default; set undirected=true to ignore it. Use it instead of chained searches to see how two symbols connect.",
+      "description": "Find the shortest path between two concepts in the knowledge graph. Follows stored edge direction by default; set undirected=true to ignore it. Ends with the path's confidence, which is that of its weakest hop. Use it instead of chained searches to see how two symbols connect.",
       "inputSchema": {
         "type": "object",
         "properties": {

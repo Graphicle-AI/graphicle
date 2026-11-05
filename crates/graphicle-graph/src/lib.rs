@@ -446,6 +446,8 @@ fn release_graph(graph: graph::Graph) {
 }
 
 /// Where a request's `graph` payload ended up during the single streaming pass.
+/// Short-lived, one per request: the inline graph is not worth a box.
+#[allow(clippy::large_enum_variant)]
 enum GraphSlot<'de> {
     Missing,
     /// Seen before the operation was known; parsed once the operation is.
