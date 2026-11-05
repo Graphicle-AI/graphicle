@@ -522,6 +522,13 @@ pub fn register_resolvers() {
             &[".swift"],
             Arc::new(|p, n, e| crate::swift_dispatch::resolve_swift_protocol_dispatch(p, n, e)),
         );
+        // Go interfaces are satisfied implicitly: the implementers are inferred
+        // from method sets (Graphify 0.9.102).
+        add(
+            "go_interface_dispatch",
+            &[".go"],
+            Arc::new(|p, n, e| crate::go_dispatch::resolve_go_interface_dispatch(p, n, e)),
+        );
         add(
             "markdown_mentions",
             &[".md", ".mdx", ".qmd", ".skill", ".rst", ".txt"],
@@ -598,6 +605,12 @@ pub fn register_resolvers() {
                 "swift_protocol_dispatch",
                 resolver_registry::any_form!(|p, n, e| {
                     crate::swift_dispatch::resolve_swift_protocol_dispatch_any(p, n, e)
+                }),
+            ),
+            (
+                "go_interface_dispatch",
+                resolver_registry::any_form!(|p, n, e| {
+                    crate::go_dispatch::resolve_go_interface_dispatch_any(p, n, e)
                 }),
             ),
             (
@@ -2059,6 +2072,88 @@ fn assemble_records(
     })
 }
 
+/// `_jvm_scope_index` (Graphify 0.9.102, #4935): method -> declaring class,
+/// class -> its `inherits` targets, nested class -> enclosing class, and the
+/// sourceless ids (classes declared outside the corpus).
+struct JvmScope<'a> {
+    owner_of: FxHashMap<&'a str, &'a str>,
+    bases_of: FxHashMap<&'a str, Vec<&'a str>>,
+    enclosing_of: FxHashMap<&'a str, &'a str>,
+    sourceless: FxHashSet<&'a str>,
+}
+impl<'a> JvmScope<'a> {
+    fn new<E: Rec>(nodes: &'a [Value], edges: &'a [E]) -> Self {
+        let mut scope = Self {
+            owner_of: FxHashMap::default(),
+            bases_of: FxHashMap::default(),
+            enclosing_of: FxHashMap::default(),
+            sourceless: nodes
+                .iter()
+                .filter(|n| !n.get("source_file").is_some_and(crate::build::truthy))
+                .map(|n| s(n, "id"))
+                .collect(),
+        };
+        for e in edges {
+            let (source, target) = (rs(e, "source"), rs(e, "target"));
+            match rs(e, "relation") {
+                "method" => {
+                    scope.owner_of.insert(target, source);
+                }
+                "inherits" => scope.bases_of.entry(source).or_default().push(target),
+                "contains" => {
+                    scope.enclosing_of.insert(target, source);
+                }
+                _ => {}
+            }
+        }
+        scope
+    }
+    /// `_jvm_reachable_candidates`: when a class in the caller's chain (its
+    /// own class, bases, enclosing classes) extends a class outside the
+    /// corpus, a bare call may name that base's member: keep only candidates
+    /// that are no class member, belong to the chain, or are imported by
+    /// name. A chain fully in the corpus keeps every candidate.
+    fn reachable(
+        &self,
+        candidates: Vec<String>,
+        caller: &str,
+        callee: &str,
+        imported: impl Fn(&str) -> bool,
+    ) -> Vec<String> {
+        let mut chain: FxHashSet<&str> = FxHashSet::default();
+        let mut todo = vec![self.owner_of.get(caller).copied().unwrap_or(caller)];
+        let mut external = false;
+        while let Some(class) = todo.pop() {
+            if !chain.insert(class) {
+                continue;
+            }
+            for &base in self.bases_of.get(class).into_iter().flatten() {
+                if self.sourceless.contains(base) {
+                    external = true;
+                } else {
+                    todo.push(base);
+                }
+            }
+            if let Some(&outer) = self.enclosing_of.get(class) {
+                todo.push(outer);
+            }
+        }
+        if !external {
+            return candidates;
+        }
+        let by_name = imported(&make_id([callee]));
+        candidates
+            .into_iter()
+            .filter(|c| {
+                self.owner_of
+                    .get(c.as_str())
+                    .is_none_or(|owner| chain.contains(owner))
+                    || imported(c)
+                    || by_name
+            })
+            .collect()
+    }
+}
 /// Drop the Rust `use` group edges and the binding markers (#4135).
 fn drop_rust_use_groups<E: Rec>(edges: &mut Vec<E>) {
     edges.retain_mut(|e| {
@@ -2219,6 +2314,19 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
             call_pairs.insert(pair);
         }
     }
+    // A Go bare call never names a method: methods are reached through their
+    // receivers (Graphify 0.9.102).
+    let method_ids: FxHashSet<&str> = edges
+        .iter()
+        .filter(|e| rs(*e, "relation") == "method")
+        .map(|e| rs(e, "target"))
+        .chain(
+            context_edges
+                .iter()
+                .filter(|e| s(e, "relation") == "method")
+                .map(|e| s(e, "target")),
+        )
+        .collect();
     // Enum members (`case_of`) and fields/properties (`defines`) are never what
     // a C# `new X()` constructs (#3815, #3888).
     let member_ids: FxHashSet<&str> = edges
@@ -2251,6 +2359,9 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
     let mut outer_type: Option<FxHashMap<&str, &str>> = None;
     // The Go package of every candidate's file, read from disk once per pass.
     let mut go_modules = types::GoModules::new(root);
+    // Which classes a bare Kotlin/Java call can reach, built on first use
+    // (Graphify 0.9.102, #4935).
+    let mut jvm_index: Option<JvmScope<'_>> = None;
     // The tables borrow from `edges`; new edges are appended after the loop.
     let mut added = vec![];
     for &rc in raw {
@@ -2306,6 +2417,9 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         let mut cs = labels.get(callee).cloned().unwrap_or_default();
         if cs.is_empty() && merge::case_insensitive(sf) {
             cs = ci.get(&callee.to_lowercase()).cloned().unwrap_or_default();
+        }
+        if rs(rc, "language") == "go" {
+            cs.retain(|c| !method_ids.contains(c.as_str()));
         }
         // An enum member or a field/property is never a C# call target, nor
         // what `new X()` constructs (#3815, #3888, #4245).
@@ -2412,6 +2526,13 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         let cf = sf_file.get(sf).or_else(|| id_file.get(caller));
         let syms = cf.and_then(|f| symbols.get(f.as_str()));
         let mods = cf.and_then(|f| modules.get(f.as_str()));
+        if merge::family(sf) == Some("jvm") {
+            let index = jvm_index.get_or_insert_with(|| JvmScope::new(nodes, &edges[..]));
+            cs = index.reachable(cs, caller, callee, |id| syms.is_some_and(|s| s.contains(id)));
+            if cs.is_empty() {
+                continue;
+            }
+        }
         let has_symbol = |id: &String| syms.is_some_and(|s| s.contains(id.as_str()));
         let has_module = |id: &String| {
             id_file
@@ -2542,6 +2663,7 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         };
         added.push(E::from_object(edge));
     }
+    drop(jvm_index);
     edges.reserve_exact(added.len());
     edges.extend(added);
     repoint_go_imports(

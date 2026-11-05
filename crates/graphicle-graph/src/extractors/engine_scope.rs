@@ -2392,6 +2392,10 @@ const PYTHON_DYNAMIC_NAMESPACE_NAMES: [&str; 7] = [
 pub struct PythonReceiverShadow {
     dynamic_binding: bool,
     scopes: BTreeMap<usize, ShadowFacts>,
+    /// A module-instance query (Graphify 0.9.102): the exact module-level
+    /// declaration and assignment nodes it proved, by name; every other
+    /// binding still shadows.
+    module_bindings: Option<BTreeMap<String, BTreeSet<usize>>>,
 }
 
 impl PythonReceiverShadow {
@@ -2416,9 +2420,20 @@ impl PythonReceiverShadow {
         Self {
             dynamic_binding,
             scopes: BTreeMap::new(),
+            module_bindings: None,
         }
     }
 
+    /// [`Self::new`] for a proved module instance: the bindings it allows.
+    pub fn with_module_bindings(
+        root: Node<'_>,
+        source: &[u8],
+        bindings: BTreeMap<String, BTreeSet<usize>>,
+    ) -> Self {
+        let mut shadow = Self::new(root, source);
+        shadow.module_bindings = Some(bindings);
+        shadow
+    }
     pub fn is_shadowed(&mut self, call: Node<'_>, receiver: &str, source: &[u8]) -> bool {
         let mut found_module = false;
         let mut node = Some(call);
@@ -2429,17 +2444,29 @@ impl PythonReceiverShadow {
                 "module" | "function_definition" | "class_definition" | "lambda"
             ) {
                 let dynamic_binding = self.dynamic_binding;
-                let (bound, plain_imports, unsafe_scope) = self
-                    .scopes
-                    .entry(current.id())
-                    .or_insert_with(|| python_shadow_facts(current, source, dynamic_binding));
+                let allowed = self.module_bindings.as_ref();
+                let (bound, plain_imports, unsafe_scope) =
+                    self.scopes.entry(current.id()).or_insert_with(|| {
+                        python_shadow_facts(current, source, dynamic_binding, allowed)
+                    });
                 if *unsafe_scope || bound.contains(receiver) {
                     return true;
                 }
                 if kind == "module" {
                     found_module = true;
-                    if plain_imports.get(receiver) != Some(&1) {
-                        return true;
+                    match allowed {
+                        Some(allowed) => {
+                            if !allowed.contains_key(receiver)
+                                || plain_imports.get(receiver).is_some_and(|&n| n > 0)
+                            {
+                                return true;
+                            }
+                        }
+                        None => {
+                            if plain_imports.get(receiver) != Some(&1) {
+                                return true;
+                            }
+                        }
                     }
                 }
             }
@@ -2449,11 +2476,17 @@ impl PythonReceiverShadow {
     }
 }
 
-fn python_shadow_facts(scope: Node<'_>, source: &[u8], dynamic_binding: bool) -> ShadowFacts {
+fn python_shadow_facts(
+    scope: Node<'_>,
+    source: &[u8],
+    dynamic_binding: bool,
+    allowed: Option<&BTreeMap<String, BTreeSet<usize>>>,
+) -> ShadowFacts {
     let module = scope.kind_name() == "module";
     let mut scan = ShadowScan {
         source,
         scope,
+        allowed,
         bound: BTreeSet::new(),
         plain_imports: BTreeMap::new(),
         unsafe_scope: scope.has_error()
@@ -2481,12 +2514,26 @@ fn python_shadow_facts(scope: Node<'_>, source: &[u8], dynamic_binding: bool) ->
 struct ShadowScan<'a, 't> {
     source: &'a [u8],
     scope: Node<'t>,
+    allowed: Option<&'a BTreeMap<String, BTreeSet<usize>>>,
     bound: BTreeSet<String>,
     plain_imports: BTreeMap<String, usize>,
     unsafe_scope: bool,
 }
 
 impl ShadowScan<'_, '_> {
+    /// Bind `names` at `node`, except a module-level binding a module-instance
+    /// query proved (Graphify 0.9.102).
+    fn bind_names(&mut self, node: Node<'_>, names: impl IntoIterator<Item = String>) {
+        for name in names {
+            let proved = self.scope.kind_name() == "module"
+                && self
+                    .allowed
+                    .is_some_and(|a| a.get(&name).is_some_and(|ids| ids.contains(&node.id())));
+            if !proved {
+                self.bound.insert(name);
+            }
+        }
+    }
     fn walk(&mut self, node: Node<'_>) {
         for child in named(node) {
             let kind = child.kind_name();
@@ -2494,7 +2541,8 @@ impl ShadowScan<'_, '_> {
                 "function_definition" | "class_definition" => {
                     match child.child_by_field_name("name") {
                         Some(name) => {
-                            self.bound.insert(read_text(name, self.source));
+                            let name = read_text(name, self.source);
+                            self.bind_names(child, [name]);
                         }
                         None => self.unsafe_scope = true,
                     }
@@ -2517,12 +2565,16 @@ impl ShadowScan<'_, '_> {
                                 *self.plain_imports.entry(name).or_default() += 1;
                             }
                         }
-                        Some(names) => self.bound.extend(names),
+                        Some(names) => self.bind_names(child, names),
                     }
                     continue;
                 }
                 "assignment" | "augmented_assignment" | "for_statement" | "for_in_clause" => {
-                    self.require_targets(child.child_by_field_name("left"))
+                    let mut assigned = BTreeSet::new();
+                    if !python_target_names(child.child_by_field_name("left"), self.source, &mut assigned) {
+                        self.unsafe_scope = true;
+                    }
+                    self.bind_names(child, assigned);
                 }
                 "type_alias_statement" => {
                     let name = child
@@ -2573,6 +2625,97 @@ impl ShadowScan<'_, '_> {
     }
 }
 
+/// `_python_module_instance_types` (Graphify 0.9.102): module-level
+/// `name = Ctor(...)` bindings whose constructor is a class declared or
+/// imported once before the assignment, with neither name rebound anywhere
+/// else; `receiver -> (class name, its shadow checker)`.
+pub fn python_module_instance_types(
+    root: Node<'_>,
+    source: &[u8],
+) -> BTreeMap<String, (String, PythonReceiverShadow)> {
+    let mut declarations: BTreeMap<String, Vec<(String, Node<'_>)>> = BTreeMap::new();
+    let mut assignments = vec![];
+    for statement in named(root) {
+        match statement.kind_name() {
+            "class_definition" => {
+                if let Some(name) = statement.child_by_field_name("name") {
+                    let name = read_text(name, source);
+                    declarations
+                        .entry(name.clone())
+                        .or_default()
+                        .push((name, statement));
+                }
+            }
+            "import_from_statement" => {
+                let mut cursor = statement.walk();
+                for item in statement.children_by_field_name("name", &mut cursor) {
+                    let (name, local) = if item.kind_name() == "aliased_import" {
+                        (
+                            item.child_by_field_name("name").map(|n| read_text(n, source)),
+                            item.child_by_field_name("alias").map(|n| read_text(n, source)),
+                        )
+                    } else {
+                        let text = read_text(item, source);
+                        (Some(text.clone()), Some(text))
+                    };
+                    if let (Some(name), Some(local)) = (name, local)
+                        && crate::extract_python::is_identifier(&name)
+                        && crate::extract_python::is_identifier(&local)
+                    {
+                        declarations.entry(local).or_default().push((name, statement));
+                    }
+                }
+            }
+            "expression_statement" => assignments.extend(
+                named(statement)
+                    .into_iter()
+                    .filter(|c| c.kind_name() == "assignment"),
+            ),
+            _ => {}
+        }
+    }
+    let mut instances = BTreeMap::new();
+    for assignment in assignments {
+        let (Some(left), Some(right)) = (
+            assignment.child_by_field_name("left"),
+            assignment.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        if left.kind_name() != "identifier" || right.kind_name() != "call" {
+            continue;
+        }
+        let Some(function) = right
+            .child_by_field_name("function")
+            .filter(|f| f.kind_name() == "identifier")
+        else {
+            continue;
+        };
+        let (receiver, constructor) = (read_text(left, source), read_text(function, source));
+        let Some([(class, declaration)]) = declarations.get(&constructor).map(Vec::as_slice) else {
+            continue;
+        };
+        if declaration.start_byte() >= assignment.start_byte() {
+            continue;
+        }
+        let mut allowed: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        allowed
+            .entry(constructor.clone())
+            .or_default()
+            .insert(declaration.id());
+        allowed
+            .entry(receiver.clone())
+            .or_default()
+            .insert(assignment.id());
+        let mut shadow = PythonReceiverShadow::with_module_bindings(root, source, allowed);
+        if !shadow.is_shadowed(assignment, &constructor, source)
+            && !shadow.is_shadowed(assignment, &receiver, source)
+        {
+            instances.insert(receiver, (class.clone(), shadow));
+        }
+    }
+    instances
+}
 fn python_target_names(
     node: Option<Node<'_>>,
     source: &[u8],

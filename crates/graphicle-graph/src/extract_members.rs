@@ -2569,18 +2569,30 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             continue;
         }
         let receiver_type = rs(raw, "receiver_type");
-        if !receiver_type.is_empty() && !upper(receiver) {
+        // A module-level instance (`client = Client()`) may be capitalized and
+        // binds only a class spelled exactly so (Graphify 0.9.102).
+        let module_instance = raw.rec_get("_python_module_instance").is_some_and(truthy);
+        if !receiver_type.is_empty() && (!upper(receiver) || module_instance) {
             // A local or parameter typed by an annotation or a constructor
             // binding (#4198), behind the origin gate (#2553): the only class
             // of that name, defined in the caller's file, imported by name,
             // or inside a module the file imports. A typed local is never an
             // imported module, so the module arm is skipped.
-            if let Some(class) = classes
+            let typed = classes
                 .get(pkey(receiver_type).as_str())
-                .filter(|c| c.len() == 1)
+                .map(|c| {
+                    c.iter()
+                        .copied()
+                        .filter(|id| {
+                            !module_instance
+                                || by_id.get(id).is_some_and(|n| s(n, "label") == receiver_type)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if let [class] = typed[..]
                 && let Some(caller_file) = file_node(caller)
             {
-                let class = *class.iter().next().unwrap();
                 let imported = imports.get(caller_file);
                 let class_file = file_node(class);
                 if class_file == Some(caller_file)
@@ -3122,7 +3134,9 @@ pub fn kotlin_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
             continue;
         };
         let wanted = format!(".{}", rs(raw, "callee"));
-        let cs = methods
+        // Overloads share one node and the type holds one `method` edge per
+        // declaration: distinct ids count (Graphify 0.9.102, #4935).
+        let mut cs = methods
             .get(&ts[0])
             .into_iter()
             .flatten()
@@ -3132,6 +3146,8 @@ pub fn kotlin_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
                     .is_some_and(|n| s(n, "label").trim_matches(['(', ')']) == wanted)
             })
             .collect::<Vec<_>>();
+        let mut distinct = FxHashSet::default();
+        cs.retain(|id| distinct.insert(*id));
         if cs.len() == 1 {
             emit(&mut added, &mut seen, raw, cs[0], "calls", true);
         }
@@ -3158,14 +3174,33 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
     if raw.is_empty() {
         return;
     }
-    let mut tables: FxHashMap<&str, &serde_json::Map<String, Value>> = FxHashMap::default();
+    // Package-level variables and imports per file: a local binding carries
+    // its own type, and only an unbound name falls back to a package
+    // variable (Graphify 0.9.102, #4962, #3368).
+    let mut package_vars: FxHashMap<&str, &serde_json::Map<String, Value>> = FxHashMap::default();
+    let mut file_imports: FxHashMap<&str, &Value> = FxHashMap::default();
     for r in per {
         let entry = r.at("go_type_table");
         let path = s(entry, "path");
-        if let Some(table) = entry["table"].as_object()
-            && !path.is_empty()
+        if path.is_empty() {
+            continue;
+        }
+        if let Some(vars) = entry["package_vars"].as_object() {
+            package_vars.insert(path, vars);
+        }
+        file_imports.insert(path, r.at("go_imports"));
+    }
+    // The import paths a type node is declared at (Graphify 0.9.102, #3368).
+    let mut package_paths: FxHashMap<String, BTreeSet<String>> = FxHashMap::default();
+    for n in nodes.iter() {
+        if truthy(&n["_callable_class"])
+            && family(s(n, "source_file")) == Some("go")
+            && !s(n, "_go_package_path").is_empty()
         {
-            tables.insert(path, table);
+            package_paths
+                .entry(s(n, "id").to_string())
+                .or_default()
+                .insert(s(n, "_go_package_path").to_string());
         }
     }
     let mut defs: FxHashMap<String, Vec<String>> = FxHashMap::default();
@@ -3209,38 +3244,78 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
     let mut parked = Vec::new();
     let mut seen = pairs(&edges[..], false);
     let mut added = vec![];
+    // One edge survives per pair: direct calls before method values
+    // (Graphify 0.9.102).
+    let mut raw = raw;
+    raw.sort_by_key(|rc| truthy(at(*rc, "indirect")));
     for rc in raw {
         let (receiver, callee, caller) = (
             rs(rc, "member_receiver"),
             rs(rc, "callee"),
             rs(rc, "caller_nid"),
         );
-        // The method's own receiver and the function's scope come first:
-        // two types in one file may both name their receiver `s`.
+        // The scoped `receiver_type` covers the method's receiver, parameters
+        // and locals; a field receiver is typed from its owning struct.
         let mut ty = rs(rc, "receiver_type");
-        if ty.is_empty() {
-            ty = tables
+        let mut from_sibling = false;
+        let owner = rs(rc, "field_owner");
+        if !owner.is_empty() {
+            ty = "";
+            if let Some([def]) = defs.get(&java_key(owner)).map(Vec::as_slice)
+                && let Some([declared]) = fields_by_type.get(def).map(Vec::as_slice)
+            {
+                ty = declared.get(receiver).and_then(Value::as_str).unwrap_or("");
+                from_sibling = true;
+            }
+        } else if ty.is_empty() && !truthy(at(rc, "receiver_bound")) {
+            ty = package_vars
                 .get(rs(rc, "source_file"))
                 .and_then(|t| t.get(receiver))
                 .and_then(Value::as_str)
                 .unwrap_or("");
         }
-        let owner = rs(rc, "field_owner");
-        if ty.is_empty() && !owner.is_empty() {
-            if let Some([def]) = defs.get(&java_key(owner)).map(Vec::as_slice)
-                && let Some([declared]) = fields_by_type.get(def).map(Vec::as_slice)
-            {
-                ty = declared.get(receiver).and_then(Value::as_str).unwrap_or("");
-            }
-        }
         if ty.is_empty() || is_language_builtin(ty) {
+            continue;
+        }
+        // `pkg.T` binds only to the `T` declared at the path the file imports
+        // `pkg` from; no match is stdlib or outside the corpus, never parked
+        // (Graphify 0.9.102, #3368). A sibling's field carries the path.
+        let qualified: Option<Vec<String>> = ty.contains('.').then(|| {
+            let (import_path, bare) = if from_sibling {
+                let (path, bare) = ty.rsplit_once('.').unwrap_or(("", ty));
+                (Some(path.to_string()), bare)
+            } else {
+                let (alias, bare) = ty.split_once('.').unwrap_or((ty, ""));
+                let path = file_imports
+                    .get(rs(rc, "source_file"))
+                    .and_then(|i| i.get(alias))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                (path, bare)
+            };
+            defs.get(&java_key(bare))
+                .into_iter()
+                .flatten()
+                .filter(|id| {
+                    import_path.as_ref().is_some_and(|p| {
+                        package_paths.get(id.as_str()).is_some_and(|paths| paths.contains(p))
+                    })
+                })
+                .cloned()
+                .collect()
+        });
+        if qualified.as_ref().is_some_and(Vec::is_empty) {
             continue;
         }
         // A method value (`routing.Wrap(s.Handle)`) hands the method over to
         // be called later: an `indirect_call`, never parked, since `f(x.y)`
         // may as well pass a field (Graphify 0.9.99, #1566).
         let indirect = truthy(at(rc, "indirect"));
-        let Some(found) = defs.get(&java_key(ty)).filter(|d| !d.is_empty()) else {
+        let found = match &qualified {
+            Some(found) => Some(found),
+            None => defs.get(&java_key(ty)).filter(|d| !d.is_empty()),
+        };
+        let Some(found) = found else {
             if !indirect {
                 parked.push((caller.to_string(), callee.to_string(), ty.to_string(), rc));
             }

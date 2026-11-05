@@ -1020,6 +1020,13 @@ impl<'a, 't> Engine<'a, 't> {
         {
             self.php_const_refs(n, owner);
         }
+        // `init { ... }`: its calls belong to the enclosing class, or the file
+        // (Graphify 0.9.102, #4935).
+        if self.is("kotlin") && t == "anonymous_initializer" {
+            let owner = parent.unwrap_or(&self.file).to_string();
+            self.initializers.push((owner, n));
+            return true;
+        }
         if self.is("kotlin") && t == "property_declaration" {
             if let Some(p) = parent {
                 self.refs(p, kotlin_property_type_node(n), line, "field", false);

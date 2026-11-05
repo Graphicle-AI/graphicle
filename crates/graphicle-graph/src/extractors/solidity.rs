@@ -804,7 +804,11 @@ pub fn extract_solidity(path: &Path) -> Value {
         if relative.is_empty() || relative.starts_with("http:") || relative.starts_with("https:") {
             continue;
         }
-        let target = fsutil::path_string(&path.parent().unwrap_or(Path::new("")).join(&relative));
+        // `../utils/Errors.sol` names the real file, not `proxy/../utils/...`
+        // (Graphify 0.9.102).
+        let target = crate::paths::normpath(&fsutil::path_string(
+            &path.parent().unwrap_or(Path::new("")).join(&relative),
+        ));
         x.add_edge(
             &file_id,
             &make_id([target.as_str()]),

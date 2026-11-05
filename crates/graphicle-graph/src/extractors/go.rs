@@ -151,12 +151,21 @@ pub fn strip_generic_args(type_text: &str) -> &str {
     trim(type_text.split('[').next().unwrap_or(""))
 }
 /// `_go_single_type_name`: the one declared type a Go type expression names
-/// (`Greeter`, `*Greeter`), or None for a slice, map, channel, qualified or
-/// predeclared type.
+/// (`Greeter`, `*Greeter`, generic arguments dropped), or None for a slice,
+/// map, channel or predeclared type. A qualified type keeps its package as
+/// written (`pkg.Greeter`), bound only through the file's import of `pkg`
+/// (Graphify 0.9.102, #3368).
 pub fn single_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
     let mut node = node?;
-    if node.kind() == "pointer_type" {
-        node = children(node).find(|n| n.is_named())?;
+    while matches!(node.kind(), "pointer_type" | "parenthesized_type" | "generic_type") {
+        node = node
+            .child_by_field_name("type")
+            .or_else(|| children(node).find(|n| n.is_named()))?;
+    }
+    if node.kind() == "qualified_type" {
+        let package = node.child_by_field_name("package")?;
+        let name = node.child_by_field_name("name")?;
+        return Some(format!("{}.{}", read_text(package, source), read_text(name, source)));
     }
     if node.kind() != "type_identifier" {
         return None;
@@ -164,31 +173,57 @@ pub fn single_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<String>
     let name = read_text(node, source);
     (!name.is_empty() && !PREDECLARED_TYPES.contains(&name.as_str())).then_some(name)
 }
-/// `_go_receiver_type_table`: `name -> TypeName` for every Go receiver whose
-/// type is written down (struct field, parameter incl. the method receiver,
-/// `var x T`, `x := T{}` / `x := &T{}`, and `var x = T{}` / `var x = &T{}`
-/// since Graphify 0.9.98), flat over `root`, first binding in source order
-/// wins.
-pub fn receiver_type_table(root: Node<'_>, source: &[u8]) -> Map<String, Value> {
+/// `_go_receiver_type_table` (Graphify 0.9.102, #4962): `name -> TypeName`
+/// for every binding whose type is written down or inferred from a
+/// composite literal (struct field, parameter incl. the method receiver,
+/// `var x T`, `x := T{}`, `var x = &T{}`), and `null` for one whose type is
+/// unknown, which still shadows a package variable. Function bodies (`block`)
+/// and nested closures are left out; `package_only` also leaves out fields
+/// and every function. First binding in source order wins.
+pub fn receiver_type_table(root: Node<'_>, source: &[u8], package_only: bool) -> Map<String, Value> {
     let mut table = Map::new();
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
-        match n.kind() {
-            "field_declaration" | "parameter_declaration" | "var_spec" => {
-                if let Some(type_name) = single_type_name(n.child_by_field_name("type"), source) {
-                    for c in children(n)
-                        .filter(|c| matches!(c.kind(), "field_identifier" | "identifier"))
-                    {
-                        table
-                            .entry(read_text(c, source))
-                            .or_insert_with(|| json!(type_name));
-                    }
-                } else if n.kind() == "var_spec"
+        let kind = n.kind();
+        if kind == "block" || (kind == "func_literal" && n.id() != root.id()) {
+            continue;
+        }
+        if package_only
+            && matches!(
+                kind,
+                "function_declaration" | "method_declaration" | "func_literal" | "type_declaration"
+            )
+        {
+            continue;
+        }
+        match kind {
+            "field_declaration"
+            | "parameter_declaration"
+            | "variadic_parameter_declaration"
+            | "var_spec" => {
+                let names = children(n)
+                    .filter(|c| matches!(c.kind(), "field_identifier" | "identifier"))
+                    .collect::<Vec<_>>();
+                let type_name = if kind == "variadic_parameter_declaration" {
+                    None
+                } else {
+                    single_type_name(n.child_by_field_name("type"), source)
+                };
+                let mut inferred = BTreeMap::new();
+                if kind == "var_spec"
+                    && type_name.is_none()
                     && let Some(value) = n.child_by_field_name("value")
                 {
-                    let names = children(n).filter(|c| c.kind() == "identifier");
-                    let values = children(value).filter(|c| c.is_named());
-                    inferred_composite_bindings(names, values, source, &mut table);
+                    inferred = inferred_composite_bindings(
+                        names.iter().copied(),
+                        children(value).filter(|c| c.is_named()),
+                        source,
+                    );
+                }
+                for name in names {
+                    let name = read_text(name, source);
+                    let ty = type_name.clone().or_else(|| inferred.get(&name).cloned());
+                    table.entry(name).or_insert_with(|| json!(ty));
                 }
             }
             "short_var_declaration" => {
@@ -196,9 +231,26 @@ pub fn receiver_type_table(root: Node<'_>, source: &[u8]) -> Map<String, Value> 
                     n.child_by_field_name("left"),
                     n.child_by_field_name("right"),
                 ) {
-                    let names = children(left).filter(|c| c.kind() == "identifier");
-                    let values = children(right).filter(|c| c.is_named());
-                    inferred_composite_bindings(names, values, source, &mut table);
+                    let names = children(left)
+                        .filter(|c| c.kind() == "identifier")
+                        .collect::<Vec<_>>();
+                    let inferred = inferred_composite_bindings(
+                        names.iter().copied(),
+                        children(right).filter(|c| c.is_named()),
+                        source,
+                    );
+                    for name in names {
+                        let name = read_text(name, source);
+                        let ty = inferred.get(&name).cloned();
+                        table.entry(name).or_insert_with(|| json!(ty));
+                    }
+                }
+            }
+            "range_clause" if children(n).any(|c| c.kind() == ":=") => {
+                if let Some(left) = n.child_by_field_name("left") {
+                    for name in children(left).filter(|c| c.is_named() && c.kind() == "identifier") {
+                        table.entry(read_text(name, source)).or_insert(Value::Null);
+                    }
                 }
             }
             _ => {}
@@ -210,13 +262,13 @@ pub fn receiver_type_table(root: Node<'_>, source: &[u8]) -> Map<String, Value> 
     table
 }
 /// `_go_inferred_composite_bindings`: each same-position name and `T{}` /
-/// `&T{}` value binds the name to `T` (first binding wins).
+/// `&T{}` value binds the name to `T`.
 fn inferred_composite_bindings<'t>(
     names: impl Iterator<Item = Node<'t>>,
     values: impl Iterator<Item = Node<'t>>,
     source: &[u8],
-    table: &mut Map<String, Value>,
-) {
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
     for (name, mut value) in names.zip(values) {
         if value.kind() == "unary_expression" {
             value = value.child_by_field_name("operand").unwrap_or(value);
@@ -225,51 +277,10 @@ fn inferred_composite_bindings<'t>(
             continue;
         }
         if let Some(type_name) = single_type_name(value.child_by_field_name("type"), source) {
-            table
-                .entry(read_text(name, source))
-                .or_insert_with(|| json!(type_name));
+            out.entry(read_text(name, source)).or_insert(type_name);
         }
     }
-}
-/// `_go_struct_field_types` (Graphify 0.9.99, #3368): `struct -> {field ->
-/// TypeName}` for every struct the file declares, by the rule of the flat
-/// receiver table, keyed by the struct.
-fn struct_field_types(root: Node<'_>, source: &[u8]) -> BTreeMap<String, BTreeMap<String, String>> {
-    let mut by_struct = BTreeMap::new();
-    let mut stack = vec![root];
-    while let Some(n) = stack.pop() {
-        if matches!(n.kind(), "function_declaration" | "method_declaration") {
-            continue;
-        }
-        if n.kind() == "type_spec" {
-            if let (Some(name), Some(body)) =
-                (n.child_by_field_name("name"), n.child_by_field_name("type"))
-                && body.kind() == "struct_type"
-            {
-                let mut fields = BTreeMap::new();
-                for list in children(body).filter(|c| c.kind() == "field_declaration_list") {
-                    for field in children(list).filter(|c| c.kind() == "field_declaration") {
-                        let Some(type_name) =
-                            single_type_name(field.child_by_field_name("type"), source)
-                        else {
-                            continue;
-                        };
-                        for c in children(field).filter(|c| c.kind() == "field_identifier") {
-                            fields
-                                .entry(read_text(c, source))
-                                .or_insert_with(|| type_name.clone());
-                        }
-                    }
-                }
-                if !fields.is_empty() {
-                    by_struct.insert(read_text(name, source), fields);
-                }
-            }
-            continue;
-        }
-        stack.extend(children(n));
-    }
-    by_struct
+    out
 }
 /// A function body to walk for calls: the caller, the body, the method's
 /// receiver name and type, and the function's own-scope type table.
@@ -295,6 +306,11 @@ struct Extractor<'source, 'tree> {
     // `_callable` / `_callable_class` stamps (#2438, #3152).
     callable: HashSet<String>,
     callable_class: HashSet<String>,
+    /// Go interfaces: implicit, so nothing else tells their requirements from
+    /// a struct's methods (Graphify 0.9.102).
+    interfaces: HashSet<String>,
+    /// The labels of the types this file declares (Graphify 0.9.102).
+    local_type_names: HashSet<String>,
     imports: Map<String, Value>,
     groups: HashMap<String, HashSet<String>>,
     labels: HashMap<String, String>,
@@ -577,7 +593,7 @@ impl<'tree> Extractor<'_, 'tree> {
                     self.edge(&self.file.clone(), &id, "contains", line, None);
                     self.signatures(node, &id, line, &HashSet::new());
                     if let Some(body) = node.child_by_field_name("body") {
-                        let scope_types = receiver_type_table(node, self.source);
+                        let scope_types = receiver_type_table(node, self.source, false);
                         self.bodies.push(Body {
                             caller: id,
                             body,
@@ -613,7 +629,7 @@ impl<'tree> Extractor<'_, 'tree> {
                 self.callable.insert(id.clone());
                 self.signatures(node, &id, line, &HashSet::new());
                 if let Some(body) = node.child_by_field_name("body") {
-                    let scope_types = receiver_type_table(node, self.source);
+                    let scope_types = receiver_type_table(node, self.source, false);
                     self.bodies.push(Body {
                         caller: id,
                         body,
@@ -688,6 +704,7 @@ impl<'tree> Extractor<'_, 'tree> {
                             }
                         }
                     } else {
+                        self.interfaces.insert(id.clone());
                         for elem in children(body) {
                             let line = elem.start_position().row + 1;
                             if elem.kind() == "method_elem" {
@@ -750,7 +767,7 @@ impl<'tree> Extractor<'_, 'tree> {
             // #2360).
             "var_declaration" if node.parent().is_some_and(|p| p.kind() == "source_file") => {
                 self.package_var_type_refs(node);
-                let scope_types = receiver_type_table(node, self.source);
+                let scope_types = receiver_type_table(node, self.source, false);
                 self.bodies.push(Body {
                     caller: self.file.clone(),
                     body: node,
@@ -798,10 +815,54 @@ impl<'tree> Extractor<'_, 'tree> {
             }
         }
     }
-    fn calls(&mut self, node: Node<'_>, caller: &str, scope: &Body<'_>) {
+    /// The call walk. `types` are the bindings in scope at `node`: the
+    /// function's parameters, then each local as its declaration is passed,
+    /// copied at every block so an inner binding never leaks out; an unknown
+    /// type is `null` and still shadows a package variable (Graphify 0.9.102,
+    /// #4962).
+    fn calls(
+        &mut self,
+        node: Node<'_>,
+        caller: &str,
+        scope: &Body<'_>,
+        types: &mut Map<String, Value>,
+    ) {
         if matches!(node.kind(), "function_declaration" | "method_declaration") {
             return;
         }
+        let mut inner_types;
+        let types = if matches!(
+            node.kind(),
+            "block"
+                | "if_statement"
+                | "for_statement"
+                | "expression_switch_statement"
+                | "type_switch_statement"
+                | "select_statement"
+                | "expression_case"
+                | "type_case"
+                | "communication_case"
+                | "default_case"
+                | "func_literal"
+        ) {
+            inner_types = types.clone();
+            if node.kind() == "func_literal" {
+                for (name, ty) in receiver_type_table(node, self.source, false) {
+                    inner_types.insert(name, ty);
+                }
+            }
+            &mut inner_types
+        } else {
+            types
+        };
+        let typed = |types: &Map<String, Value>, name: &str| {
+            types.get(name).and_then(Value::as_str).map(str::to_string)
+        };
+        let self_name = scope.self_name.clone().filter(|n| !n.is_empty());
+        // `s.field` is the receiver's field only while `s` still names it.
+        let self_bound = self_name
+            .as_deref()
+            .is_some_and(|n| typed(types, n) == scope.self_type);
         if node.kind() == "call_expression" {
             let mut callee = None;
             let mut member = false;
@@ -830,30 +891,41 @@ impl<'tree> Extractor<'_, 'tree> {
                             .map(str::to_string);
                     } else if let Some(op) = operand_node {
                         if op.kind() == "identifier" {
-                            // The method's own receiver is typed by its
-                            // declaration; other names by the function's scope.
-                            member_receiver_type = if scope
-                                .self_name
-                                .as_deref()
-                                .is_some_and(|n| !n.is_empty() && n == operand)
-                            {
-                                scope.self_type.clone()
-                            } else {
-                                scope
-                                    .scope_types
-                                    .get(&operand)
-                                    .and_then(Value::as_str)
-                                    .map(str::to_string)
-                            };
+                            member_receiver_type = typed(types, &operand);
+                            // A type named as the receiver (`T.M`), unless a
+                            // binding shadows it.
+                            if !types.contains_key(&operand) && self.local_type_names.contains(&operand) {
+                                member_receiver_type = Some(operand.clone());
+                            }
                             member_receiver = Some(operand.clone());
+                        } else if op.kind() == "parenthesized_expression" {
+                            // `(*T).M`: the method expression of a local type.
+                            let mut expression = op;
+                            while expression.kind() == "parenthesized_expression"
+                                && let Some(first) = children(expression).find(|c| c.is_named())
+                            {
+                                expression = first;
+                            }
+                            if expression.kind() == "unary_expression"
+                                && read_text(expression, self.source).starts_with('*')
+                            {
+                                let name = expression
+                                    .child_by_field_name("operand")
+                                    .map(|o| read_text(o, self.source))
+                                    .unwrap_or_default();
+                                if self.local_type_names.contains(&name) && !types.contains_key(&name) {
+                                    member_receiver = Some(name.clone());
+                                    member_receiver_type = Some(name);
+                                }
+                            }
                         } else if op.kind() == "selector_expression" {
                             // `s.logger.Log()` names the receiver by the field
                             // only when `s` is this method's own receiver.
                             let inner = op.child_by_field_name("operand");
-                            if let (Some(self_name), Some(inner)) =
-                                (scope.self_name.as_deref().filter(|n| !n.is_empty()), inner)
+                            if let (Some(self_name), Some(inner)) = (self_name.as_deref(), inner)
                                 && inner.kind() == "identifier"
                                 && read_text(inner, self.source) == self_name
+                                && self_bound
                             {
                                 member_receiver = Some(
                                     op.child_by_field_name("field")
@@ -879,7 +951,9 @@ impl<'tree> Extractor<'_, 'tree> {
                 callee = None;
             }
             if let Some(callee) = callee.filter(|s| !s.is_empty() && !is_language_builtin(s)) {
-                let target = if import_path.as_ref().is_some_and(|s| !s.is_empty()) {
+                // A member call resolves by its receiver's type; the bare name
+                // proves nothing about the receiver (Graphify 0.9.102).
+                let target = if import_path.as_ref().is_some_and(|s| !s.is_empty()) || member {
                     None
                 } else {
                     self.labels.get(&callee).filter(|s| !s.is_empty()).cloned()
@@ -898,7 +972,9 @@ impl<'tree> Extractor<'_, 'tree> {
                     // `member_receiver` is a key of its own: `receiver` means
                     // "imported package" here, and other languages' member
                     // resolvers read `receiver`.
-                    self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":member,"language":"go","receiver":receiver,"member_receiver":member_receiver,"receiver_type":member_receiver_type,"field_owner":field_owner,"import_path":import_path,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
+                    let bound = field_owner.is_none()
+                        && member_receiver.as_ref().is_some_and(|r| types.contains_key(r));
+                    self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":member,"language":"go","receiver":receiver,"member_receiver":member_receiver,"receiver_type":member_receiver_type,"receiver_bound":bound,"field_owner":field_owner,"import_path":import_path,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
                 }
             }
             // A method value passed as an argument (`routing.Wrap(s.Handle)`)
@@ -912,30 +988,21 @@ impl<'tree> Extractor<'_, 'tree> {
                     ) else {
                         continue;
                     };
-                    let self_name = scope.self_name.as_deref().filter(|n| !n.is_empty());
                     let (name, receiver_type, field_owner) = if operand.kind() == "identifier" {
                         let name = read_text(operand, self.source);
                         if self.imports.contains_key(&name) {
                             continue;
                         }
-                        let receiver_type = if self_name == Some(name.as_str()) {
-                            scope.self_type.clone()
-                        } else {
-                            scope
-                                .scope_types
-                                .get(&name)
-                                .and_then(Value::as_str)
-                                .map(str::to_string)
-                        };
+                        let receiver_type = typed(types, &name);
                         (name, receiver_type, None)
                     } else if operand.kind() == "selector_expression" {
                         // `s.field.Handle`, typed through the field only when
                         // `s` is this method's receiver (Graphify 0.9.101).
                         let inner = operand.child_by_field_name("operand");
-                        if !(self_name.is_some()
+                        if !(self_bound
                             && inner.is_some_and(|i| {
                                 i.kind() == "identifier"
-                                    && Some(read_text(i, self.source).as_str()) == self_name
+                                    && Some(read_text(i, self.source).as_str()) == self_name.as_deref()
                             }))
                         {
                             continue;
@@ -948,12 +1015,18 @@ impl<'tree> Extractor<'_, 'tree> {
                     } else {
                         continue;
                     };
-                    self.raw_calls.push(json!({"caller_nid":caller,"callee":read_text(field, self.source),"is_member_call":true,"indirect":true,"context":"argument","language":"go","receiver":null,"member_receiver":name,"receiver_type":receiver_type,"field_owner":field_owner,"import_path":null,"source_file":self.path,"source_location":format!("L{}",arg.start_position().row+1)}));
+                    let bound = field_owner.is_none() && types.contains_key(&name);
+                    self.raw_calls.push(json!({"caller_nid":caller,"callee":read_text(field, self.source),"is_member_call":true,"indirect":true,"context":"argument","language":"go","receiver":null,"member_receiver":name,"receiver_type":receiver_type,"receiver_bound":bound,"field_owner":field_owner,"import_path":null,"source_file":self.path,"source_location":format!("L{}",arg.start_position().row+1)}));
                 }
             }
         }
         for n in children(node) {
-            self.calls(n, caller, scope);
+            self.calls(n, caller, scope, types);
+            if matches!(n.kind(), "short_var_declaration" | "var_spec" | "range_clause") {
+                for (name, ty) in receiver_type_table(n, self.source, false) {
+                    types.insert(name, ty);
+                }
+            }
         }
     }
 }
@@ -996,6 +1069,8 @@ pub fn extract_go(path: &Path) -> Value {
         bodies: vec![],
         callable: HashSet::new(),
         callable_class: HashSet::new(),
+        interfaces: HashSet::new(),
+        local_type_names: HashSet::new(),
         imports: Map::new(),
         groups: HashMap::new(),
         labels: HashMap::new(),
@@ -1006,33 +1081,80 @@ pub fn extract_go(path: &Path) -> Value {
     ex.scan_types(tree.root_node());
     ex.scan(tree.root_node());
     ex.walk(tree.root_node());
-    // A type carries both markers: `_callable_class` narrows `_callable`.
+    // A type carries both markers: `_callable_class` narrows `_callable`. A
+    // type also carries its import path from go.mod, so a `pkg.T` receiver
+    // binds only to a `T` declared at the path the caller imports `pkg` from
+    // (Graphify 0.9.102, #3368), and an interface says it is one.
+    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    let package_path = crate::extractors::resolution_types::go_import_path_for_file(
+        &absolute,
+        absolute.parent().unwrap_or(Path::new("")),
+    );
     for n in &mut ex.nodes {
         let id = n["id"].as_str().unwrap_or("");
         let class = ex.callable_class.contains(id);
+        let interface = ex.interfaces.contains(id);
         if class || ex.callable.contains(id) {
             n["_callable"] = json!(true);
             if class {
                 n["_callable_class"] = json!(true);
+                if let Some(package_path) = package_path.as_deref() {
+                    n["_go_package_path"] = json!(package_path);
+                }
             }
+        }
+        if interface {
+            n["metadata"] = json!({"language": "go", "kind": "interface"});
         }
     }
     // The field types of the structs this file declares ride on the file
     // node, keyed by struct id, so a method in a sibling file can type
-    // `s.field` (Graphify 0.9.99, #3368).
+    // `s.field` (Graphify 0.9.99, #3368). A `pkg.T` field is stored as
+    // `<import path>.T`, settled by this file's imports (0.9.102).
     let mut struct_fields = BTreeMap::new();
     for (name, fields) in struct_field_types(tree.root_node(), &source) {
-        struct_fields.insert(ex.type_symbol(&name), fields);
+        let mut typed = BTreeMap::new();
+        for (field, type_name) in fields {
+            match type_name.split_once('.') {
+                None => {
+                    typed.insert(field, type_name);
+                }
+                Some((alias, bare)) => {
+                    if let Some(path) = ex.imports.get(alias).and_then(Value::as_str) {
+                        typed.insert(field, format!("{path}.{bare}"));
+                    }
+                }
+            }
+        }
+        if !typed.is_empty() {
+            struct_fields.insert(ex.type_symbol(&name), typed);
+        }
     }
     if !struct_fields.is_empty()
         && let Some(file_node) = ex.nodes.iter_mut().find(|n| n["id"] == file.as_str())
     {
         file_node["_go_fields"] = json!(struct_fields);
     }
-    let type_table = receiver_type_table(tree.root_node(), &source);
+    let type_table = receiver_type_table(tree.root_node(), &source, false);
+    let package_vars = receiver_type_table(tree.root_node(), &source, true);
+    ex.local_type_names = ex
+        .nodes
+        .iter()
+        .filter(|n| n["id"].as_str().is_some_and(|id| ex.callable_class.contains(id)))
+        .filter_map(|n| n["label"].as_str().map(str::to_string))
+        .collect();
+    // A method is reached through its receiver, never by bare name
+    // (Graphify 0.9.102).
+    let methods = ex
+        .edges
+        .iter()
+        .filter(|e| e["relation"] == "method")
+        .filter_map(|e| e["target"].as_str().map(str::to_string))
+        .collect::<HashSet<_>>();
     ex.labels = ex
         .nodes
         .iter()
+        .filter(|n| n["id"].as_str().is_none_or(|id| !methods.contains(id)))
         .filter_map(|n| {
             Some((
                 n["label"]
@@ -1045,7 +1167,8 @@ pub fn extract_go(path: &Path) -> Value {
         })
         .collect();
     for scope in std::mem::take(&mut ex.bodies) {
-        ex.calls(scope.body, &scope.caller, &scope);
+        let mut types = scope.scope_types.clone();
+        ex.calls(scope.body, &scope.caller, &scope, &mut types);
     }
     ex.edges.retain(|e| {
         e["source"].as_str().is_some_and(|s| ex.seen.contains(s))
@@ -1054,7 +1177,7 @@ pub fn extract_go(path: &Path) -> Value {
     });
     let path = ex.path.clone();
     json!({"nodes":ex.nodes,"edges":ex.edges,"raw_calls":ex.raw_calls,"go_imports":ex.imports,
-        "go_type_table":{"path":path,"table":type_table}})
+        "go_type_table":{"path":path,"table":type_table,"package_vars":package_vars}})
 }
 #[cfg(test)]
 mod tests {

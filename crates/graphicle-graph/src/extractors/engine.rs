@@ -87,6 +87,10 @@ pub(crate) struct Engine<'a, 't> {
     pub local_bases: BTreeMap<String, Vec<String>>,
     /// Receiver-shadow guard for plain external module calls (Python only).
     pub python_shadow: Option<super::engine_scope::PythonReceiverShadow>,
+    /// Python: module-level `name = Ctor(...)` instances and their checkers
+    /// (Graphify 0.9.102).
+    pub python_module_instances:
+        BTreeMap<String, (String, super::engine_scope::PythonReceiverShadow)>,
     /// JS/TS: names the module exports (#3778), computed on first use;
     /// upstream rescans the program for every `Obj.m = fn` assignment.
     pub js_exported: Option<BTreeSet<String>>,
@@ -1041,6 +1045,7 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         methods_by_owner: BTreeMap::new(),
         local_bases: BTreeMap::new(),
         python_shadow: None,
+        python_module_instances: BTreeMap::new(),
         js_exported: None,
         field_order: vec![],
         stem_id,

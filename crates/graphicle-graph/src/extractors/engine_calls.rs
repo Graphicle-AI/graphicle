@@ -246,7 +246,7 @@ impl<'a, 't> Engine<'a, 't> {
     /// Python member-call stamps for the corpus resolvers: `self.X.m()`'s
     /// class (0.9.80, #2860), a typed receiver (#4198) and
     /// `super(Cls, obj).m()`, whose MRO starts after `Cls` (0.9.81).
-    fn python_member_stamps(&self, n: Node<'t>, caller: &str, call: &Call, raw: &mut Value) {
+    fn python_member_stamps(&mut self, n: Node<'t>, caller: &str, call: &Call, raw: &mut Value) {
         let object = n
             .child_by_field_name("function")
             .and_then(|f| f.child_by_field_name("object"));
@@ -282,6 +282,12 @@ impl<'a, 't> Engine<'a, 't> {
                 // A fixture parameter: typed by the resolver from the fixture
                 // pytest would pick for it (0.9.92, #4332).
                 raw["_python_fixture_param"] = json!(true);
+            } else if let Some((class, shadow)) = self.python_module_instances.get_mut(receiver)
+                && !shadow.is_shadowed(n, receiver, self.source)
+            {
+                // A module-level instance of a proved class (Graphify 0.9.102).
+                raw["receiver_type"] = json!(class);
+                raw["_python_module_instance"] = json!(true);
             }
         }
         if call.receiver.as_deref() == Some("super")
@@ -2008,6 +2014,7 @@ impl<'a, 't> Engine<'a, 't> {
                 root,
                 self.source,
             ));
+            self.python_module_instances = python_module_instance_types(root, self.source);
         }
         for (caller, body) in self.bodies.clone() {
             let mut table = receiver_tables.remove(&body.id()).unwrap_or_default();
