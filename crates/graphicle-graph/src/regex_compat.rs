@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/blade.py
 //! Character classes matching Python 3.12's Unicode-15 regular expressions.
 use crate::unicode15::WORD_RANGES;

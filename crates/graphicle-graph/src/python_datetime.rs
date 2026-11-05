@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/reflect.py
 //! ISO datetime subset used by Graphify's reflection layer, matching the
 //! CPython 3.12 C parser (including week dates and fractional UTC offsets).

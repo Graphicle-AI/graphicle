@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/yaml_config.py
 //! Structural YAML extraction (Graphify 0.9.95, #2214): `.yaml`/`.yml` files are
 //! code. A file node plus `contains` edges to keys, the shape `extract_json`

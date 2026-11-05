@@ -210,10 +210,12 @@ limits, its `docs/evidence/upstream-tests-known-differences.md` lists the
 upstream tests that fail against the engine, with the reason for each, and its
 `docs/evidence/upstream-tests-not-run.md` lists the test files the checks do
 not run, with the reason for each.
-[migration/STATUS.md](migration/STATUS.md), [AUDIT.json](migration/AUDIT.json)
-and the [file ledger](migration/FILES.json) record the 24 October run against
-0.9.95: the ledger lists every file of the pinned Graphify 0.9.95 archive with
-its SHA-256 and marks each of the 96 application modules verified. The
+[migration/STATUS.md](migration/STATUS.md) and [AUDIT.json](migration/AUDIT.json)
+record the 24 October run against 0.9.95, which marked each of its 96
+application modules verified. The engine now follows Graphify 0.9.102: the
+[file ledger](migration/FILES.json) lists every file of the pinned 0.9.102
+archive with its SHA-256, and its 97 application modules stay pending until
+the comparison checks run against that release. The
 repository's `docs/evidence/` folder summarizes the 13 October qualification
 against 0.9.88 and the 14 October run of the widened checks.
 

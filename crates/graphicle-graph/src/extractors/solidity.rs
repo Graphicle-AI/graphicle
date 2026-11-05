@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/solidity.py
 //! Port of graphify/extractors/solidity.py (Graphify 0.9.69, #3716):
 //! contracts, interfaces and libraries with their state, events, errors,

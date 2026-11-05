@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/affected.py, graphify/global_graph.py, graphify/multigraph_compat.py
 //! Native attributed graph substrate for the translated Graphify modules.
 //! Preserves insertion order, keyed parallel edges and node-link JSON semantics.
