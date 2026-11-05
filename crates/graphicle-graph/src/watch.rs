@@ -236,8 +236,12 @@ pub fn build_docs(out: &Path) -> bool {
     build_flag(out, "docs")
 }
 pub fn write_flag_config(out: &Path, key: &str) {
+    set_flag_config(out, key, true)
+}
+/// Record `key` as `value` in the build configuration.
+pub fn set_flag_config(out: &Path, key: &str, value: bool) {
     let mut config = read_config(out);
-    config[key] = json!(true);
+    config[key] = json!(value);
     let _ = fs::create_dir_all(out);
     let _ = paths::write_json_atomic(&out.join(".graphicle_build.json"), &config, None, false);
 }
@@ -1948,9 +1952,21 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     // an arXiv abstract) gets the same quick-scan when it has an AST
     // extractor; PDFs and plain .txt have none, so the filter keeps them out
     // (Graphify 0.9.96, #4750).
-    let docs = items(&detected["files"], "document")
+    // A `--code-only` graph opted out of documents, so its rebuilds skip
+    // the quick-scan; document nodes already in it are kept untouched
+    // (Graphify 0.9.101, #4923).
+    let code_only = build_flag(out, "code_only");
+    let (document_files, paper_files) = if code_only {
+        (vec![], vec![])
+    } else {
+        (
+            items(&detected["files"], "document"),
+            items(&detected["files"], "paper"),
+        )
+    };
+    let docs = document_files
         .iter()
-        .chain(items(&detected["files"], "paper").iter())
+        .chain(paper_files.iter())
         .filter_map(Value::as_str)
         .map(PathBuf::from)
         .filter(|p| extract::get_extractor(p).is_some())

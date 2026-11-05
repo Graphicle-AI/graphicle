@@ -362,6 +362,11 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
     if a.flag("routes") && !dry_run_only {
         crate::watch::write_flag_config(&dir, "routes");
     }
+    // The scope a later hook, update or watch rebuild keeps (Graphify
+    // 0.9.101, #4923).
+    if a.flag("code-only") && !dry_run_only {
+        crate::watch::write_flag_config(&dir, "code_only");
+    }
     if a.flag("routes") || crate::watch::build_flag(&dir, "routes") {
         crate::extractors::routes::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1020,6 +1025,11 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
             comm.len()
         ));
         crate::par::drop_later((g, comm));
+    }
+    // A flagless extract that ingested documents changes the scope back to
+    // a full graph (Graphify 0.9.101, #4923).
+    if !code_only && !semantic.is_empty() && !dry_run_only {
+        crate::watch::set_flag_config(&dir, "code_only", false);
     }
     crate::install_fs::write(&dir.join(".graphicle_root"), &target.to_string_lossy())?;
     if has_path {

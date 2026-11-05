@@ -337,6 +337,8 @@ fn settings(
             crate::extractors::rst::enabled(),
             crate::extractors::routes::enabled(),
         ),
+        // The scope a `--code-only` graph keeps (Graphify 0.9.101, #4923).
+        crate::watch::build_flag(out, "code_only"),
         content(&watch_root.join(rcfile::RC_FILENAME)),
         env,
     ))

@@ -310,3 +310,33 @@ fn a_contended_incremental_request_is_recorded_not_dropped() {
         Some("Incremental: re-extracting 1 of 4 scanned files that changed since the last build.")
     );
 }
+
+#[test]
+fn a_code_only_graph_stays_code_only_on_rebuilds() {
+    // test_code_only_scope_4923.py (Graphify 0.9.101, #4923): the scope of
+    // `extract --code-only` is recorded and kept by update.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    fs::write(root.join("app.py"), "def f():\n    return 1\n").unwrap();
+    fs::write(root.join("README.md"), "# Notes\n\n## Usage\n\nRun it.\n").unwrap();
+    let args: Vec<String> = ["extract", root.to_str().unwrap(), "--code-only", "--no-cluster"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let r = graphicle::cli::run(&args);
+    assert_eq!(r.exit_code, 0, "{}", r.stderr);
+    assert!(watch::build_flag(&root.join(".graphicle"), "code_only"));
+    let result = watch::rebuild(
+        root,
+        &RebuildOptions {
+            force: true,
+            no_cluster: true,
+            acquire_lock: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(result.success, "{:?}", result.messages);
+    assert!(nodes_of(&graph(root), "README.md").is_empty());
+    assert!(!nodes_of(&graph(root), "app.py").is_empty());
+}
