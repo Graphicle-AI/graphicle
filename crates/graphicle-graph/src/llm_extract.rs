@@ -268,6 +268,16 @@ impl Runtime {
         // Graphify 0.9.96 (#3616): the chunks that raised before returning a
         // response, so reconcile does not call their files model omissions.
         let mut failed = BTreeSet::new();
+        // A file split into slices is complete only once every slice has
+        // returned (Graphify 0.9.101, #4943): its results are held until the
+        // last slice succeeds and then saved in one write, in chunk order.
+        let mut slices_left: BTreeMap<PathBuf, usize> = BTreeMap::new();
+        for unit in chunks.iter().flatten() {
+            if matches!(unit, Unit::Slice(_)) {
+                *slices_left.entry(unit_path(unit).to_path_buf()).or_default() += 1;
+            }
+        }
+        let mut held: BTreeMap<PathBuf, Vec<(usize, Value)>> = BTreeMap::new();
         let run = |index: usize| {
             let mut d = Diagnostics::default();
             let start = Instant::now();
@@ -288,7 +298,49 @@ impl Runtime {
                         parse::merge_into(&mut merged, &result)
                     }
                     if cfg::get(&self.config.env, "GRAPHICLE_NO_INCREMENTAL_CACHE").is_empty() {
-                        checkpoint(&result, &chunks[index], o, cache, d)
+                        let chunk = &chunks[index];
+                        let whole: Vec<Unit> = chunk
+                            .iter()
+                            .filter(|u| !matches!(u, Unit::Slice(_)))
+                            .cloned()
+                            .collect();
+                        if !whole.is_empty() {
+                            checkpoint(&result, &whole, o, cache, d)
+                        }
+                        let mut parents: Vec<PathBuf> = Vec::new();
+                        for unit in chunk.iter().filter(|u| matches!(u, Unit::Slice(_))) {
+                            let parent = unit_path(unit).to_path_buf();
+                            if let Some(left) = slices_left.get_mut(&parent) {
+                                *left = left.saturating_sub(1);
+                            }
+                            if !parents.contains(&parent) {
+                                parents.push(parent);
+                            }
+                        }
+                        for parent in parents {
+                            held.entry(parent.clone())
+                                .or_default()
+                                .push((index, result.clone()));
+                            if slices_left.get(&parent) == Some(&0) {
+                                let mut parts = held.remove(&parent).unwrap_or_default();
+                                parts.sort_by_key(|(i, _)| *i);
+                                let mut combined = json!({});
+                                for bucket in ["nodes", "edges", "hyperedges"] {
+                                    combined[bucket] = Value::Array(
+                                        parts
+                                            .iter()
+                                            .flat_map(|(_, r)| {
+                                                r[bucket].as_array().cloned().unwrap_or_default()
+                                            })
+                                            .collect(),
+                                    );
+                                }
+                                let refs: Vec<&Value> = parts.iter().map(|(_, r)| r).collect();
+                                combined["_partial_files"] =
+                                    json!(parse::merged_partial_files(&refs));
+                                checkpoint(&combined, &[Unit::Path(parent)], o, cache, d)
+                            }
+                        }
                     }
                     on_done(Progress {
                         index,
@@ -345,6 +397,27 @@ impl Runtime {
         }
         if merged["failed_chunks"].as_u64().unwrap_or(0) > 0 {
             d.stderr.push(format!("[graphicle] WARNING: {}/{total} semantic chunk(s) failed — see errors above. Partial results returned.",merged["failed_chunks"]))
+        }
+        // A failed slice leaves its parent with nodes from the other slices,
+        // so the parent looks covered: it is named partial so the final save
+        // stamps it and the next run retries it (#4943).
+        let failed_parents: BTreeSet<String> = failed
+            .iter()
+            .filter_map(|&i| chunks.get(i))
+            .flatten()
+            .filter(|u| matches!(u, Unit::Slice(_)))
+            .map(|u| unit_path(u).to_string_lossy().into_owned())
+            .collect();
+        if !failed_parents.is_empty() {
+            let mut partial: BTreeSet<String> = merged["_partial_files"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            partial.extend(failed_parents);
+            merged["_partial_files"] = json!(partial);
         }
         reconcile_failed(&mut merged, &chunks, &o.extract.root, &failed, d);
         llm::stamp_semantic_origin(&mut merged);
