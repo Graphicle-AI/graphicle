@@ -283,21 +283,27 @@ pub fn god_node_article(
     neighbors.sort_by_key(|n| std::cmp::Reverse(analyze::degree(g, *n)));
     for other in neighbors {
         let edges = g.edges_between(&g.nodes[n].id, &g.nodes[other].id);
-        let edge = edges.first().ok_or("Missing neighbor edge")?;
-        let relation = edge
-            .attributes
-            .get("relation")
-            .map(display)
-            .unwrap_or("related".into());
-        let conf = edge.attributes.get("confidence");
-        let suffix = conf
-            .filter(|v| truthy(v))
-            .map(|c| format!(" `{}`", display(c)))
-            .unwrap_or_default();
-        by_relation
-            .entry(relation)
-            .or_default()
-            .push(format!("{}{suffix}", md_link(&label(g, other), resolver)?));
+        if edges.is_empty() {
+            return Err("Missing neighbor edge".into());
+        }
+        // Every parallel relation to the neighbour is listed (Graphify
+        // 0.9.101, 1954192a).
+        for edge in edges {
+            let relation = edge
+                .attributes
+                .get("relation")
+                .map(display)
+                .unwrap_or("related".into());
+            let conf = edge.attributes.get("confidence");
+            let suffix = conf
+                .filter(|v| truthy(v))
+                .map(|c| format!(" `{}`", display(c)))
+                .unwrap_or_default();
+            by_relation
+                .entry(relation)
+                .or_default()
+                .push(format!("{}{suffix}", md_link(&label(g, other), resolver)?));
+        }
     }
     lines.extend(["## Connections by Relation".into(), "".into()]);
     for (rel, targets) in by_relation {

@@ -465,11 +465,17 @@ pub fn cross_community_surprises(
             return Err("ValueError: too many values to unpack (expected 2)".into());
         }
         let mut result = Vec::new();
-        for (u, v, score) in scores {
-            let edge = graph.edges_between(&graph.nodes[u].id, &graph.nodes[v].id)[0];
-            let mut row = edge_result(graph, u, v, &edge.attributes);
-            row["note"] = json!(format!("Bridges graph structure (betweenness={score:.3})"));
-            result.push(row);
+        // Every parallel relation of a bridging pair is reported, up to
+        // `top_n` rows (Graphify 0.9.101, 1954192a).
+        'pairs: for (u, v, score) in scores {
+            for edge in graph.edges_between(&graph.nodes[u].id, &graph.nodes[v].id) {
+                let mut row = edge_result(graph, u, v, &edge.attributes);
+                row["note"] = json!(format!("Bridges graph structure (betweenness={score:.3})"));
+                result.push(row);
+                if result.len() as i64 >= top_n {
+                    break 'pairs;
+                }
+            }
         }
         return Ok(result);
     }
