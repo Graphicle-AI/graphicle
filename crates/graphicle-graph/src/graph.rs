@@ -938,6 +938,7 @@ impl Graph {
             edge_index: HashTable::new(),
             adjacency: kept.iter().map(|&u| row(&self.adjacency[u])).collect(),
             incoming: kept.iter().map(|&u| row(&self.incoming[u])).collect(),
+            dedup_remap: self.dedup_remap.clone(),
         };
         graph.reindex_nodes();
         graph.reindex_edges(false)?;
@@ -1352,6 +1353,7 @@ impl Graph {
             edge_index: self.edge_index.clone(),
             adjacency: self.adjacency.clone(),
             incoming: self.incoming.clone(),
+            dedup_remap: Default::default(),
         }
     }
     /// `without_node_attributes` that also keeps only the `key` attribute of
@@ -1405,6 +1407,7 @@ impl Graph {
             edge_index: self.edge_index.clone(),
             adjacency: self.adjacency.clone(),
             incoming: self.incoming.clone(),
+            dedup_remap: Default::default(),
         }
     }
     pub fn to_undirected(&self) -> Result<Self> {

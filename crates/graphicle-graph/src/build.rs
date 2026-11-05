@@ -192,7 +192,7 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) -> usize {
     declared.dedup();
     // Two ids with one normalized spelling: the later in sorted order wins,
     // the same stable choice build_from_json makes (the reference iterates a set).
-    let mut norm_to_id: FxHashMap<String, String> = declared
+    let norm_to_id: FxHashMap<String, String> = declared
         .iter()
         .map(|nid| (ids::normalize_id(nid), nid.clone()))
         .collect();
