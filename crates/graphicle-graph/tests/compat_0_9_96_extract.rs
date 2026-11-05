@@ -473,7 +473,7 @@ fn vbnet_external_namespaces_are_sourceless_stubs() {
         .iter()
         .filter(|n| n["label"] == "System.Collections.Generic")
         .collect::<Vec<_>>();
-    assert_eq!(namespaces.iter().map(|n| &n["id"]).collect::<BTreeSet<_>>().len(), 1);
+    assert_eq!(namespaces.iter().filter_map(|n| n["id"].as_str()).collect::<BTreeSet<_>>().len(), 1);
     assert!(namespaces.iter().all(|n| n["source_file"] == "" && n["source_location"] == ""));
 }
 

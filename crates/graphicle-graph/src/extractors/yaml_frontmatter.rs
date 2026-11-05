@@ -30,7 +30,7 @@ static DATE: LazyLock<Regex> = LazyLock::new(|| {
 enum Node {
     Scalar(Value),
     /// A float JSON cannot hold (`.inf`, `-.inf`, `.nan`, `1e999`), kept only
-    /// when the builder allows it ([`parse_all`]); [`expand`] refuses it.
+    /// when the builder allows it ([`parse_all_with_tree`]); [`expand`] refuses it.
     NonFinite(f64),
     Merge,
     Sequence(Vec<usize>, String),
@@ -762,11 +762,8 @@ impl Tree {
         out
     }
 }
-/// `yaml.safe_load_all(text)`: every document of the stream, in order.
-pub fn parse_all(text: &str) -> Result<Vec<Loaded>> {
-    parse_all_with_tree(text).map(|(docs, _)| docs)
-}
-/// [`parse_all`] and the stream's composed [`Tree`], document for document.
+/// `yaml.safe_load_all(text)`: every document of the stream, in order, and
+/// the stream's composed [`Tree`], document for document.
 pub fn parse_all_with_tree(text: &str) -> Result<(Vec<Loaded>, Tree)> {
     let text = repair_flow_indentation(text, FLOW_REPAIR_READ_LIMIT)?;
     let text = text.as_ref();
