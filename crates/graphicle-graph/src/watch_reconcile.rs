@@ -14,7 +14,7 @@ use crate::{
 };
 use serde_json::{Value, json};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
 };
 fn pair(a: &str, b: &str) -> (String, String) {
@@ -537,6 +537,44 @@ pub fn plan(
             hyper_evicted.insert(id);
         }
     }
+    // Edges and hyperedges may own a source with no node; positive exclusion
+    // evidence evicts those records too (Graphify 0.9.101, #4912).
+    let mut seen_record_sources: HashSet<String> = HashSet::new();
+    let links = existing
+        .get("links")
+        .or_else(|| existing.get("edges"))
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice);
+    let hyperedges = existing["hyperedges"]
+        .as_array()
+        .map_or(&[][..], Vec::as_slice);
+    for item in links.iter().chain(hyperedges) {
+        let sf = text(item, "source_file");
+        if !seen_record_sources.insert(sf.clone()) {
+            continue;
+        }
+        if sf.is_empty() || remote(&sf) || !sp.in_watch(&sf) {
+            continue;
+        }
+        let id = sp.identity(&sf);
+        if id.is_empty() || current.contains(&id) {
+            continue;
+        }
+        let (alive, is_ignored) = match file_state.get(&id) {
+            Some(&state) => state,
+            None => {
+                let alive = Path::new(&id).exists();
+                let is_ignored = alive && ignored(Path::new(&id), o.full);
+                file_state.insert(id.clone(), (alive, is_ignored));
+                (alive, is_ignored)
+            }
+        };
+        if alive && is_ignored {
+            edge_evicted.insert(id.clone());
+            hyper_evicted.insert(id.clone());
+            newly.insert(id);
+        }
+    }
     let mut messages = vec![];
     if !newly.is_empty() {
         messages.push(format!(
@@ -787,4 +825,144 @@ pub fn finish(
     out.insert("input_tokens".into(), json!(0));
     out.insert("output_tokens".into(), json!(0));
     Ok(Value::Object(out))
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detect_ignore::{EncodingWarnings, IgnoreState};
+    use std::{fs, process::Command};
+
+    /// A main checkout `app` with `a.py` and a linked worktree
+    /// `app-feature` beside it, both under the scan root.
+    fn workspace(tmp: &Path) -> (PathBuf, PathBuf, PathBuf) {
+        let main = tmp.join("app");
+        fs::create_dir_all(&main).unwrap();
+        let source = main.join("a.py");
+        fs::write(&source, "def answer(): return 42\n").unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(&main)
+                .args(args)
+                .output()
+                .unwrap()
+                .status;
+            assert!(status.success(), "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["add", "."]);
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.com",
+            "commit",
+            "-qm",
+            "fixture",
+        ]);
+        let linked = tmp.join("app-feature");
+        let linked_arg = linked.to_string_lossy().into_owned();
+        git(&["worktree", "add", "-q", "-b", "fixture-linked", &linked_arg]);
+        let linked_source = linked.join("a.py");
+        (source, linked_source, linked)
+    }
+
+    fn ignored_under(root: &Path, path: &Path) -> bool {
+        let mut warnings = EncodingWarnings::default();
+        let mut rules = IgnoreState::new(root, &[], true, &mut warnings).unwrap();
+        rules.predicate(path, &mut warnings).unwrap()
+    }
+
+    // Graphify 0.9.101, #4912: test_linked_worktree_reconcile.py.
+    #[test]
+    fn predicate_matches_scan_for_linked_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        let (_, linked_source, linked) = workspace(&root);
+        assert!(ignored_under(&root, &linked_source));
+        // Scanning the linked copy itself is intentional.
+        assert!(!ignored_under(&linked, &linked_source));
+    }
+
+    #[test]
+    fn reconcile_prunes_records_owned_by_a_linked_copy() {
+        for linked_node in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = fs::canonicalize(tmp.path()).unwrap();
+            let (source, linked_source, _) = workspace(&root);
+            let control = root.join("unexplained.txt");
+            fs::write(&control, "still here").unwrap();
+            let (s, l, c) = (
+                source.to_string_lossy().into_owned(),
+                linked_source.to_string_lossy().into_owned(),
+                control.to_string_lossy().into_owned(),
+            );
+            let fresh = json!([
+                {"id": "a", "label": "a", "source_file": s, "_origin": "ast"},
+                {"id": "b", "label": "b", "source_file": s, "_origin": "ast"},
+            ]);
+            let mut nodes = fresh.as_array().unwrap().clone();
+            if linked_node {
+                nodes.push(json!({"id": "linked", "label": "linked", "source_file": l, "_origin": "ast"}));
+            }
+            nodes.push(json!({"id": "control", "label": "control", "source_file": c, "_origin": "semantic"}));
+            let existing = json!({
+                "nodes": nodes,
+                "links": [
+                    {"source": "a", "target": "b", "relation": "references", "source_file": l, "_origin": "semantic"},
+                    {"source": "b", "target": "a", "relation": "references", "source_file": c, "_origin": "semantic"},
+                ],
+                "hyperedges": [
+                    {"id": "linked-edge", "nodes": ["a", "b"], "source_file": l},
+                    {"id": "control-edge", "nodes": ["a", "b"], "source_file": c},
+                ],
+            });
+            let out = root.join("graphify-out");
+            fs::create_dir_all(&out).unwrap();
+            let code = vec![source.clone()];
+            let mut deleted = BTreeSet::new();
+            let ids = BTreeSet::new();
+            let mut warnings = EncodingWarnings::default();
+            let mut rules = IgnoreState::new(&root, &[], true, &mut warnings).unwrap();
+            let mut messages = vec![];
+            let result = reconcile(
+                &existing,
+                json!({"nodes": fresh, "edges": [], "hyperedges": []}),
+                &mut ReconcileOptions {
+                    out: &out,
+                    project_root: &root,
+                    watch_root: &root,
+                    code_files: &code,
+                    extract_targets: &code,
+                    full: true,
+                    deleted_paths: &mut deleted,
+                    deleted_identities: &ids,
+                },
+                |p, _| rules.predicate(p, &mut warnings).unwrap_or(false),
+                &mut messages,
+            )
+            .unwrap();
+            let node_ids: BTreeSet<_> = result["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|n| n["id"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(node_ids, BTreeSet::from(["a".into(), "b".into(), "control".into()]));
+            let edge_files: Vec<_> = result["edges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|e| e["source_file"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(edge_files, vec!["unexplained.txt".to_owned()]);
+            let hyper: Vec<_> = result["hyperedges"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|h| h["id"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(hyper, vec!["control-edge".to_owned()]);
+        }
+    }
 }

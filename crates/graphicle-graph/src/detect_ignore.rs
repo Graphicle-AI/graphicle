@@ -673,6 +673,9 @@ pub struct IgnoreState {
     pub explicit_cache: MatchCache,
     pub loaded: HashSet<PathBuf>,
     pub gitignore: bool,
+    /// Directories under the root that are linked worktrees of a checkout
+    /// inside the root (Graphify 0.9.101, #4912), memoised per directory.
+    pub linked_boundaries: HashMap<PathBuf, bool>,
 }
 impl IgnoreState {
     pub fn new(
@@ -706,6 +709,7 @@ impl IgnoreState {
             cache: HashMap::new(),
             explicit_cache: HashMap::new(),
             gitignore,
+            linked_boundaries: HashMap::new(),
         })
     }
     pub fn load_directory(&mut self, path: &Path, warnings: &mut EncodingWarnings) -> Result<()> {
@@ -759,6 +763,21 @@ impl IgnoreState {
                 return Ok(true);
             }
             parent.push(part.as_os_str());
+            // A linked worktree of a checkout under the root is excluded as
+            // the scan excludes it, so reconcile evicts its old records
+            // (Graphify 0.9.101, #4912).
+            let linked = match self.linked_boundaries.get(&parent) {
+                Some(&linked) => linked,
+                None => {
+                    let linked = linked_worktree_main_root(&parent)
+                        .is_some_and(|main| resolves_under_root(&main, &self.root));
+                    self.linked_boundaries.insert(parent.clone(), linked);
+                    linked
+                }
+            };
+            if linked {
+                return Ok(true);
+            }
         }
         let mut ancestor = self.root.clone();
         for part in parts.iter().take(parts.len().saturating_sub(1)) {
