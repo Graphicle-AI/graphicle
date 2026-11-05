@@ -611,6 +611,112 @@ fn remap_extraction<R: Record, E: EdgeItem<Record = R>>(
 /// Whether a new edge with the same relation as `old` should be dropped:
 /// lower confidence rank, or equal rank while losing a source location or a
 /// lower confidence score.
+/// The fields that say how sure the graph is of an edge and where that came
+/// from. When two edges with one relation collapse, the loser's copy of these
+/// is folded into the winner's `also_seen` list (Graphify 0.9.98, #4881).
+pub const EVIDENCE_KEYS: [&str; 4] = [
+    "confidence",
+    "confidence_score",
+    "source_file",
+    "source_location",
+];
+/// `_evidence`: the provenance fields of one edge or `also_seen` entry,
+/// scalars only, a `confidence_score` as a finite float.
+fn evidence(attrs: &(impl crate::record::Properties + ?Sized)) -> Map<String, Value> {
+    let mut out = Map::new();
+    for key in EVIDENCE_KEYS {
+        let Some(value) = attrs.get(key) else {
+            continue;
+        };
+        if value.is_boolean() || value.is_null() || value.as_str() == Some("") {
+            continue;
+        }
+        if key == "confidence_score" {
+            let score = match value {
+                Value::Number(n) => n.as_f64(),
+                Value::String(s) => s.trim().parse::<f64>().ok(),
+                _ => None,
+            };
+            match score.filter(|s| s.is_finite()) {
+                Some(score) => {
+                    out.insert(key.into(), json!(score));
+                }
+                None => continue,
+            }
+        } else if value.is_string() || value.is_number() {
+            out.insert(key.into(), value.clone());
+        }
+    }
+    out
+}
+/// `_evidence_sort_key`: weakest first, by confidence tier, then score.
+fn evidence_order(a: &Map<String, Value>, b: &Map<String, Value>) -> std::cmp::Ordering {
+    let rank = |ev: &Map<String, Value>| match ev.get("confidence").map(python_compat::string).as_deref() {
+        Some("EXTRACTED") => 3,
+        Some("INFERRED") => 2,
+        Some("AMBIGUOUS") => 1,
+        _ => 0,
+    };
+    let score = |ev: &Map<String, Value>| ev.get("confidence_score").and_then(Value::as_f64);
+    let text = |ev: &Map<String, Value>, k: &str| ev.get(k).map(python_compat::string).unwrap_or_default();
+    rank(a)
+        .cmp(&rank(b))
+        .then_with(|| score(a).is_none().cmp(&score(b).is_none()))
+        .then_with(|| {
+            score(a)
+                .unwrap_or(0.0)
+                .partial_cmp(&score(b).unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| text(a, "source_file").cmp(&text(b, "source_file")))
+        .then_with(|| text(a, "source_location").cmp(&text(b, "source_location")))
+}
+/// `edge_evidence`: every provenance record an edge carries, its own first,
+/// then each `also_seen` entry (Graphify 0.9.98, #4881).
+pub fn edge_evidence(d: &dyn crate::record::Properties) -> Vec<&dyn crate::record::Properties> {
+    let mut out: Vec<&dyn crate::record::Properties> = vec![d];
+    if let Some(also) = d.get("also_seen").and_then(Value::as_array) {
+        out.extend(
+            also.iter()
+                .filter_map(Value::as_object)
+                .map(|m| m as &dyn crate::record::Properties),
+        );
+    }
+    out
+}
+/// `_fold_also_seen`: record `loser`'s provenance on `winner` when the two
+/// collapse (#4881). Entries that repeat the winner's own provenance, or each
+/// other, are dropped, so re-reading a written graph.json is idempotent.
+pub(crate) fn fold_also_seen<R: crate::record::Record>(
+    winner: &mut R,
+    loser: &dyn crate::record::Properties,
+) {
+    let own = evidence(&*winner);
+    let subset = |ev: &Map<String, Value>| ev.iter().all(|(k, v)| own.get(k) == Some(v));
+    let mut kept: Vec<Map<String, Value>> = Vec::new();
+    let mut consider = |ev: Map<String, Value>| {
+        if !ev.is_empty() && !subset(&ev) && !kept.contains(&ev) {
+            kept.push(ev);
+        }
+    };
+    for raw in edge_evidence(&*winner).into_iter().skip(1) {
+        consider(evidence(raw));
+    }
+    let loser_evidence = edge_evidence(loser);
+    consider(evidence(loser_evidence[0]));
+    for raw in loser_evidence.into_iter().skip(1) {
+        consider(evidence(raw));
+    }
+    if kept.is_empty() {
+        winner.take_key("also_seen");
+    } else {
+        kept.sort_by(evidence_order);
+        winner.put(
+            "also_seen",
+            Value::Array(kept.into_iter().map(Value::Object).collect()),
+        );
+    }
+}
 fn same_relation_is_weaker(
     old: &dyn crate::record::Properties,
     new: &dyn crate::record::Properties,
@@ -1275,6 +1381,9 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
                 attrs.put(key, value);
             }
         }
+        if attrs.get("also_seen").is_some() {
+            fold_also_seen(&mut attrs, &Map::new());
+        }
         if !attrs.get("source_file").is_some_and(truthy) {
             let sf = graph.nodes[u]
                 .attributes
@@ -1386,12 +1495,33 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
             graph.add_edge(src, tgt, Some(key), attrs)?;
             continue;
         }
+        let mut stamp_reverse_import = false;
         if let Some(existing) = graph.edges_between(&src, &tgt).first() {
             let old = &existing.attributes;
             let reverse = old.get("_src") == Some(&tgt) && old.get("_tgt") == Some(&src);
             if !directed && reverse && old.get("relation") == attrs.get("relation") {
-                continue;
+                // For an import the dropped leg is the other half of a
+                // two-file cycle: the kept edge is stamped so
+                // find_import_cycles still sees it; a type-only or deferred
+                // import closes no cycle (Graphify 0.9.98, #4839).
+                stamp_reverse_import = matches!(relation, "imports_from" | "re_exports")
+                    && !attrs.get("type_only").is_some_and(truthy)
+                    && !attrs.get("deferred").is_some_and(truthy);
+                if !stamp_reverse_import {
+                    continue;
+                }
             }
+        }
+        if stamp_reverse_import {
+            if let Some(old) = graph.edge_attributes_mut(&src, &tgt, None) {
+                old.put("reverse_import", json!(true));
+            }
+            continue;
+        }
+        let mut same_relation = None;
+        if let Some(existing) = graph.edges_between(&src, &tgt).first() {
+            let old = &existing.attributes;
+            let reverse = old.get("_src") == Some(&tgt) && old.get("_tgt") == Some(&src);
             // Different relations in opposite directions only share a pair
             // because the graph is undirected: a type's `method`/`contains`
             // edge beats its member's `calls` edge back (0.9.83, #4256). If
@@ -1415,10 +1545,41 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
             {
                 continue;
             }
-            if old.get("relation") == attrs.get("relation") && same_relation_is_weaker(old, &attrs)
-            {
+            if old.get("relation") == attrs.get("relation") {
+                same_relation = Some(same_relation_is_weaker(old, &attrs));
+                if same_relation == Some(false) {
+                    // The incoming edge wins: it keeps the stored edge's
+                    // provenance in `also_seen` (#4881).
+                    fold_also_seen(&mut attrs, old);
+                }
+            }
+        }
+        match same_relation {
+            Some(true) => {
+                // The stored edge wins and records the incoming one's
+                // provenance (#4881).
+                if let Some(old) = graph.edge_attributes_mut(&src, &tgt, None) {
+                    fold_also_seen(old, &attrs);
+                }
                 continue;
             }
+            Some(false) => {
+                // The stored attributes are merged with the incoming ones: a
+                // field only the loser carried (its score, its line) would
+                // otherwise stay on the winner.
+                let stale: Vec<&str> = EVIDENCE_KEYS
+                    .iter()
+                    .copied()
+                    .chain(["also_seen"])
+                    .filter(|k| attrs.get(k).is_none())
+                    .collect();
+                if let Some(old) = graph.edge_attributes_mut(&src, &tgt, None) {
+                    for key in stale {
+                        old.take_key(key);
+                    }
+                }
+            }
+            None => {}
         }
         graph.add_edge(src, tgt, None, attrs)?;
     }

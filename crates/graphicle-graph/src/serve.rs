@@ -422,7 +422,9 @@ pub fn call_graph_tool(
             Ok(output)
         }
         "get_node" => {
-            let query = node_query().to_lowercase();
+            // The query keeps its case: an exact spelling settles a tie
+            // that is only case (Graphify 0.9.98).
+            let query = node_query();
             if query.is_empty() {
                 return Ok(
                     "Provide a node label or id (accepted keys: label, node_id, id).".into(),
@@ -475,7 +477,7 @@ pub fn call_graph_tool(
             Ok(lines.join("\n"))
         }
         "get_neighbors" => {
-            let query = node_query().to_lowercase();
+            let query = node_query();
             if query.is_empty() {
                 return Ok(
                     "Provide a node label or id (accepted keys: label, node_id, id).".into(),

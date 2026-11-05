@@ -133,11 +133,55 @@ pub fn rank_path(source_file: &str, root: Option<&Path>) -> String {
     }
     normalized
 }
-pub type CollisionRank = (bool, bool, u8, usize, String, Vec<String>);
+pub type CollisionRank = (bool, bool, bool, u8, usize, String, Vec<String>);
 /// `(id, root-relative file)` pairs read as a mention of a document ([`mentions`]).
 pub type Mentions = HashSet<(String, String)>;
 pub fn collision_rank(node: &Value, root: Option<&Path>) -> CollisionRank {
     collision_rank_with(node, root, &Mentions::new())
+}
+pub fn collision_rank_with(
+    node: &Value,
+    root: Option<&Path>,
+    mentions: &Mentions,
+) -> CollisionRank {
+    collision_rank_outranked(node, root, mentions, &Mentions::new())
+}
+/// `_outranked_by_ast` (Graphify 0.9.98, #4859): `(id, root-relative file)`
+/// of non-AST definers that an AST node from another file also defines,
+/// while their own file has no AST definer. The AST node is extracted fact,
+/// the other an inference about it, so the AST node keeps the id. A file with
+/// its own AST definer is never listed, and an AST node with the same full
+/// stem (an `x.py`/`x.html` twin) never counts against it.
+pub fn outranked_by_ast(nodes: &[Value], root: Option<&Path>, mentions: &Mentions) -> Mentions {
+    let mut ast_defs: HashMap<&str, Vec<(String, String)>> = HashMap::new();
+    let mut others: Vec<(&str, String, String)> = Vec::new();
+    for node in nodes {
+        let nid = id(node);
+        let source_file = source(node);
+        let path = rank_path(source_file, root);
+        if nid.is_empty() || !defines_id(node) || mentions.contains(&(nid.to_owned(), path.clone())) {
+            continue;
+        }
+        let stem = full_stem(source_file);
+        if field(node, "_origin").and_then(Value::as_str) == Some("ast") {
+            ast_defs.entry(nid).or_default().push((path, stem));
+        } else {
+            others.push((nid, path, stem));
+        }
+    }
+    let mut outranked = Mentions::new();
+    for (nid, path, stem) in others {
+        let Some(defs) = ast_defs.get(nid) else {
+            continue;
+        };
+        if !defs.is_empty()
+            && !defs.iter().any(|(p, _)| *p == path)
+            && defs.iter().any(|(_, s)| *s != stem)
+        {
+            outranked.insert((nid.to_owned(), path));
+        }
+    }
+    outranked
 }
 /// `_collision_rank(node, root, mentions)` (0.9.88, #4281): a node read as a
 /// mention of a document ranks as a reference even though its id is a path
@@ -145,16 +189,24 @@ pub fn collision_rank(node: &Value, root: Option<&Path>) -> CollisionRank {
 /// Right after that key a node with a `source_file` beats one without
 /// (Graphify 0.9.92, #4492): when neither defines the id, a sourceless node
 /// used to win on its empty path sorting first.
-pub fn collision_rank_with(
+/// `_collision_rank(node, root, mentions, outranked)`: a definer listed in
+/// `outranked` ranks right behind the other definers (Graphify 0.9.98,
+/// #4859).
+pub fn collision_rank_outranked(
     node: &Value,
     root: Option<&Path>,
     mentions: &Mentions,
+    outranked: &Mentions,
 ) -> CollisionRank {
     let label = text(node, "label");
     let path = rank_path(source(node), root);
-    let mentioned = !mentions.is_empty() && mentions.contains(&(id(node).to_owned(), path.clone()));
+    let key = (id(node).to_owned(), path.clone());
+    let mentioned = !mentions.is_empty() && mentions.contains(&key);
     (
         !defines_id(node) || mentioned,
+        !outranked.is_empty()
+            && outranked.contains(&key)
+            && field(node, "_origin").and_then(Value::as_str) != Some("ast"),
         !node
             .get("source_file")
             .is_some_and(crate::build_normalize::truthy),
@@ -1279,6 +1331,7 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
     );
     let mut mentioned = mentions_in(&nodes, &edges, root.as_deref());
     mentioned.extend(slice_references(&nodes, root.as_deref()));
+    let outranked = outranked_by_ast(&nodes, root.as_deref(), &mentioned);
     // The tables below are looked up, not iterated in any order that reaches
     // the output, so they use hashbrown's faster (still randomly seeded) hasher.
     let mut unique = Vec::<Value>::with_capacity(nodes.len());
@@ -1291,8 +1344,8 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
         }
         if let Some(&i) = indices.get(id(&node)) {
             let nid = id(&node).to_owned();
-            let loser = if collision_rank_with(&node, root.as_deref(), &mentioned)
-                < collision_rank_with(&unique[i], root.as_deref(), &mentioned)
+            let loser = if collision_rank_outranked(&node, root.as_deref(), &mentioned, &outranked)
+                < collision_rank_outranked(&unique[i], root.as_deref(), &mentioned, &outranked)
             {
                 std::mem::replace(&mut unique[i], node)
             } else {
@@ -1315,7 +1368,7 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
             .iter()
             .filter(|n| same_source_entity(&unique[i], n))
             .collect();
-        same.sort_by_key(|n| collision_rank_with(n, root.as_deref(), &mentioned));
+        same.sort_by_key(|n| collision_rank_outranked(n, root.as_deref(), &mentioned, &outranked));
         for loser in same {
             unique[i] = merge_missing_attributes(&unique[i], loser);
         }

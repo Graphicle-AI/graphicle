@@ -762,9 +762,16 @@ pub fn find_import_cycles(graph: &Graph, max_cycle_length: i64, top_n: i64) -> R
         if !matches!(
             a.get("relation").and_then(Value::as_str),
             Some("imports_from" | "re_exports")
-        ) || a.get("deferred").is_some_and(truthy)
-            || a.get("type_only").is_some_and(truthy)
-        {
+        ) {
+            continue;
+        }
+        let forward =
+            !a.get("deferred").is_some_and(truthy) && !a.get("type_only").is_some_and(truthy);
+        // An undirected build keeps one edge per file pair, so the other
+        // file's runtime import back is only a stamp on this edge (Graphify
+        // 0.9.98, #4839).
+        let reverse = a.get("reverse_import").is_some_and(truthy);
+        if !forward && !reverse {
             continue;
         }
         let Some(src) = a
@@ -794,7 +801,12 @@ pub fn find_import_cycles(graph: &Graph, max_cycle_length: i64, top_n: i64) -> R
             uf
         };
         if !target.is_empty() {
-            files.add_edge(json!(src), json!(target), None, Map::new())?;
+            if forward {
+                files.add_edge(json!(src), json!(target), None, Map::new())?;
+            }
+            if reverse {
+                files.add_edge(json!(target), json!(src), None, Map::new())?;
+            }
         }
     }
     if files.edge_count() == 0 {

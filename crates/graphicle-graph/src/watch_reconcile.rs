@@ -429,6 +429,9 @@ pub struct Plan {
     /// Stored hyperedges that pass every filter but the new hyperedge ids
     /// and their members' presence.
     hyper: Vec<Value>,
+    /// `(source, target, relation)` of evicted stored edges whose
+    /// `reverse_import` stamp moves onto the fresh edge (#4839).
+    carried_reverse: BTreeSet<(String, String, String)>,
 }
 /// The part of [`reconcile`] that reads only the stored graph, the file
 /// system and the ignore rules, never the new extraction: every filter is a
@@ -578,6 +581,47 @@ pub fn plan(
         .filter(|e| !sp.evicted(e, &hyper_evicted) || sp.evicted(e, &excluded))
         .cloned()
         .collect::<Vec<_>>();
+    // `reverse_import` stands for the target file's import back, which the
+    // undirected build dropped in favour of this edge (Graphify 0.9.98,
+    // #4839). That import is the target file's, so it goes when an edge from
+    // that file would: the stamp is cleared then (re-extracting the file
+    // stamps it again), and moved onto the fresh edge when only this edge's
+    // own file was re-extracted.
+    let mut edges = edges;
+    let mut carried_reverse = BTreeSet::new();
+    let stored_edges: &[Value] = existing[edge_bucket].as_array().map_or(&[], Vec::as_slice);
+    let stamped = |e: &Value| e.get("reverse_import").is_some_and(build::truthy);
+    if stored_edges.iter().any(stamped) {
+        let node_files: HashMap<String, Value> = existing_nodes
+            .iter()
+            .map(|n| (text(n, "id"), n.get("source_file").cloned().unwrap_or(Value::Null)))
+            .collect();
+        let edge_kept = |e: &Value| {
+            (!sp.evicted(e, &edge_evicted) || sp.evicted(e, &excluded))
+                && !(tier_is_ast(e) && sp.evicted(e, &rebuilt) && !sp.evicted(e, &excluded))
+        };
+        let reverse_leg_evicted = |e: &Value| {
+            let mut leg = e.clone();
+            leg["source_file"] = node_files
+                .get(&text(e, "target"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            !edge_kept(&leg)
+        };
+        for e in edges.iter_mut() {
+            if stamped(e)
+                && reverse_leg_evicted(e)
+                && let Some(object) = e.as_object_mut()
+            {
+                object.shift_remove("reverse_import");
+            }
+        }
+        for e in stored_edges {
+            if stamped(e) && !edge_kept(e) && !reverse_leg_evicted(e) {
+                carried_reverse.insert((text(e, "source"), text(e, "target"), text(e, "relation")));
+            }
+        }
+    }
     Plan {
         sp,
         deleted_paths,
@@ -585,6 +629,7 @@ pub fn plan(
         nodes,
         edges,
         hyper,
+        carried_reverse,
     }
 }
 /// [`reconcile`] of a [`plan`] with the new extraction `result`.
@@ -607,7 +652,16 @@ pub fn finish(
         nodes,
         edges,
         hyper,
+        carried_reverse,
     } = plan;
+    if !carried_reverse.is_empty() {
+        for edge in result["edges"].as_array_mut().into_iter().flatten() {
+            let key = (text(edge, "source"), text(edge, "target"), text(edge, "relation"));
+            if carried_reverse.contains(&key) {
+                edge["reverse_import"] = json!(true);
+            }
+        }
+    }
     o.deleted_paths.extend(deleted_paths);
     messages.extend(planned);
     // With nothing left to keep from the stored graph (a full rebuild of a

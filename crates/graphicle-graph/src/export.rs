@@ -1083,8 +1083,10 @@ pub fn to_cypher(graph: &Graph, output: &Path) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         let ftype = cypher_label(&crate::exporters::graphdb::capitalize(ftype), "Entity");
+        // The label is SET, not matched, so a re-import updates a renamed
+        // node instead of creating a twin (Graphify 0.9.98).
         lines.push(format!(
-            "MERGE (n:{ftype} {{id: '{}', label: '{}'}});",
+            "MERGE (n:{ftype} {{id: '{}'}}) SET n.label = '{}';",
             cypher_escape(id),
             cypher_escape(label)
         ));

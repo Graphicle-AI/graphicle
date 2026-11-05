@@ -136,3 +136,55 @@ fn edges_missing_relation_are_dropped() {
     assert_eq!(raw["edges"].as_array().unwrap().len(), 1);
     assert_eq!(raw["edges"][0]["relation"], "calls");
 }
+
+#[test]
+fn two_file_import_cycle_survives_the_undirected_build() {
+    // test_undirected_two_file_import_cycle.py (Graphify 0.9.98, #4839): the
+    // dropped reverse import is a stamp on the kept edge, and
+    // find_import_cycles reads it back.
+    let node = |id: &str, file: &str| json!({"id": id, "label": file, "file_type": "code", "source_file": file});
+    let import = |s: &str, t: &str, file: &str| json!({"source": s, "target": t, "relation": "imports_from", "confidence": "EXTRACTED", "source_file": file});
+    let mut extraction = json!({
+        "nodes": [node("a", "src/a.ts"), node("b", "src/b.ts")],
+        "edges": [import("a", "b", "src/a.ts"), import("b", "a", "src/b.ts")],
+    });
+    let mut d = graphicle::build::Diagnostics::default();
+    let g = graphicle::build::build_from_json(&mut extraction, false, None, &mut d).unwrap();
+    assert_eq!(g.edge_count(), 1);
+    let cycles = graphicle::analyze::find_import_cycles(&g, 10, 10).unwrap();
+    assert_eq!(cycles.len(), 1, "{cycles:?}");
+    // A one-way import is no cycle.
+    let mut extraction = json!({
+        "nodes": [node("a", "src/a.ts"), node("b", "src/b.ts")],
+        "edges": [import("a", "b", "src/a.ts")],
+    });
+    let g = graphicle::build::build_from_json(&mut extraction, false, None, &mut d).unwrap();
+    assert!(graphicle::analyze::find_import_cycles(&g, 10, 10).unwrap().is_empty());
+}
+
+#[test]
+fn collapsed_edge_keeps_weaker_evidence_in_also_seen() {
+    // test_edge_also_seen.py (Graphify 0.9.98, #4881): one relation found
+    // twice keeps one edge; the weaker copy is listed in also_seen, and the
+    // result is the same whichever order the copies arrive in.
+    let a = json!({"source": "a", "target": "b", "relation": "calls", "confidence": "EXTRACTED", "source_file": "a.py", "source_location": "L3"});
+    let b = json!({"source": "a", "target": "b", "relation": "calls", "confidence": "INFERRED", "confidence_score": 0.6, "source_file": "b.py"});
+    for edges in [[a.clone(), b.clone()], [b.clone(), a.clone()]] {
+        let mut extraction = json!({
+            "nodes": [
+                {"id": "a", "label": "a", "file_type": "code", "source_file": "a.py"},
+                {"id": "b", "label": "b", "file_type": "code", "source_file": "b.py"}
+            ],
+            "edges": edges,
+        });
+        let mut d = graphicle::build::Diagnostics::default();
+        let g = graphicle::build::build_from_json(&mut extraction, true, None, &mut d).unwrap();
+        let attrs = graphicle::build::edge_data(&g, &json!("a"), &json!("b")).unwrap();
+        assert_eq!(attrs.get("confidence"), Some(&json!("EXTRACTED")));
+        assert_eq!(attrs.get("confidence_score"), None);
+        assert_eq!(
+            attrs.get("also_seen"),
+            Some(&json!([{"confidence": "INFERRED", "confidence_score": 0.6, "source_file": "b.py"}]))
+        );
+    }
+}

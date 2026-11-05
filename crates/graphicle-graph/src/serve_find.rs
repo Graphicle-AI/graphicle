@@ -133,6 +133,42 @@ pub fn tiers(g: &Graph, index: &SearchIndex, query: &str) -> [Vec<usize>; 4] {
             out[3].push(i);
         }
     }
+    // The tiers fold case, so in a case-sensitive language `Run` and `run`
+    // tie in the exact tier and every lookup is refused, even one spelled
+    // exactly like one of them. When the tie is only case and exactly one
+    // label is written as queried, it wins; the others stay reachable one
+    // tier down (Graphify 0.9.98).
+    if out[1].len() > 1 {
+        let bare = |s: &str| {
+            let s = s.trim().trim_start_matches('.');
+            s.strip_suffix("()").unwrap_or(s).to_owned()
+        };
+        let wanted = bare(query);
+        let labels: Vec<String> = out[1]
+            .iter()
+            .map(|&i| bare(&or_empty(field(g, i, "label"))))
+            .collect();
+        let same_case: Vec<usize> = out[1]
+            .iter()
+            .zip(&labels)
+            .filter(|(_, l)| **l == wanted)
+            .map(|(&i, _)| i)
+            .collect();
+        if same_case.len() == 1
+            && labels
+                .iter()
+                .all(|l| l.to_lowercase() == wanted.to_lowercase())
+        {
+            let mut demoted: Vec<usize> = out[1]
+                .iter()
+                .copied()
+                .filter(|&i| i != same_case[0])
+                .collect();
+            demoted.append(&mut out[2]);
+            out[2] = demoted;
+            out[1] = same_case;
+        }
+    }
     if !out[0].is_empty() {
         let base = fold(
             std::path::Path::new(query)
