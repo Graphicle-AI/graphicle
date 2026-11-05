@@ -398,10 +398,16 @@ pub fn backup_if_protected_at(out: &Path, today: &str, d: &mut Diagnostics) -> O
         return None;
     }
     let backup = out.join(today);
+    // Today's backup is reused only when it holds every artifact present
+    // beside an identical graph.json: a snapshot an earlier copy left
+    // incomplete is copied again (Graphify 0.9.100, #3769).
     if let (Ok(a), Ok(b)) = (
         fs::read(out.join("graph.json")),
         fs::read(backup.join("graph.json")),
     ) && a == b
+        && BACKUP_ARTIFACTS
+            .iter()
+            .all(|name| !out.join(name).exists() || backup.join(name).exists())
     {
         return Some(backup);
     }
@@ -412,10 +418,15 @@ pub fn backup_if_protected_at(out: &Path, today: &str, d: &mut Diagnostics) -> O
         return None;
     }
     let mut copied = 0;
+    let mut failed = vec![];
     for name in BACKUP_ARTIFACTS {
         let src = out.join(name);
         let dst = backup.join(name);
-        if src.exists() && fs::copy(&src, &dst).is_ok() {
+        if src.exists() && fs::copy(&src, &dst).is_err() {
+            failed.push(name.to_string());
+            continue;
+        }
+        if src.exists() {
             if let (Ok(metadata), Ok(file)) = (
                 fs::metadata(&src),
                 fs::File::options().write(true).open(&dst),
@@ -431,6 +442,16 @@ pub fn backup_if_protected_at(out: &Path, today: &str, d: &mut Diagnostics) -> O
             }
             copied += 1;
         }
+    }
+    // A partial snapshot reported as a backup would let a stale graph.json
+    // survive the next overwrite unnoticed (#3769): warn, report no backup,
+    // and still let the write go ahead.
+    if !failed.is_empty() {
+        d.stderr.push(format!(
+            "[graphicle] warning: backup incomplete - could not copy {} -> {today}/ - continuing with overwrite",
+            failed.join(", ")
+        ));
+        return None;
     }
     if copied > 0 {
         let reason = match (semantic, curated) {
