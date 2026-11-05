@@ -635,6 +635,16 @@ pub fn build_merge_owned(
             {
                 continue;
             }
+            // A fold into a survivor still in the graph is one node, not a
+            // loss; a survivor that is gone excuses nothing (Graphify
+            // 0.9.102, #4955).
+            if node["id"]
+                .as_str()
+                .and_then(|id| graph.dedup_remap.get(id))
+                .is_some_and(|survivor| graph.node_index(&json!(survivor)).is_some())
+            {
+                continue;
+            }
             let twin = node["id"]
                 .as_str()
                 .filter(|id| !id.ends_with("_doc") && node["file_type"] == "document")

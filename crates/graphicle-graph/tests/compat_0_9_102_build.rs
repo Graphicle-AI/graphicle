@@ -188,3 +188,103 @@ fn collapsed_edge_keeps_weaker_evidence_in_also_seen() {
         );
     }
 }
+
+// --- test_shrink_guard_dedup_merge_4940.py (Graphify 0.9.101, #4940) and
+// test_build_merge_ghost_fold_4955.py (0.9.102, #4955) ---
+
+fn concept(id: &str, label: &str, source_file: &str) -> Value {
+    json!({"id": id, "label": label, "file_type": "concept", "source_file": source_file, "_origin": "semantic"})
+}
+
+#[test]
+fn dedup_reports_each_id_it_merged_away() {
+    let nodes = [
+        concept("glossary_the_nudge", "The nudge", "GLOSSARY.md"),
+        concept("glossary_the_nudge_2", "The nudge", "GLOSSARY.md"),
+        concept("claude_a", "Alpha concept", "CLAUDE.md"),
+    ];
+    let out = dedup(&nodes, &[]);
+    assert_eq!(out.remap.len(), 1, "{:?}", out.remap);
+    let (loser, winner) = out.remap.iter().next().unwrap();
+    let survivors: BTreeSet<&str> = out.nodes.iter().map(|n| n["id"].as_str().unwrap()).collect();
+    assert!(survivors.contains(winner.as_str()) && !survivors.contains(loser.as_str()));
+    let out = dedup(
+        &[
+            concept("claude_a", "Alpha concept", "CLAUDE.md"),
+            concept("glossary_b", "Bravo concept", "GLOSSARY.md"),
+        ],
+        &[],
+    );
+    assert!(out.remap.is_empty());
+}
+
+#[test]
+fn build_carries_the_dedup_map_but_never_writes_it() {
+    let mut d = graphicle::build::Diagnostics::default();
+    let g = graphicle::build::build(
+        &[json!({"nodes": [
+            concept("glossary_the_nudge", "The nudge", "GLOSSARY.md"),
+            concept("glossary_the_nudge_2", "The nudge", "GLOSSARY.md")
+        ], "edges": [], "hyperedges": []})],
+        &graphicle::build::BuildOptions::default(),
+        &mut d,
+        None,
+    )
+    .unwrap();
+    assert_eq!(g.dedup_remap().len(), 1);
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("graph.json");
+    let communities: graphicle::cluster::Communities = vec![];
+    assert!(graphicle::export::to_json(&g, &communities, &out, &graphicle::export::JsonOptions::default(), &mut d).unwrap());
+    let text = std::fs::read_to_string(&out).unwrap();
+    assert!(!text.contains("_dedup_remap"), "{text}");
+}
+
+#[test]
+fn a_survivor_that_is_itself_gone_excuses_nothing() {
+    let saved = [concept("loser", "The nudge", "GLOSSARY.md")];
+    let remap: std::collections::BTreeMap<String, String> =
+        [("loser".to_string(), "winner".to_string())].into();
+    let lost = graphicle::build::lost_saved_semantic_nodes_with(&saved, &[], &[], None, Some(&remap));
+    assert_eq!(lost, saved);
+    let kept = [concept("winner", "The nudge", "GLOSSARY.md")];
+    let lost = graphicle::build::lost_saved_semantic_nodes_with(&saved, &kept, &[], None, Some(&remap));
+    assert!(lost.is_empty());
+}
+
+#[test]
+fn the_allowance_counts_only_merges_whose_survivor_is_present() {
+    let set = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<std::collections::HashSet<_>>();
+    let remap: std::collections::BTreeMap<String, String> = [("a", "w"), ("b", "w"), ("c", "gone")]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    let allowance = graphicle::build::dedup_shrink_allowance;
+    assert_eq!(allowance(&set(&["a", "b", "c"]), &set(&["w"]), &remap), 1);
+    assert_eq!(allowance(&set(&["a", "b", "w"]), &set(&["w"]), &remap), 2);
+    assert_eq!(allowance(&set(&["a"]), &set(&[]), &remap), 0);
+}
+
+#[test]
+fn semantic_record_with_its_own_evidence_is_not_folded_into_an_ast_twin() {
+    // test_lost_saved_semantic_nodes.py (Graphify 0.9.101, #4896): a mention
+    // with a rationale or source URL stays its own node; one with only
+    // metadata still folds.
+    let ast = json!({"id": "auth_py", "label": "auth.py", "file_type": "code", "source_file": "auth.py", "_origin": "ast", "source_location": "L1"});
+    for (extra, folds) in [
+        (json!({"metadata": {"k": "v"}}), true),
+        (json!({"rationale": "why auth matters"}), false),
+        (json!({"source_url": "https://example.org/spec"}), false),
+    ] {
+        let mut mention = json!({"id": "notes_auth", "label": "auth.py", "file_type": "document", "source_file": "notes.md"});
+        for (k, v) in extra.as_object().unwrap() {
+            mention[k] = v.clone();
+        }
+        let mut extraction = json!({"nodes": [ast.clone(), mention], "edges": []});
+        let mut d = graphicle::build::Diagnostics::default();
+        let g = graphicle::build::build_from_json(&mut extraction, true, None, &mut d).unwrap();
+        let present = g.node_index(&json!("notes_auth")).is_some();
+        assert_eq!(present, !folds, "{extra}");
+        assert_eq!(g.dedup_remap().contains_key("notes_auth"), folds, "{extra}");
+    }
+}

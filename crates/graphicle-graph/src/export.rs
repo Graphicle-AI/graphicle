@@ -600,9 +600,17 @@ pub fn to_json(
             return Ok(false);
         };
         // A saved semantic node (rationale, document) the new graph lacks is
-        // lost even when AST growth keeps the total up (#4115/#2229).
-        let missing =
-            crate::build::lost_saved_semantic_nodes(&existing, &semantic_check_nodes(graph), &[]);
+        // lost even when AST growth keeps the total up (#4115/#2229); a
+        // saved id folded into a twin, or merged by dedup into a survivor in
+        // the new graph, is not (Graphify 0.9.97-0.9.102, #4778, #4940).
+        let mut folded = std::collections::BTreeMap::new();
+        let missing = crate::build::lost_saved_semantic_nodes_with(
+            &existing,
+            &semantic_check_nodes(graph),
+            &[],
+            Some(&mut folded),
+            Some(graph.dedup_remap()),
+        );
         if !missing.is_empty() {
             let ids = missing
                 .iter()
@@ -613,7 +621,29 @@ pub fn to_json(
             return Ok(false);
         }
         let (n, old) = (graph.nodes.len(), existing.len());
-        if n < old {
+        // A saved semantic node merged into an AST twin that was already
+        // saved is one node, not two (#4389); a twin new to this run does not
+        // offset another node's loss. Dedup merges of saved ids count as
+        // their allowance (#4940).
+        let existing_ids: std::collections::HashSet<String> = existing
+            .iter()
+            .filter(|node| node.is_object())
+            .filter_map(|node| node.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        let mut merged = folded.values().filter(|twin| existing_ids.contains(*twin)).count();
+        if !graph.dedup_remap().is_empty() {
+            let new_ids: std::collections::HashSet<String> = graph
+                .nodes
+                .iter()
+                .filter_map(|node| node.id.as_str().map(str::to_owned))
+                .collect();
+            merged += crate::build::dedup_shrink_allowance(
+                &existing_ids,
+                &new_ids,
+                graph.dedup_remap(),
+            );
+        }
+        if n + merged < old {
             d.stderr.push(format!("[graphicle] WARNING: new graph has {n} nodes but existing graph.json has {old} (net -{}). Refusing to overwrite. Possible causes: missing chunk files from a previous session, or fuzzy dedup collapsed same-named symbols across files during an --update on an already-current graph. Run a full rebuild (/graphicle .) to be safe, or pass force=True only if you have verified the reduction is legitimate.",old-n));
             return Ok(false);
         }

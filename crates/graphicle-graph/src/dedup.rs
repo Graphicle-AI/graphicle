@@ -1154,6 +1154,11 @@ pub struct DedupOutput {
     pub edges: Vec<Value>,
     pub stdout: Vec<String>,
     pub stderr: Vec<String>,
+    /// `{merged-away id: surviving id}` for every node this call dropped
+    /// (`remap_out`, Graphify 0.9.101, #4940): a caller can tell a node
+    /// folded into a twin from one that was lost.
+    #[serde(skip)]
+    pub remap: std::collections::BTreeMap<String, String>,
 }
 fn merge_exact_group(group: &[usize], nodes: &[Value], uf: &mut ProtectedUnion) -> usize {
     if group.len() <= 1 {
@@ -1294,6 +1299,7 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
         edges: Vec::new(),
         stdout: Vec::new(),
         stderr: Vec::new(),
+        remap: Default::default(),
     };
     if nodes.len() <= 1 {
         output.nodes = nodes;
@@ -1593,6 +1599,7 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
     if let Some(hyperedges) = hyperedges.as_mut() {
         remap_hyperedge_members(hyperedges, &remap);
     }
+    output.remap = remap.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     output.nodes = unique
         .into_iter()
         .filter(|n| !remap.contains_key(id(n)))

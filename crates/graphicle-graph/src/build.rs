@@ -1160,6 +1160,11 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
             {
                 continue;
             }
+            // An independent semantic explanation is no disposable AST twin,
+            // even of the same source file (Graphify 0.9.101, #4896).
+            if has_independent_semantic_evidence(attributes) {
+                continue;
+            }
             ghosts_by_key.insert(key, nid.clone());
         } else if !located.contains_key(&key) {
             // #3705: spec-conformant method ghost that omits the class
@@ -1195,11 +1200,23 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
             .filter(|(_, sf)| crate::build_labels::is_file_node_label_str(&label, sf))
             .map(|(n, _)| n.clone())
             .collect();
-        if matches.len() == 1 {
+        // Only an evidence-free mention of another file folds by label
+        // (Graphify 0.9.101, #4896).
+        let own_file = value_string(attributes, "source_file");
+        if matches.len() == 1
+            && !has_independent_semantic_evidence(attributes)
+            && !(!own_file.is_empty()
+                && crate::build_labels::is_file_node_label_str(&label, &own_file))
+        {
             ghosts.insert(nid.clone(), matches.into_iter().next().unwrap());
         }
     }
     graph.remove_nodes_from(&ghosts.keys().map(|s| json!(s)).collect::<Vec<_>>())?;
+    // These folds are intentional (#1145, #3344, #3705): the write guards
+    // read them as merges, not losses (Graphify 0.9.102, #4955).
+    graph
+        .dedup_remap
+        .extend(ghosts.iter().map(|(k, v)| (k.clone(), v.clone())));
     let mut norm_to_id = FxHashMap::<String, String>::default();
     // Stable order resolves the reference's hash-order ambiguity when two IDs
     // have the same normalized spelling; no insertion is allowed to mint a node.
@@ -1711,6 +1728,7 @@ fn build_combined<R: Record, E: EdgeItem<Record = R>>(
     let mut combined = Value::Object(combined);
     let root = resolve_root(options.root.as_deref())?;
     let mut dedup_collapsed = 0;
+    let mut dedup_remap = std::collections::BTreeMap::new();
     if options.dedup && !combined["nodes"].as_array().unwrap().is_empty() {
         let profiled = crate::profile::span("build.dedup_prepare");
         coerce_non_string_ids(&mut combined);
@@ -1752,6 +1770,7 @@ fn build_combined<R: Record, E: EdgeItem<Record = R>>(
         )?;
         edges = deduped;
         dedup_collapsed = before_dedup.saturating_sub(result.nodes.len());
+        dedup_remap = result.remap;
         combined["nodes"] = Value::Array(result.nodes);
         combined["hyperedges"] = Value::Array(hyperedges);
         messages.stdout.extend(result.stdout);
@@ -1771,6 +1790,9 @@ fn build_combined<R: Record, E: EdgeItem<Record = R>>(
         true,
         options.dedup,
     )?;
+    // Which ids dedup folded into which survivor, for the write guard
+    // (Graphify 0.9.101, #4940).
+    graph.dedup_remap.extend(dedup_remap);
     // The extract CLI reads this to tell a dedup shrink from a file deletion
     // (#3774); `to_json` never stores it in graph.json.
     if dedup_collapsed > 0 {

@@ -241,8 +241,18 @@ pub struct Graph {
     edge_index: HashTable<u32>,
     adjacency: Vec<Neighbors>,
     incoming: Vec<Neighbors>,
+    /// `{merged-away id: survivor id}` of this build's intentional folds:
+    /// entity dedup (Graphify 0.9.101, #4940) and ghost folds into AST twins
+    /// (0.9.102, #4955). The write guards read it; it is never serialized,
+    /// digested or stored in a snapshot.
+    pub(crate) dedup_remap: std::collections::BTreeMap<String, String>,
 }
 impl Graph {
+    /// The `{merged-away id: survivor id}` folds of the build that made this
+    /// graph (`take_dedup_remap`, Graphify 0.9.101-0.9.102).
+    pub fn dedup_remap(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.dedup_remap
+    }
     pub fn new(directed: bool, multigraph: bool) -> Self {
         Self::with_capacity(directed, multigraph, 0, 0)
     }
@@ -259,6 +269,7 @@ impl Graph {
             edge_index: HashTable::with_capacity(if multigraph { edges } else { 0 }),
             adjacency: Vec::with_capacity(nodes),
             incoming: Vec::with_capacity(nodes),
+            dedup_remap: Default::default(),
         }
     }
     /// Room for `additional` more edges, so that a build that knows how many

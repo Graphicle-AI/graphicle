@@ -83,10 +83,67 @@ pub fn execution_wins(a: &mut Value, b: &mut Value) {
 /// rebuilt from this run's import edges, a node of a `deleted_sources` file
 /// may go, and a semantic ghost folded into its AST twin at the same
 /// `(source_file, label)` survives as that twin.
+/// `_has_independent_semantic_evidence` (Graphify 0.9.101, #4896): a
+/// semantic record with provenance of its own (rationale, source URL,
+/// author, contributor) is not label-folded into an AST twin. `metadata` and
+/// `captured_at` ride on ordinary mention ghosts, so they do not count.
+pub fn has_independent_semantic_evidence(node: &(impl crate::record::Properties + ?Sized)) -> bool {
+    ["rationale", "source_url", "author", "contributor"]
+        .iter()
+        .any(|field| match node.get(field) {
+            None | Some(Value::Null) => false,
+            Some(Value::String(s)) => !s.is_empty(),
+            Some(Value::Array(a)) => !a.is_empty(),
+            Some(Value::Object(o)) => !o.is_empty(),
+            Some(_) => true,
+        })
+}
+/// `_dedup_shrink_allowance` (Graphify 0.9.101, #4940): how many fewer nodes
+/// the graph may have because dedup merged saved ids. Merging N saved ids
+/// into one survivor removes N - 1 nodes when the survivor is new this run
+/// and N when it is itself a saved id; a merge whose survivor is not in the
+/// new graph is a loss.
+pub fn dedup_shrink_allowance(
+    saved_ids: &HashSet<String>,
+    new_ids: &HashSet<String>,
+    dedup_remap: &std::collections::BTreeMap<String, String>,
+) -> usize {
+    let mut losers_by_survivor: std::collections::BTreeMap<&str, usize> = Default::default();
+    for (loser, survivor) in dedup_remap {
+        if saved_ids.contains(loser) && new_ids.contains(survivor) {
+            *losers_by_survivor.entry(survivor).or_default() += 1;
+        }
+    }
+    losers_by_survivor
+        .into_iter()
+        .map(|(survivor, count)| {
+            if saved_ids.contains(survivor) {
+                count
+            } else {
+                count - 1
+            }
+        })
+        .sum()
+}
 pub fn lost_saved_semantic_nodes(
     saved_nodes: &[Value],
     new_nodes: &[Value],
     deleted_sources: &[String],
+) -> Vec<Value> {
+    lost_saved_semantic_nodes_with(saved_nodes, new_nodes, deleted_sources, None, None)
+}
+/// [`lost_saved_semantic_nodes`] that also fills `folded` with each saved id
+/// a fold of the build merged into an AST twin (`{saved id: twin id}`,
+/// Graphify 0.9.97, #4778) and excuses a saved id `dedup_remap` folded into
+/// a survivor present in the new graph (0.9.101, #4940). Label-only folds
+/// apply only to evidence-free mentions of another file, as in the build
+/// (0.9.101, #4896).
+pub fn lost_saved_semantic_nodes_with(
+    saved_nodes: &[Value],
+    new_nodes: &[Value],
+    deleted_sources: &[String],
+    mut folded: Option<&mut std::collections::BTreeMap<String, String>>,
+    dedup_remap: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Vec<Value> {
     let norm = |source: &str| source.replace('\\', "/");
     let deleted: HashSet<String> = deleted_sources
@@ -106,8 +163,11 @@ pub fn lost_saved_semantic_nodes(
             .trim_matches(dedup_strings::whitespace)
             .to_owned()
     };
-    let mut ast_locations = HashSet::new();
+    let mut ast_locations: std::collections::HashMap<(String, String), String> = Default::default();
     let mut ast_collisions = HashSet::new();
+    // AST file nodes, for the label-only fold of the build (#3344).
+    let mut ast_files: Vec<(String, String)> = Vec::new();
+    let id_text = |node: &Value| python_compat::string(field(node, "id").unwrap_or(&Value::Null));
     for node in new_nodes {
         if !node.is_object() || field(node, "_origin").is_none_or(|origin| origin != "ast") {
             continue;
@@ -122,8 +182,11 @@ pub fn lost_saved_semantic_nodes(
         if label.is_empty() {
             continue;
         }
+        if crate::build_labels::is_file_node_label_str(&label, source) {
+            ast_files.push((id_text(node), source.to_owned()));
+        }
         let key = (norm(source), label);
-        if !ast_locations.insert(key.clone()) {
+        if ast_locations.insert(key.clone(), id_text(node)).is_some() {
             ast_collisions.insert(key);
         }
     }
@@ -164,16 +227,66 @@ pub fn lost_saved_semantic_nodes(
         if id.as_str().is_some_and(renamed_present) {
             continue;
         }
-        let source = field(node, "source_file")
+        if let Some(remap) = dedup_remap
+            && let Some(survivor) = id.as_str().and_then(|id| remap.get(id))
+            && renamed_present(survivor)
+        {
+            continue;
+        }
+        let raw_source = field(node, "source_file")
             .and_then(Value::as_str)
-            .filter(|s| !s.is_empty())
-            .map(norm);
+            .filter(|s| !s.is_empty());
+        let source = raw_source.map(norm);
         let label = label_of(node);
+        let evidence = node.as_object().is_some_and(has_independent_semantic_evidence);
+        let id_string = python_compat::string(id);
         if let Some(source) = &source
             && !label.is_empty()
         {
-            let key = (source.clone(), label);
-            if ast_locations.contains(&key) && !ast_collisions.contains(&key) {
+            let key = (source.clone(), label.clone());
+            if !evidence && !ast_collisions.contains(&key)
+                && let Some(twin) = ast_locations.get(&key)
+            {
+                if let Some(folded) = folded.as_deref_mut() {
+                    folded.insert(id_string.clone(), twin.clone());
+                }
+                continue;
+            }
+            // A full rebuild can relabel an AST file node with a
+            // path-qualified suffix when several files share a basename;
+            // an evidence-free mention of the same file then matches by
+            // exact source identity (Graphify 0.9.101).
+            if !evidence {
+                let same_source: BTreeSet<&String> = ast_files
+                    .iter()
+                    .filter(|(_, sf)| {
+                        norm(sf) == *source && crate::build_labels::is_file_node_label_str(&label, sf)
+                    })
+                    .map(|(twin, _)| twin)
+                    .collect();
+                if same_source.len() == 1 {
+                    if let Some(folded) = folded.as_deref_mut() {
+                        folded.insert(id_string.clone(), (*same_source.iter().next().unwrap()).clone());
+                    }
+                    continue;
+                }
+            }
+        }
+        // Only an evidence-free mention of another file folds by label into
+        // the one AST file node it names (#3344, #4778, #4896).
+        if !label.is_empty()
+            && !evidence
+            && !raw_source.is_some_and(|sf| crate::build_labels::is_file_node_label_str(&label, sf))
+        {
+            let twins: Vec<&String> = ast_files
+                .iter()
+                .filter(|(_, sf)| crate::build_labels::is_file_node_label_str(&label, sf))
+                .map(|(twin, _)| twin)
+                .collect();
+            if twins.len() == 1 {
+                if let Some(folded) = folded.as_deref_mut() {
+                    folded.insert(id_string.clone(), twins[0].clone());
+                }
                 continue;
             }
         }
