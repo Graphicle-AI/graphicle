@@ -254,10 +254,20 @@ fn cpp_receivers_typed_from_parameters_and_fields() {
 
 #[test]
 fn cpp_local_callable_value_stays_local() {
+    for declaration in ["auto box = [](int x){return x;};", "std::function<int(int)> box = [](int x){return x;};"] {
+        let f = Fixture::new();
+        let r = f.extract_files(&[
+            ("a.cpp", &format!("\nint run(){{{declaration} return box(1);}}")),
+            ("b.cpp", "int box(int x){return x;}"),
+        ]);
+        assert!(!pairs(&r, "calls").iter().any(|(s, _)| s == "run()"), "{:?}", pairs(&r, "calls"));
+    }
     let f = Fixture::new();
-    let r = f.extract_files(&[(
-        "cb.cpp",
-        "void callback() {}\nvoid run(void (*callback)()) { callback(); }\n",
-    )]);
-    assert!(!pairs(&r, "calls").contains(&("run()".into(), "callback()".into())), "{:?}", pairs(&r, "calls"));
+    let r = f.extract_files(&[("a.cpp", "void box() {}\nvoid run() {{auto box=[]{}; box();} box();}")]);
+    let calls = edges(&r)
+        .iter()
+        .filter(|e| e["relation"] == "calls")
+        .collect::<Vec<_>>();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert_eq!(calls[0]["source_location"], "L2");
 }

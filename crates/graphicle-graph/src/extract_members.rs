@@ -1037,7 +1037,7 @@ pub fn cpp_out_of_line_methods<P: PerFile>(
             .copied()
             .filter(|owner| {
                 members[owner].contains(method)
-                    && class_files.get(owner).is_some_and(|f| visible(*f))
+                    && class_files.get(owner).is_some_and(|f| visible(f))
             })
             .collect::<Vec<_>>();
         if candidates.is_empty() {

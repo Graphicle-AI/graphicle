@@ -311,7 +311,7 @@ fn ocaml_and_chained_modules_and_classes_are_walked() {
         "pair.ml",
         "module Alpha = struct\n  let f x = x\nend\nand Beta = struct\n  let g x = x\nend\n",
     )]);
-    assert!(["Alpha", "f", "Beta", "g"].iter().all(|l| labels(&r).contains(*l)), "{:?}", labels(&r));
+    assert!(["Alpha", "f", "Beta", "g"].iter().all(|l| labels(&r).contains(*l)), "{r}");
     assert!(pairs(&r, "contains").contains(&("Beta".into(), "g".into())));
     assert_eq!(by_label(&r, "Beta")["source_location"], "L4");
     let f = Fixture::new();
@@ -388,7 +388,7 @@ fn fortran_call_to_another_files_subroutine_binds_its_definition() {
         .iter()
         .filter(|e| e["relation"] == "calls")
         .filter_map(|e| node(&r, &e["target"]))
-        .filter(|n| n["label"] == "helper")
+        .filter(|n| n["label"].as_str().unwrap_or("").trim_end_matches("()") == "helper")
         .map(|n| n["source_file"].as_str().unwrap_or("").to_string())
         .collect::<Vec<_>>();
     assert!(calls.iter().any(|f| f.ends_with("lib.f90")), "{calls:?}");

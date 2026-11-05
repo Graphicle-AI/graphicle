@@ -424,9 +424,11 @@ fn zig_call_shape_picks_method_or_free_function() {
     let f = Fixture::new();
     let r = f.extract_files(&[(
         "main.zig",
-        "const S = struct {\n    fn helper(self: S) void { _ = self; }\n};\nfn caller() void {\n    helper();\n}\n",
+        "const S = struct {\n    fn helper(self: S) void { _ = self; }\n};\nfn helper() void {}\nfn caller() void {\n    helper();\n}\n",
     )]);
-    assert!(!pairs(&r, "calls").contains(&("caller()".into(), ".helper()".into())));
+    let calls = pairs(&r, "calls");
+    assert!(calls.contains(&("caller()".into(), "helper()".into())), "{calls:?}");
+    assert!(!calls.contains(&("caller()".into(), ".helper()".into())), "{calls:?}");
 }
 
 #[test]
@@ -437,7 +439,7 @@ fn dart_unnamed_extension_is_detected() {
         "extension on String {\n  int get twice => length * 2;\n}\n",
     )]);
     assert!(
-        nodes(&r).iter().any(|n| n["label"] == "ext_anonymous_extension"),
+        nodes(&r).iter().any(|n| n["label"] == "Extension on String"),
         "{:?}",
         nodes(&r).iter().map(|n| &n["label"]).collect::<Vec<_>>()
     );

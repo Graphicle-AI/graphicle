@@ -297,8 +297,7 @@ impl<'a, 't> Engine<'a, 't> {
                         );
                         return true;
                     }
-                } else if kind == "exports" {
-                    if js_has_closures(v) {
+                } else if kind == "exports" && js_has_closures(v) {
                         // Graphify 0.9.98, #4854.
                         let id = self.decl_id(&make_id([stem.as_str(), name.as_str()]), &name, "fn");
                         self.js_closures(v, &id);
@@ -306,7 +305,6 @@ impl<'a, 't> Engine<'a, 't> {
                         self.edge(&file, &id, "contains", line, None, Value::Null);
                         self.callable.insert(id);
                         return true;
-                    }
                 }
             }
         }

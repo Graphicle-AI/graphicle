@@ -187,7 +187,9 @@ fn go_receiver_table_and_member_receivers() {
     let table = &r["go_type_table"]["table"];
     assert_eq!(
         table,
-        &serde_json::json!({"greeter": "Greeter", "global": "Store", "a": "App", "c": "Client", "x": "Thing"})
+        // Since Graphify 0.9.102 (#4962) the file table leaves function bodies
+        // out, keeps an untyped binding as null, and reads generic receivers.
+        &serde_json::json!({"greeter": "Greeter", "names": null, "global": "Store", "a": "App", "c": "Client", "b": "Box"})
     );
     let call = |callee: &str| {
         array(&r, "raw_calls")

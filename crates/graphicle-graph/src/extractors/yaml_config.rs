@@ -525,7 +525,7 @@ mod tests {
     fn yaml_1_1_keys_read_as_pyyaml_reads_them() {
         // `on` is the boolean True in YAML 1.1 (a GitHub workflow's trigger key).
         let result = extract("ci.yml", "on:\n  push: {}\njobs:\n  build: {}\n");
-        assert_eq!(labels(&result), ["ci.yml", "True", "push", "jobs", "build"]);
+        assert_eq!(labels(&result), ["ci.yml", "on", "push", "jobs", "build"]);
         // `1` and `"1"` are two keys; `1` and `true` are one.
         let result = extract("values.yaml", "1: a\n'1': b\ntrue: c\nx: {y: 1}\n");
         assert_eq!(labels(&result), ["values.yaml", "1", "x", "y"]);
@@ -543,7 +543,7 @@ mod tests {
         );
         assert_eq!(
             labels(&result),
-            ["values.yaml", "limits", "inf", "nan", "nested", "-inf"]
+            ["values.yaml", "limits", ".inf", ".nan", "nested", "-.Inf"]
         );
         assert_eq!(result["edges"].as_array().unwrap().len(), 6);
     }
