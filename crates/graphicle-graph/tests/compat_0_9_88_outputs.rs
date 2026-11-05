@@ -1503,3 +1503,30 @@ fn a_global_opencode_install_writes_the_plugin_to_the_config_dir() {
     assert!(project.join(".opencode/plugins/graphicle.js").is_file());
     assert!(!global.exists());
 }
+
+#[test]
+fn a_global_uninstall_removes_only_the_registration_it_wrote() {
+    // test_uninstall_global_registration.py (Graphify 0.9.101): the global
+    // skill's `# graphicle` block in ~/.claude/CLAUDE.md goes with the skill;
+    // a hand-written `# graphicle` section stays.
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let project = dir.path().join("proj");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(&project).unwrap();
+    let mut o = options(&home, &project);
+    o.project = false;
+    let claude_md = home.join(".claude/CLAUDE.md");
+    fs::create_dir_all(claude_md.parent().unwrap()).unwrap();
+    fs::write(&claude_md, "# mine\nkeep this\n").unwrap();
+    graphicle::install::install("claude", &o).unwrap();
+    assert!(fs::read_to_string(&claude_md).unwrap().contains("Trigger: `/graphicle`"));
+    graphicle::install::uninstall("claude", &o).unwrap();
+    let text = fs::read_to_string(&claude_md).unwrap();
+    assert!(!text.contains("# graphicle"), "{text}");
+    assert!(text.contains("# mine\nkeep this"), "{text}");
+    let hand = "# graphicle\nmy own notes\n";
+    fs::write(&claude_md, hand).unwrap();
+    graphicle::install::uninstall("claude", &o).unwrap();
+    assert_eq!(fs::read_to_string(&claude_md).unwrap(), hand);
+}

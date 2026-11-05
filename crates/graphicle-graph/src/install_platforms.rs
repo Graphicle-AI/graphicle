@@ -437,6 +437,26 @@ pub fn uninstall(name: &str, o: &Options) -> Result<Vec<String>> {
             "# ",
         )?;
     }
+    // A global install registers the skill in the user's CLAUDE.md
+    // (CLAUDE_CONFIG_DIR's when set) or CODEBUDDY.md; the registration goes
+    // with the skill (Graphify 0.9.101).
+    if ["claude", "windows"].contains(&name) && !o.project {
+        let target = o
+            .claude_config_dir
+            .clone()
+            .unwrap_or_else(|| o.home.join(".claude"))
+            .join("CLAUDE.md");
+        messages.extend(f::remove_global_registration(
+            &target,
+            "  CLAUDE.md        ->  ",
+        ));
+    }
+    if name == "codebuddy" && !o.project {
+        messages.extend(f::remove_global_registration(
+            &o.home.join(".codebuddy/CODEBUDDY.md"),
+            "  CODEBUDDY.md     ->  ",
+        ));
+    }
     if name == "kilo" && !o.project {
         let p = o.home.join(".config/kilo/command/graphicle.md");
         f::remove(&p)?;
