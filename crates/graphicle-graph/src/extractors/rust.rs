@@ -481,6 +481,8 @@ struct Extractor<'source, 'tree> {
     /// the `use` path (Graphify 0.9.96, #4699). A sourceless stub of such a
     /// name carries it, so the corpus rewire can scope the binding.
     use_roots: HashMap<String, BTreeSet<String>>,
+    /// Unique declaration ids, the file id reserved (Graphify 0.9.98, #4854).
+    decl: crate::ids::DeclIdRegistry,
 }
 impl<'tree> Extractor<'_, 'tree> {
     /// `name_use`: mark the last edge with the name as written (#4439) for a
@@ -523,7 +525,14 @@ impl<'tree> Extractor<'_, 'tree> {
     /// `impl` blocks name it); every other member is salted with a hash of its
     /// own name. Repeats of one name (`#[cfg]` twins, an `impl` of a local
     /// type) are one member and share a node.
-    fn file_item(&self, plain: String, name: &str) -> String {
+    /// Resolved through the file's declaration registry, so an item whose id
+    /// is the file's gets its own (Graphify 0.9.98, #4854).
+    fn file_item(&mut self, plain: String, name: &str) -> String {
+        let id = self.file_item_salted(plain, name);
+        let seen = &self.seen;
+        self.decl.resolve(&id, name, "type", |id| seen.contains(id))
+    }
+    fn file_item_salted(&self, plain: String, name: &str) -> String {
         let Some(items) = self.file_items.get(&plain) else {
             return plain;
         };
@@ -1181,6 +1190,7 @@ pub fn extract_rust(path: &Path) -> Value {
         declared_types: HashMap::new(),
         impl_bare: HashMap::new(),
         use_roots: HashMap::new(),
+        decl: crate::ids::DeclIdRegistry::new([file.as_str()]),
     };
     scan_local_types(tree.root_node(), &source, &mut ex.local_types);
     ex.node(&file, &name, 1);

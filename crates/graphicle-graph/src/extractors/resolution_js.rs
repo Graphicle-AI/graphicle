@@ -743,7 +743,11 @@ pub fn resolve_js_module_path(raw: &str, start: Option<&Path>) -> Option<PathBuf
         return Some(resolve_js_import_path(Path::new(raw)));
     };
     if raw.starts_with('.') {
-        return Some(resolve_js_import_path(&start.join(raw)));
+        // Strip ?query / #fragment before resolving, as bundlers do
+        // (Graphify 0.9.98, #4860).
+        let specifier = raw.split('#').next().unwrap_or("");
+        let specifier = specifier.split('?').next().unwrap_or("");
+        return Some(resolve_js_import_path(&start.join(specifier)));
     }
     let aliases = load_tsconfig_aliases(start);
     let base = load_tsconfig_base_url(start);

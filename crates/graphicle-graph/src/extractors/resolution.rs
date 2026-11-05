@@ -631,6 +631,87 @@ pub fn apply_symbol_resolution_facts(
     let facts = PassFacts::new(Vec::new(), facts.clone());
     apply_pass_facts(paths, nodes, edges, root, facts, context_nodes);
 }
+/// Graphify 0.9.98 (#4854): a reference to an imported name can be minted
+/// before the imported declaration is known, as a sourceless stub. In a
+/// JS/TS importer, a `references` edge to such a stub is bound to the
+/// declaration in the imported file, keyed by (file, name), so two modules
+/// may declare the same symbol.
+fn bind_imported_references(nodes: &[Value], edges: &mut [Value], root: &Path, facts: &PassFacts) {
+    let mut paths: FxHashMap<String, Option<PathBuf>> = FxHashMap::default();
+    let mut source = |sf: &str| -> Option<PathBuf> {
+        paths
+            .entry(sf.to_string())
+            .or_insert_with(|| js_source_path(sf, root))
+            .clone()
+    };
+    let mut declared: FxHashMap<(PathBuf, String), &str> = FxHashMap::default();
+    for n in nodes {
+        let Some(path) = source(s(n, "source_file")) else {
+            continue;
+        };
+        let label = s(n, "label").trim();
+        if label.is_empty() || label.starts_with('.') {
+            continue;
+        }
+        let bare = label.strip_suffix("()").unwrap_or(label);
+        if bare.contains('.') {
+            continue;
+        }
+        declared
+            .entry((path, crate::ids::normalize_id(bare)))
+            .or_insert(s(n, "id"));
+    }
+    let by_id = nodes
+        .iter()
+        .map(|n| (s(n, "id"), n))
+        .collect::<FxHashMap<_, _>>();
+    let mut by_source: FxHashMap<PathBuf, Vec<usize>> = FxHashMap::default();
+    for (i, e) in edges.iter().enumerate() {
+        if s(e, "relation") == "references"
+            && let Some(path) = source(s(e, "source_file"))
+        {
+            by_source.entry(path).or_default().push(i);
+        }
+    }
+    for fact in facts.imports() {
+        let suffix = crate::rcfile::effective_suffix(fact.file_path).to_lowercase();
+        if ![".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"].contains(&suffix.as_str()) {
+            continue;
+        }
+        let source_path = resolved(fact.file_path);
+        let target_path = resolved(fact.target_path);
+        let names = [
+            crate::ids::normalize_id(fact.imported_name),
+            crate::ids::normalize_id(fact.local_name),
+        ];
+        let Some(&target) = names
+            .iter()
+            .find_map(|name| declared.get(&(target_path.clone(), name.clone())))
+        else {
+            continue;
+        };
+        for &i in by_source.get(&source_path).into_iter().flatten() {
+            let e = &mut edges[i];
+            if s(e, "target") == target {
+                continue;
+            }
+            let Some(node) = by_id.get(s(e, "target")) else {
+                continue;
+            };
+            if node.get("source_file").is_some_and(crate::build::truthy) {
+                continue;
+            }
+            let stub = crate::ids::normalize_id(
+                s(node, "label")
+                    .trim_matches(['(', ')'])
+                    .trim_start_matches('.'),
+            );
+            if names.contains(&stub) {
+                e["target"] = json!(target);
+            }
+        }
+    }
+}
 /// [`apply_symbol_resolution_facts`] consuming the facts, so each kind is
 /// freed as soon as its last pass ends.
 fn apply_pass_facts(
@@ -641,6 +722,9 @@ fn apply_pass_facts(
     mut facts: PassFacts,
     context_nodes: &[Value],
 ) {
+    if facts.imports().next().is_some() {
+        bind_imported_references(nodes, edges, root, &facts);
+    }
     let span = crate::profile::span("assemble.symbol_resolution.index");
     let mut rs = Resolver::default();
     let mut new = NewEdges::default();

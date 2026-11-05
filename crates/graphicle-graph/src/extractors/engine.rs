@@ -22,6 +22,9 @@ pub(crate) struct Engine<'a, 't> {
     pub path: String,
     pub stem: String,
     pub file: String,
+    /// Unique declaration ids of the file, the file id reserved (Graphify
+    /// 0.9.98, #4854).
+    pub decl: crate::ids::DeclIdRegistry,
     pub nodes: Vec<Value>,
     pub edges: Vec<Value>,
     pub raw: Vec<Value>,
@@ -277,7 +280,18 @@ impl<'a, 't> Engine<'a, 't> {
         }
         self.edges.push(e);
     }
+    /// `decl_registry.resolve`: the unique id of a declaration that would use
+    /// `nid` (Graphify 0.9.98, #4854).
+    pub fn decl_id(&mut self, nid: &str, name: &str, kind: &str) -> String {
+        let seen = &self.seen;
+        self.decl.resolve(nid, name, kind, |id| seen.contains(id))
+    }
     pub fn ensure(&mut self, name: &str, origin: bool) -> String {
+        // A name the file declares once binds that declaration (Graphify
+        // 0.9.98, #4854).
+        if let Some(declared) = self.decl.lookup(name) {
+            return declared;
+        }
         let mut local = make_id([self.stem.as_str(), self.namespace.join(".").as_str(), name]);
         if self.is("c_sharp") {
             local = python_underscore_salted_nid(&local, name, &self.csharp_type_groups);
@@ -285,7 +299,8 @@ impl<'a, 't> Engine<'a, 't> {
             // A salted module-level class (0.9.92, #2810).
             local = python_underscore_salted_nid(&local, name, &self.underscore);
         }
-        if self.seen.contains(&local) {
+        // Never the file's own id for a reference (#4854).
+        if self.seen.contains(&local) && local != self.file {
             return local;
         }
         let id = make_id([name]);
@@ -629,6 +644,11 @@ impl<'a, 't> Engine<'a, 't> {
         {
             id = self.js_member_nid(class, n, &sanitized);
         }
+        if parent.is_none() {
+            // A top-level function whose id is the file's (Graphify 0.9.98,
+            // #4854).
+            id = self.decl_id(&id, &sanitized, "fn");
+        }
         let mut meta = Value::Null;
         if let Some((_, _, overload_meta)) = &overload {
             meta = overload_meta.clone();
@@ -947,6 +967,7 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         path: path_str,
         stem: stem.clone(),
         file: file.clone(),
+        decl: crate::ids::DeclIdRegistry::new([file.as_str()]),
         nodes: vec![],
         edges: vec![],
         raw: vec![],

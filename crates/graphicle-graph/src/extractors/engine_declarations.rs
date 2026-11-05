@@ -136,6 +136,8 @@ impl<'a, 't> Engine<'a, 't> {
                 meta["ruby_lookup_unsafe"] = json!(true);
             }
         }
+        // A class whose id is the file's gets its own (Graphify 0.9.98, #4854).
+        let id = self.decl_id(&id, &name, "type");
         self.add_node(&id, &name, line, None, meta.clone());
         if self.is("ruby")
             && meta.as_object().is_some_and(|m| !m.is_empty())

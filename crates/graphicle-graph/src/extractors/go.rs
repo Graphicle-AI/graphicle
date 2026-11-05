@@ -166,8 +166,9 @@ pub fn single_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<String>
 }
 /// `_go_receiver_type_table`: `name -> TypeName` for every Go receiver whose
 /// type is written down (struct field, parameter incl. the method receiver,
-/// `var x T`, `x := T{}` / `x := &T{}`), flat over `root`, first binding in
-/// source order wins.
+/// `var x T`, `x := T{}` / `x := &T{}`, and `var x = T{}` / `var x = &T{}`
+/// since Graphify 0.9.98), flat over `root`, first binding in source order
+/// wins.
 pub fn receiver_type_table(root: Node<'_>, source: &[u8]) -> Map<String, Value> {
     let mut table = Map::new();
     let mut stack = vec![root];
@@ -182,6 +183,12 @@ pub fn receiver_type_table(root: Node<'_>, source: &[u8]) -> Map<String, Value> 
                             .entry(read_text(c, source))
                             .or_insert_with(|| json!(type_name));
                     }
+                } else if n.kind() == "var_spec"
+                    && let Some(value) = n.child_by_field_name("value")
+                {
+                    let names = children(n).filter(|c| c.kind() == "identifier");
+                    let values = children(value).filter(|c| c.is_named());
+                    inferred_composite_bindings(names, values, source, &mut table);
                 }
             }
             "short_var_declaration" => {
@@ -191,21 +198,7 @@ pub fn receiver_type_table(root: Node<'_>, source: &[u8]) -> Map<String, Value> 
                 ) {
                     let names = children(left).filter(|c| c.kind() == "identifier");
                     let values = children(right).filter(|c| c.is_named());
-                    for (name, mut value) in names.zip(values) {
-                        if value.kind() == "unary_expression" {
-                            value = value.child_by_field_name("operand").unwrap_or(value);
-                        }
-                        if value.kind() != "composite_literal" {
-                            continue;
-                        }
-                        if let Some(type_name) =
-                            single_type_name(value.child_by_field_name("type"), source)
-                        {
-                            table
-                                .entry(read_text(name, source))
-                                .or_insert_with(|| json!(type_name));
-                        }
-                    }
+                    inferred_composite_bindings(names, values, source, &mut table);
                 }
             }
             _ => {}
@@ -215,6 +208,28 @@ pub fn receiver_type_table(root: Node<'_>, source: &[u8]) -> Map<String, Value> 
         stack.extend(kids);
     }
     table
+}
+/// `_go_inferred_composite_bindings`: each same-position name and `T{}` /
+/// `&T{}` value binds the name to `T` (first binding wins).
+fn inferred_composite_bindings<'t>(
+    names: impl Iterator<Item = Node<'t>>,
+    values: impl Iterator<Item = Node<'t>>,
+    source: &[u8],
+    table: &mut Map<String, Value>,
+) {
+    for (name, mut value) in names.zip(values) {
+        if value.kind() == "unary_expression" {
+            value = value.child_by_field_name("operand").unwrap_or(value);
+        }
+        if value.kind() != "composite_literal" {
+            continue;
+        }
+        if let Some(type_name) = single_type_name(value.child_by_field_name("type"), source) {
+            table
+                .entry(read_text(name, source))
+                .or_insert_with(|| json!(type_name));
+        }
+    }
 }
 /// A function body to walk for calls: the caller, the body, the method's
 /// receiver name and type, and the function's own-scope type table.
@@ -234,6 +249,8 @@ struct Extractor<'source, 'tree> {
     nodes: Vec<Value>,
     edges: Vec<Value>,
     seen: HashSet<String>,
+    /// Unique declaration ids, the file id reserved (Graphify 0.9.98, #4854).
+    decl: crate::ids::DeclIdRegistry,
     bodies: Vec<Body<'tree>>,
     // `_callable` / `_callable_class` stamps (#2438, #3152).
     callable: HashSet<String>,
@@ -427,19 +444,31 @@ impl<'tree> Extractor<'_, 'tree> {
     }
     /// `type_symbol_nid`: the id of a type name, salted when the file declares
     /// it beside a case-only sibling.
-    fn type_symbol(&self, name: &str) -> String {
+    fn type_symbol(&mut self, name: &str) -> String {
         let plain = make_id([self.scope.as_str(), name]);
         if self
             .groups
             .get(&plain)
             .is_some_and(|names| names.contains(name))
         {
-            self.symbol(plain, name)
+            self.symbol_of(plain, name, "type")
         } else {
-            plain
+            self.decl_id(&plain, name, "type")
         }
     }
-    fn symbol(&self, plain: String, name: &str) -> String {
+    /// The unique declaration id of the file (Graphify 0.9.98, #4854).
+    fn decl_id(&mut self, nid: &str, name: &str, kind: &str) -> String {
+        let seen = &self.seen;
+        self.decl.resolve(nid, name, kind, |id| seen.contains(id))
+    }
+    fn symbol(&mut self, plain: String, name: &str) -> String {
+        self.symbol_of(plain, name, "fn")
+    }
+    fn symbol_of(&mut self, plain: String, name: &str, kind: &str) -> String {
+        let id = self.case_salted(plain, name);
+        self.decl_id(&id, name, kind)
+    }
+    fn case_salted(&self, plain: String, name: &str) -> String {
         let Some(names) = self.groups.get(&plain).filter(|n| n.len() >= 2) else {
             return plain;
         };
@@ -811,6 +840,7 @@ pub fn extract_go(path: &Path) -> Value {
         nodes: vec![],
         edges: vec![],
         seen: HashSet::new(),
+        decl: crate::ids::DeclIdRegistry::new([file.as_str()]),
         bodies: vec![],
         callable: HashSet::new(),
         callable_class: HashSet::new(),

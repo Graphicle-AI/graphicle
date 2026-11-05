@@ -1716,6 +1716,21 @@ fn assemble_records(
     options: &ExtractOptions,
     corpus_paths: &[PathBuf],
 ) -> Result<Assembled> {
+    // Persisted C# method labels carry their owner (Graphify 0.9.98, #4883);
+    // the resolvers match the bare `.Name()` form a fresh extraction makes.
+    let bare_options;
+    let options = match extractors::csharp::bare_csharp_method_labels_in_nodes(
+        &options.resolution_context_nodes,
+    ) {
+        Some(nodes) => {
+            bare_options = ExtractOptions {
+                resolution_context_nodes: nodes,
+                ..options.clone()
+            };
+            &bare_options
+        }
+        None => options,
+    };
     let assemble_started = std::time::Instant::now();
     let _assemble_span = crate::profile::span("extract.assemble");
     let collect_span = crate::profile::span("assemble.collect");

@@ -116,7 +116,9 @@ static P: LazyLock<Patterns> = LazyLock::new(|| {
         remove_task: fancy(r"(?s)(?<!\w)task(?!\w).*?(?<!\w)endtask(?!\w)"),
         task: fancy(&format!(r"(?m)(?<!\w)task\s+(\w+)\s*\(({inner})\)\s*;")),
         function: fancy(&format!(
-            r"(?m)(?<!\w)function\s+([A-Za-z_]\w*(?:\s*#\s*{parens})?)\s+(\w+)\s*\(({inner})\)\s*;"
+            // The return type is optional: a `new` constructor has none
+            // (Graphify 0.9.98).
+            r"(?m)(?<!\w)function\s+(?:([A-Za-z_]\w*(?:\s*#\s*{parens})?)\s+)?(\w+)\s*\(({inner})\)\s*;"
         )),
         field: regex_compat::compile(
             r"(?m)^\s*(?:(?:rand|randc|local|protected|static|const|automatic|var)\s+)*([A-Za-z_]\w*(?:\s*#\s*\([^;]+?\))?)\s+\w+\s*;",
@@ -430,7 +432,13 @@ impl Extractor<'_> {
                 let function = make_id([id.as_str(), name]);
                 self.augmented_node(&function, name, function_line);
                 self.edge(&id, &function, "method", function_line, None);
-                for (name, role) in collect_type_refs(&fm[1], false, &skip) {
+                let return_type = fm.get(1).map_or("", |m| m.as_str());
+                let return_refs = if return_type.is_empty() {
+                    vec![]
+                } else {
+                    collect_type_refs(return_type, false, &skip)
+                };
+                for (name, role) in return_refs {
                     self.typed_edge(
                         &function,
                         &name,
