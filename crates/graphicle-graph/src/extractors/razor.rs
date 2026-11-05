@@ -11,8 +11,7 @@ static USING: LazyLock<Regex> = LazyLock::new(|| compile(r"^@using\s+(.+)"));
 static INJECT: LazyLock<Regex> = LazyLock::new(|| compile(r"^@inject\s+([\w.<>\[\]]+)\s+(\w+)"));
 static INHERITS: LazyLock<Regex> = LazyLock::new(|| compile(r"^@inherits\s+([\w.<>\[\]]+)"));
 // One `@implements` per interface a component satisfies (Graphify 0.9.97).
-static IMPLEMENTS: LazyLock<Regex> =
-    LazyLock::new(|| compile(r"^@implements\s+([\w.<>\[\]]+)"));
+static IMPLEMENTS: LazyLock<Regex> = LazyLock::new(|| compile(r"^@implements\s+([\w.<>\[\]]+)"));
 static MODEL: LazyLock<Regex> = LazyLock::new(|| compile(r"^@model\s+([\w.<>\[\]]+)"));
 static PAGE: LazyLock<Regex> = LazyLock::new(|| compile(r#"^@page\s+"([^"]+)""#));
 static COMPONENT: LazyLock<Regex> = LazyLock::new(|| compile(r"<([A-Z][A-Za-z0-9]+)[\s/>]"));

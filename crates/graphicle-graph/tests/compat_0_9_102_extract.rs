@@ -79,7 +79,6 @@ fn pairs(result: &Value, relation: &str) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-
 // --- Go ----------------------------------------------------------------------
 
 #[test]
@@ -106,8 +105,14 @@ fn go_local_binding_shadows_a_package_variable() {
         "package svc\n\ntype A struct{}\n\nfunc (a *A) Run() {}\n\nvar x = &A{}\n\nfunc use() {\n\tx := make()\n\tx.Run()\n}\n\nfunc other() {\n\tx.Run()\n}\n",
     )]);
     let calls = pairs(&r, "calls");
-    assert!(!calls.contains(&("use()".into(), ".Run()".into())), "{calls:?}");
-    assert!(calls.contains(&("other()".into(), ".Run()".into())), "{calls:?}");
+    assert!(
+        !calls.contains(&("use()".into(), ".Run()".into())),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&("other()".into(), ".Run()".into())),
+        "{calls:?}"
+    );
 }
 
 #[test]
@@ -145,7 +150,10 @@ fn go_interface_method_dispatches_to_implicit_implementers() {
         .filter_map(|e| node(&r, &e["target"]))
         .map(|n| n["id"].as_str().unwrap_or("").to_string())
         .collect::<Vec<_>>();
-    assert!(dispatch.iter().any(|id| id.contains("real")), "{dispatch:?}");
+    assert!(
+        dispatch.iter().any(|id| id.contains("real")),
+        "{dispatch:?}"
+    );
     assert!(!edges(&r).iter().any(|e| e["relation"] == "implements"));
 }
 
@@ -162,7 +170,10 @@ fn kotlin_overloads_and_init_blocks() {
         ),
     ]);
     let calls = pairs(&r, "calls");
-    assert!(calls.contains(&("App".into(), "helper()".into())), "{calls:?}");
+    assert!(
+        calls.contains(&("App".into(), "helper()".into())),
+        "{calls:?}"
+    );
 }
 
 #[test]
@@ -175,7 +186,11 @@ fn python_module_instance_method_calls_resolve() {
             "from pkg.client import Client\n\nclient = Client()\n\n\ndef run():\n    return client.send()\n",
         ),
     ]);
-    assert!(pairs(&r, "calls").contains(&("run()".into(), ".send()".into())), "{:?}", pairs(&r, "calls"));
+    assert!(
+        pairs(&r, "calls").contains(&("run()".into(), ".send()".into())),
+        "{:?}",
+        pairs(&r, "calls")
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[
         ("pkg/client.py", "class Client:\n    def send(self):\n        return 1\n"),
@@ -191,15 +206,24 @@ fn python_module_instance_method_calls_resolve() {
 fn solidity_parent_relative_import_names_the_real_file() {
     let f = Fixture::new();
     let r = f.extract_files(&[
-        ("contracts/utils/Errors.sol", "pragma solidity ^0.8.0;\nlibrary Errors {}\n"),
-        ("contracts/proxy/Proxy.sol", "pragma solidity ^0.8.0;\nimport \"../utils/Errors.sol\";\ncontract Proxy {}\n"),
+        (
+            "contracts/utils/Errors.sol",
+            "pragma solidity ^0.8.0;\nlibrary Errors {}\n",
+        ),
+        (
+            "contracts/proxy/Proxy.sol",
+            "pragma solidity ^0.8.0;\nimport \"../utils/Errors.sol\";\ncontract Proxy {}\n",
+        ),
     ]);
     let targets = edges(&r)
         .iter()
         .filter(|e| e["relation"] == "imports_from" || e["relation"] == "imports")
         .map(|e| e["target"].as_str().unwrap_or("").to_string())
         .collect::<Vec<_>>();
-    assert!(!targets.iter().any(|t| t.contains("proxy_utils")), "{targets:?}");
+    assert!(
+        !targets.iter().any(|t| t.contains("proxy_utils")),
+        "{targets:?}"
+    );
 }
 
 #[test]
@@ -209,16 +233,29 @@ fn ts_typed_tagged_template_keeps_later_declarations() {
         "q.ts",
         "declare function sql<T>(s: TemplateStringsArray): T;\nconst rows = sql<{ id: number }[]>`select id from t`;\nexport function after() { return rows; }\n",
     )]);
-    assert!(nodes(&r).iter().any(|n| n["label"] == "after()"), "{:?}", nodes(&r).iter().map(|n| &n["label"]).collect::<Vec<_>>());
+    assert!(
+        nodes(&r).iter().any(|n| n["label"] == "after()"),
+        "{:?}",
+        nodes(&r).iter().map(|n| &n["label"]).collect::<Vec<_>>()
+    );
 }
 
 #[test]
 fn js_class_extends_through_a_cjs_require_binding() {
-    for export in ["module.exports = Base;\n", "module.exports = exports = Base;\n"] {
+    for export in [
+        "module.exports = Base;\n",
+        "module.exports = exports = Base;\n",
+    ] {
         let f = Fixture::new();
         let r = f.extract_files(&[
-            ("base.js", &format!("class Base {{ hello() {{}} }}\n{export}")),
-            ("a.js", "const Base = require('./base');\nclass A extends Base {}\nmodule.exports = A;\n"),
+            (
+                "base.js",
+                &format!("class Base {{ hello() {{}} }}\n{export}"),
+            ),
+            (
+                "a.js",
+                "const Base = require('./base');\nclass A extends Base {}\nmodule.exports = A;\n",
+            ),
         ]);
         let targets = edges(&r)
             .iter()
@@ -226,6 +263,9 @@ fn js_class_extends_through_a_cjs_require_binding() {
             .filter_map(|e| node(&r, &e["target"]))
             .map(|n| n["source_file"].as_str().unwrap_or("").to_string())
             .collect::<Vec<_>>();
-        assert!(targets.iter().any(|f| f.ends_with("base.js")), "{export}: {targets:?}");
+        assert!(
+            targets.iter().any(|f| f.ends_with("base.js")),
+            "{export}: {targets:?}"
+        );
     }
 }

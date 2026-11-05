@@ -783,7 +783,12 @@ fn typed_member_edges<'p, P: PerFile, E: Rec>(
                 let typed = table_type(file, receiver);
                 if typed.is_empty() {
                     if found.is_empty() {
-                        parked.push((caller.to_string(), callee.to_string(), receiver.to_string(), raw));
+                        parked.push((
+                            caller.to_string(),
+                            callee.to_string(),
+                            receiver.to_string(),
+                            raw,
+                        ));
                     }
                     continue;
                 }
@@ -953,7 +958,11 @@ pub fn cpp_out_of_line_methods<P: PerFile>(
         let label = s(n, "label");
         label.ends_with("()")
             && label.contains("::")
-            && SUFFIXES.contains(&crate::path_syntax::suffix(s(n, "source_file")).to_lowercase().as_str())
+            && SUFFIXES.contains(
+                &crate::path_syntax::suffix(s(n, "source_file"))
+                    .to_lowercase()
+                    .as_str(),
+            )
             && s(n, "_cpp_qualified").contains("::")
     };
     if !nodes.iter().any(qualified_definition) {
@@ -968,7 +977,10 @@ pub fn cpp_out_of_line_methods<P: PerFile>(
         let sf = s(n, "source_file");
         if !sf.is_empty()
             && by_id.get(s(n, "id")).is_some_and(|m| std::ptr::eq(*m, n))
-            && s(n, "label") == Path::new(sf).file_name().map_or("", |f| f.to_str().unwrap_or(""))
+            && s(n, "label")
+                == Path::new(sf)
+                    .file_name()
+                    .map_or("", |f| f.to_str().unwrap_or(""))
         {
             file_ids.insert(sf, s(n, "id"));
         }
@@ -988,7 +1000,11 @@ pub fn cpp_out_of_line_methods<P: PerFile>(
             "imports" => {
                 imports.entry(source).or_default().insert(target);
             }
-            "contains" if by_id.get(target).is_some_and(|n| truthy(&n["_callable_class"])) => {
+            "contains"
+                if by_id
+                    .get(target)
+                    .is_some_and(|n| truthy(&n["_callable_class"])) =>
+            {
                 class_files.insert(target, source);
             }
             "method" | "defines" => {
@@ -2385,81 +2401,83 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
     // `_emit_call`: an attribute read only runs a property getter, and only
     // the one it spells (`_key()` folds `_items` into `items`), as a
     // `references` edge; INFERRED for the typed-receiver arms.
-    let mut emit_call =
-        |raw: &'a P::R, target: Option<&'a str>, inferred: bool, added: &mut Vec<Value>| {
-            let caller = rs(raw, "caller_nid");
-            let Some(target) = target.filter(|t| !t.is_empty() && *t != caller) else {
-                return;
-            };
-            // Python callers bind Python definitions only; stubs and
-            // external modules carry no file (Graphify 0.9.96).
-            let target_file = by_id.get(target).map_or("", |n| s(n, "source_file"));
-            if !target_file.is_empty() && !is_python_file(target_file) {
-                return;
-            }
-            if raw.rec_get("indirect").is_some_and(truthy) {
-                // `module.func` in a dispatch table is referenced, not invoked:
-                // an INFERRED `indirect_call`, only to a real callable, never a
-                // class used as a value (Graphify 0.9.99, #1566, #2137).
-                let node = by_id.get(target).copied().unwrap_or(&Value::Null);
-                if call_like.contains(&(caller, target))
-                    || !node.get("_callable").is_some_and(truthy)
-                    || node.get("_callable_class").is_some_and(truthy)
-                {
-                    return;
-                }
-                call_like.insert((caller, target));
-                seen.insert(caller, target);
-                let context = rs(raw, "context");
-                added.push(json!({
-                    "source": caller,
-                    "target": target,
-                    "relation": "indirect_call",
-                    "context": if context.is_empty() { "collection" } else { context },
-                    "confidence": "INFERRED",
-                    "confidence_score": 0.85,
-                    "source_file": rs(raw, "source_file"),
-                    "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
-                    "weight": 1.0,
-                }));
+    let mut emit_call = |raw: &'a P::R,
+                         target: Option<&'a str>,
+                         inferred: bool,
+                         added: &mut Vec<Value>| {
+        let caller = rs(raw, "caller_nid");
+        let Some(target) = target.filter(|t| !t.is_empty() && *t != caller) else {
+            return;
+        };
+        // Python callers bind Python definitions only; stubs and
+        // external modules carry no file (Graphify 0.9.96).
+        let target_file = by_id.get(target).map_or("", |n| s(n, "source_file"));
+        if !target_file.is_empty() && !is_python_file(target_file) {
+            return;
+        }
+        if raw.rec_get("indirect").is_some_and(truthy) {
+            // `module.func` in a dispatch table is referenced, not invoked:
+            // an INFERRED `indirect_call`, only to a real callable, never a
+            // class used as a value (Graphify 0.9.99, #1566, #2137).
+            let node = by_id.get(target).copied().unwrap_or(&Value::Null);
+            if call_like.contains(&(caller, target))
+                || !node.get("_callable").is_some_and(truthy)
+                || node.get("_callable_class").is_some_and(truthy)
+            {
                 return;
             }
-            let attr_read = raw.rec_get("_python_attr_read").is_some_and(truthy);
-            if attr_read {
-                let node = by_id.get(target).copied().unwrap_or(&Value::Null);
-                let label = py_strip(s(node, "label")).trim_start_matches('.');
-                let label = label.strip_suffix("()").unwrap_or(label);
-                if !node.get("_py_property").is_some_and(truthy) || label != rs(raw, "callee") {
-                    return;
-                }
-            } else if let Some(site) = call_site(raw.rec_get("_python_call_site")) {
-                // The precise producer, before the pair dedupe: a same-line
-                // argument call never stands in for the assigned factory.
-                resolved_sites
-                    .borrow_mut()
-                    .entry((caller, site))
-                    .or_default()
-                    .insert(target);
-            }
-            if seen.contains(caller, target) {
-                return;
-            }
+            call_like.insert((caller, target));
             seen.insert(caller, target);
-            if !attr_read {
-                call_like.insert((caller, target));
-            }
+            let context = rs(raw, "context");
             added.push(json!({
                 "source": caller,
                 "target": target,
-                "relation": if attr_read { "references" } else { "calls" },
-                "context": if attr_read { "property_read" } else { "call" },
-                "confidence": if inferred { "INFERRED" } else { "EXTRACTED" },
-                "confidence_score": if inferred { 0.85 } else { 1.0 },
+                "relation": "indirect_call",
+                "context": if context.is_empty() { "collection" } else { context },
+                "confidence": "INFERRED",
+                "confidence_score": 0.85,
                 "source_file": rs(raw, "source_file"),
                 "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
                 "weight": 1.0,
             }));
-        };
+            return;
+        }
+        let attr_read = raw.rec_get("_python_attr_read").is_some_and(truthy);
+        if attr_read {
+            let node = by_id.get(target).copied().unwrap_or(&Value::Null);
+            let label = py_strip(s(node, "label")).trim_start_matches('.');
+            let label = label.strip_suffix("()").unwrap_or(label);
+            if !node.get("_py_property").is_some_and(truthy) || label != rs(raw, "callee") {
+                return;
+            }
+        } else if let Some(site) = call_site(raw.rec_get("_python_call_site")) {
+            // The precise producer, before the pair dedupe: a same-line
+            // argument call never stands in for the assigned factory.
+            resolved_sites
+                .borrow_mut()
+                .entry((caller, site))
+                .or_default()
+                .insert(target);
+        }
+        if seen.contains(caller, target) {
+            return;
+        }
+        seen.insert(caller, target);
+        if !attr_read {
+            call_like.insert((caller, target));
+        }
+        added.push(json!({
+            "source": caller,
+            "target": target,
+            "relation": if attr_read { "references" } else { "calls" },
+            "context": if attr_read { "property_read" } else { "call" },
+            "confidence": if inferred { "INFERRED" } else { "EXTRACTED" },
+            "confidence_score": if inferred { 0.85 } else { 1.0 },
+            "source_file": rs(raw, "source_file"),
+            "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
+            "weight": 1.0,
+        }));
+    };
     let mut factory_receivers = vec![];
     // Dispatch-table values go last, so a direct call to the same target
     // claims the pair as `calls` (Graphify 0.9.99); each half keeps its order.
@@ -2585,7 +2603,9 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
                         .copied()
                         .filter(|id| {
                             !module_instance
-                                || by_id.get(id).is_some_and(|n| s(n, "label") == receiver_type)
+                                || by_id
+                                    .get(id)
+                                    .is_some_and(|n| s(n, "label") == receiver_type)
                         })
                         .collect::<Vec<_>>()
                 })
@@ -2690,7 +2710,11 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
                 .insert(rs(e, "target"));
         }
     }
-    let class_ids = classes.values().flatten().copied().collect::<FxHashSet<_>>();
+    let class_ids = classes
+        .values()
+        .flatten()
+        .copied()
+        .collect::<FxHashSet<_>>();
     let factory_targets = {
         let sites = resolved_sites.borrow();
         factory_receivers
@@ -2738,9 +2762,8 @@ pub fn jvm_references<P: PerFile>(
     nodes: &[Value],
     edges: &mut Vec<Value>,
 ) {
-    static PACKAGE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?m)^\s*package\s+([\w.]+)\s*;").unwrap()
-    });
+    static PACKAGE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?m)^\s*package\s+([\w.]+)\s*;").unwrap());
     static IMPORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"(?m)^\s*import\s+(?:static\s+)?([\w.]+)\s*;").unwrap()
     });
@@ -3298,7 +3321,9 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
                 .flatten()
                 .filter(|id| {
                     import_path.as_ref().is_some_and(|p| {
-                        package_paths.get(id.as_str()).is_some_and(|paths| paths.contains(p))
+                        package_paths
+                            .get(id.as_str())
+                            .is_some_and(|paths| paths.contains(p))
                     })
                 })
                 .cloned()
@@ -3333,8 +3358,11 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
             emit(&mut added, &mut seen, rc, &targets[0], relation, false);
             if indirect && added.len() > before {
                 let context = rs(rc, "context");
-                added[before]["context"] =
-                    json!(if context.is_empty() { "argument" } else { context });
+                added[before]["context"] = json!(if context.is_empty() {
+                    "argument"
+                } else {
+                    context
+                });
             }
         }
     }

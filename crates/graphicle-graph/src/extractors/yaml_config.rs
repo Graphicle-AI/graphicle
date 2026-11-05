@@ -312,7 +312,14 @@ impl Walk {
     /// pair budget is spent every mapping returns at its first key. It walks
     /// the composed tree: keys as written, each on its own line (Graphify
     /// 0.9.97, #4784).
-    fn walk(&mut self, tree: &Tree, value: usize, parent: &str, parent_key: Option<&str>, depth: usize) {
+    fn walk(
+        &mut self,
+        tree: &Tree,
+        value: usize,
+        parent: &str,
+        parent_key: Option<&str>,
+        depth: usize,
+    ) {
         if depth > MAX_DEPTH {
             return;
         }
@@ -386,7 +393,8 @@ pub fn extract_yaml(path: &Path) -> Value {
     }
     // PyYAML's scanner skips a byte-order mark at the very start of the stream.
     let (docs, tree) =
-        match yaml_frontmatter::parse_all_with_tree(text.strip_prefix('\u{feff}').unwrap_or(&text)) {
+        match yaml_frontmatter::parse_all_with_tree(text.strip_prefix('\u{feff}').unwrap_or(&text))
+        {
             Ok(parsed) => parsed,
             Err(error) => return refused(error.to_string()),
         };

@@ -2388,7 +2388,10 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         {
             continue;
         }
-        if rc.rec_get("is_scoped_call").is_some_and(crate::build::truthy) {
+        if rc
+            .rec_get("is_scoped_call")
+            .is_some_and(crate::build::truthy)
+        {
             // A Rust `module::function()` binds only through its verified
             // qualifier, EXTRACTED, and never falls through to the bare-name
             // tie-breakers (Graphify 0.9.101, #908).
@@ -2528,7 +2531,9 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         let mods = cf.and_then(|f| modules.get(f.as_str()));
         if merge::family(sf) == Some("jvm") {
             let index = jvm_index.get_or_insert_with(|| JvmScope::new(nodes, &edges[..]));
-            cs = index.reachable(cs, caller, callee, |id| syms.is_some_and(|s| s.contains(id)));
+            cs = index.reachable(cs, caller, callee, |id| {
+                syms.is_some_and(|s| s.contains(id))
+            });
             if cs.is_empty() {
                 continue;
             }

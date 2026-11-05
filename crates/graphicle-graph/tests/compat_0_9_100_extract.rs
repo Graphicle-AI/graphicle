@@ -79,7 +79,6 @@ fn pairs(result: &Value, relation: &str) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-
 fn labels(result: &Value) -> BTreeSet<String> {
     nodes(result)
         .iter()
@@ -90,7 +89,13 @@ fn node_by<'a>(result: &'a Value, label: &str, suffix: &str) -> &'a Value {
     let found = nodes(result)
         .iter()
         .filter(|n| n["label"] == label)
-        .filter(|n| n["source_file"].as_str().unwrap_or("").replace('\\', "/").ends_with(suffix))
+        .filter(|n| {
+            n["source_file"]
+                .as_str()
+                .unwrap_or("")
+                .replace('\\', "/")
+                .ends_with(suffix)
+        })
         .collect::<Vec<_>>();
     assert_eq!(found.len(), 1, "{label} {suffix}");
     found[0]
@@ -115,14 +120,21 @@ fn php_class_level_scope_members_are_referenced() {
         let f = Fixture::new();
         let r = f.extract_files(&[("Perms.php", &format!("<?php\nnamespace App;\n{ROLE}{body}"))]);
         let refs = pairs(&r, "references_constant");
-        assert!(refs.contains(&("Catalog".into(), "Role".into())), "{body}: {refs:?}");
+        assert!(
+            refs.contains(&("Catalog".into(), "Role".into())),
+            "{body}: {refs:?}"
+        );
     }
     let f = Fixture::new();
     let r = f.extract_files(&[(
         "Perms.php",
         "<?php\nclass Catalog {\n    const A = self::B;\n    const B = static::C;\n    const C = \\Vendor\\Unknown::X;\n}\n",
     )]);
-    assert!(pairs(&r, "references_constant").is_empty(), "{:?}", pairs(&r, "references_constant"));
+    assert!(
+        pairs(&r, "references_constant").is_empty(),
+        "{:?}",
+        pairs(&r, "references_constant")
+    );
 }
 
 // --- A type and a function differing only in case stay apart (#4904) ---------
@@ -130,11 +142,17 @@ fn php_class_level_scope_members_are_referenced() {
 #[test]
 fn case_only_type_and_function_keep_two_nodes() {
     let f = Fixture::new();
-    let r = f.extract_files(&[("m.ts", "export class Foo {}\nexport function foo() { return 1; }\n")]);
+    let r = f.extract_files(&[(
+        "m.ts",
+        "export class Foo {}\nexport function foo() { return 1; }\n",
+    )]);
     let l = labels(&r);
     assert!(l.contains("Foo") && l.contains("foo()"), "{l:?}");
     let f = Fixture::new();
-    let r = f.extract_files(&[("m.ts", "export class Foo {}\nexport namespace Foo { export const x = 1; }\n")]);
+    let r = f.extract_files(&[(
+        "m.ts",
+        "export class Foo {}\nexport namespace Foo { export const x = 1; }\n",
+    )]);
     let foo = nodes(&r).iter().filter(|n| n["label"] == "Foo").count();
     assert_eq!(foo, 1, "class and namespace Foo merge");
 }
@@ -153,9 +171,17 @@ fn jvm_references_cross_java_and_kotlin() {
     let logger = node_by(&r, "Logger", "Logger.java");
     let base = node_by(&r, "BaseScreen", "BaseScreen.kt");
     let java_user = node_by(&r, "JavaUser", "JavaUser.java");
-    assert!(has_edge(&r, java_user, "inherits", base), "{:?}", pairs(&r, "inherits"));
+    assert!(
+        has_edge(&r, java_user, "inherits", base),
+        "{:?}",
+        pairs(&r, "inherits")
+    );
     let kotlin_file = node_by(&r, "KotlinUser.kt", "KotlinUser.kt");
-    assert!(has_edge(&r, kotlin_file, "imports", logger), "{:?}", pairs(&r, "imports"));
+    assert!(
+        has_edge(&r, kotlin_file, "imports", logger),
+        "{:?}",
+        pairs(&r, "imports")
+    );
     let info = node_by(&r, ".info()", "Logger.java");
     let calls = edges(&r)
         .iter()
@@ -163,7 +189,10 @@ fn jvm_references_cross_java_and_kotlin() {
         .filter_map(|e| node(&r, &e["source"]))
         .map(|n| n["source_file"].as_str().unwrap_or("").to_string())
         .collect::<Vec<_>>();
-    assert!(calls.iter().any(|f| f.ends_with("KotlinUser.kt")), "{calls:?}");
+    assert!(
+        calls.iter().any(|f| f.ends_with("KotlinUser.kt")),
+        "{calls:?}"
+    );
 }
 
 // --- Single-language fixes ------------------------------------------------------
@@ -175,7 +204,13 @@ fn r_contains_is_an_inheritance_keyword() {
         "classes.R",
         "setClass(\"Base\", representation(x = \"numeric\"))\nsetClass(\"Derived\", contains = \"Base\")\n",
     )]);
-    assert!(pairs(&r, "inherits").iter().any(|(s, t)| s.contains("Derived") && t.contains("Base")), "{:?}", pairs(&r, "inherits"));
+    assert!(
+        pairs(&r, "inherits")
+            .iter()
+            .any(|(s, t)| s.contains("Derived") && t.contains("Base")),
+        "{:?}",
+        pairs(&r, "inherits")
+    );
 }
 
 #[test]
@@ -192,7 +227,16 @@ fn elixir_bare_call_reaches_its_own_modules_def() {
         .map(|e| e["target"].as_str().unwrap_or("").to_string())
         .collect::<Vec<_>>();
     assert_eq!(targets.len(), 1, "{targets:?}");
-    assert!(targets[0].starts_with(&a_run["id"].as_str().unwrap().trim_end_matches("_run").to_string()), "{targets:?}");
+    assert!(
+        targets[0].starts_with(
+            &a_run["id"]
+                .as_str()
+                .unwrap()
+                .trim_end_matches("_run")
+                .to_string()
+        ),
+        "{targets:?}"
+    );
 }
 
 #[test]
@@ -203,7 +247,11 @@ fn dart_mixin_on_clause_lists_every_constraint() {
         "class A {}\nclass B<T> {}\nmixin M on A, B<int> {}\n",
     )]);
     let inherits = pairs(&r, "inherits");
-    assert!(inherits.contains(&("M".into(), "A".into())) && inherits.contains(&("M".into(), "B".into())), "{inherits:?}");
+    assert!(
+        inherits.contains(&("M".into(), "A".into()))
+            && inherits.contains(&("M".into(), "B".into())),
+        "{inherits:?}"
+    );
 }
 
 #[test]
@@ -213,7 +261,11 @@ fn fortran_extends_clause_is_an_inherits_edge() {
         "shapes.f90",
         "module shapes\n  type :: shape\n  end type shape\n  type, extends(shape) :: circle\n  end type circle\nend module shapes\n",
     )]);
-    assert!(pairs(&r, "inherits").contains(&("circle".into(), "shape".into())), "{:?}", pairs(&r, "inherits"));
+    assert!(
+        pairs(&r, "inherits").contains(&("circle".into(), "shape".into())),
+        "{:?}",
+        pairs(&r, "inherits")
+    );
 }
 
 #[test]
@@ -225,7 +277,11 @@ fn scala_extension_methods_belong_to_their_receiver_type() {
     )]);
     let owners = edges(&r)
         .iter()
-        .filter(|e| label_of(&r, &e["target"]).trim_start_matches('.').starts_with("flip"))
+        .filter(|e| {
+            label_of(&r, &e["target"])
+                .trim_start_matches('.')
+                .starts_with("flip")
+        })
         .map(|e| label_of(&r, &e["source"]))
         .collect::<Vec<_>>();
     assert!(owners.iter().any(|o| o == "Point"), "{owners:?}");

@@ -78,12 +78,17 @@ fn pairs(result: &Value, relation: &str) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-
 fn id_by_label(result: &Value, label: &str, suffix: &str) -> String {
     let found = nodes(result)
         .iter()
         .filter(|n| n["label"].as_str().unwrap_or("").trim_end_matches("()") == label)
-        .filter(|n| n["source_file"].as_str().unwrap_or("").replace('\\', "/").ends_with(suffix))
+        .filter(|n| {
+            n["source_file"]
+                .as_str()
+                .unwrap_or("")
+                .replace('\\', "/")
+                .ends_with(suffix)
+        })
         .map(|n| n["id"].as_str().unwrap_or("").to_string())
         .collect::<Vec<_>>();
     assert_eq!(found.len(), 1, "{label} {suffix}: {found:?}");
@@ -110,7 +115,10 @@ const PAYMENTS: [(&str, &str); 3] = [
         "shop/payments/card.py",
         "def card_charge(amount):\n    return amount\n\n\nclass CardGateway:\n    pass\n",
     ),
-    ("shop/payments/cash.py", "def cash_charge(amount):\n    return amount\n"),
+    (
+        "shop/payments/cash.py",
+        "def cash_charge(amount):\n    return amount\n",
+    ),
 ];
 
 #[test]
@@ -126,12 +134,21 @@ fn python_dispatch_table_of_module_attributes_links_each_function() {
     let card = id_by_label(&r, "card_charge", "card.py");
     let cash = id_by_label(&r, "cash_charge", "cash.py");
     let indirect = id_pairs(&r, "indirect_call");
-    assert!(indirect.contains(&(pay.clone(), card.clone())), "{indirect:?}");
+    assert!(
+        indirect.contains(&(pay.clone(), card.clone())),
+        "{indirect:?}"
+    );
     assert!(indirect.contains(&(pay.clone(), cash.clone())));
     let calls = id_pairs(&r, "calls");
     assert!(!calls.contains(&(pay.clone(), card)) && !calls.contains(&(pay.clone(), cash)));
-    for e in edges(&r).iter().filter(|e| e["relation"] == "indirect_call" && e["source"] == pay.as_str()) {
-        assert_eq!((e["confidence"].as_str(), e["context"].as_str()), (Some("INFERRED"), Some("collection")));
+    for e in edges(&r)
+        .iter()
+        .filter(|e| e["relation"] == "indirect_call" && e["source"] == pay.as_str())
+    {
+        assert_eq!(
+            (e["confidence"].as_str(), e["context"].as_str()),
+            (Some("INFERRED"), Some("collection"))
+        );
         assert_eq!(e["confidence_score"], 0.85);
     }
 }
@@ -151,7 +168,10 @@ fn python_module_level_registry_links_from_the_file() {
         .map(|n| n["id"].as_str().unwrap().to_string())
         .unwrap();
     let indirect = id_pairs(&r, "indirect_call");
-    assert!(indirect.contains(&(registry.clone(), id_by_label(&r, "card_charge", "card.py"))), "{indirect:?}");
+    assert!(
+        indirect.contains(&(registry.clone(), id_by_label(&r, "card_charge", "card.py"))),
+        "{indirect:?}"
+    );
     assert!(indirect.contains(&(registry, id_by_label(&r, "cash_charge", "cash.py"))));
 }
 
@@ -164,14 +184,21 @@ fn go_package_level_var_initialiser_calls_are_the_files() {
         "svc/svc.go",
         "package svc\n\nfunc newRegistry() int { return 1 }\n\nvar (\n\tregistry = newRegistry()\n\tother    = 2\n)\n",
     )]);
-    assert!(pairs(&r, "calls").contains(&("svc.go".into(), "newRegistry()".into())), "{:?}", pairs(&r, "calls"));
+    assert!(
+        pairs(&r, "calls").contains(&("svc.go".into(), "newRegistry()".into())),
+        "{:?}",
+        pairs(&r, "calls")
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[(
         "svc/svc.go",
         "package svc\n\nfunc helper() int { return 1 }\n\nfunc run() {\n\tvar x = helper()\n\t_ = x\n}\n",
     )]);
     let calls = pairs(&r, "calls");
-    assert!(calls.contains(&("run()".into(), "helper()".into())), "{calls:?}");
+    assert!(
+        calls.contains(&("run()".into(), "helper()".into())),
+        "{calls:?}"
+    );
     assert!(!calls.contains(&("svc.go".into(), "helper()".into())));
 }
 
@@ -183,7 +210,10 @@ fn go_method_value_argument_is_an_indirect_call() {
         "package svc\n\ntype Server struct{}\n\nfunc (s *Server) Health() {}\n\nfunc wrap(f func()) func() { return f }\n\nfunc (s *Server) Routes() {\n\twrap(s.Health)\n}\n",
     )]);
     let indirect = pairs(&r, "indirect_call");
-    assert!(indirect.contains(&(".Routes()".into(), ".Health()".into())), "{indirect:?}");
+    assert!(
+        indirect.contains(&(".Routes()".into(), ".Health()".into())),
+        "{indirect:?}"
+    );
 }
 
 #[test]
@@ -200,6 +230,13 @@ fn go_receiver_field_typed_from_a_sibling_file() {
         ),
     ]);
     let calls = pairs(&r, "calls");
-    assert!(calls.contains(&(".Run()".into(), ".Log()".into())), "{calls:?}");
-    assert!(nodes(&r).iter().all(|n| n.get("_go_fields").is_none() || n["label"] == "types.go"));
+    assert!(
+        calls.contains(&(".Run()".into(), ".Log()".into())),
+        "{calls:?}"
+    );
+    assert!(
+        nodes(&r)
+            .iter()
+            .all(|n| n.get("_go_fields").is_none() || n["label"] == "types.go")
+    );
 }

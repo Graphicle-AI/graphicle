@@ -120,7 +120,9 @@ pub fn csharp_method_label_reassignments<'a>(
         .filter_map(|(method, labels)| {
             let mut labels = labels.into_iter();
             match (labels.next(), labels.next()) {
-                (Some(Some(owner)), None) => Some((method.to_string(), format!("{owner}{}", bare[method]))),
+                (Some(Some(owner)), None) => {
+                    Some((method.to_string(), format!("{owner}{}", bare[method])))
+                }
                 _ => None,
             }
         })

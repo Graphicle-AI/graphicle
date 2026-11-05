@@ -358,7 +358,8 @@ pub fn js_rationale(path: &Path, r: &mut Value) {
     }
 }
 static TS_TYPED_TAG: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
-    regex::bytes::Regex::new(r"(?-u)([A-Za-z_$][A-Za-z0-9_$]*)(<\s*\{[^{}]*\}\s*\[\s*\]\s*>)").unwrap()
+    regex::bytes::Regex::new(r"(?-u)([A-Za-z_$][A-Za-z0-9_$]*)(<\s*\{[^{}]*\}\s*\[\s*\]\s*>)")
+        .unwrap()
 });
 static TS_QUALIFIED_IMPORT_TYPE: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
     regex::bytes::Regex::new(
@@ -437,7 +438,10 @@ pub fn normalize_ts_tag_and_import_annotations(source: &[u8], tsx: bool) -> Opti
     // (start, end, anchor, is a tag)
     let mut candidates = vec![];
     for (tag, start, end) in tags {
-        if let Some(backtick) = source[end..].iter().position(|b| *b == b'`').map(|i| end + i)
+        if let Some(backtick) = source[end..]
+            .iter()
+            .position(|b| *b == b'`')
+            .map(|i| end + i)
             && missing.iter().any(|&pos| end <= pos && pos <= backtick)
             && code(tag)
         {
@@ -464,7 +468,9 @@ pub fn normalize_ts_tag_and_import_annotations(source: &[u8], tsx: bool) -> Opti
     let mut result = source.to_vec();
     let mut accepted = false;
     for (start, end, anchor, tag) in candidates {
-        let mut node = recovered.root_node().descendant_for_byte_range(anchor, anchor + 1);
+        let mut node = recovered
+            .root_node()
+            .descendant_for_byte_range(anchor, anchor + 1);
         while let Some(n) = node {
             if !tag && n.kind() == "type_annotation" {
                 result[start..end].copy_from_slice(&masked[start..end]);
@@ -1431,7 +1437,9 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
             // (Graphify 0.9.102); a blanked `import("m")` type is no
             // executable import for the dynamic-import rescue.
             let working = source.as_deref().unwrap_or(&s);
-            if let Some(normalized) = normalize_ts_tag_and_import_annotations(working, lang == "TSX") {
+            if let Some(normalized) =
+                normalize_ts_tag_and_import_annotations(working, lang == "TSX")
+            {
                 type_only_imports = ts_qualified_import_types(working)
                     .into_iter()
                     .map(|(start, _)| start)

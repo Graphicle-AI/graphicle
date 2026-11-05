@@ -103,7 +103,11 @@ impl<'t> Extractor<'t, '_> {
             // file and location (Graphify 0.9.96, #4725).
             item.insert(
                 "source_file".into(),
-                json!(if source_backed { self.path.as_str() } else { "" }),
+                json!(if source_backed {
+                    self.path.as_str()
+                } else {
+                    ""
+                }),
             );
             item.insert(
                 "source_location".into(),

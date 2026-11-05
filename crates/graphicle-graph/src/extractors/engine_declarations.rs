@@ -990,7 +990,11 @@ impl<'a, 't> Engine<'a, 't> {
         if let Some(declared) = self.decl.lookup(&name) {
             return Some(declared);
         }
-        let nid = make_id([self.stem.as_str(), self.namespace.join(".").as_str(), name.as_str()]);
+        let nid = make_id([
+            self.stem.as_str(),
+            self.namespace.join(".").as_str(),
+            name.as_str(),
+        ]);
         (self.seen.contains(&nid) && nid != self.file).then_some(nid)
     }
     /// The `references_constant` edges of the `Scope::MEMBER` accesses under
@@ -1006,7 +1010,14 @@ impl<'a, 't> Engine<'a, 't> {
                 && seen_here.insert(target.clone())
             {
                 let line = sub.start_position().row + 1;
-                self.edge(source, &target, "references_constant", line, None, Value::Null);
+                self.edge(
+                    source,
+                    &target,
+                    "references_constant",
+                    line,
+                    None,
+                    Value::Null,
+                );
             }
             stack.extend(children(sub));
         }

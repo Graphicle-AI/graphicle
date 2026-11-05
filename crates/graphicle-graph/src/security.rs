@@ -641,9 +641,8 @@ static SECRET_SHAPE: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
 static PEM_BEGIN: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----").unwrap()
 });
-static PEM_END: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----").unwrap()
-});
+static PEM_END: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----").unwrap());
 pub const REDACTED_MARKER: &str = "[redacted]";
 /// `redact_secrets`: credential-shaped substrings of `text` replaced with
 /// `[redacted]`, applied to docstring and comment text before it becomes a

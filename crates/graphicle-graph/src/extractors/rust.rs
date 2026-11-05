@@ -557,7 +557,13 @@ impl<'tree> Extractor<'_, 'tree> {
     /// path of this crate, record where the bound name comes from, and mark
     /// a plain `pub use` of another crate's item as a re-export (Graphify
     /// 0.9.96, #4699).
-    fn name_use(&mut self, written: &str, path: &str, scope_mods: &HashSet<String>, reexport: bool) {
+    fn name_use(
+        &mut self,
+        written: &str,
+        path: &str,
+        scope_mods: &HashSet<String>,
+        reexport: bool,
+    ) {
         let bound = trim(written.rsplit(" as ").next().unwrap_or("")).to_string();
         let (used, root) = use_root_in(written, path, scope_mods);
         let edge = self.edges.last_mut().unwrap();

@@ -79,7 +79,6 @@ fn pairs(result: &Value, relation: &str) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-
 fn labels(result: &Value) -> BTreeSet<String> {
     nodes(result)
         .iter()
@@ -123,8 +122,14 @@ fn js_same_inner_name_in_two_functions_binds_to_its_own() {
     assert!(has(&e, "x_second", "x_second_run", "calls"));
     assert!(has(&e, "x_first", "x_first_run", "indirect_call"));
     assert!(has(&e, "x_second", "x_second_run", "indirect_call"));
-    assert!(!e.iter().any(|(s, t, _)| s == "x_first" && t == "x_second_run"));
-    assert!(!e.iter().any(|(s, t, _)| s == "x_second" && t == "x_first_run"));
+    assert!(
+        !e.iter()
+            .any(|(s, t, _)| s == "x_first" && t == "x_second_run")
+    );
+    assert!(
+        !e.iter()
+            .any(|(s, t, _)| s == "x_second" && t == "x_first_run")
+    );
 }
 
 #[test]
@@ -165,7 +170,10 @@ fn js_siblings_and_deeper_inner_functions_still_resolve() {
         "Panels.tsx",
         "export const Left = () => { function onClick() { return 1; } return onClick(); };\nexport const Right = () => { function onClick() { return 2; } return onClick(); };\n",
     )]));
-    assert!(has(&e, "panels_left", "panels_left_onclick", "calls"), "{e:?}");
+    assert!(
+        has(&e, "panels_left", "panels_left_onclick", "calls"),
+        "{e:?}"
+    );
     assert!(has(&e, "panels_right", "panels_right_onclick", "calls"));
     assert!(!has(&e, "panels_left", "panels_right_onclick", "calls"));
 }
@@ -209,7 +217,12 @@ fn yaml_workflow_on_key_keeps_its_spelling() {
     let on = by_label(&r, "on");
     assert!(on["id"].as_str().unwrap().ends_with("_ci_on"), "{on}");
     assert_eq!(on["source_location"], "L2");
-    assert!(by_label(&r, "push")["id"].as_str().unwrap().ends_with("_ci_on_push"));
+    assert!(
+        by_label(&r, "push")["id"]
+            .as_str()
+            .unwrap()
+            .ends_with("_ci_on_push")
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[("pipeline-trigger.yml", "on: push\nretries: 3\n")]);
     assert!(labels(&r).contains("on"), "{r}");
@@ -220,9 +233,18 @@ fn yaml_workflow_on_key_keeps_its_spelling() {
 #[test]
 fn redaction_covers_userinfo_pem_bodies_and_glued_tokens() {
     use graphicle::security::redact_secrets;
-    assert_eq!(redact_secrets("redis://:s3cretpass@cache.internal"), "redis://[redacted]@cache.internal");
-    assert_eq!(redact_secrets("https://svc:p@ss@host/x"), "https://[redacted]@host/x");
-    assert_eq!(redact_secrets("https://svc:ab/cd@host"), "https://[redacted]@host");
+    assert_eq!(
+        redact_secrets("redis://:s3cretpass@cache.internal"),
+        "redis://[redacted]@cache.internal"
+    );
+    assert_eq!(
+        redact_secrets("https://svc:p@ss@host/x"),
+        "https://[redacted]@host/x"
+    );
+    assert_eq!(
+        redact_secrets("https://svc:ab/cd@host"),
+        "https://[redacted]@host"
+    );
     for benign in [
         "https://host:8080/path?email=a@b.com",
         "see https://example.com:443/a and mail ops@example.com",
@@ -231,22 +253,36 @@ fn redaction_covers_userinfo_pem_bodies_and_glued_tokens() {
         assert_eq!(redact_secrets(benign), benign);
     }
     let body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC";
-    let full = format!("key:\n-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\nafter");
+    let full = format!(
+        "key:\n-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\nafter"
+    );
     assert_eq!(redact_secrets(&full), "key:\n[redacted]\nafter");
     assert!(!redact_secrets(&format!("-----BEGIN PRIVATE KEY-----\n{body}")).contains(body));
     let ghp = format!("ghp_{}", "a".repeat(36));
     let aiza = format!("AIza{}", "b".repeat(35));
     for (secret, text) in [
-        ("AKIAIOSFODNN7EXAMPLE".to_string(), "AKIAIOSFODNN7EXAMPLE_prod".to_string()),
+        (
+            "AKIAIOSFODNN7EXAMPLE".to_string(),
+            "AKIAIOSFODNN7EXAMPLE_prod".to_string(),
+        ),
         (ghp.clone(), format!("token_{ghp}")),
         (aiza.clone(), format!("{aiza}_backup")),
     ] {
         let out = redact_secrets(&text);
-        assert!(!out.contains(&secret) && out.contains("[redacted]"), "{text}");
+        assert!(
+            !out.contains(&secret) && out.contains("[redacted]"),
+            "{text}"
+        );
     }
-    for secret in [format!("xoxe-1-{}", "c".repeat(40)), format!("eyJhbGciOiJIUzI1NiJ9.e30.{}", "d".repeat(43))] {
+    for secret in [
+        format!("xoxe-1-{}", "c".repeat(40)),
+        format!("eyJhbGciOiJIUzI1NiJ9.e30.{}", "d".repeat(43)),
+    ] {
         let out = redact_secrets(&format!("see {secret} here"));
-        assert!(!out.contains(&secret) && out.contains("[redacted]"), "{secret}");
+        assert!(
+            !out.contains(&secret) && out.contains("[redacted]"),
+            "{secret}"
+        );
     }
     assert!(redact_secrets(&format!("key sk-proj-{}", "a1".repeat(12))).contains("[redacted]"));
 }
@@ -261,16 +297,27 @@ fn terraform_aliased_providers_get_their_own_nodes_and_references() {
         "provider \"aws\" {\n  alias  = \"west\"\n  region = \"us-west-1\"\n}\n\nprovider \"aws\" {\n  alias  = \"east\"\n  region = \"us-east-1\"\n}\n\nresource \"aws_instance\" \"web\" {\n  provider = aws.west\n}\n",
     )]);
     let l = labels(&r);
-    assert!(l.contains("provider.aws.west") && l.contains("provider.aws.east"), "{l:?}");
-    assert!(pairs(&r, "references").contains(&("aws_instance.web".into(), "provider.aws.west".into())));
+    assert!(
+        l.contains("provider.aws.west") && l.contains("provider.aws.east"),
+        "{l:?}"
+    );
+    assert!(
+        pairs(&r, "references").contains(&("aws_instance.web".into(), "provider.aws.west".into()))
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[(
         "main.tf",
         "provider \"aws\" { region = \"us-east-1\" }\n\nresource \"aws_instance\" \"web\" {\n  provider = aws\n}\n\nlocals {\n  provider = data.aws_caller_identity.current.account_id\n}\n\ndata \"aws_caller_identity\" \"current\" {}\n",
     )]);
     let refs = pairs(&r, "references");
-    assert!(refs.contains(&("aws_instance.web".into(), "provider.aws".into())), "{refs:?}");
-    assert!(refs.contains(&("local.provider".into(), "data.aws_caller_identity.current".into())));
+    assert!(
+        refs.contains(&("aws_instance.web".into(), "provider.aws".into())),
+        "{refs:?}"
+    );
+    assert!(refs.contains(&(
+        "local.provider".into(),
+        "data.aws_caller_identity.current".into()
+    )));
 }
 
 // --- Single-language fixes -----------------------------------------------------
@@ -300,7 +347,10 @@ fn cobol_end_program_restores_the_enclosing_program() {
         "       IDENTIFICATION DIVISION.\n       PROGRAM-ID. PARENT.\n       PROCEDURE DIVISION.\n       PARENT-PARA.\n           CALL 'CHILD'.\n           STOP RUN.\n       IDENTIFICATION DIVISION.\n       PROGRAM-ID. CHILD.\n       PROCEDURE DIVISION.\n       CHILD-PARA.\n           DISPLAY 'CHILD'.\n       END PROGRAM CHILD.\n       PARENT-PARA-2.\n           DISPLAY 'BACK IN PARENT'.\n       END PROGRAM PARENT.\n",
     )]);
     let contains = pairs(&r, "contains");
-    assert!(contains.contains(&("PARENT".into(), "PARENT-PARA-2".into())), "{contains:?}");
+    assert!(
+        contains.contains(&("PARENT".into(), "PARENT-PARA-2".into())),
+        "{contains:?}"
+    );
     assert!(!contains.contains(&("CHILD".into(), "PARENT-PARA-2".into())));
 }
 
@@ -308,14 +358,18 @@ fn cobol_end_program_restores_the_enclosing_program() {
 fn ocaml_and_chained_modules_and_classes_are_walked() {
     // The extractor itself, as upstream's test calls it.
     let f = Fixture::new();
-    let run = |name: &str, text: &str| {
-        graphicle::extractors::ocaml::extract_ocaml(&f.write(name, text))
-    };
+    let run =
+        |name: &str, text: &str| graphicle::extractors::ocaml::extract_ocaml(&f.write(name, text));
     let r = run(
         "pair.ml",
         "module Alpha = struct\n  let f x = x\nend\nand Beta = struct\n  let g x = x\nend\n",
     );
-    assert!(["Alpha", "f", "Beta", "g"].iter().all(|l| labels(&r).contains(*l)), "{r}");
+    assert!(
+        ["Alpha", "f", "Beta", "g"]
+            .iter()
+            .all(|l| labels(&r).contains(*l)),
+        "{r}"
+    );
     assert!(pairs(&r, "contains").contains(&("Beta".into(), "g".into())));
     assert_eq!(by_label(&r, "Beta")["source_location"], "L4");
     let r = run(
@@ -323,7 +377,11 @@ fn ocaml_and_chained_modules_and_classes_are_walked() {
         "class alpha = object\n  method m = 1\nend\nand beta = object\n  method n = 2\nend\n",
     );
     let methods = pairs(&r, "method");
-    assert!(methods.contains(&("alpha".into(), "m".into())) && methods.contains(&("beta".into(), "n".into())), "{r}");
+    assert!(
+        methods.contains(&("alpha".into(), "m".into()))
+            && methods.contains(&("beta".into(), "n".into())),
+        "{r}"
+    );
 }
 
 #[test]
@@ -349,21 +407,38 @@ fn razor_implements_and_vbnet_operator_and_sv_task() {
         "Widget.razor",
         "@implements IDisposable\n<div>hi</div>\n@code {\n    public void Dispose() {}\n}\n",
     )]);
-    assert!(pairs(&r, "implements").iter().any(|(_, t)| t == "IDisposable"), "{:?}", pairs(&r, "implements"));
+    assert!(
+        pairs(&r, "implements")
+            .iter()
+            .any(|(_, t)| t == "IDisposable"),
+        "{:?}",
+        pairs(&r, "implements")
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[(
         "Money.vb",
         "Public Class Money\n    Public Shared Operator +(a As Money, b As Money) As Money\n        Return a\n    End Operator\nEnd Class\n",
     )]);
-    assert!(pairs(&r, "method").iter().any(|(s, _)| s == "Money"), "{:?}", pairs(&r, "method"));
+    assert!(
+        pairs(&r, "method").iter().any(|(s, _)| s == "Money"),
+        "{:?}",
+        pairs(&r, "method")
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[(
         "drv.sv",
         "class Config;\nendclass\nclass Driver;\n  task run(Config cfg);\n    int local_count;\n  endtask\nendclass\n",
     )]);
     let method = pairs(&r, "method");
-    assert!(method.contains(&("Driver".into(), "run".into())), "{method:?}");
-    assert!(pairs(&r, "references").iter().any(|(s, t)| s == "run" && t == "Config"));
+    assert!(
+        method.contains(&("Driver".into(), "run".into())),
+        "{method:?}"
+    );
+    assert!(
+        pairs(&r, "references")
+            .iter()
+            .any(|(s, t)| s == "run" && t == "Config")
+    );
 }
 
 #[test]
@@ -399,11 +474,21 @@ fn fortran_call_to_another_files_subroutine_binds_its_definition() {
 
 #[test]
 fn pnpm_workspace_glob_comments_and_rejected_globs() {
-    for workspace in ["  - \"pk/*\" # staging runner\n", "  - 'pk/**' # x\n", "  - pk/* # note\n"] {
+    for workspace in [
+        "  - \"pk/*\" # staging runner\n",
+        "  - 'pk/**' # x\n",
+        "  - pk/* # note\n",
+    ] {
         let f = Fixture::new();
-        f.write("pk/p/package.json", "{\"name\": \"@x/p\", \"main\": \"index.ts\"}");
+        f.write(
+            "pk/p/package.json",
+            "{\"name\": \"@x/p\", \"main\": \"index.ts\"}",
+        );
         let lib = f.write("pk/p/index.ts", "export function boot() { return 1; }\n");
-        let app = f.write("app/c.ts", "import { boot } from \"@x/p\";\nexport function go() { return boot(); }\n");
+        let app = f.write(
+            "app/c.ts",
+            "import { boot } from \"@x/p\";\nexport function go() { return boot(); }\n",
+        );
         f.write("package.json", "{\"name\": \"root\"}");
         f.write("pnpm-workspace.yaml", &format!("packages:\n{workspace}"));
         let r = f.run(&[app, lib]);
@@ -411,7 +496,12 @@ fn pnpm_workspace_glob_comments_and_rejected_globs() {
             .iter()
             .filter(|e| e["relation"] == "imports_from")
             .filter_map(|e| node(&r, &e["target"]))
-            .any(|n| n["source_file"].as_str().unwrap_or("").ends_with("p/index.ts"));
+            .any(|n| {
+                n["source_file"]
+                    .as_str()
+                    .unwrap_or("")
+                    .ends_with("p/index.ts")
+            });
         assert!(resolved, "{workspace}");
     }
 }

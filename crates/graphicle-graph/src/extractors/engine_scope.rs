@@ -939,7 +939,10 @@ pub fn cpp_qualified_name(node: Node<'_>, name: &str, source: &[u8]) -> String {
 /// `_cpp_local_binding_ranges` (Graphify 0.9.101): the byte ranges in which
 /// each named local or parameter of a C++ function is in scope; a call of
 /// such a name is a local callable value, not a corpus function.
-pub fn cpp_local_binding_ranges(body: Node<'_>, source: &[u8]) -> BTreeMap<String, Vec<(usize, usize)>> {
+pub fn cpp_local_binding_ranges(
+    body: Node<'_>,
+    source: &[u8],
+) -> BTreeMap<String, Vec<(usize, usize)>> {
     const SCOPES: [&str; 8] = [
         "compound_statement",
         "for_statement",
@@ -977,8 +980,9 @@ pub fn cpp_local_binding_ranges(body: Node<'_>, source: &[u8]) -> BTreeMap<Strin
             if let Some(scope) = scope {
                 let mut cursor = node.walk();
                 for declarator in node.children_by_field_name("declarator", &mut cursor) {
-                    if let Some(name) = super::engine_declarator::cpp_declarator_name(declarator, source)
-                        .filter(|n| !n.is_empty())
+                    if let Some(name) =
+                        super::engine_declarator::cpp_declarator_name(declarator, source)
+                            .filter(|n| !n.is_empty())
                     {
                         ranges
                             .entry(name)
@@ -2160,7 +2164,8 @@ pub fn js_value_is_require(value: Node<'_>, source: &[u8]) -> bool {
 /// require of an external package has no file to redirect `new X()` or
 /// `extends X` to, so its binding node stays.
 pub fn js_require_resolves_locally(value: Node<'_>, source: &[u8], path: &str) -> bool {
-    let Some(args) = find_require_call(Some(value)).and_then(|c| c.child_by_field_name("arguments"))
+    let Some(args) =
+        find_require_call(Some(value)).and_then(|c| c.child_by_field_name("arguments"))
     else {
         return false;
     };
@@ -2571,7 +2576,11 @@ impl ShadowScan<'_, '_> {
                 }
                 "assignment" | "augmented_assignment" | "for_statement" | "for_in_clause" => {
                     let mut assigned = BTreeSet::new();
-                    if !python_target_names(child.child_by_field_name("left"), self.source, &mut assigned) {
+                    if !python_target_names(
+                        child.child_by_field_name("left"),
+                        self.source,
+                        &mut assigned,
+                    ) {
                         self.unsafe_scope = true;
                     }
                     self.bind_names(child, assigned);
@@ -2651,8 +2660,10 @@ pub fn python_module_instance_types(
                 for item in statement.children_by_field_name("name", &mut cursor) {
                     let (name, local) = if item.kind_name() == "aliased_import" {
                         (
-                            item.child_by_field_name("name").map(|n| read_text(n, source)),
-                            item.child_by_field_name("alias").map(|n| read_text(n, source)),
+                            item.child_by_field_name("name")
+                                .map(|n| read_text(n, source)),
+                            item.child_by_field_name("alias")
+                                .map(|n| read_text(n, source)),
                         )
                     } else {
                         let text = read_text(item, source);
@@ -2662,7 +2673,10 @@ pub fn python_module_instance_types(
                         && crate::extract_python::is_identifier(&name)
                         && crate::extract_python::is_identifier(&local)
                     {
-                        declarations.entry(local).or_default().push((name, statement));
+                        declarations
+                            .entry(local)
+                            .or_default()
+                            .push((name, statement));
                     }
                 }
             }

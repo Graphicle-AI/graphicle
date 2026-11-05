@@ -654,7 +654,10 @@ fn js_declarations_imports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: 
             cjs_export_facts(n, s, line, f);
             continue;
         }
-        if matches!(n.kind_name(), "lexical_declaration" | "variable_declaration") {
+        if matches!(
+            n.kind_name(),
+            "lexical_declaration" | "variable_declaration"
+        ) {
             for declarator in children(n)
                 .into_iter()
                 .filter(|c| c.kind_name() == "variable_declarator")
@@ -662,7 +665,8 @@ fn js_declarations_imports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: 
                 let Some(local) = cjs_require_binding(declarator, s) else {
                     continue;
                 };
-                let Some((_, raw)) = require_call_and_specifier(declarator.child_by_field_name("value"), s)
+                let Some((_, raw)) =
+                    require_call_and_specifier(declarator.child_by_field_name("value"), s)
                 else {
                     continue;
                 };
@@ -755,7 +759,11 @@ fn require_call_and_specifier<'t>(value: Option<Node<'t>>, s: &[u8]) -> Option<(
     let raw = children(args)
         .into_iter()
         .find(|a| a.kind_name() == "string")
-        .map(|a| read_text(a, s).trim_matches(['\'', '"', '`', ' ']).to_string())?;
+        .map(|a| {
+            read_text(a, s)
+                .trim_matches(['\'', '"', '`', ' '])
+                .to_string()
+        })?;
     (!raw.is_empty()).then_some((node, raw))
 }
 /// `_js_cjs_require_bindings`: the local name of a whole-module
@@ -860,7 +868,8 @@ fn cjs_export_facts(n: Node<'_>, s: &[u8], line: i64, f: &mut JsFileFacts) {
         return;
     };
     let exported = read_text(property, s);
-    if exported.is_empty() || !matches!(read_text(object, s).as_str(), "exports" | "module.exports") {
+    if exported.is_empty() || !matches!(read_text(object, s).as_str(), "exports" | "module.exports")
+    {
         return;
     }
     let local = cjs_default_export_local(right, s).unwrap_or_else(|| exported.clone());

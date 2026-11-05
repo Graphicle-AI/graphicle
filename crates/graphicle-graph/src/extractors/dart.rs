@@ -449,7 +449,8 @@ impl Output<'_> {
                 bases.push((base, generics));
                 while is_on && let Some(more) = find(&P.on_more, header)? {
                     let base = more.get(1).unwrap().as_str();
-                    let (generics, after) = consume_generic_args(&header[more.get(0).unwrap().end()..]);
+                    let (generics, after) =
+                        consume_generic_args(&header[more.get(0).unwrap().end()..]);
                     header = after;
                     bases.push((base, generics));
                 }

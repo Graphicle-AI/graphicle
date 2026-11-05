@@ -113,7 +113,13 @@ impl DeclIdRegistry {
     }
     /// The id of the declaration `name` of `kind` that would use `nid`;
     /// `taken` says whether an id is already a node of the file.
-    pub fn resolve(&mut self, nid: &str, name: &str, kind: &str, taken: impl Fn(&str) -> bool) -> String {
+    pub fn resolve(
+        &mut self,
+        nid: &str,
+        name: &str,
+        kind: &str,
+        taken: impl Fn(&str) -> bool,
+    ) -> String {
         let key = (kind.to_string(), nid.to_string());
         let owner = self.owners.get(nid).cloned();
         if owner.as_ref() == Some(&key) {
@@ -139,9 +145,10 @@ impl DeclIdRegistry {
         // Foo` + `namespace Foo`); `class Foo` + `function foo` are two
         // (Graphify 0.9.100, #4904).
         if taken(nid)
-            && owner
-                .as_ref()
-                .is_some_and(|(k, _)| k != "file" && (k == kind || self.spelled.get(nid).map(String::as_str) == Some(name)))
+            && owner.as_ref().is_some_and(|(k, _)| {
+                k != "file"
+                    && (k == kind || self.spelled.get(nid).map(String::as_str) == Some(name))
+            })
             && !self.salted.contains(nid)
         {
             return nid.to_string();

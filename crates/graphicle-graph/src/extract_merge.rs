@@ -519,7 +519,8 @@ fn rewire_unique_stub_edges_with(
                             .and_then(Value::as_array)
                             .is_some_and(|roots| {
                                 roots.iter().any(|r| {
-                                    r == "crate" || r.as_str().is_some_and(|r| scope.workspace.contains(r))
+                                    r == "crate"
+                                        || r.as_str().is_some_and(|r| scope.workspace.contains(r))
                                 })
                             })
                 })

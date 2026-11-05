@@ -57,8 +57,12 @@ pub fn resolve_go_interface_dispatch_any<P: PerFile, E: Rec>(
         edge.insert("relation".into(), json!("implements"));
         E::from_object(edge)
     }));
-    let result =
-        crate::interface_dispatch::resolve_interface_dispatch_any(per_file, nodes, edges, GO_SUFFIXES);
+    let result = crate::interface_dispatch::resolve_interface_dispatch_any(
+        per_file,
+        nodes,
+        edges,
+        GO_SUFFIXES,
+    );
     // The inferred pairs only feed the mechanism.
     edges.drain(base..base + count);
     result

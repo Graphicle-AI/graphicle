@@ -79,7 +79,6 @@ fn pairs(result: &Value, relation: &str) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-
 fn labels(result: &Value) -> BTreeSet<String> {
     nodes(result)
         .iter()
@@ -137,9 +136,15 @@ fn assert_clean(result: &Value, expected: &[(&str, &str)]) {
         })
         .collect::<BTreeSet<_>>();
     for (label, file) in expected {
-        assert!(got.contains(&(label.to_string(), file.to_string())), "missing {label} in {file}: {got:?}");
+        assert!(
+            got.contains(&(label.to_string(), file.to_string())),
+            "missing {label} in {file}: {got:?}"
+        );
     }
-    let ids = nodes(result).iter().map(|n| n["id"].clone()).collect::<Vec<_>>();
+    let ids = nodes(result)
+        .iter()
+        .map(|n| n["id"].clone())
+        .collect::<Vec<_>>();
     let unique = ids.iter().collect::<std::collections::HashSet<_>>();
     assert_eq!(ids.len(), unique.len(), "duplicate ids");
     assert!(
@@ -165,7 +170,10 @@ fn declarations_named_like_their_file_keep_their_own_nodes() {
             "a.js",
             "class Js { run() { return 1; } }\n",
             &[("a.js", "a.js"), ("Js", "a.js"), (".run()", "a.js")],
-            &[(("a.js", "a.js"), "contains", ("Js", "a.js")), (("Js", "a.js"), "method", (".run()", "a.js"))],
+            &[
+                (("a.js", "a.js"), "contains", ("Js", "a.js")),
+                (("Js", "a.js"), "method", (".run()", "a.js")),
+            ],
         ),
         (
             "a.js",
@@ -189,13 +197,19 @@ fn declarations_named_like_their_file_keep_their_own_nodes() {
             "m.py",
             "class Py:\n    def run(self):\n        return 1\n",
             &[("m.py", "m.py"), ("Py", "m.py"), (".run()", "m.py")],
-            &[(("m.py", "m.py"), "contains", ("Py", "m.py")), (("Py", "m.py"), "method", (".run()", "m.py"))],
+            &[
+                (("m.py", "m.py"), "contains", ("Py", "m.py")),
+                (("Py", "m.py"), "method", (".run()", "m.py")),
+            ],
         ),
         (
             "a.ts",
             "class Ts {}\n@Ts class Other {}\n",
             &[("a.ts", "a.ts"), ("Ts", "a.ts"), ("Other", "a.ts")],
-            &[(("a.ts", "a.ts"), "contains", ("Ts", "a.ts")), (("Other", "a.ts"), "references", ("Ts", "a.ts"))],
+            &[
+                (("a.ts", "a.ts"), "contains", ("Ts", "a.ts")),
+                (("Other", "a.ts"), "references", ("Ts", "a.ts")),
+            ],
         ),
     ];
     for (file, text, expected, expected_edges) in cases {
@@ -204,7 +218,10 @@ fn declarations_named_like_their_file_keep_their_own_nodes() {
         assert_clean(&r, expected);
         let facts = edge_facts(&r);
         for (a, rel, b) in expected_edges {
-            assert!(facts.contains(&fact(*a, rel, *b)), "{text}: missing {a:?} {rel} {b:?}");
+            assert!(
+                facts.contains(&fact(*a, rel, *b)),
+                "{text}: missing {a:?} {rel} {b:?}"
+            );
         }
     }
     let f = Fixture::new();
@@ -240,7 +257,10 @@ fn decl_registry_salts_and_reuses() {
     let class = registry.resolve("a_js", "Js", "type", taken);
     assert_eq!(class, make_id(["a_js", decl_salt("Js").as_str()]));
     assert_eq!(registry.resolve("a_js", "Js", "type", taken), class);
-    assert_eq!(registry.resolve("a_other", "Other", "type", |_| false), "a_other");
+    assert_eq!(
+        registry.resolve("a_other", "Other", "type", |_| false),
+        "a_other"
+    );
     assert_eq!(registry.lookup("Js"), Some(class));
     assert_eq!(decl_salt("Js").len(), 12);
 }
@@ -255,10 +275,19 @@ fn csharp_method_labels_round_trip_through_the_bare_form() {
     };
     use serde_json::json;
     let cs = json!("src/A.cs");
-    assert_eq!(bare_csharp_method_label(&json!("Widget.Build()"), &cs).as_deref(), Some(".Build()"));
-    assert_eq!(bare_csharp_method_label(&json!(".Build()"), &cs).as_deref(), Some(".Build()"));
+    assert_eq!(
+        bare_csharp_method_label(&json!("Widget.Build()"), &cs).as_deref(),
+        Some(".Build()")
+    );
+    assert_eq!(
+        bare_csharp_method_label(&json!(".Build()"), &cs).as_deref(),
+        Some(".Build()")
+    );
     assert_eq!(bare_csharp_method_label(&json!("A.B.Build()"), &cs), None);
-    assert_eq!(bare_csharp_method_label(&json!("Widget.Build()"), &json!("a.py")), None);
+    assert_eq!(
+        bare_csharp_method_label(&json!("Widget.Build()"), &json!("a.py")),
+        None
+    );
     let nodes = vec![
         json!({"id":"w","label":"Widget","source_file":"src/A.cs"}),
         json!({"id":"m","label":".Build()","source_file":"src/A.cs"}),
@@ -287,9 +316,18 @@ fn js_relative_import_with_query_or_fragment_resolves() {
         .iter()
         .filter(|e| e["relation"] == "imports_from")
         .filter_map(|e| node(&r, &e["target"]))
-        .any(|n| n["source_file"].as_str().unwrap_or("").ends_with("lib/foo.js"));
+        .any(|n| {
+            n["source_file"]
+                .as_str()
+                .unwrap_or("")
+                .ends_with("lib/foo.js")
+        });
     assert!(hit, "{:?}", pairs(&r, "imports_from"));
-    assert!(!labels(&r).iter().any(|l| l.contains("v=134") || l.contains("134")));
+    assert!(
+        !labels(&r)
+            .iter()
+            .any(|l| l.contains("v=134") || l.contains("134"))
+    );
 }
 
 #[test]
@@ -326,7 +364,10 @@ fn solidity_free_function_using_set_emits_uses_edges() {
         .filter(|(s, _)| s == "C")
         .map(|(_, t)| t)
         .collect::<BTreeSet<_>>();
-    assert!(used.iter().any(|t| t.starts_with("add")) && used.iter().any(|t| t.starts_with("sub")), "{used:?}");
+    assert!(
+        used.iter().any(|t| t.starts_with("add")) && used.iter().any(|t| t.starts_with("sub")),
+        "{used:?}"
+    );
 }
 
 #[test]
@@ -354,7 +395,10 @@ fn lazarus_inherited_and_inline_component_blocks() {
         "inherited ChildForm: TChildForm\n  Caption = 'x'\n  inline Frame1: TFrame1\n  end\n  object Button1: TButton\n    OnClick = Button1Click\n  end\nend\n",
     )]);
     let l = labels(&r);
-    assert!(l.contains("TChildForm") && l.contains("TFrame1") && l.contains("TButton"), "{l:?}");
+    assert!(
+        l.contains("TChildForm") && l.contains("TFrame1") && l.contains("TButton"),
+        "{l:?}"
+    );
 }
 
 #[test]
@@ -364,16 +408,30 @@ fn systemverilog_constructor_without_return_type() {
         "pkt.sv",
         "class Cfg;\nendclass\nclass Pkt;\n  function new(Cfg c);\n  endfunction\nendclass\n",
     )]);
-    assert!(pairs(&r, "method").contains(&("Pkt".into(), "new".into())), "{:?}", pairs(&r, "method"));
-    assert!(pairs(&r, "references").iter().any(|(s, t)| s == "new" && t == "Cfg"));
+    assert!(
+        pairs(&r, "method").contains(&("Pkt".into(), "new".into())),
+        "{:?}",
+        pairs(&r, "method")
+    );
+    assert!(
+        pairs(&r, "references")
+            .iter()
+            .any(|(s, t)| s == "new" && t == "Cfg")
+    );
 }
 
 #[test]
 fn go_var_with_composite_literal_types_the_receiver() {
     let greeter = "package svc\n\ntype Greeter struct{}\n\nfunc (g Greeter) Greet() string { return \"hi\" }\n";
     for (app, expect) in [
-        ("package svc\n\nfunc Run() {\n\tvar g = Greeter{}\n\tg.Greet()\n}\n", true),
-        ("package svc\n\nfunc Run() {\n\tvar g = &Greeter{}\n\tg.Greet()\n}\n", true),
+        (
+            "package svc\n\nfunc Run() {\n\tvar g = Greeter{}\n\tg.Greet()\n}\n",
+            true,
+        ),
+        (
+            "package svc\n\nfunc Run() {\n\tvar g = &Greeter{}\n\tg.Greet()\n}\n",
+            true,
+        ),
     ] {
         let f = Fixture::new();
         let r = f.extract_files(&[("svc/greeter.go", greeter), ("svc/app.go", app)]);

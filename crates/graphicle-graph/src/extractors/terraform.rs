@@ -425,7 +425,10 @@ impl Extractor<'_> {
             return Ok(None);
         };
         for attr in children(body).filter(|n| n.kind() == "attribute") {
-            if attr.child(0).is_none_or(|k| read_text(k, self.source) != "alias") {
+            if attr
+                .child(0)
+                .is_none_or(|k| read_text(k, self.source) != "alias")
+            {
                 continue;
             }
             let Some(value) = named(attr).last() else {

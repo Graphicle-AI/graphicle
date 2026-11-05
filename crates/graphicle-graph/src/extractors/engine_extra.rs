@@ -231,7 +231,8 @@ impl<'a, 't> Engine<'a, 't> {
             {
                 if set("_JS_FUNCTION_VALUE_TYPES").contains(v.kind_name()) {
                     if kind == "exports" {
-                        let id = self.decl_id(&make_id([stem.as_str(), name.as_str()]), &name, "fn");
+                        let id =
+                            self.decl_id(&make_id([stem.as_str(), name.as_str()]), &name, "fn");
                         self.js_callable(
                             &id,
                             CallableInfo {
@@ -298,13 +299,13 @@ impl<'a, 't> Engine<'a, 't> {
                         return true;
                     }
                 } else if kind == "exports" && js_has_closures(v) {
-                        // Graphify 0.9.98, #4854.
-                        let id = self.decl_id(&make_id([stem.as_str(), name.as_str()]), &name, "fn");
-                        self.js_closures(v, &id);
-                        self.add_node(&id, &format!("{name}()"), line, None, Value::Null);
-                        self.edge(&file, &id, "contains", line, None, Value::Null);
-                        self.callable.insert(id);
-                        return true;
+                    // Graphify 0.9.98, #4854.
+                    let id = self.decl_id(&make_id([stem.as_str(), name.as_str()]), &name, "fn");
+                    self.js_closures(v, &id);
+                    self.add_node(&id, &format!("{name}()"), line, None, Value::Null);
+                    self.edge(&file, &id, "contains", line, None, Value::Null);
+                    self.callable.insert(id);
+                    return true;
                 }
             }
         }
@@ -578,7 +579,9 @@ impl<'a, 't> Engine<'a, 't> {
             };
             let receiver = self.ensure(&receiver, true);
             let mut cursor = n.walk();
-            let members = n.children_by_field_name("body", &mut cursor).collect::<Vec<_>>();
+            let members = n
+                .children_by_field_name("body", &mut cursor)
+                .collect::<Vec<_>>();
             for member in members {
                 self.walk(member, Some(&receiver));
             }

@@ -302,7 +302,13 @@ fn rust_crate_root(source_file: &str) -> Option<String> {
     let parts = path.components().collect::<Vec<_>>();
     let dirs = &parts[..parts.len().saturating_sub(1)];
     let src = dirs.iter().rposition(|c| c.as_os_str() == "src")?;
-    Some(parts[..src].iter().collect::<PathBuf>().to_string_lossy().into_owned())
+    Some(
+        parts[..src]
+            .iter()
+            .collect::<PathBuf>()
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 /// `rust_scoped_call_survivors` (Graphify 0.9.101): the candidates a Rust
 /// `module::function()` qualifier verifies, right to left against each
@@ -326,7 +332,9 @@ pub fn rust_scoped_call_survivors(
     let Some(&last) = segments.last() else {
         return vec![];
     };
-    if matches!(last, "crate" | "super" | "self") || last.chars().next().is_some_and(char::is_uppercase) {
+    if matches!(last, "crate" | "super" | "self")
+        || last.chars().next().is_some_and(char::is_uppercase)
+    {
         return vec![];
     }
     let mut roots: std::collections::HashMap<String, Option<String>> = Default::default();
@@ -336,7 +344,9 @@ pub fn rust_scoped_call_survivors(
             .or_insert_with(|| rust_crate_root(file))
             .clone()
     };
-    let caller_crate = (!caller_file.is_empty()).then(|| root_of(caller_file)).flatten();
+    let caller_crate = (!caller_file.is_empty())
+        .then(|| root_of(caller_file))
+        .flatten();
     let mut survivors = vec![];
     for candidate in candidates {
         let file = source_of(candidate);
@@ -350,7 +360,10 @@ pub fn rust_scoped_call_survivors(
             continue;
         }
         let path = Path::new(&file);
-        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let parent = path.parent().unwrap_or(Path::new(""));
         let mut cursor = if stem == last {
             parent
@@ -405,11 +418,20 @@ pub fn resolve_cross_file_raw_calls(
             // qualifier, never the bare name (Graphify 0.9.101, #908).
             let qualifier = text(call, "scope_qualifier");
             let qualifier = qualifier.trim();
-            let source_of = |id: &str| files.get(id).and_then(Value::as_str).unwrap_or("").to_string();
+            let source_of = |id: &str| {
+                files
+                    .get(id)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            };
             let label_of = |id: &str| labels_by_id.get(id).cloned().unwrap_or_default();
             let survivors = rust_scoped_call_survivors(
                 qualifier,
-                labels.get(&callee.to_lowercase()).map(Vec::as_slice).unwrap_or_default(),
+                labels
+                    .get(&callee.to_lowercase())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
                 &source_of,
                 &text(call, "source_file"),
                 Some(&label_of),

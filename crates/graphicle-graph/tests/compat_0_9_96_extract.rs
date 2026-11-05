@@ -100,7 +100,10 @@ fn method_hits(r: &Value, caller: &str) -> BTreeSet<String> {
 
 #[test]
 fn python_member_calls_hit_the_spelled_method() {
-    for (call, target) in [("Worker.run(None)", ".run()"), ("Worker._run(None)", "._run()")] {
+    for (call, target) in [
+        ("Worker.run(None)", ".run()"),
+        ("Worker._run(None)", "._run()"),
+    ] {
         let f = Fixture::new();
         let r = f.extract_files(&[
             ("worker.py", WORKER),
@@ -109,7 +112,10 @@ fn python_member_calls_hit_the_spelled_method() {
                 &format!("from worker import Worker\n\n\ndef viaclass():\n    return {call}\n"),
             ),
         ]);
-        assert_eq!(method_hits(&r, "viaclass()"), BTreeSet::from([target.to_string()]));
+        assert_eq!(
+            method_hits(&r, "viaclass()"),
+            BTreeSet::from([target.to_string()])
+        );
     }
     for (call, target) in [("w.run()", ".run()"), ("w._run()", "._run()")] {
         let f = Fixture::new();
@@ -117,10 +123,15 @@ fn python_member_calls_hit_the_spelled_method() {
             ("worker.py", WORKER),
             (
                 "main.py",
-                &format!("from worker import Worker\n\n\ndef typed(w: Worker):\n    return {call}\n"),
+                &format!(
+                    "from worker import Worker\n\n\ndef typed(w: Worker):\n    return {call}\n"
+                ),
             ),
         ]);
-        assert_eq!(method_hits(&r, "typed()"), BTreeSet::from([target.to_string()]));
+        assert_eq!(
+            method_hits(&r, "typed()"),
+            BTreeSet::from([target.to_string()])
+        );
     }
     for (call, target) in [("self.run()", ".run()"), ("self._run()", "._run()")] {
         let f = Fixture::new();
@@ -133,7 +144,10 @@ fn python_member_calls_hit_the_spelled_method() {
                 ),
             ),
         ]);
-        assert_eq!(method_hits(&r, ".start()"), BTreeSet::from([target.to_string()]));
+        assert_eq!(
+            method_hits(&r, ".start()"),
+            BTreeSet::from([target.to_string()])
+        );
     }
 }
 
@@ -150,7 +164,10 @@ fn python_member_call_matching_no_method_exactly_is_not_guessed() {
     assert!(method_hits(&r, "viaclass()").is_empty());
     let f = Fixture::new();
     let r = f.extract_files(&[
-        ("worker.py", "class Worker:\n    def run(self):\n        return 1\n"),
+        (
+            "worker.py",
+            "class Worker:\n    def run(self):\n        return 1\n",
+        ),
         (
             "main.py",
             "from worker import Worker\n\n\ndef viaclass():\n    return Worker.run(None)\n",
@@ -163,14 +180,8 @@ fn python_member_call_matching_no_method_exactly_is_not_guessed() {
 fn python_member_calls_bind_python_definitions_only() {
     let f = Fixture::new();
     let r = f.extract_files(&[
-        (
-            "Inner.swift",
-            "class Inner {\n    func go() {}\n}\n",
-        ),
-        (
-            "main.py",
-            "def caller():\n    return Inner.go()\n",
-        ),
+        ("Inner.swift", "class Inner {\n    func go() {}\n}\n"),
+        ("main.py", "def caller():\n    return Inner.go()\n"),
     ]);
     assert!(
         !pairs(&r, "calls").contains(&("caller()".into(), ".go()".into())),
@@ -211,8 +222,12 @@ fn python_injected_parameter_types_reach_member_calls() {
         assert_eq!(e["confidence"], "INFERRED");
         assert_eq!(e["source_location"], line);
     }
-    let e = calls_edge(&r, "services_taskservice_complete_task", "models_task_complete")
-        .expect("the annotated method result types the local");
+    let e = calls_edge(
+        &r,
+        "services_taskservice_complete_task",
+        "models_task_complete",
+    )
+    .expect("the annotated method result types the local");
     assert_eq!(e["confidence"], "INFERRED");
     assert_eq!(e["source_location"], "L10");
 }
@@ -230,30 +245,60 @@ fn python_unknown_rebound_and_shadowed_results_do_not_guess() {
         let services = format!("{head}    def complete_task(self, key):\n{body}");
         let r = task_project(MODELS, REPOSITORY, &services);
         assert!(
-            calls_edge(&r, "services_taskservice_complete_task", "models_task_complete").is_none(),
+            calls_edge(
+                &r,
+                "services_taskservice_complete_task",
+                "models_task_complete"
+            )
+            .is_none(),
             "{body}"
         );
     }
-    for annotation in ["", " -> list[Task]", " -> Task | Other", " -> Task | int", " -> Task | Unknown"] {
+    for annotation in [
+        "",
+        " -> list[Task]",
+        " -> Task | Other",
+        " -> Task | int",
+        " -> Task | Unknown",
+    ] {
         let repository = REPOSITORY.replace(
             "    def get(self, key) -> Task:",
             &format!("    def get(self, key){annotation}:"),
         ) + "class Other:\n    def complete(self): pass\n";
         let r = task_project(MODELS, &repository, SERVICES);
         assert!(
-            calls_edge(&r, "services_taskservice_complete_task", "models_task_complete").is_none(),
+            calls_edge(
+                &r,
+                "services_taskservice_complete_task",
+                "models_task_complete"
+            )
+            .is_none(),
             "{annotation:?}"
         );
     }
     let untyped = SERVICES.replace("repository: TaskRepository", "repository");
     let r = task_project(MODELS, REPOSITORY, &untyped);
-    assert!(calls_edge(&r, "services_taskservice_create_task", "repository_taskrepository_add").is_none());
+    assert!(
+        calls_edge(
+            &r,
+            "services_taskservice_create_task",
+            "repository_taskrepository_add"
+        )
+        .is_none()
+    );
     let rebound = SERVICES.replace(
         "        self.repository = repository",
         "        repository = unknown()\n        self.repository = repository",
     );
     let r = task_project(MODELS, REPOSITORY, &rebound);
-    assert!(calls_edge(&r, "services_taskservice_create_task", "repository_taskrepository_add").is_none());
+    assert!(
+        calls_edge(
+            &r,
+            "services_taskservice_create_task",
+            "repository_taskrepository_add"
+        )
+        .is_none()
+    );
 }
 
 // --- Rust `use` scoped to the crate it names (#4699) -----------------------
@@ -267,7 +312,11 @@ fn rust_run(f: &Fixture, files: &[(&str, &str)], manifests: bool) -> Value {
         f.write(rel, text);
     }
     if manifests {
-        for rel in files.iter().map(|(rel, _)| *rel).filter(|r| r.ends_with(".rs")) {
+        for rel in files
+            .iter()
+            .map(|(rel, _)| *rel)
+            .filter(|r| r.ends_with(".rs"))
+        {
             let krate = rel.split('/').next().unwrap();
             let manifest = f.root.join(krate).join("Cargo.toml");
             if !manifest.exists() {
@@ -297,10 +346,14 @@ fn crate_of(file: Option<&str>) -> Option<String> {
 fn between<'a>(r: &'a Value, src: &str, dst: &str) -> Vec<&'a Value> {
     edges(r)
         .iter()
-        .filter(|e| !["contains", "case_of", "method"].contains(&e["relation"].as_str().unwrap_or("")))
         .filter(|e| {
-            crate_of(node(r, &e["source"]).and_then(|n| n["source_file"].as_str())).as_deref() == Some(src)
-                && crate_of(node(r, &e["target"]).and_then(|n| n["source_file"].as_str())).as_deref()
+            !["contains", "case_of", "method"].contains(&e["relation"].as_str().unwrap_or(""))
+        })
+        .filter(|e| {
+            crate_of(node(r, &e["source"]).and_then(|n| n["source_file"].as_str())).as_deref()
+                == Some(src)
+                && crate_of(node(r, &e["target"]).and_then(|n| n["source_file"].as_str()))
+                    .as_deref()
                     == Some(dst)
         })
         .collect()
@@ -312,20 +365,33 @@ fn rust_external_crate_use_does_not_reach_a_local_crate() {
         let f = Fixture::new();
         let r = rust_run(
             &f,
-            &[("a/src/lib.rs", decl), ("b/src/lib.rs", &format!("use serde_json::Value;\n\n{USE_VALUE}"))],
+            &[
+                ("a/src/lib.rs", decl),
+                (
+                    "b/src/lib.rs",
+                    &format!("use serde_json::Value;\n\n{USE_VALUE}"),
+                ),
+            ],
             true,
         );
         assert!(between(&r, "b", "a").is_empty());
     }
     let f = Fixture::new();
-    let r = rust_run(&f, &[("a/src/lib.rs", ENUM_A), ("b/src/lib.rs", USE_VALUE)], true);
+    let r = rust_run(
+        &f,
+        &[("a/src/lib.rs", ENUM_A), ("b/src/lib.rs", USE_VALUE)],
+        true,
+    );
     assert!(between(&r, "b", "a").is_empty());
     let f = Fixture::new();
     let r = rust_run(
         &f,
         &[
             ("a/src/lib.rs", "pub struct HashMap;\n"),
-            ("b/src/lib.rs", "use std::collections::HashMap;\n\npub fn f(m: &HashMap<u8, u8>) {}\n"),
+            (
+                "b/src/lib.rs",
+                "use std::collections::HashMap;\n\npub fn f(m: &HashMap<u8, u8>) {}\n",
+            ),
         ],
         true,
     );
@@ -352,7 +418,10 @@ fn rust_workspace_crate_use_reaches_the_named_crate() {
         &[
             ("osiris-types/src/lib.rs", "pub struct Config;\n"),
             ("server/src/lib.rs", "pub struct Config;\n"),
-            ("plugin/src/lib.rs", "use osiris_types::Config;\n\npub fn f(c: &Config) {}\n"),
+            (
+                "plugin/src/lib.rs",
+                "use osiris_types::Config;\n\npub fn f(c: &Config) {}\n",
+            ),
         ],
         true,
     );
@@ -365,7 +434,13 @@ fn rust_crate_less_binding_is_inferred_and_a_scoped_one_extracted() {
     let f = Fixture::new();
     let r = rust_run(
         &f,
-        &[("a/src/lib.rs", STRUCT_VALUE), ("b/src/lib.rs", &format!("use serde_json::Value;\n\n{USE_VALUE}"))],
+        &[
+            ("a/src/lib.rs", STRUCT_VALUE),
+            (
+                "b/src/lib.rs",
+                &format!("use serde_json::Value;\n\n{USE_VALUE}"),
+            ),
+        ],
         false,
     );
     let found = between(&r, "b", "a");
@@ -375,7 +450,10 @@ fn rust_crate_less_binding_is_inferred_and_a_scoped_one_extracted() {
     let r = rust_run(
         &f,
         &[
-            ("b/src/lib.rs", &format!("mod model;\nuse crate::model::Value;\n\n{USE_VALUE}")),
+            (
+                "b/src/lib.rs",
+                &format!("mod model;\nuse crate::model::Value;\n\n{USE_VALUE}"),
+            ),
             ("b/src/model.rs", STRUCT_VALUE),
         ],
         true,
@@ -394,7 +472,10 @@ fn rust_reexports_reach_the_defining_crate_only_when_public() {
             ("corelib/src/lib.rs", "pub struct FromRequestParts;\n"),
             ("other/src/lib.rs", "pub struct FromRequestParts;\n"),
             ("api/src/lib.rs", "pub use corelib::FromRequestParts;\n"),
-            ("plugin/src/lib.rs", "use api::FromRequestParts;\n\npub fn f(x: &FromRequestParts) {}\n"),
+            (
+                "plugin/src/lib.rs",
+                "use api::FromRequestParts;\n\npub fn f(x: &FromRequestParts) {}\n",
+            ),
         ],
         true,
     );
@@ -405,8 +486,14 @@ fn rust_reexports_reach_the_defining_crate_only_when_public() {
         &f,
         &[
             ("corelib/src/lib.rs", "pub struct FromRequestParts;\n"),
-            ("api/src/lib.rs", "pub(crate) use corelib::FromRequestParts;\n"),
-            ("plugin/src/lib.rs", "use api::FromRequestParts;\n\npub fn f(x: &FromRequestParts) {}\n"),
+            (
+                "api/src/lib.rs",
+                "pub(crate) use corelib::FromRequestParts;\n",
+            ),
+            (
+                "plugin/src/lib.rs",
+                "use api::FromRequestParts;\n\npub fn f(x: &FromRequestParts) {}\n",
+            ),
         ],
         true,
     );
@@ -427,8 +514,14 @@ fn zig_call_shape_picks_method_or_free_function() {
         "const S = struct {\n    fn helper(self: S) void { _ = self; }\n};\nfn helper() void {}\nfn caller() void {\n    helper();\n}\n",
     )]);
     let calls = pairs(&r, "calls");
-    assert!(calls.contains(&("caller()".into(), "helper()".into())), "{calls:?}");
-    assert!(!calls.contains(&("caller()".into(), ".helper()".into())), "{calls:?}");
+    assert!(
+        calls.contains(&("caller()".into(), "helper()".into())),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.contains(&("caller()".into(), ".helper()".into())),
+        "{calls:?}"
+    );
 }
 
 #[test]
@@ -439,7 +532,9 @@ fn dart_unnamed_extension_is_detected() {
         "extension on String {\n  int get twice => length * 2;\n}\n",
     )]);
     assert!(
-        nodes(&r).iter().any(|n| n["label"] == "Extension on String"),
+        nodes(&r)
+            .iter()
+            .any(|n| n["label"] == "Extension on String"),
         "{:?}",
         nodes(&r).iter().map(|n| &n["label"]).collect::<Vec<_>>()
     );
@@ -452,7 +547,10 @@ fn robot_duplicate_test_cases_get_their_own_nodes() {
         "suite.robot",
         "*** Test Cases ***\nSame Name\n    Log    one\nSame Name\n    Log    two\nOther\n    Log    three\n",
     )]);
-    let same = nodes(&r).iter().filter(|n| n["label"] == "Same Name").collect::<Vec<_>>();
+    let same = nodes(&r)
+        .iter()
+        .filter(|n| n["label"] == "Same Name")
+        .collect::<Vec<_>>();
     assert_eq!(same.len(), 2);
     assert_ne!(same[0]["id"], same[1]["id"]);
     assert!(nodes(&r).iter().any(|n| n["id"] == "suite_other"));
@@ -475,8 +573,19 @@ fn vbnet_external_namespaces_are_sourceless_stubs() {
         .iter()
         .filter(|n| n["label"] == "System.Collections.Generic")
         .collect::<Vec<_>>();
-    assert_eq!(namespaces.iter().filter_map(|n| n["id"].as_str()).collect::<BTreeSet<_>>().len(), 1);
-    assert!(namespaces.iter().all(|n| n["source_file"] == "" && n["source_location"] == ""));
+    assert_eq!(
+        namespaces
+            .iter()
+            .filter_map(|n| n["id"].as_str())
+            .collect::<BTreeSet<_>>()
+            .len(),
+        1
+    );
+    assert!(
+        namespaces
+            .iter()
+            .all(|n| n["source_file"] == "" && n["source_location"] == "")
+    );
 }
 
 #[test]
@@ -487,8 +596,9 @@ fn js_require_of_an_external_package_keeps_its_binding_node() {
         "const Plugin = require('some-plugin');\nclass Mine extends Plugin {}\nmodule.exports = { Mine };\n",
     )]);
     assert!(
-        edges(&r).iter().any(|e| e["relation"] == "inherits"
-            && label_of(&r, &e["source"]) == "Mine"),
+        edges(&r)
+            .iter()
+            .any(|e| e["relation"] == "inherits" && label_of(&r, &e["source"]) == "Mine"),
         "{:?}",
         pairs(&r, "inherits")
     );

@@ -387,7 +387,10 @@ pub fn pnpm_workspace_globs(p: &Path) -> Vec<String> {
                         .find(|&(i, c)| {
                             c == '#'
                                 && (i == 0
-                                    || value[..i].chars().next_back().is_some_and(char::is_whitespace))
+                                    || value[..i]
+                                        .chars()
+                                        .next_back()
+                                        .is_some_and(char::is_whitespace))
                         })
                         .map_or(value.len(), |(i, _)| i);
                     let kept = &value[..cut];

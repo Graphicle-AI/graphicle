@@ -545,17 +545,20 @@ impl<'tree> Extractor<'tree, '_> {
                     .flatten()
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| self.file.clone());
-                self.module_defs.get(&(own, callee.clone())).cloned().or_else(|| {
-                    self.call_scope_for(caller).iter().find_map(|scope| {
-                        let module = self
-                            .module_names
-                            .iter()
-                            .rev()
-                            .find(|(_, name)| name == scope)
-                            .map(|(id, _)| id.clone())?;
-                        self.module_defs.get(&(module, callee.clone())).cloned()
+                self.module_defs
+                    .get(&(own, callee.clone()))
+                    .cloned()
+                    .or_else(|| {
+                        self.call_scope_for(caller).iter().find_map(|scope| {
+                            let module = self
+                                .module_names
+                                .iter()
+                                .rev()
+                                .find(|(_, name)| name == scope)
+                                .map(|(id, _)| id.clone())?;
+                            self.module_defs.get(&(module, callee.clone())).cloned()
+                        })
                     })
-                })
             };
             if let Some(target) = target.filter(|s| !s.is_empty() && s.as_str() != caller) {
                 if self.pairs.insert((caller.into(), target.clone())) {

@@ -157,7 +157,10 @@ pub fn strip_generic_args(type_text: &str) -> &str {
 /// (Graphify 0.9.102, #3368).
 pub fn single_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
     let mut node = node?;
-    while matches!(node.kind(), "pointer_type" | "parenthesized_type" | "generic_type") {
+    while matches!(
+        node.kind(),
+        "pointer_type" | "parenthesized_type" | "generic_type"
+    ) {
         node = node
             .child_by_field_name("type")
             .or_else(|| children(node).find(|n| n.is_named()))?;
@@ -165,7 +168,11 @@ pub fn single_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<String>
     if node.kind() == "qualified_type" {
         let package = node.child_by_field_name("package")?;
         let name = node.child_by_field_name("name")?;
-        return Some(format!("{}.{}", read_text(package, source), read_text(name, source)));
+        return Some(format!(
+            "{}.{}",
+            read_text(package, source),
+            read_text(name, source)
+        ));
     }
     if node.kind() != "type_identifier" {
         return None;
@@ -180,7 +187,11 @@ pub fn single_type_name(node: Option<Node<'_>>, source: &[u8]) -> Option<String>
 /// unknown, which still shadows a package variable. Function bodies (`block`)
 /// and nested closures are left out; `package_only` also leaves out fields
 /// and every function. First binding in source order wins.
-pub fn receiver_type_table(root: Node<'_>, source: &[u8], package_only: bool) -> Map<String, Value> {
+pub fn receiver_type_table(
+    root: Node<'_>,
+    source: &[u8],
+    package_only: bool,
+) -> Map<String, Value> {
     let mut table = Map::new();
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
@@ -248,7 +259,8 @@ pub fn receiver_type_table(root: Node<'_>, source: &[u8], package_only: bool) ->
             }
             "range_clause" if children(n).any(|c| c.kind() == ":=") => {
                 if let Some(left) = n.child_by_field_name("left") {
-                    for name in children(left).filter(|c| c.is_named() && c.kind() == "identifier") {
+                    for name in children(left).filter(|c| c.is_named() && c.kind() == "identifier")
+                    {
                         table.entry(read_text(name, source)).or_insert(Value::Null);
                     }
                 }
@@ -934,7 +946,9 @@ impl<'tree> Extractor<'_, 'tree> {
                             member_receiver_type = typed(&*types, &operand);
                             // A type named as the receiver (`T.M`), unless a
                             // binding shadows it.
-                            if !types.contains_key(&operand) && self.local_type_names.contains(&operand) {
+                            if !types.contains_key(&operand)
+                                && self.local_type_names.contains(&operand)
+                            {
                                 member_receiver_type = Some(operand.clone());
                             }
                             member_receiver = Some(operand.clone());
@@ -953,7 +967,9 @@ impl<'tree> Extractor<'_, 'tree> {
                                     .child_by_field_name("operand")
                                     .map(|o| read_text(o, self.source))
                                     .unwrap_or_default();
-                                if self.local_type_names.contains(&name) && !types.contains_key(&name) {
+                                if self.local_type_names.contains(&name)
+                                    && !types.contains_key(&name)
+                                {
                                     member_receiver = Some(name.clone());
                                     member_receiver_type = Some(name);
                                 }
@@ -1013,7 +1029,9 @@ impl<'tree> Extractor<'_, 'tree> {
                     // "imported package" here, and other languages' member
                     // resolvers read `receiver`.
                     let bound = field_owner.is_none()
-                        && member_receiver.as_ref().is_some_and(|r| types.contains_key(r));
+                        && member_receiver
+                            .as_ref()
+                            .is_some_and(|r| types.contains_key(r));
                     self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":member,"language":"go","receiver":receiver,"member_receiver":member_receiver,"receiver_type":member_receiver_type,"receiver_bound":bound,"field_owner":field_owner,"import_path":import_path,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
                 }
             }
@@ -1042,7 +1060,8 @@ impl<'tree> Extractor<'_, 'tree> {
                         if !(self_bound
                             && inner.is_some_and(|i| {
                                 i.kind() == "identifier"
-                                    && Some(read_text(i, self.source).as_str()) == self_name.as_deref()
+                                    && Some(read_text(i, self.source).as_str())
+                                        == self_name.as_deref()
                             }))
                         {
                             continue;
@@ -1062,7 +1081,10 @@ impl<'tree> Extractor<'_, 'tree> {
         }
         for n in children(node) {
             self.calls(n, caller, scope, types);
-            if matches!(n.kind(), "short_var_declaration" | "var_spec" | "range_clause") {
+            if matches!(
+                n.kind(),
+                "short_var_declaration" | "var_spec" | "range_clause"
+            ) {
                 for (name, ty) in receiver_type_table(n, self.source, false) {
                     types.insert(name, ty);
                 }
@@ -1180,7 +1202,11 @@ pub fn extract_go(path: &Path) -> Value {
     ex.local_type_names = ex
         .nodes
         .iter()
-        .filter(|n| n["id"].as_str().is_some_and(|id| ex.callable_class.contains(id)))
+        .filter(|n| {
+            n["id"]
+                .as_str()
+                .is_some_and(|id| ex.callable_class.contains(id))
+        })
         .filter_map(|n| n["label"].as_str().map(str::to_string))
         .collect();
     // A method is reached through its receiver, never by bare name

@@ -79,7 +79,6 @@ fn pairs(result: &Value, relation: &str) -> BTreeSet<(String, String)> {
         .collect()
 }
 
-
 /// `(source label, target label, confidence)` of every call edge, labels
 /// without their parens.
 fn calls_with_confidence(result: &Value) -> BTreeSet<(String, String, String)> {
@@ -88,8 +87,14 @@ fn calls_with_confidence(result: &Value) -> BTreeSet<(String, String, String)> {
         .filter(|e| e["relation"] == "calls")
         .map(|e| {
             (
-                label_of(result, &e["source"]).trim_matches(['(', ')']).trim_start_matches('.').to_string(),
-                label_of(result, &e["target"]).trim_matches(['(', ')']).trim_start_matches('.').to_string(),
+                label_of(result, &e["source"])
+                    .trim_matches(['(', ')'])
+                    .trim_start_matches('.')
+                    .to_string(),
+                label_of(result, &e["target"])
+                    .trim_matches(['(', ')'])
+                    .trim_start_matches('.')
+                    .to_string(),
                 e["confidence"].as_str().unwrap_or("").to_string(),
             )
         })
@@ -107,29 +112,47 @@ fn rust_module_qualified_call_binds_the_named_module() {
         ("src/c.rs", "pub fn helper() {}\n"),
     ]);
     let calls = calls_with_confidence(&r);
-    assert!(calls.contains(&("run".into(), "helper".into(), "EXTRACTED".into())), "{calls:?}");
+    assert!(
+        calls.contains(&("run".into(), "helper".into(), "EXTRACTED".into())),
+        "{calls:?}"
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[
         ("src/a.rs", "pub fn run() { util::helper(); }\n"),
         ("src/util/mod.rs", "pub fn helper() {}\n"),
     ]);
-    assert!(calls_with_confidence(&r).contains(&("run".into(), "helper".into(), "EXTRACTED".into())));
+    assert!(calls_with_confidence(&r).contains(&(
+        "run".into(),
+        "helper".into(),
+        "EXTRACTED".into()
+    )));
     let f = Fixture::new();
     let r = f.extract_files(&[
         ("src/a.rs", "pub fn run() { b::helper(); }\n"),
         ("src/b.rs", "pub fn helper() {}\n"),
         ("src/b/mod.rs", "pub fn helper() {}\n"),
     ]);
-    assert!(!calls_with_confidence(&r).iter().any(|(s, t, _)| s == "run" && t == "helper"));
+    assert!(
+        !calls_with_confidence(&r)
+            .iter()
+            .any(|(s, t, _)| s == "run" && t == "helper")
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[
         ("src/a.rs", "use std::fs;\npub fn run() { fs::read(); }\n"),
         ("src/fs.rs", "pub fn read() {}\n"),
     ]);
-    assert!(!calls_with_confidence(&r).iter().any(|(s, t, _)| s == "run" && t == "read"));
+    assert!(
+        !calls_with_confidence(&r)
+            .iter()
+            .any(|(s, t, _)| s == "run" && t == "read")
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[
-        ("src/a.rs", "pub fn helper() {}\npub fn run() { crate::b::helper(); }\n"),
+        (
+            "src/a.rs",
+            "pub fn helper() {}\npub fn run() { crate::b::helper(); }\n",
+        ),
         ("src/b.rs", "pub fn helper() {}\n"),
     ]);
     let targets = edges(&r)
@@ -151,7 +174,11 @@ fn rust_calls_inside_macro_arguments_are_linked() {
     )]);
     let found = edges(&r)
         .iter()
-        .filter(|e| e["relation"] == "calls" && label_of(&r, &e["source"]) == "run()" && label_of(&r, &e["target"]) == "compute()")
+        .filter(|e| {
+            e["relation"] == "calls"
+                && label_of(&r, &e["source"]) == "run()"
+                && label_of(&r, &e["target"]) == "compute()"
+        })
         .collect::<Vec<_>>();
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0]["context"], "macro_argument_call");
@@ -182,7 +209,9 @@ fn python_bare_call_in_a_method_never_binds_a_method() {
         ),
     ]);
     assert!(
-        !edges(&r).iter().any(|e| e["relation"] == "calls" && e["source"] == e["target"]),
+        !edges(&r)
+            .iter()
+            .any(|e| e["relation"] == "calls" && e["source"] == e["target"]),
         "self loop"
     );
     let method = nodes(&r)
@@ -208,8 +237,16 @@ fn python_namespace_package_under_src_resolves_imports() {
             "from airflow.sql.hooks.sql import DbApiHook\n\n\nclass PgHook(DbApiHook):\n    def go(self):\n        return self.run()\n",
         ),
     ]);
-    assert!(pairs(&r, "inherits").contains(&("PgHook".into(), "DbApiHook".into())), "{:?}", pairs(&r, "inherits"));
-    assert!(pairs(&r, "calls").contains(&(".go()".into(), ".run()".into())), "{:?}", pairs(&r, "calls"));
+    assert!(
+        pairs(&r, "inherits").contains(&("PgHook".into(), "DbApiHook".into())),
+        "{:?}",
+        pairs(&r, "inherits")
+    );
+    assert!(
+        pairs(&r, "calls").contains(&(".go()".into(), ".run()".into())),
+        "{:?}",
+        pairs(&r, "calls")
+    );
 }
 
 // --- Go -------------------------------------------------------------------------
@@ -221,7 +258,11 @@ fn go_method_value_through_a_receiver_field() {
         "svc/server.go",
         "package svc\n\ntype Handlers struct{}\n\nfunc (h *Handlers) Health() {}\n\ntype Server struct {\n\th *Handlers\n}\n\nfunc wrap(f func()) {}\n\nfunc (s *Server) Routes() {\n\twrap(s.h.Health)\n}\n",
     )]);
-    assert!(pairs(&r, "indirect_call").contains(&(".Routes()".into(), ".Health()".into())), "{:?}", pairs(&r, "indirect_call"));
+    assert!(
+        pairs(&r, "indirect_call").contains(&(".Routes()".into(), ".Health()".into())),
+        "{:?}",
+        pairs(&r, "indirect_call")
+    );
 }
 
 #[test]
@@ -232,7 +273,11 @@ fn go_package_var_references_the_types_it_names() {
         "package wire\n\ntype Iface interface{}\ntype Impl struct{}\n\nfunc Bind(a, b interface{}) int { return 0 }\n\nvar Set = Bind(new(Iface), new(*Impl))\n",
     )]);
     let refs = pairs(&r, "references");
-    assert!(refs.contains(&("set.go".into(), "Iface".into())) && refs.contains(&("set.go".into(), "Impl".into())), "{refs:?}");
+    assert!(
+        refs.contains(&("set.go".into(), "Iface".into()))
+            && refs.contains(&("set.go".into(), "Impl".into())),
+        "{refs:?}"
+    );
 }
 
 // --- C++ ----------------------------------------------------------------------
@@ -248,22 +293,41 @@ fn cpp_receivers_typed_from_parameters_and_fields() {
         ),
     ]);
     let calls = pairs(&r, "calls");
-    assert!(calls.contains(&("ParamRef()".into(), ".Touch()".into())), "{calls:?}");
-    assert!(calls.contains(&(".Poke()".into(), ".Touch()".into())), "{calls:?}");
+    assert!(
+        calls.contains(&("ParamRef()".into(), ".Touch()".into())),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&(".Poke()".into(), ".Touch()".into())),
+        "{calls:?}"
+    );
 }
 
 #[test]
 fn cpp_local_callable_value_stays_local() {
-    for declaration in ["auto box = [](int x){return x;};", "std::function<int(int)> box = [](int x){return x;};"] {
+    for declaration in [
+        "auto box = [](int x){return x;};",
+        "std::function<int(int)> box = [](int x){return x;};",
+    ] {
         let f = Fixture::new();
         let r = f.extract_files(&[
-            ("a.cpp", &format!("\nint run(){{{declaration} return box(1);}}")),
+            (
+                "a.cpp",
+                &format!("\nint run(){{{declaration} return box(1);}}"),
+            ),
             ("b.cpp", "int box(int x){return x;}"),
         ]);
-        assert!(!pairs(&r, "calls").iter().any(|(s, _)| s == "run()"), "{:?}", pairs(&r, "calls"));
+        assert!(
+            !pairs(&r, "calls").iter().any(|(s, _)| s == "run()"),
+            "{:?}",
+            pairs(&r, "calls")
+        );
     }
     let f = Fixture::new();
-    let r = f.extract_files(&[("a.cpp", "void box() {}\nvoid run() {{auto box=[]{}; box();} box();}")]);
+    let r = f.extract_files(&[(
+        "a.cpp",
+        "void box() {}\nvoid run() {{auto box=[]{}; box();} box();}",
+    )]);
     let calls = edges(&r)
         .iter()
         .filter(|e| e["relation"] == "calls")
