@@ -31,6 +31,8 @@ graphicle-graph benchmark
 
 `query` takes `--budget N` (default 2000 tokens) and `--depth N` (1 to 6, default 2); a project sets its own defaults with `query_budget=N` and `query_depth=N` in `.graphiclerc`, and explicit options win. Answers list source before tests and documents, file by file.
 
+For a question about why a node bridges communities or has unusually many edges, the neighbour listing shows only code that already has an edge to it. Pick one or two literal, distinctive things the hub does (a constant it wraps, a string it returns, the exact computation in its body), search the corpus for that text in files with no edge to the hub, and report hits separately as bypasses: code that reimplements the hub instead of calling it. A shared utility is often clustered into its heaviest consumer's community, so say so when its community label names another node.
+
 Use `--graph PATH` to target another graph. Preserve provenance and distinguish extracted relationships from inferred ones. A missing graph result does not prove the underlying relationship is absent.
 
 Content and repositories:
