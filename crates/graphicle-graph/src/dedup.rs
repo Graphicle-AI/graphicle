@@ -338,6 +338,17 @@ pub fn is_reference_stub(node: &Value) -> bool {
 /// required), saved semantic evidence from a file that has no AST node under
 /// that id is kept the same way even without the marker, a taken name gets a
 /// `__2`, `__3`... suffix, and AST edges keep their endpoints.
+/// `_namespace_reference_stub_collisions(..., preserve_saved_semantics=True)`
+/// as a watch reconcile calls it on the merged fresh and preserved records
+/// (Graphify 0.9.101).
+pub fn namespace_saved_semantic_collisions(
+    nodes: &mut [Value],
+    edges: &mut [Value],
+    hyperedges: Option<&mut [Value]>,
+    root: &Path,
+) {
+    namespace_reference_stub_collisions_in(nodes, edges, hyperedges, Some(root), true);
+}
 fn namespace_reference_stub_collisions_in<R: Record, E: EdgeItem<Record = R>>(
     nodes: &mut [Value],
     edges: &mut [E],

@@ -858,6 +858,13 @@ pub fn check_shrink_with(
                 }
             },
             ids: &|| after.iter().map(|n| n["id"].to_string()).collect(),
+            stripped: &|| {
+                if has_saved_semantic(old) {
+                    stripped_semantic_provenance(&old.saved, after)
+                } else {
+                    vec![]
+                }
+            },
         },
         deletions,
         rebuilt,
@@ -880,6 +887,61 @@ struct ShrinkCandidate<'a> {
     nodes: usize,
     lost: &'a dyn Fn(&[String]) -> Vec<Value>,
     ids: &'a dyn Fn() -> BTreeSet<String>,
+    /// Ids of saved, independently evidenced semantic nodes still present
+    /// whose provenance fields the candidate emptied.
+    stripped: &'a dyn Fn() -> Vec<String>,
+}
+/// The provenance half of `_check_shrink` (Graphify 0.9.101, #4896): a saved
+/// semantic node with independent evidence whose id survives but whose
+/// rationale, source URL, author, contributor, capture time or metadata the
+/// candidate emptied (an AST extractor minted the same id) is lost data.
+fn stripped_semantic_provenance(saved: &[Value], new: &[Value]) -> Vec<String> {
+    let protected = saved
+        .iter()
+        .filter(|n| {
+            !build::is_ast_tier(n)
+                && n.as_object()
+                    .is_some_and(crate::build_normalize::has_independent_semantic_evidence)
+        })
+        .collect::<Vec<_>>();
+    if protected.is_empty() {
+        return vec![];
+    }
+    let by_id: std::collections::HashMap<&str, &Value> = new
+        .iter()
+        .filter_map(|n| Some((n.get("id")?.as_str()?, n)))
+        .collect();
+    let empty = |v: Option<&Value>| match v {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.is_empty(),
+        Some(Value::Array(a)) => a.is_empty(),
+        Some(Value::Object(o)) => o.is_empty(),
+        Some(_) => false,
+    };
+    const FIELDS: [&str; 6] = [
+        "rationale",
+        "source_url",
+        "author",
+        "contributor",
+        "captured_at",
+        "metadata",
+    ];
+    protected
+        .into_iter()
+        .filter(|old| {
+            let Some(fresh) = old
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| by_id.get(id))
+            else {
+                return false; // a missing id is the lost-node check's
+            };
+            FIELDS
+                .iter()
+                .any(|f| !empty(old.get(*f)) && empty(fresh.get(*f)))
+        })
+        .map(|old| crate::python_compat::string(old.get("id").unwrap_or(&Value::Null)))
+        .collect()
 }
 /// [`check_shrink_with`] over what it reads of the candidate.
 #[allow(clippy::too_many_arguments)]
@@ -910,6 +972,15 @@ fn shrink_allowed(
         if new.nodes < old.nodes.len() {
             messages.push(shrink_warning(new.nodes, old.nodes.len()));
         }
+        return false;
+    }
+    let stripped = (new.stripped)();
+    if !stripped.is_empty() {
+        messages.push(format!(
+            "[graphicle] WARNING: Refusing to overwrite — saved semantic provenance field(s) stripped from {} node(s): {}.",
+            stripped.len(),
+            stripped.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
+        ));
         return false;
     }
     if new.nodes >= old.nodes.len() {
@@ -1520,6 +1591,7 @@ impl Candidate {
                     nodes: nodes.len(),
                     lost: &|_| vec![],
                     ids: &|| nodes.iter().map(|n| n.id.to_string()).collect(),
+                    stripped: &|| vec![],
                 },
                 deletions,
                 rebuilt,

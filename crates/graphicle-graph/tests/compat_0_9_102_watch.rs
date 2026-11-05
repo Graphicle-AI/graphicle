@@ -340,3 +340,28 @@ fn a_code_only_graph_stays_code_only_on_rebuilds() {
     assert!(nodes_of(&graph(root), "README.md").is_empty());
     assert!(!nodes_of(&graph(root), "app.py").is_empty());
 }
+
+// Graphify 0.9.101, #4896: test_metadata_shrink_guard_rejects_same_id_ast_overwrite.
+// A node count increase never compensates for lost semantic rationale.
+#[test]
+fn shrink_guard_rejects_a_same_id_ast_overwrite() {
+    let saved = json!({"nodes": [
+        {"id": "yaml_node", "_origin": "semantic",
+         "source_file": "config/settings.yaml", "rationale": "Reviewed"}
+    ]});
+    let damaged = json!({"nodes": [
+        {"id": "yaml_node", "_origin": "ast",
+         "source_file": "config/settings.yaml", "source_location": "L1"},
+        {"id": "new_function", "_origin": "ast"}
+    ]});
+    let none = std::collections::BTreeSet::new();
+    let mut messages = vec![];
+    assert!(!watch::check_shrink(
+        false, &saved, &damaged, false, None, &none, &none, &mut messages
+    ));
+    assert!(messages.iter().any(|m| m.contains("provenance field(s) stripped")));
+    let kept = json!({"nodes": [saved["nodes"][0].clone(), {"id": "new_function"}]});
+    assert!(watch::check_shrink(
+        false, &saved, &kept, false, None, &none, &none, &mut vec![]
+    ));
+}

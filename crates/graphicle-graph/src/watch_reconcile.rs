@@ -432,6 +432,11 @@ pub struct Plan {
     /// `(source, target, relation)` of evicted stored edges whose
     /// `reverse_import` stamp moves onto the fresh edge (#4839).
     carried_reverse: BTreeSet<(String, String, String)>,
+    /// Ids of stored semantic nodes with independent evidence that a fresh
+    /// AST node may not take over (#4896).
+    protected: HashSet<String>,
+    /// Stored non-AST ids of the `<id>__ast_<hash>` form.
+    stored_non_ast_aliases: HashSet<String>,
 }
 /// The part of [`reconcile`] that reads only the stored graph, the file
 /// system and the ignore rules, never the new extraction: every filter is a
@@ -454,12 +459,13 @@ pub fn plan(
         .iter()
         .map(|p| sp.absolute_identity(&p.to_string_lossy(), o.project_root))
         .collect::<BTreeSet<_>>();
+    // Re-extraction owns only a rebuilt source's AST-tier nodes (the node
+    // filter below); adding rebuilt sources to this provenance-blind eviction
+    // would drop the semantic nodes of the very file an incremental update
+    // re-extracts (Graphify 0.9.101, #4896).
     let mut node_evicted = o.deleted_identities.clone();
     let mut edge_evicted = node_evicted.clone();
     let mut hyper_evicted = node_evicted.clone();
-    if !o.full {
-        node_evicted.extend(rebuilt.iter().cloned());
-    }
     let mut excluded = BTreeSet::new();
     let mut newly = BTreeSet::new();
     let (mut excluded_count, mut newly_count) = (0, 0);
@@ -575,6 +581,31 @@ pub fn plan(
             newly.insert(id);
         }
     }
+    // Stored semantic nodes with evidence of their own that an AST id
+    // collision must not replace (Graphify 0.9.101, #4896, #4927), and the
+    // stored non-AST ids an `__ast_` successor could clash with.
+    let mut last_by_id: HashMap<&str, &Value> = HashMap::new();
+    for n in existing_nodes {
+        if let Some(id) = n.get("id").and_then(Value::as_str) {
+            last_by_id.insert(id, n);
+        }
+    }
+    let mut protected = HashSet::new();
+    let mut stored_non_ast_aliases = HashSet::new();
+    for (id, n) in last_by_id {
+        if build::is_ast_tier(n) {
+            continue;
+        }
+        if id.contains("__ast_") {
+            stored_non_ast_aliases.insert(id.to_owned());
+        }
+        if n.as_object()
+            .is_some_and(crate::build_normalize::has_independent_semantic_evidence)
+            && !sp.evicted(n, &node_evicted)
+        {
+            protected.insert(id.to_owned());
+        }
+    }
     let mut messages = vec![];
     if !newly.is_empty() {
         messages.push(format!(
@@ -590,7 +621,7 @@ pub fn plan(
         .filter(|n| {
             !(tier_is_ast(n)
                 && ((text(n, "source_file").is_empty() && (o.full || o.code_files.is_empty()))
-                    || (o.full && sp.evicted(n, &rebuilt) && !sp.evicted(n, &excluded))))
+                    || (sp.evicted(n, &rebuilt) && !sp.evicted(n, &excluded))))
                 && (!sp.evicted(n, &node_evicted) || sp.evicted(n, &excluded))
         })
         .cloned()
@@ -668,6 +699,80 @@ pub fn plan(
         edges,
         hyper,
         carried_reverse,
+        protected,
+        stored_non_ast_aliases,
+    }
+}
+/// The `_origin` a stored node has once upstream's `_backfill_origin` ran:
+/// semantic unless stamped otherwise, AST-tier or an external stub.
+fn stored_origin_is_semantic(n: &Value) -> bool {
+    match n.get("_origin") {
+        Some(origin) => origin == "semantic",
+        None => !build::is_external_stub(n) && !build::is_ast_tier(n),
+    }
+}
+/// The `__ast_` successor of every fresh node whose id a protected stored
+/// semantic node holds, or why the collision cannot be rekeyed safely.
+fn ast_collision_successors(
+    result: &Value,
+    protected: &HashSet<String>,
+    stored_non_ast_aliases: &HashSet<String>,
+) -> std::result::Result<BTreeMap<String, String>, String> {
+    use sha2::{Digest, Sha256};
+    let fresh_nodes: &[Value] = result["nodes"].as_array().map_or(&[], Vec::as_slice);
+    let mut collisions = BTreeMap::new();
+    let mut fresh_ids: Option<HashSet<&str>> = None;
+    for fresh in fresh_nodes {
+        let Some(nid) = fresh.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        if !protected.contains(nid) {
+            continue;
+        }
+        if fresh.get("_origin").and_then(Value::as_str) != Some("ast") {
+            return Err(format!(
+                "Cannot safely reconcile same-ID semantic and non-AST node: {nid}"
+            ));
+        }
+        let digest = format!("{:x}", Sha256::digest(nid.as_bytes()));
+        let alias = format!("{nid}__ast_{}", &digest[..16]);
+        let ids = fresh_ids.get_or_insert_with(|| {
+            fresh_nodes
+                .iter()
+                .filter_map(|n| n.get("id").and_then(Value::as_str))
+                .collect()
+        });
+        if ids.contains(alias.as_str()) || stored_non_ast_aliases.contains(&alias) {
+            return Err(format!("AST ID collision cannot be safely rekeyed: {nid}"));
+        }
+        collisions.insert(nid.to_owned(), alias);
+    }
+    Ok(collisions)
+}
+/// Moves the fresh nodes, edges and hyperedge members onto their successors.
+fn rekey_fresh(result: &mut Value, collisions: &BTreeMap<String, String>) {
+    for node in result["nodes"].as_array_mut().into_iter().flatten() {
+        if let Some(alias) = node.get("id").and_then(Value::as_str).and_then(|id| collisions.get(id)) {
+            node["id"] = json!(alias);
+        }
+    }
+    for edge in result["edges"].as_array_mut().into_iter().flatten() {
+        for field in ["source", "target"] {
+            if let Some(alias) = edge.get(field).and_then(Value::as_str).and_then(|id| collisions.get(id)) {
+                edge[field] = json!(alias);
+            }
+        }
+    }
+    for hyperedge in result["hyperedges"].as_array_mut().into_iter().flatten() {
+        for field in ["nodes", "members", "node_ids"] {
+            if let Some(members) = hyperedge.get_mut(field).and_then(Value::as_array_mut) {
+                for member in members.iter_mut() {
+                    if let Some(alias) = member.as_str().and_then(|id| collisions.get(id)) {
+                        *member = json!(alias);
+                    }
+                }
+            }
+        }
     }
 }
 /// [`reconcile`] of a [`plan`] with the new extraction `result`.
@@ -691,6 +796,8 @@ pub fn finish(
         edges,
         hyper,
         carried_reverse,
+        protected,
+        stored_non_ast_aliases,
     } = plan;
     if !carried_reverse.is_empty() {
         for edge in result["edges"].as_array_mut().into_iter().flatten() {
@@ -702,6 +809,31 @@ pub fn finish(
     }
     o.deleted_paths.extend(deleted_paths);
     messages.extend(planned);
+    // An extractor upgrade can mint an AST node with exactly the id of a
+    // saved, independently evidenced semantic node (Graphify 0.9.101, #4896,
+    // #4927). The semantic id stays; the fresh AST node moves to
+    // `<id>__ast_<sha256(id)[:16]>`, the same successor for every record of
+    // that id, and only the fresh edges and hyperedges follow it.
+    if !protected.is_empty() {
+        match ast_collision_successors(&result, &protected, &stored_non_ast_aliases) {
+            Err(err) => {
+                // Upstream falls back to the fresh extraction alone; the
+                // write guard still checks it against the stored graph.
+                messages.push(format!(
+                    "reconcile of existing graph failed (ValueError: {err}); proceeding with fresh extraction only."
+                ));
+                return Ok(result);
+            }
+            Ok(collisions) if !collisions.is_empty() => {
+                rekey_fresh(&mut result, &collisions);
+                messages.push(format!(
+                    "preserved {} independent semantic node(s) from AST ID collision",
+                    collisions.len()
+                ));
+            }
+            Ok(_) => {}
+        }
+    }
     // With nothing left to keep from the stored graph (a full rebuild of a
     // code graph), the new ids and endpoints that only filter those records
     // are not collected.
@@ -709,19 +841,28 @@ pub fn finish(
     let mut preserved = vec![];
     let mut kept_edges = vec![];
     let mut allids = BTreeSet::new();
+    let mut newids = BTreeSet::new();
     if keeps {
-        let newids = result["nodes"]
+        newids = result["nodes"]
             .as_array()
             .into_iter()
             .flatten()
             .map(|n| text(n, "id"))
             .collect::<BTreeSet<_>>();
+        // A sourced semantic node keeps its place beside a fresh AST node of
+        // the same id; the namespacing below separates or drops it
+        // (Graphify 0.9.101).
         preserved = nodes
             .into_iter()
-            .filter(|n| !newids.contains(&text(n, "id")))
+            .filter(|n| {
+                !newids.contains(&text(n, "id"))
+                    || (stored_origin_is_semantic(n)
+                        && n.get("source_file").is_some_and(build::truthy))
+            })
             .collect::<Vec<_>>();
         allids = newids
-            .into_iter()
+            .iter()
+            .cloned()
             .chain(preserved.iter().map(|n| text(n, "id")))
             .collect::<BTreeSet<_>>();
         kept_edges = edges
@@ -811,12 +952,26 @@ pub fn finish(
     for v in preserved.iter_mut().chain(&mut edges).chain(&mut hyper) {
         sp.rebase_preserved(v);
     }
+    let shares_ids = preserved.iter().any(|n| newids.contains(&text(n, "id")))
+        || preserved.iter().any(crate::dedup::is_reference_stub);
     let mut ns = take_items(&mut result, "nodes");
     ns.extend(preserved);
     let mut es = take_items(&mut result, "edges");
     es.extend(edges);
     let mut hs = take_items(&mut result, "hyperedges");
     hs.extend(hyper);
+    if shares_ids {
+        // Saved semantic evidence from another file is kept under a
+        // namespaced id; an unattributed or same-source copy must not
+        // overwrite a fresh AST fact (Graphify 0.9.101).
+        crate::dedup::namespace_saved_semantic_collisions(
+            &mut ns,
+            &mut es,
+            Some(hs.as_mut_slice()),
+            o.project_root,
+        );
+        ns.retain(|n| !newids.contains(&text(n, "id")) || build::is_ast_tier(n));
+    }
     // Moved in rather than copied through the serializer, in `json!`'s key order.
     let mut out = serde_json::Map::new();
     out.insert("nodes".into(), Value::Array(ns));
@@ -963,6 +1118,109 @@ mod tests {
                 .map(|h| h["id"].as_str().unwrap().to_owned())
                 .collect();
             assert_eq!(hyper, vec!["control-edge".to_owned()]);
+        }
+    }
+
+    fn reconcile_plain(
+        root: &Path,
+        existing: Value,
+        fresh: Value,
+        code: &[PathBuf],
+        full: bool,
+    ) -> (Value, Vec<String>) {
+        let out = root.join("graphify-out");
+        fs::create_dir_all(&out).unwrap();
+        let mut deleted = BTreeSet::new();
+        let ids = BTreeSet::new();
+        let mut messages = vec![];
+        let result = reconcile(
+            &existing,
+            fresh,
+            &mut ReconcileOptions {
+                out: &out,
+                project_root: root,
+                watch_root: root,
+                code_files: code,
+                extract_targets: code,
+                full,
+                deleted_paths: &mut deleted,
+                deleted_identities: &ids,
+            },
+            |_, _| false,
+            &mut messages,
+        )
+        .unwrap();
+        (result, messages)
+    }
+
+    // Graphify 0.9.101, #4896: test_sourceless_ast_collision_keeps_semantic_tier.
+    #[test]
+    fn sourceless_ast_collision_keeps_semantic_tier() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(tmp.path()).unwrap();
+        fs::write(root.join("notes.md"), "## Record\n").unwrap();
+        let existing = json!({
+            "nodes": [{"id": "memory", "label": "Memory", "_origin": "semantic",
+                       "file_type": "document", "source_file": "notes.md",
+                       "rationale": "Reviewed evidence"}],
+            "links": [], "hyperedges": [],
+        });
+        let fresh = json!({"nodes": [{"id": "memory", "_origin": "ast", "label": "Memory",
+            "file_type": "code", "source_file": "", "source_location": ""}],
+            "edges": [], "hyperedges": []});
+        let (result, messages) = reconcile_plain(&root, existing, fresh, &[], true);
+        let nodes = result["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2, "{nodes:?}");
+        let memory = nodes.iter().find(|n| n["id"] == "memory").unwrap();
+        assert_eq!(memory["rationale"], "Reviewed evidence");
+        assert_eq!(memory["_origin"], "semantic");
+        assert!(nodes.iter().any(|n| n["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("memory__ast_")));
+        assert!(messages.iter().any(|m| m.contains("independent semantic node")));
+    }
+
+    // Graphify 0.9.101, #4896 and #4927:
+    // test_multiple_ast_records_colliding_with_reviewed_semantic_id.
+    #[test]
+    fn multiple_ast_records_colliding_with_a_reviewed_semantic_id() {
+        for full in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let root = fs::canonicalize(tmp.path()).unwrap();
+            fs::write(root.join("notes.md"), "## Reviewed node\n").unwrap();
+            let (a, b) = (root.join("a.py"), root.join("b.py"));
+            fs::write(&a, "def one(): pass\n").unwrap();
+            fs::write(&b, "def two(): pass\n").unwrap();
+            let existing = json!({
+                "nodes": [{"id": "shared_registry", "label": "Registry", "_origin": "semantic",
+                           "file_type": "document", "source_file": "notes.md",
+                           "rationale": "Original reviewed registry"}],
+                "links": [], "hyperedges": [],
+            });
+            let records = [&a, &b]
+                .iter()
+                .map(|p| json!({"id": "shared_registry", "_origin": "ast", "label": "Registry",
+                    "file_type": "code", "source_file": p.to_string_lossy(),
+                    "source_location": "L1"}))
+                .collect::<Vec<_>>();
+            let fresh = json!({"nodes": records, "edges": [
+                {"source": "shared_registry", "target": "ast_target",
+                 "source_file": a.to_string_lossy(), "_origin": "ast"}], "hyperedges": []});
+            let (result, _) = reconcile_plain(&root, existing, fresh, &[a.clone(), b.clone()], full);
+            let nodes = result["nodes"].as_array().unwrap();
+            let semantic = nodes.iter().find(|n| n["id"] == "shared_registry").unwrap();
+            assert_eq!(semantic["rationale"], "Original reviewed registry");
+            let aliases = nodes
+                .iter()
+                .filter(|n| n["_origin"] == "ast" && n["label"] == "Registry")
+                .map(|n| n["id"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>();
+            assert_eq!(aliases.len(), 2, "full {full}");
+            assert_eq!(aliases[0], aliases[1]);
+            assert!(aliases[0].starts_with("shared_registry__ast_"));
+            let edge = &result["edges"][0];
+            assert_eq!(edge["source"], json!(aliases[0]));
         }
     }
 }
