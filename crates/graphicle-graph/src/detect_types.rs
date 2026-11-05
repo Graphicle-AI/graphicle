@@ -436,6 +436,45 @@ pub fn has_coverage_artifacts(path: &Path) -> bool {
     strings("_COVERAGE_ARTIFACT_FILES").any(|s| path.join(s).is_file())
         || strings("_COVERAGE_ARTIFACT_DIRS").any(|s| path.join(s).is_dir())
 }
+/// Files only MSBuild and NuGet write: `obj/` gets the restore outputs and
+/// a legacy project's FileListAbsolute.txt, `bin/` the runtime manifests and
+/// PDBs. `.dll`/`.exe` are left out: a checked-in `tools/bin/` of vendored
+/// binaries is source (Graphify 0.9.96).
+const MSBUILD_OBJ_MARKERS: [&str; 4] = [
+    "project.assets.json",
+    ".nuget.dgspec.json",
+    ".nuget.g.props",
+    ".filelistabsolute.txt",
+];
+const MSBUILD_BIN_MARKERS: [&str; 3] = [".deps.json", ".runtimeconfig.json", ".pdb"];
+/// `_has_msbuild_markers`: a file ending in one of `markers` sits within
+/// `max_depth` folder levels below `dir`. The walk is bounded by 4000
+/// entries scanned.
+pub fn has_msbuild_markers(dir: &Path, markers: &[&str], max_depth: usize) -> bool {
+    let mut budget = 4000i64;
+    let mut pending = vec![(dir.to_path_buf(), 0usize)];
+    while let Some((current, depth)) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&current) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            budget -= 1;
+            if budget <= 0 {
+                return false;
+            }
+            let path = entry.path();
+            if path.is_file() {
+                let name = entry.file_name().to_string_lossy().to_lowercase();
+                if markers.iter().any(|m| name.ends_with(m)) {
+                    return true;
+                }
+            } else if depth < max_depth && entry.file_type().is_ok_and(|t| t.is_dir()) {
+                pending.push((path, depth + 1));
+            }
+        }
+    }
+    false
+}
 pub fn has_build_output_markers(path: &Path) -> bool {
     if path.join("production").is_dir() || path.join("_next").is_dir() {
         return true;
@@ -585,6 +624,15 @@ pub fn is_noise_dir(part: &str, parent: Option<&Path>) -> bool {
     }
     if part == "out" {
         return parent.is_some_and(|p| has_build_output_markers(&p.join(part)));
+    }
+    // `obj`/`bin`: MSBuild's intermediate and output folders, or real source
+    // (Rust's src/bin/, script folders); pruned only on MSBuild's own
+    // artifacts (Graphify 0.9.96).
+    if part == "obj" {
+        return parent.is_some_and(|p| has_msbuild_markers(&p.join(part), &MSBUILD_OBJ_MARKERS, 1));
+    }
+    if part == "bin" {
+        return parent.is_some_and(|p| has_msbuild_markers(&p.join(part), &MSBUILD_BIN_MARKERS, 3));
     }
     if part == "snapshots" {
         return parent.is_some_and(|p| {

@@ -265,6 +265,9 @@ impl Runtime {
             .unwrap_or_else(|| cfg::max_retry_depth(&self.config.env, 3));
         let mut merged = json!({"nodes":[],"edges":[],"hyperedges":[],"input_tokens":0,"output_tokens":0,"failed_chunks":0});
         let mut results = BTreeMap::new();
+        // Graphify 0.9.96 (#3616): the chunks that raised before returning a
+        // response, so reconcile does not call their files model omissions.
+        let mut failed = BTreeSet::new();
         let run = |index: usize| {
             let mut d = Diagnostics::default();
             let start = Instant::now();
@@ -302,7 +305,8 @@ impl Runtime {
                         index + 1
                     ));
                     let n = merged["failed_chunks"].as_u64().unwrap_or(0) + 1;
-                    merged["failed_chunks"] = json!(n)
+                    merged["failed_chunks"] = json!(n);
+                    failed.insert(index);
                 }
             }
         };
@@ -342,7 +346,7 @@ impl Runtime {
         if merged["failed_chunks"].as_u64().unwrap_or(0) > 0 {
             d.stderr.push(format!("[graphicle] WARNING: {}/{total} semantic chunk(s) failed — see errors above. Partial results returned.",merged["failed_chunks"]))
         }
-        reconcile(&mut merged, &chunks, &o.extract.root, d);
+        reconcile_failed(&mut merged, &chunks, &o.extract.root, &failed, d);
         llm::stamp_semantic_origin(&mut merged);
         Ok(merged)
     }
@@ -397,6 +401,24 @@ fn checkpoint(
         .extend(cache.warnings[warnings_before..].iter().cloned());
 }
 pub fn reconcile(merged: &mut Value, chunks: &[Vec<Unit>], root: &Path, d: &mut Diagnostics) {
+    reconcile_failed(merged, chunks, root, &BTreeSet::new(), d)
+}
+/// `reconcile` where `failed` names the chunks that raised: their files never
+/// got a response, so they are warned about apart from the files the model
+/// omitted (Graphify 0.9.96, #3616). `uncovered_files` lists both.
+pub fn reconcile_failed(
+    merged: &mut Value,
+    chunks: &[Vec<Unit>],
+    root: &Path,
+    failed: &BTreeSet<usize>,
+    d: &mut Diagnostics,
+) {
+    let failed_files: HashSet<PathBuf> = failed
+        .iter()
+        .filter_map(|&i| chunks.get(i))
+        .flatten()
+        .map(|u| unit_path(u).to_owned())
+        .collect();
     let dispatched: BTreeSet<PathBuf> = chunks
         .iter()
         .flatten()
@@ -499,18 +521,107 @@ pub fn reconcile(merged: &mut Value, chunks: &[Vec<Unit>], root: &Path, d: &mut 
             .map(|p| p.to_string_lossy())
             .collect::<Vec<_>>()
     );
-    if !uncovered.is_empty() {
-        let shown = uncovered
+    let (unanswered, omitted): (Vec<&PathBuf>, Vec<&PathBuf>) = uncovered
+        .iter()
+        .copied()
+        .partition(|p| failed_files.contains(*p));
+    let names = |files: &[&PathBuf]| {
+        let shown = files
             .iter()
             .take(5)
             .map(|p| p.file_name().unwrap_or_default().to_string_lossy())
             .collect::<Vec<_>>()
             .join(", ");
-        let more = if uncovered.len() > 5 {
-            format!(" (+{} more)", uncovered.len() - 5)
+        let more = if files.len() > 5 {
+            format!(" (+{} more)", files.len() - 5)
         } else {
             String::new()
         };
-        d.stderr.push(format!("[graphicle] WARNING: {}/{} dispatched file(s) produced no nodes and are absent from the graph: {shown}{more}. The model returned a response but omitted them; a re-run will retry them.",uncovered.len(),dispatched.len()));
+        format!("{shown}{more}")
+    };
+    if !unanswered.is_empty() {
+        d.stderr.push(format!("[graphicle] WARNING: {}/{} dispatched file(s) produced no nodes and are absent from the graph: {}. Their chunk failed before returning a response (see errors above); a re-run will retry them.",unanswered.len(),dispatched.len(),names(&unanswered)));
+    }
+    if !omitted.is_empty() {
+        d.stderr.push(format!("[graphicle] WARNING: {}/{} dispatched file(s) produced no nodes and are absent from the graph: {}. The model returned a response but omitted them; a re-run will retry them.",omitted.len(),dispatched.len(),names(&omitted)));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Graphify 0.9.96 (#3616): a chunk that raised never got a response, so
+    /// its files are not called model omissions; both kinds stay uncovered so
+    /// a re-run retries them. Serial and pooled paths alike.
+    #[test]
+    fn files_of_a_failed_chunk_are_not_reported_as_model_omissions() {
+        for workers in [1, 2] {
+            let dir = tempfile::tempdir().unwrap();
+            for name in ["failed.md", "omitted.md", "kept.md"] {
+                std::fs::write(dir.path().join(name), format!("# {name}\n")).unwrap();
+            }
+            let files: Vec<Unit> = ["failed.md", "omitted.md", "kept.md"]
+                .iter()
+                .map(|n| Unit::Path(dir.path().join(n)))
+                .collect();
+            let rt = Runtime::new(crate::llm::Configuration::builtins(
+                [("GRAPHICLE_NO_INCREMENTAL_CACHE".into(), "1".into())].into(),
+            ));
+            let o = CorpusOptions {
+                extract: ExtractOptions {
+                    backend: Some("kimi".into()),
+                    root: dir.path().to_path_buf(),
+                    ..Default::default()
+                },
+                token_budget: None,
+                chunk_size: 1,
+                max_concurrency: workers,
+                ..Default::default()
+            };
+            let call = |c: &[Unit], _: &ExtractOptions, _: &mut Diagnostics| -> Result<Value> {
+                let path = unit_path(&c[0]).to_path_buf();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                if name == "failed.md" {
+                    return Err(Error::runtime("OpenAI package not installed."));
+                }
+                let nodes = if name == "omitted.md" {
+                    json!([])
+                } else {
+                    json!([{"id": "k", "source_file": path.to_string_lossy(), "file_type": "document"}])
+                };
+                Ok(json!({"nodes": nodes, "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}))
+            };
+            let mut d = Diagnostics::default();
+            let result = rt
+                .corpus_using(
+                    &files,
+                    &o,
+                    &mut ExtractionCache::default(),
+                    &mut d,
+                    &mut |_| {},
+                    &call,
+                )
+                .unwrap();
+            let uncovered: Vec<String> = result["uncovered_files"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| p.as_str().unwrap().to_string())
+                .collect();
+            assert_eq!(uncovered.len(), 2, "{uncovered:?}");
+            let err = d.stderr.join("\n");
+            let failed_line = err
+                .lines()
+                .find(|l| l.contains("failed.md") && l.contains("produced no nodes"))
+                .unwrap_or_default();
+            assert!(failed_line.contains("Their chunk failed before returning a response"), "{err}");
+            assert!(!failed_line.contains("omitted them"), "{err}");
+            let omitted_line = err
+                .lines()
+                .find(|l| l.contains("omitted.md") && l.contains("produced no nodes"))
+                .unwrap_or_default();
+            assert!(omitted_line.contains("The model returned a response but omitted them"), "{err}");
+        }
     }
 }

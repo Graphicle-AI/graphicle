@@ -158,7 +158,14 @@ pub fn parse_ci(rollup: &[Value]) -> &'static str {
         "FAILURE"
     } else if rollup
         .iter()
-        .any(|r| matches!(r["status"].as_str(), Some("IN_PROGRESS" | "QUEUED")))
+        // Every CheckStatusState but COMPLETED is a run with no conclusion
+        // yet; WAITING, REQUESTED and PENDING were missed (Graphify 0.9.96).
+        .any(|r| {
+            matches!(
+                r["status"].as_str(),
+                Some("REQUESTED" | "QUEUED" | "IN_PROGRESS" | "WAITING" | "PENDING")
+            )
+        })
         || any(&["PENDING", "EXPECTED"])
     {
         "PENDING"

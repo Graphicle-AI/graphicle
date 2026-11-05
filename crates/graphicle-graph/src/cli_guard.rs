@@ -793,7 +793,7 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(
-            context.contains("artifacts/graphicle/graph.json exists"),
+            context.contains("knowledge graph at artifacts/graphicle/graph.json"),
             "{context}"
         );
         assert!(!context.contains(".graphicle/graph.json"), "{context}");
@@ -803,6 +803,34 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(super::nudge_for_out_with(stale, "/shared/out").contains("/shared/out/graph.json"));
+    }
+
+    #[test]
+    fn hook_reminders_state_facts_not_commands() {
+        // test_hook_nudge_wording.py (Graphify 0.9.96, #2202): commands in a
+        // tool result read like a prompt injection.
+        let commanding = |text: &str| {
+            let lower = text.to_lowercase();
+            lower.contains("mandatory")
+                || lower.contains("subagent prompt")
+                || text
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w.eq_ignore_ascii_case("must"))
+        };
+        for name in ["_SEARCH_NUDGE", "_READ_NUDGE", "_READ_NUDGE_STALE"] {
+            let d: serde_json::Value =
+                serde_json::from_str(super::DATA[name].as_str().unwrap()).unwrap();
+            let text = d["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(!commanding(text), "{name}: {text}");
+        }
+        let d: serde_json::Value =
+            serde_json::from_str(super::DATA["_READ_DENY"].as_str().unwrap()).unwrap();
+        let reason = d["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(!reason.to_lowercase().contains("subagent"), "{reason}");
     }
 
     #[test]

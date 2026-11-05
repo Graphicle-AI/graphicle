@@ -211,7 +211,13 @@ pub fn bind_node_evidence(
         if ids.is_empty() || ids.iter().any(|id| text.contains(&id.to_lowercase())) {
             continue;
         }
-        if (n["confidence"].is_null() || matches!(n["confidence"].as_str(), Some("" | "EXTRACTED")))
+        // Matched case-insensitively, as the build's confidence fold reads it:
+        // a mis-cased `"extracted"` is checked like `"EXTRACTED"` (Graphify
+        // 0.9.96).
+        if (n["confidence"].is_null()
+            || n["confidence"]
+                .as_str()
+                .is_some_and(|c| c.is_empty() || c.eq_ignore_ascii_case("EXTRACTED")))
             && !truth(&n["verification"])
         {
             n["verification"] = json!("unverified");

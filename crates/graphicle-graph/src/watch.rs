@@ -1816,8 +1816,13 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         .filter_map(Value::as_str)
         .map(PathBuf::from)
         .collect::<Vec<_>>();
+    // A document that detect() reclassified as a paper (Markdown notes quoting
+    // an arXiv abstract) gets the same quick-scan when it has an AST
+    // extractor; PDFs and plain .txt have none, so the filter keeps them out
+    // (Graphify 0.9.96, #4750).
     let docs = items(&detected["files"], "document")
         .iter()
+        .chain(items(&detected["files"], "paper").iter())
         .filter_map(Value::as_str)
         .map(PathBuf::from)
         .filter(|p| extract::get_extractor(p).is_some())
@@ -2684,7 +2689,14 @@ pub fn watch(
             let config_event = std::mem::take(&mut config_changed);
             announce(&format!("{} file(s) changed", batch.len()));
             if config_event || batch_triggers_rebuild(&batch) {
-                match rebuild(path, &RebuildOptions::default()) {
+                // Each rebuild is bounded by GRAPHICLE_REBUILD_TIMEOUT, as
+                // the hook rebuild is (Graphify 0.9.96, #2173).
+                let timeout = crate::hooks_runtime::RebuildTimeout::arm("watch");
+                let rebuilt = match timeout {
+                    Ok(_guard) => rebuild(path, &RebuildOptions::default()),
+                    Err(e) => Err(e),
+                };
+                match rebuilt {
                     Ok(r) => {
                         for m in r.messages {
                             announce(&m);

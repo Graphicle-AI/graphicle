@@ -417,38 +417,60 @@ fn stop_descendants() {
             .status();
     }
 }
+/// Bounds one rebuild by `GRAPHICLE_REBUILD_TIMEOUT` seconds (600 by
+/// default, 0 disables): past it, a watchdog thread stops the rebuild's
+/// child processes and exits the process, since nothing can interrupt the
+/// rebuilding thread. Dropping the guard disarms it. The hook rebuild uses
+/// it, and since Graphify 0.9.96 (#2173) each watch-loop rebuild too.
+pub struct RebuildTimeout {
+    completed: std::sync::Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+}
+impl RebuildTimeout {
+    pub fn arm(label: &'static str) -> Result<Self> {
+        let timeout = std::env::var("GRAPHICLE_REBUILD_TIMEOUT")
+            .unwrap_or("600".into())
+            .parse::<u64>()
+            .map_err(|_| "Invalid GRAPHICLE_REBUILD_TIMEOUT")?;
+        let completed =
+            std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        if timeout > 0 {
+            let state = completed.clone();
+            std::thread::spawn(move || {
+                let (lock, wake) = &*state;
+                let (g, _) = wake
+                    .wait_timeout_while(
+                        lock.lock().unwrap(),
+                        Duration::from_secs(timeout),
+                        |done| !*done,
+                    )
+                    .unwrap();
+                if !*g {
+                    eprintln!("[graphicle {label}] graphicle rebuild exceeded {timeout}s");
+                    stop_descendants();
+                    std::process::exit(1);
+                }
+            });
+        }
+        Ok(Self { completed })
+    }
+}
+impl Drop for RebuildTimeout {
+    fn drop(&mut self) {
+        let (lock, wake) = &*self.completed;
+        if let Ok(mut done) = lock.lock() {
+            *done = true;
+        }
+        wake.notify_all();
+    }
+}
 pub fn run_worker(event: &str) -> Result<watch::RebuildResult> {
     watch::apply_resource_limits();
-    let timeout = std::env::var("GRAPHICLE_REBUILD_TIMEOUT")
-        .unwrap_or("600".into())
-        .parse::<u64>()
-        .map_err(|_| "Invalid GRAPHICLE_REBUILD_TIMEOUT")?;
-    let completed = std::sync::Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-    if timeout > 0 {
-        let state = completed.clone();
-        std::thread::spawn(move || {
-            let (lock, wake) = &*state;
-            let (g, _) = wake
-                .wait_timeout_while(lock.lock().unwrap(), Duration::from_secs(timeout), |done| {
-                    !*done
-                })
-                .unwrap();
-            if !*g {
-                eprintln!("[graphicle hook] graphicle rebuild exceeded {timeout}s");
-                stop_descendants();
-                std::process::exit(1);
-            }
-        });
-    }
-    let result = run_rebuild(
+    let _timeout = RebuildTimeout::arm("hook")?;
+    run_rebuild(
         &std::env::current_dir().map_err(crate::Error::from)?,
         event,
         None,
-    );
-    let (lock, wake) = &*completed;
-    *lock.lock().unwrap() = true;
-    wake.notify_all();
-    result
+    )
 }
 pub fn dispatch(r: &Value) -> Result<Value> {
     let s = |k| r.get(k).and_then(Value::as_str).unwrap_or("");

@@ -117,13 +117,29 @@ pub fn ollama_native_response(data: &Value) -> Value {
 /// `_ollama_request_extras`: `num_ctx` sized to the prompt (the
 /// GRAPHICLE_OLLAMA_NUM_CTX setting wins, with warnings for a bad or too
 /// small value) and `keep_alive`.
+/// `_estimate_prompt_tokens`: characters past Latin Extended (CJK,
+/// Devanagari, Cyrillic, ...) count one token each, the rest four characters
+/// per token (Graphify 0.9.96).
+pub(crate) fn estimate_prompt_tokens(text: &str) -> i64 {
+    let (mut total, mut non_latin) = (0i64, 0i64);
+    for c in text.chars() {
+        total += 1;
+        if c > '\u{024F}' {
+            non_latin += 1
+        }
+    }
+    (total - non_latin) / 4 + non_latin
+}
 fn ollama_request_extras(
     env: &Environment,
     user: &str,
+    system: &str,
     max_tokens: i64,
     d: &mut Diagnostics,
 ) -> (i64, Value) {
-    let input = user.chars().count() as i64 / 4 + 400;
+    // The system prompt is measured, not assumed to be 400 tokens (Graphify
+    // 0.9.96).
+    let input = estimate_prompt_tokens(user) + estimate_prompt_tokens(system);
     let auto = (input + max_tokens + 2000).clamp(8192, 131072);
     let raw = cfg::trim(cfg::get(env, "GRAPHICLE_OLLAMA_NUM_CTX"));
     let n = if raw.is_empty() {
@@ -299,6 +315,11 @@ pub fn plan(
             messages.push(json!({"role":"user","content":if extract.is_some()&&backend!="azure"{source::openai_content(user,images)}else{json!(user)}}));
             request.body =
                 json!({"model":model,"messages":messages,"max_completion_tokens":max_tokens});
+            // DeepSeek documents `max_tokens` and ignores
+            // `max_completion_tokens` (Graphify 0.9.96).
+            if backend == "deepseek" {
+                request.body = json!({"model":model,"messages":request.body["messages"].take(),"max_tokens":max_tokens});
+            }
             let default = c
                 .get("temperature")
                 .map(|v| v.as_f64())
@@ -371,7 +392,16 @@ pub fn plan(
                 // with its own extra_body has opted out.
                 let ollama = backend == "ollama" && explicit.is_none();
                 if ollama {
-                    let (n, keep_alive) = ollama_request_extras(env, user, max_tokens, d);
+                    // Extraction sizes for its system prompt too; a plain
+                    // call (community labels) sends none (Graphify 0.9.96).
+                    let system_prompt = extract.map(crate::llm::extraction_system);
+                    let (n, keep_alive) = ollama_request_extras(
+                        env,
+                        user,
+                        system_prompt.as_deref().unwrap_or(""),
+                        max_tokens,
+                        d,
+                    );
                     // Merge, don't assign: GRAPHICLE_DISABLE_THINKING may have
                     // set the body above (Graphify 69d87e0, #3988).
                     let mut merged = extra
@@ -682,5 +712,30 @@ mod tests {
         assert_eq!(request.body["thinking"], json!({"type": "disabled"}));
         assert_eq!(request.body["options"], json!({"num_ctx": 8192}));
         assert_eq!(request.body["keep_alive"], json!("30m"));
+    }
+    #[test]
+    fn ollama_num_ctx_counts_non_latin_text_and_the_system_prompt() {
+        // test_ollama_ctx_sizing.py (Graphify 0.9.96): chars/4 undercounts
+        // CJK and Devanagari, and the system prompt is measured.
+        assert_eq!(estimate_prompt_tokens("abcdefgh"), 2);
+        assert_eq!(estimate_prompt_tokens("\u{4e2d}\u{6587}abcd"), 3);
+        let config = Configuration::builtins(crate::llm_config::Environment::new());
+        let user = "\u{4e2d}".repeat(20_000);
+        let mut d = Diagnostics::default();
+        let options = CallOptions {
+            backend: "ollama",
+            model: Some("m"),
+            api_key: None,
+            user: &user,
+            images: &[],
+            max_tokens: 100,
+            extract: Some(false),
+        };
+        let request = plan(&config, options, &mut d).unwrap();
+        let system = estimate_prompt_tokens(&crate::llm::extraction_system(false));
+        assert_eq!(
+            request.body["options"]["num_ctx"],
+            json!(20_000 + system + 100 + 2000)
+        );
     }
 }

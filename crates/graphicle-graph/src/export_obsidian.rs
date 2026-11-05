@@ -168,19 +168,26 @@ pub fn to_obsidian(
             lines.push("## Connections".into());
             adjacent.sort_by_cached_key(|j| node_label(graph, *j));
             for j in adjacent {
-                let e = build::edge_data(graph, &n.id, &graph.nodes[j].id)?;
-                let relation = e.get("relation").unwrap_or(&Value::Null);
-                let relation = if e.get("relation").is_none() {
-                    String::new()
-                } else {
-                    string(relation)
-                };
-                let confidence = e.get("confidence").cloned().unwrap_or(json!("EXTRACTED"));
-                lines.push(format!(
-                    "- [[{}]] - `{relation}` [{}]",
-                    filenames[j],
-                    string(&confidence)
-                ));
+                // One bullet per parallel edge, sorted by relation and
+                // confidence so the note stays byte-stable (Graphify 0.9.96).
+                let mut rows = build::edge_datas(graph, &n.id, &graph.nodes[j].id)?
+                    .into_iter()
+                    .map(|e| {
+                        let relation = e.get("relation").map(string).unwrap_or_default();
+                        let confidence = e
+                            .get("confidence")
+                            .map(string)
+                            .unwrap_or_else(|| "EXTRACTED".into());
+                        (relation, confidence)
+                    })
+                    .collect::<Vec<_>>();
+                rows.sort();
+                for (relation, confidence) in rows {
+                    lines.push(format!(
+                        "- [[{}]] - `{relation}` [{confidence}]",
+                        filenames[j]
+                    ));
+                }
             }
             lines.push(String::new());
         }

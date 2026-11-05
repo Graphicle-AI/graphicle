@@ -114,6 +114,63 @@ fn paths_for(data: &Value, key: &str) -> Vec<PathBuf> {
 fn tokens(v: &Value, key: &str) -> i64 {
     v[key].as_i64().unwrap_or(0)
 }
+/// `_record_extract_cost` (Graphify 0.9.96, #1769): add this run's token use
+/// to `cost.json`, the ledger the skill writes. A ledger that does not read
+/// as `{"runs": [...], "total_input_tokens": int, "total_output_tokens":
+/// int}` is left alone rather than replaced with one run.
+pub(crate) fn record_extract_cost(
+    out_dir: &Path,
+    input_tokens: i64,
+    output_tokens: i64,
+    files: i64,
+    stderr: &mut Vec<String>,
+) {
+    let cost_path = out_dir.join("cost.json");
+    let mut cost = json!({"runs": [], "total_input_tokens": 0, "total_output_tokens": 0});
+    if cost_path.exists() {
+        let read = std::fs::read_to_string(&cost_path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()))
+            .and_then(|mut v| {
+                let Some(o) = v.as_object_mut() else {
+                    return Err("unexpected layout".to_string());
+                };
+                o.entry("runs").or_insert(json!([]));
+                o.entry("total_input_tokens").or_insert(json!(0));
+                o.entry("total_output_tokens").or_insert(json!(0));
+                let int = |k: &str| o[k].as_i64().is_some() && !o[k].is_boolean();
+                if !o["runs"].is_array() || !int("total_input_tokens") || !int("total_output_tokens") {
+                    return Err("unexpected layout".to_string());
+                }
+                Ok(v)
+            });
+        match read {
+            Ok(v) => cost = v,
+            Err(e) => {
+                stderr.push(format!(
+                    "[graphicle extract] warning: could not read {}, not updating it: {e}",
+                    cost_path.display()
+                ));
+                return;
+            }
+        }
+    }
+    cost["runs"].as_array_mut().unwrap().push(json!({
+        "date": crate::python_datetime::DateTime::now().isoformat(),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "files": files,
+    }));
+    for (k, n) in [("total_input_tokens", input_tokens), ("total_output_tokens", output_tokens)] {
+        cost[k] = json!(cost[k].as_i64().unwrap_or(0) + n);
+    }
+    if let Err(e) = crate::paths::write_json_atomic(&cost_path, &cost, Some(2), false) {
+        stderr.push(format!(
+            "[graphicle extract] warning: could not write {}: {e}",
+            cost_path.display()
+        ));
+    }
+}
 fn context(
     existing: &Value,
     root: &Path,
@@ -341,6 +398,7 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         (detection, stored)
     });
     let detection = detection?;
+    let total_files = detection["total_files"].as_i64().unwrap_or(0);
     let files = detection.get("files").cloned().unwrap_or(json!({}));
     let selection = if incremental {
         &detection["new_files"]
@@ -1030,6 +1088,13 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
                 tokens(&merged, "output_tokens") as f64
             )
         ));
+        record_extract_cost(
+            &dir,
+            tokens(&merged, "input_tokens"),
+            tokens(&merged, "output_tokens"),
+            total_files,
+            &mut d.stderr,
+        );
     }
     stages.mark("write", &mut d.stderr);
     stages.total(&mut d.stderr);
@@ -1039,6 +1104,36 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    /// Graphify 0.9.96 (#1769): each run is added to cost.json; an existing
+    /// ledger is kept and an unreadable one is not overwritten.
+    #[test]
+    fn extract_runs_are_added_to_the_cost_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let cost_path = dir.path().join("cost.json");
+        let mut stderr = vec![];
+        super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
+        super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
+        let cost: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cost_path).unwrap()).unwrap();
+        assert_eq!(cost["runs"].as_array().unwrap().len(), 2);
+        assert_eq!(cost["runs"][0]["files"], 2);
+        assert!(cost["runs"][0]["date"].as_str().is_some_and(|s| !s.is_empty()));
+        assert_eq!((cost["total_input_tokens"].clone(), cost["total_output_tokens"].clone()), (json!(200), json!(80)));
+        let earlier = json!({"date": "2026-01-01T00:00:00+00:00", "input_tokens": 5000, "output_tokens": 0, "files": 493});
+        std::fs::write(&cost_path, json!({"runs": [earlier], "total_input_tokens": 5000, "total_output_tokens": 0}).to_string()).unwrap();
+        super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
+        let cost: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cost_path).unwrap()).unwrap();
+        assert_eq!(cost["runs"][0], earlier);
+        assert_eq!(cost["total_input_tokens"], 5100);
+        assert!(stderr.is_empty(), "{stderr:?}");
+        for bad in ["{not json", "[]", "null", "{\"runs\": {}}", "{\"runs\": [], \"total_input_tokens\": \"5\"}", "{\"runs\": [], \"total_input_tokens\": null}"] {
+            std::fs::write(&cost_path, bad).unwrap();
+            super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
+            assert_eq!(std::fs::read_to_string(&cost_path).unwrap(), bad);
+        }
+    }
 
     /// Graphify 0.9.85 (#4101): only a run with omitted files and no
     /// truncated or hollow chunk gets the coverage note.

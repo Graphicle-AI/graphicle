@@ -223,10 +223,23 @@ fn rename_references<R: Record, E: EdgeItem<Record = R>>(
     renames: &HashMap<(String, String), String>,
     root: Option<&Path>,
 ) {
+    rename_references_skipping(items, renames, root, false)
+}
+/// [`rename_references`]; with `skip_ast`, an item whose `_origin` is `ast`
+/// keeps its endpoints.
+fn rename_references_skipping<R: Record, E: EdgeItem<Record = R>>(
+    items: &mut [E],
+    renames: &HashMap<(String, String), String>,
+    root: Option<&Path>,
+    skip_ast: bool,
+) {
     for item in items.iter_mut() {
         let Some(item) = item.record_mut() else {
             continue;
         };
+        if skip_ast && item.get("_origin").and_then(Value::as_str) == Some("ast") {
+            continue;
+        }
         let k = collision_key(item.get("source_file"), root);
         for end in ["source", "target"] {
             if let Some(new) = item
@@ -256,6 +269,125 @@ fn rename_references<R: Record, E: EdgeItem<Record = R>>(
         if let Some(members) = renamed {
             item.put("nodes", Value::Array(members));
         }
+    }
+}
+/// `_is_reference_stub`: semantic extraction marked the node as one it
+/// emitted only for a cross-document reference (Graphify 0.9.96, #4738).
+pub fn is_reference_stub(node: &Value) -> bool {
+    field(node, "metadata")
+        .and_then(Value::as_object)
+        .and_then(|m| m.get("graphicle_reference_stub").or_else(|| m.get("graphify_reference_stub")))
+        == Some(&Value::Bool(true))
+}
+/// `_namespace_reference_stub_collisions` (Graphify 0.9.96, #4738; 0.9.101):
+/// a marked reference stub whose id collides with another file's node is
+/// kept as `<citing-file stem>__ref__<id>`, and the citing file's edges
+/// follow it. With `preserve_saved_semantics` (AST-only updates, a scan root
+/// required), saved semantic evidence from a file that has no AST node under
+/// that id is kept the same way even without the marker, a taken name gets a
+/// `__2`, `__3`... suffix, and AST edges keep their endpoints.
+fn namespace_reference_stub_collisions_in<R: Record, E: EdgeItem<Record = R>>(
+    nodes: &mut [Value],
+    edges: &mut [E],
+    hyperedges: Option<&mut [Value]>,
+    root: Option<&Path>,
+    preserve_saved_semantics: bool,
+) {
+    let key = |node: &Value| collision_key(field(node, "source_file"), root);
+    let mut by_id: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+    let mut order: Vec<String> = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if let Some(nid) = field(node, "id").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            let entry = by_id.entry(nid.to_owned()).or_default();
+            if entry.is_empty() {
+                order.push(nid.to_owned());
+            }
+            entry.push(i);
+        }
+    }
+    let mut taken: HashSet<String> = nodes
+        .iter()
+        .filter(|n| field(n, "id").is_some_and(crate::build_normalize::truthy))
+        .map(id_text)
+        .collect();
+    let origin = |node: &Value| field(node, "_origin").and_then(Value::as_str).map(str::to_owned);
+    let mut renames: HashMap<(String, String), String> = HashMap::new();
+    for nid in &order {
+        let members = &by_id[nid];
+        if members.iter().map(|&i| key(&nodes[i])).collect::<HashSet<_>>().len() < 2 {
+            continue;
+        }
+        let ast_sources: HashSet<String> = members
+            .iter()
+            .filter(|&&i| origin(&nodes[i]).as_deref() == Some("ast"))
+            .map(|&i| key(&nodes[i]))
+            .collect();
+        let stubs: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let node = &nodes[i];
+                is_reference_stub(node)
+                    || (preserve_saved_semantics
+                        && root.is_some()
+                        && origin(node).as_deref() == Some("semantic")
+                        && !key(node).is_empty()
+                        && !ast_sources.is_empty()
+                        && !ast_sources.contains(&key(node)))
+            })
+            .collect();
+        if stubs.is_empty() {
+            continue;
+        }
+        let source_keys: BTreeSet<String> = stubs.iter().map(|&i| key(&nodes[i])).collect();
+        if source_keys.contains("") {
+            continue;
+        }
+        let mut candidates: std::collections::BTreeMap<String, String> = source_keys
+            .iter()
+            .filter(|k| !full_stem(k).is_empty())
+            .map(|k| (k.clone(), format!("{}__ref__{nid}", full_stem(k))))
+            .collect();
+        if candidates.len() != source_keys.len() {
+            continue;
+        }
+        if candidates.values().collect::<HashSet<_>>().len() != candidates.len() {
+            continue;
+        }
+        if candidates.values().any(|c| taken.contains(c)) {
+            if !preserve_saved_semantics {
+                continue;
+            }
+            let mut reserved: HashSet<String> = taken.clone();
+            reserved.extend(candidates.values().cloned());
+            for (_, value) in candidates.iter_mut() {
+                let base = value.clone();
+                let mut candidate = base.clone();
+                let mut suffix = 2;
+                while taken.contains(&candidate) || (candidate != base && reserved.contains(&candidate)) {
+                    candidate = format!("{base}__{suffix}");
+                    suffix += 1;
+                }
+                reserved.insert(candidate.clone());
+                *value = candidate;
+            }
+        }
+        for (source_key, candidate) in candidates {
+            taken.insert(candidate.clone());
+            renames.insert((nid.clone(), source_key), candidate);
+        }
+    }
+    if renames.is_empty() {
+        return;
+    }
+    for node in nodes.iter_mut() {
+        if let Some(new) = renames.get(&(id_text(node), key(node))) {
+            node["id"] = json!(new);
+        }
+    }
+    rename_references_skipping(edges, &renames, root, preserve_saved_semantics);
+    if let Some(hyperedges) = hyperedges {
+        rename_references_skipping(hyperedges, &renames, root, preserve_saved_semantics);
     }
 }
 /// `_disambiguate_defining_collisions` (0.9.85, #4281): keep `x.py` and
@@ -712,6 +844,16 @@ pub fn merge_missing_attributes(survivor: &Value, duplicate: &Value) -> Value {
 }
 pub fn report_id_collision(nid: &str, survivor: &Value, losers: &[Value]) -> Vec<String> {
     let mut messages = Vec::new();
+    // A module or namespace node (`import Foundation`) is one shared entity
+    // every importing file mints: a group of one such type under one label is
+    // no collision (Graphify 0.9.96).
+    let kind = survivor.get("type").unwrap_or(&Value::Null);
+    if matches!(kind.as_str(), Some("module" | "namespace"))
+        && losers.iter().all(|n| n.get("type").unwrap_or(&Value::Null) == kind)
+        && losers.iter().all(|n| n.get("label") == survivor.get("label"))
+    {
+        return messages;
+    }
     let keep_file = source(survivor);
     let keep_label = text(survivor, "label");
     for loser in losers {
@@ -1127,6 +1269,13 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
         hyperedges.as_deref_mut(),
         root.as_deref(),
         &mut output.stderr,
+    );
+    namespace_reference_stub_collisions_in(
+        &mut nodes,
+        &mut edges,
+        hyperedges.as_deref_mut(),
+        root.as_deref(),
+        false,
     );
     let mut mentioned = mentions_in(&nodes, &edges, root.as_deref());
     mentioned.extend(slice_references(&nodes, root.as_deref()));

@@ -369,13 +369,18 @@ pub fn coerce_non_string_ids(extraction: &mut Value) {
         .into_iter()
         .flatten()
     {
-        for v in he
-            .get_mut("nodes")
-            .and_then(Value::as_array_mut)
-            .into_iter()
-            .flatten()
-        {
-            coerce_in_place(v);
+        // The `members`/`node_ids` aliases are coerced too: they fold onto
+        // `nodes` only after the node ids have become strings (Graphify
+        // 0.9.96).
+        for key in ["nodes", "members", "node_ids"] {
+            for v in he
+                .get_mut(key)
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                coerce_in_place(v);
+            }
         }
     }
 }
