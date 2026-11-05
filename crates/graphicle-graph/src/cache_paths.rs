@@ -28,8 +28,19 @@ pub fn ps(p: &Path) -> String {
 pub fn resolve(p: &Path) -> Result<PathBuf> {
     fsutil::resolve_missing(p).map_err(crate::Error::from)
 }
+/// `_normalize_path`: a path for cache identity without folding case
+/// (Graphify 0.9.101, #4925). Windows spellings differ in separators and
+/// the extended-length prefix, but case is not equivalent on every volume a
+/// Windows process can reach, so the key keeps the caller's case.
 pub fn normalize(p: &Path) -> PathBuf {
-    fsutil::path_key(p)
+    #[cfg(windows)]
+    {
+        fsutil::plain(p).to_string_lossy().replace('/', "\\").into()
+    }
+    #[cfg(not(windows))]
+    {
+        p.to_path_buf()
+    }
 }
 pub fn absolute(p: &Path) -> Result<PathBuf> {
     let p = if p.is_absolute() {
