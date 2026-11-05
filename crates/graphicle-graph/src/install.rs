@@ -218,9 +218,13 @@ pub fn command_executable(o: &Options) -> String {
         crate::hooks::shell_quote(&exe)
     }
 }
+/// With `strict`, both hooks carry `--strict`, so Read and a dedicated Grep
+/// share one block per session; Bash and Glob stay advisory (Graphify
+/// 0.9.102).
 pub fn claude_hooks(o: &Options) -> Value {
     let exe = command_executable(o);
-    json!([{"matcher":"Bash|Grep","hooks":[{"type":"command","command":format!("{exe} hook-guard search"),"timeout":10}]},{"matcher":"Read|Glob","hooks":[{"type":"command","command":format!("{exe} hook-guard read{}",if o.strict{" --strict"}else{""}),"timeout":10}]}])
+    let strict = if o.strict { " --strict" } else { "" };
+    json!([{"matcher":"Bash|Grep","hooks":[{"type":"command","command":format!("{exe} hook-guard search{strict}"),"timeout":10}]},{"matcher":"Read|Glob","hooks":[{"type":"command","command":format!("{exe} hook-guard read{}",if o.strict{" --strict"}else{""}),"timeout":10}]}])
 }
 pub fn gemini_hook(o: &Options) -> Value {
     json!({"matcher":"read_file|list_directory","hooks":[{"type":"command","command":format!("{} hook-guard gemini",command_executable(o))}]})

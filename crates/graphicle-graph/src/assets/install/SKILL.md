@@ -5,6 +5,8 @@ description: Build, update, query, and export a knowledge graph of source code, 
 
 Use this skill when the user invokes `/graphicle`, asks for a knowledge graph, or wants architecture and dependency context from an existing graph.
 
+When you are choosing a tool yourself (not when the user invoked `/graphicle`), a graph is worth building when you expect many questions against this corpus, the corpus is large or unfamiliar, or the question needs links text search cannot see (documents to code, communities, import cycles). If a graph already exists, query it. With no graph, one targeted lookup in an ordinary-sized codebase is faster with a plain text search; mention that a graph can be built. Code extraction is fast and local; semantic extraction runs the model over every document.
+
 Run `graphicle-graph --version` to check the installation. All processing runs in the native executable. Use `graphicle-graph --help` for the command inventory, and read [the workflow reference](references/workflows.md) for advanced operations.
 
 1. Choose the input directory from the user's request; default to `.`. Pass it to commands as one single-quoted argument and never splice it into other shell code, so a path containing shell metacharacters cannot execute. Inspect an existing `.graphicle/GRAPH_REPORT.md` or query its graph before a rebuild.

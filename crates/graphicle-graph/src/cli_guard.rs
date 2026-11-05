@@ -539,19 +539,41 @@ pub fn bash_search(cmd: &str) -> bool {
             break;
         }
     }
+    // A quoted span becomes one placeholder word: never the executable, but
+    // a quoted sed/awk program is still an operand (Graphify 0.9.101).
     text = regex::Regex::new(r"'[^']*'")
         .unwrap()
-        .replace_all(&text, " ")
+        .replace_all(&text, "Q")
         .into_owned();
     text = regex::Regex::new(r#""[^"]*""#)
         .unwrap()
-        .replace_all(&text, " ")
+        .replace_all(&text, "Q")
         .into_owned();
-    for segment in regex::Regex::new(r"[|;&\n]|\$\(|`|\(|\)|\{|\}")
-        .unwrap()
-        .split(&text)
-    {
+    // Command segments split at shell operators, each knowing whether it
+    // reads a pipe; a pipe carries over the empty segments of `|&` and of a
+    // pipeline continued on the next line.
+    let operators = regex::Regex::new(r"\|\|?|[;&\n]|\$\(|`|\(|\)|\{|\}").unwrap();
+    let mut segments: Vec<(Option<&str>, &str)> = Vec::new();
+    let mut start = 0;
+    let mut before = None;
+    for m in operators.find_iter(&text) {
+        segments.push((before, &text[start..m.start()]));
+        before = Some(m.as_str());
+        start = m.end();
+    }
+    segments.push((before, &text[start..]));
+    let mut piped = false;
+    for (operator, segment) in segments {
+        if let Some(op) = operator
+            && (op == "|" || op == "||")
+        {
+            piped = op == "|";
+        }
         let tokens = segment.split_whitespace().collect::<Vec<_>>();
+        if tokens.is_empty() {
+            continue;
+        }
+        let segment_piped = std::mem::replace(&mut piped, false);
         let mut i = 0;
         while i < tokens.len() {
             let tok = tokens[i];
@@ -583,6 +605,27 @@ pub fn bash_search(cmd: &str) -> bool {
             }
             if name == "git" && tokens[i + 1..(i + 4).min(tokens.len())].contains(&"grep") {
                 return true;
+            }
+            // sed and awk count when they open a file themselves: not
+            // reading a pipe, not editing in place, and a program plus at
+            // least one file (`x=1` is an awk assignment) (Graphify 0.9.101).
+            if (name == "sed" || name == "awk") && !segment_piped {
+                let rest = &tokens[i + 1..];
+                let in_place = rest.iter().any(|t2| {
+                    t2.starts_with("--in-place")
+                        || if name == "awk" {
+                            t2.starts_with("-i")
+                        } else {
+                            t2.starts_with('-') && !t2.starts_with("--") && t2.contains('i')
+                        }
+                });
+                let operands = rest
+                    .iter()
+                    .filter(|t2| !t2.starts_with('-') && !t2.contains('='))
+                    .count();
+                if !in_place && operands >= 2 {
+                    return true;
+                }
             }
             break;
         }
@@ -659,6 +702,154 @@ pub fn under_out(target: &str, root: &Path, configured: &str, windows: bool) -> 
     dirs.iter()
         .any(|dir| target.starts_with(dir) || lower(&target).starts_with(lower(dir)))
 }
+/// `_target_matches_manifest` (Graphify 0.9.102): a file newer than
+/// graph.json still matches its saved extraction. The manifest (read up to
+/// 2,000,000 bytes) must list the exact project-relative path, or the exact
+/// absolute one, and every populated AST/semantic hash must equal the
+/// file's MD5; any doubt keeps the file stale.
+pub fn target_matches_manifest(file_path: &str, root: &Path) -> bool {
+    use std::io::Read;
+    let Ok(file) = fs::File::open(out().join("manifest.json")) else {
+        return false;
+    };
+    let mut raw = Vec::new();
+    if file.take(2_000_001).read_to_end(&mut raw).is_err() || raw.len() > 2_000_000 {
+        return false;
+    }
+    let Ok(Value::Object(manifest)) = serde_json::from_slice::<Value>(&raw) else {
+        return false;
+    };
+    let p = crate::detect_ignore::absolute_lexical(Path::new(file_path));
+    let Ok(rel) = p.strip_prefix(root) else {
+        return false;
+    };
+    let rel = crate::paths::nfc(&rel.to_string_lossy().replace('\\', "/"));
+    let Some(Value::Object(entry)) = manifest
+        .get(&rel)
+        .or_else(|| manifest.get(&crate::paths::nfc(&p.to_string_lossy())))
+    else {
+        return false;
+    };
+    let hashes: Vec<&Value> = if entry.contains_key("hash") && !entry.contains_key("ast_hash") {
+        vec![&entry["hash"]]
+    } else {
+        [entry.get("ast_hash"), entry.get("semantic_hash")]
+            .into_iter()
+            .map(|h| h.unwrap_or(&EMPTY))
+            .collect()
+    };
+    if !hashes.iter().all(|h| h.is_string()) {
+        return false;
+    }
+    let hashes: std::collections::BTreeSet<&str> = hashes
+        .iter()
+        .filter_map(|h| h.as_str())
+        .filter(|h| !h.is_empty())
+        .collect();
+    if hashes.len() != 1 {
+        return false;
+    }
+    hashes.into_iter().next() == Some(crate::detect_manifest::md5_file(&p).as_str())
+}
+static EMPTY: Value = Value::String(String::new());
+/// `_search_is_outside_project` (Graphify 0.9.102, #4961): every literal
+/// target of a structured Grep, or of a simple `grep`/`rg` command, is
+/// outside the project. Shell composition, expansion, wrappers and unknown
+/// options stay advisory: this is not a shell interpreter or an access gate.
+pub fn search_is_outside_project(t: &Map<String, Value>) -> bool {
+    let command = t
+        .get("command")
+        .filter(|v| crate::build::truthy(v))
+        .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| crate::python_compat::string(v)))
+        .unwrap_or_default();
+    let paths: Vec<String> = if !command.is_empty() {
+        if command.chars().any(|c| "$`;&|<>\n\\".contains(c)) {
+            return false;
+        }
+        let Ok(tokens) = crate::detect_types::shell_split(&command) else {
+            return false;
+        };
+        let Some(first) = tokens.first() else {
+            return false;
+        };
+        if !["grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep"]
+            .contains(&first.rsplit('/').next().unwrap_or(""))
+        {
+            return false;
+        }
+        let short = regex::Regex::new(r"^-[nriIvVwxlLchHqsoEFGPRUa]+$").unwrap();
+        let mut positional = vec![];
+        let mut explicit_pattern = false;
+        let mut options = true;
+        let mut args = tokens[1..].iter();
+        while let Some(arg) = args.next() {
+            if options && arg == "--" {
+                options = false;
+            } else if options && ["-e", "--regexp", "-f", "--file"].contains(&arg.as_str()) {
+                if args.next().is_none() {
+                    return false;
+                }
+                explicit_pattern = true;
+            } else if options && (arg.starts_with("--regexp=") || arg.starts_with("--file=")) {
+                explicit_pattern = true;
+            } else if options && HINT_VALUE_FLAGS.contains(&arg.as_str()) {
+                if args.next().is_none() {
+                    return false;
+                }
+            } else if options && arg.starts_with("--") {
+                let name = arg.split('=').next().unwrap_or("");
+                if HINT_VALUE_FLAGS.contains(&name) && arg.contains('=') {
+                    continue;
+                }
+                if ![
+                    "--ignore-case",
+                    "--line-number",
+                    "--recursive",
+                    "--fixed-strings",
+                    "--word-regexp",
+                    "--invert-match",
+                ]
+                .contains(&arg.as_str())
+                {
+                    return false;
+                }
+            } else if options && arg.starts_with('-') {
+                if !short.is_match(arg) {
+                    return false;
+                }
+            } else {
+                positional.push(arg.clone());
+            }
+        }
+        if explicit_pattern {
+            positional
+        } else {
+            positional.into_iter().skip(1).collect()
+        }
+    } else {
+        vec![
+            t.get("path")
+                .filter(|v| crate::build::truthy(v))
+                .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| crate::python_compat::string(v)))
+                .unwrap_or_default(),
+        ]
+    };
+    let glob = regex::Regex::new(r"[$`*?\[\]{}~]").unwrap();
+    if paths.is_empty() || paths.iter().any(|p| p.is_empty() || p == "-" || glob.is_match(p)) {
+        return false;
+    }
+    // Bash on Windows may use /c/... or /mnt/c/... paths whose drive is
+    // unknown here; the hint is kept.
+    if !command.is_empty() && cfg!(windows) && paths.iter().any(|p| p.starts_with('/')) {
+        return false;
+    }
+    let root = crate::extractors::resolution::resolved(Path::new(
+        &std::env::var("CLAUDE_PROJECT_DIR").unwrap_or_else(|_| ".".into()),
+    ));
+    paths
+        .iter()
+        .all(|p| !crate::extractors::resolution::resolved(Path::new(p)).starts_with(&root))
+}
 pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     let graph = out().join("graph.json");
     if kind == "gemini" {
@@ -690,11 +881,63 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     let emit = |name| crate::cli::program_text(DATA[name].as_str().unwrap_or("")).into_owned();
     if kind == "search" {
         let cmd = s("command");
-        if ((cmd.is_empty() && t.get("pattern").is_some_and(crate::build::truthy))
-            || (!cmd.is_empty() && bash_search(&cmd)))
-            && graph.is_file()
-            && nudge_allowed(d)
-        {
+        // A dedicated Grep is scoped to the project's source targets and,
+        // in strict mode, shares the once-per-session block with Read
+        // (Graphify 0.9.102). Bash searches stay advisory: a compound shell
+        // command has no single reliable target.
+        let is_grep_tool = cmd.is_empty()
+            && t.get("pattern")
+                .and_then(Value::as_str)
+                .is_some_and(|p| !p.is_empty())
+            && d.get("tool_name")
+                .is_none_or(|v| v.is_null() || v == "Grep");
+        let is_bash_search = !cmd.is_empty() && bash_search(&cmd);
+        if !(is_grep_tool || is_bash_search) || !graph.is_file() {
+            return String::new();
+        }
+        if is_grep_tool {
+            let path = match t.get("path") {
+                None => ".".to_string(),
+                Some(Value::String(p)) => p.clone(),
+                Some(_) => return String::new(),
+            };
+            let root = crate::extractors::resolution::resolved(Path::new(
+                &std::env::var("CLAUDE_PROJECT_DIR").unwrap_or_else(|_| ".".into()),
+            ));
+            let mut target = std::path::PathBuf::from(path.replace('\\', "/"));
+            if cwd_relative(&path, cfg!(windows)) {
+                target = root.join(target);
+            }
+            let target = crate::extractors::resolution::resolved(&target);
+            if !target.starts_with(&root) {
+                return String::new();
+            }
+            for output in [out(), root.join(crate::paths::DEFAULT_OUT_DIR)] {
+                let output = if cwd_relative(&output.to_string_lossy(), cfg!(windows)) {
+                    root.join(output)
+                } else {
+                    output
+                };
+                if target.starts_with(crate::extractors::resolution::resolved(&output)) {
+                    return String::new();
+                }
+            }
+            // A single-file target needs the same index evidence as Read; a
+            // folder is the code the graph covers.
+            let indexed =
+                !target.is_file() || target_indexed(&target.to_string_lossy(), &root);
+            if indexed
+                && strict(strict_flag)
+                && !out().join("needs_update").exists()
+                && !query_fresh()
+                && mark_denied(&payload_text(d, "session_id"))
+            {
+                return with_hint(emit("_SEARCH_DENY"), &search_hint_terms(t), None);
+            }
+        }
+        // A search whose every literal target is outside the project gets
+        // no project hint (Graphify 0.9.102, #4961).
+        if !search_is_outside_project(t) && nudge_allowed(d) {
             return with_hint(
                 nudge_for_out(emit("_SEARCH_NUDGE")),
                 &search_hint_terms(t),
@@ -747,11 +990,16 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     let Ok(gtime) = graph.metadata().and_then(|m| m.modified()) else {
         return String::new();
     };
+    // A checkout can refresh modification times without changing what was
+    // extracted: a newer file whose content still matches its manifest
+    // hashes is not stale (Graphify 0.9.102). The `needs_update` marker
+    // always softens.
     let stale = out().join("needs_update").exists()
         || (!vals[0].is_empty()
             && fs::metadata(&vals[0])
                 .and_then(|m| m.modified())
-                .is_ok_and(|mtime| mtime > gtime));
+                .is_ok_and(|mtime| mtime > gtime)
+            && !target_matches_manifest(&vals[0], &root));
     if stale {
         return if nudge_allowed(d) {
             nudge_for_out(emit("_READ_NUDGE_STALE"))
@@ -803,6 +1051,63 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(super::nudge_for_out_with(stale, "/shared/out").contains("/shared/out/graph.json"));
+    }
+
+    /// tests/test_search_hook_scope.py (Graphify 0.9.102, #4961): a search
+    /// whose every literal target is outside the project gets no hint;
+    /// composition, globs and unknown options stay advisory.
+    #[cfg(unix)]
+    #[test]
+    fn searches_outside_the_project_get_no_hint() {
+        if std::env::var_os("CLAUDE_PROJECT_DIR").is_some() {
+            return;
+        }
+        let input = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let outside = super::search_is_outside_project;
+        assert!(outside(&input(serde_json::json!({"command": "grep -rn foo /"}))));
+        assert!(outside(&input(serde_json::json!({"command": "rg -e foo /"}))));
+        assert!(outside(&input(serde_json::json!({"pattern": "foo", "path": "/"}))));
+        for inside in [
+            "grep -rn foo src",
+            "grep -rn foo / | head",
+            "grep -rn foo /*",
+            "grep --context=3 foo",
+            "grep --weird foo /",
+            "find / -name x",
+        ] {
+            assert!(!outside(&input(serde_json::json!({"command": inside}))), "{inside}");
+        }
+        assert!(!outside(&input(serde_json::json!({"pattern": "foo"}))));
+    }
+
+    /// tests/test_hook_guard_token_match.py (Graphify 0.9.101): sed and awk
+    /// that open files count as searches; on a pipe, in place or with no
+    /// file they stay quiet.
+    #[test]
+    fn sed_and_awk_reading_files_count_as_searches() {
+        for cmd in [
+            "sed -n 4085,4145p src/inc.php",
+            "awk 'NR>=10 && /warn/ {print NR}' src/a.py",
+            "sed -n '/def x/,/^$/p' a.py | head",
+            "cd src && awk -F: '{print $1}' a.py",
+        ] {
+            assert!(super::bash_search(cmd), "{cmd}");
+        }
+        for cmd in [
+            "ps aux | awk '{print $2}'",
+            "git log --oneline | sed -n 1,5p",
+            "echo x | sed s/a/b/",
+            "sed -i 's/a/b/' f.txt",
+            "gh pr list | awk -F'\\t' '{print $1}'",
+            "sed -Ei 's/a/b/' f.txt",
+            "sed -ni 's/a/b/p' f.txt",
+            "git log |\n  awk '{print $1}'",
+            "make 2>&1 |& sed -n 1,5p",
+            "awk 'BEGIN { print 1 }'",
+            "sed -n 1,5p",
+        ] {
+            assert!(!super::bash_search(cmd), "{cmd}");
+        }
     }
 
     #[test]
