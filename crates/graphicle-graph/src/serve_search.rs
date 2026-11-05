@@ -652,6 +652,24 @@ pub struct QueryScores {
     /// (Graphify 0.9.87, #4357; see [`pick_seeds_in_order`]).
     pub term_order: Vec<String>,
 }
+/// `_confidence_tag` (Graphify 0.9.99, #4882): an edge's confidence label,
+/// with its stored score when it carries one (`INFERRED 0.75`). EXTRACTED is
+/// 1.0 by definition and stays bare; a missing, boolean or non-finite score
+/// keeps the bare label.
+pub fn confidence_tag(d: &dyn crate::record::Properties) -> String {
+    let conf = d
+        .get("confidence")
+        .filter(|v| crate::build::truthy(v))
+        .map(crate::python_compat::string)
+        .unwrap_or_default();
+    match d.get("confidence_score") {
+        Some(Value::Number(n)) if !conf.is_empty() && conf != "EXTRACTED" => match n.as_f64() {
+            Some(score) if score.is_finite() => format!("{conf} {score:.2}"),
+            _ => conf,
+        },
+        _ => conf,
+    }
+}
 pub fn score_query(
     g: &Graph,
     index: &SearchIndex,

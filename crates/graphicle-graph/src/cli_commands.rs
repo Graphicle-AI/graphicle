@@ -283,7 +283,8 @@ fn query_loaded(
                         if *forward { "-->" } else { "<--" },
                         search::label(&g, *nb),
                         text("relation"),
-                        text("confidence")
+                        // With its score (Graphify 0.9.99, #4882).
+                        crate::serve_search::confidence_tag(e)
                     ));
                 }
                 if connections.len() > shown {

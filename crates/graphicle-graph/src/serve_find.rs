@@ -778,6 +778,7 @@ fn shortest_path_with(
         )));
     }
     let mut segments = vec![label(g, src)];
+    let mut hop_datas: Vec<Vec<&crate::record::Attributes>> = Vec::new();
     for pair in path.windows(2) {
         let (u, v) = (pair[0], pair[1]);
         let (mut fwd, mut bwd) = (vec![], vec![]);
@@ -792,6 +793,7 @@ fn shortest_path_with(
         }
         let forward = !fwd.is_empty();
         let data = if forward { fwd } else { bwd };
+        hop_datas.push(data.iter().map(|e| &e.attributes).collect());
         let terms = |k| {
             data.iter()
                 .filter_map(|e| e.attributes.get(k))
@@ -808,7 +810,17 @@ fn shortest_path_with(
         } else {
             rel
         };
-        let conf = terms("confidence");
+        // Every provenance record of the hop's edges, each with its score
+        // (Graphify 0.9.98-0.9.99, #4881, #4882).
+        let conf = data
+            .iter()
+            .flat_map(|e| crate::build::edge_evidence(&e.attributes))
+            .filter(|e| e.get("confidence").is_some_and(crate::build::truthy))
+            .map(crate::serve_search::confidence_tag)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join("/");
         let conf = if conf.is_empty() {
             conf
         } else {
@@ -825,14 +837,115 @@ fn shortest_path_with(
     } else {
         format!("{}\n", warnings.join("\n"))
     };
+    // The path's confidence is that of its weakest hop (Graphify 0.9.98,
+    // #4885).
+    let summary = path_confidence_line(&hop_datas);
     Ok(PathAnswer {
         text: format!(
-            "{prefix}Shortest path ({hops} hops):\n  {}",
-            segments.join(" ")
+            "{prefix}Shortest path ({hops} hops):\n  {}{}",
+            segments.join(" "),
+            if summary.is_empty() {
+                String::new()
+            } else {
+                format!("\n{summary}")
+            }
         ),
         refusal: None,
         hops: Some(hops),
     })
+}
+/// `_path_weakest` (Graphify 0.9.98-0.9.99, #4885): the weakest hop of a
+/// path, ranked by the weakest evidence it carries (confidence tier, then the
+/// lowest score; a missing score never counts as weaker than a present one,
+/// and EXTRACTED's score is neither ranked nor printed). Returns `(hop,
+/// relation, confidence or None for no recognised tag, score)`.
+fn path_weakest(
+    hop_datas: &[Vec<&crate::record::Attributes>],
+) -> Option<(usize, String, Option<String>, Option<f64>)> {
+    let empty = crate::record::Attributes::new();
+    let mut weakest: Option<((u8, bool, f64, usize), usize, String, Option<String>, Option<f64>)> =
+        None;
+    for (index, datas) in hop_datas.iter().enumerate() {
+        let hop = index + 1;
+        let datas: Vec<&crate::record::Attributes> = if datas.is_empty() {
+            vec![&empty]
+        } else {
+            datas.clone()
+        };
+        for d in datas {
+            for ev in crate::build::edge_evidence(d) {
+                let conf = ev.get("confidence");
+                let score = match ev.get("confidence_score") {
+                    Some(Value::Number(n)) if conf.and_then(Value::as_str) != Some("EXTRACTED") => {
+                        n.as_f64().filter(|s| s.is_finite())
+                    }
+                    _ => None,
+                };
+                let rank: u8 = match conf.map(string).as_deref() {
+                    Some("EXTRACTED") => 3,
+                    Some("INFERRED") => 2,
+                    Some("AMBIGUOUS") => 1,
+                    _ => 0,
+                };
+                let key = (rank, score.is_none(), score.unwrap_or(0.0), hop);
+                let weaker = weakest.as_ref().is_none_or(|(old, ..)| {
+                    key.0
+                        .cmp(&old.0)
+                        .then(key.1.cmp(&old.1))
+                        .then(key.2.total_cmp(&old.2))
+                        .then(key.3.cmp(&old.3))
+                        .is_lt()
+                });
+                if weaker {
+                    let relation = d
+                        .get("relation")
+                        .filter(|v| crate::build::truthy(v))
+                        .map(string)
+                        .unwrap_or_else(|| "related".into());
+                    let conf = (rank > 0).then(|| conf.map(string).unwrap_or_default());
+                    weakest = Some((key, hop, relation, conf, score));
+                }
+            }
+        }
+    }
+    weakest.map(|(_, hop, relation, conf, score)| (hop, relation, conf, score))
+}
+/// `_path_confidence_line`: `Path confidence: <tier> (weakest hop N: rel,
+/// score S)`, or `unknown` when the weakest hop has no recognised tag.
+fn path_confidence_line(hop_datas: &[Vec<&crate::record::Attributes>]) -> String {
+    let Some((hop, relation, conf, score)) = path_weakest(hop_datas) else {
+        return String::new();
+    };
+    match conf {
+        None => format!("Path confidence: unknown (hop {hop}: {relation} has no confidence tag)"),
+        Some(conf) => format!(
+            "Path confidence: {conf} (weakest hop {hop}: {relation}{})",
+            score.map(|s| format!(", score {}", format_g(s))).unwrap_or_default()
+        ),
+    }
+}
+/// Python's `format(x, "g")`: six significant digits, trailing zeros
+/// dropped, scientific notation below 1e-4 and from 1e6.
+fn format_g(x: f64) -> String {
+    if x == 0.0 {
+        return if x.is_sign_negative() { "-0" } else { "0" }.into();
+    }
+    let sci = format!("{x:.5e}");
+    let (mantissa, exponent) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let exponent: i32 = exponent.parse().unwrap_or(0);
+    let trim = |s: &str| {
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    if !(-4..6).contains(&exponent) {
+        let sign = if exponent < 0 { '-' } else { '+' };
+        format!("{}e{sign}{:02}", trim(mantissa), exponent.abs())
+    } else {
+        trim(&format!("{:.*}", (5 - exponent) as usize, x))
+    }
 }
 #[cfg(test)]
 mod tests {

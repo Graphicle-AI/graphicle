@@ -285,3 +285,40 @@ fn query_depth_and_budget_come_from_options_then_project_settings() {
     assert!(r.stderr.contains("ignoring project settings"), "{}", r.stderr);
     assert!(r.stdout.contains("depth=2"), "{}", r.stdout);
 }
+
+#[test]
+fn path_reports_its_weakest_hop_and_scored_tags() {
+    // test_path_confidence.py and test_confidence_score_output.py (Graphify
+    // 0.9.98-0.9.99, #4885, #4882): a path is as sure as its weakest hop, and
+    // a scored non-EXTRACTED tag prints its score.
+    let dir = tempfile::tempdir().unwrap();
+    let graph = dir.path().join("graph.json");
+    std::fs::write(
+        &graph,
+        json!({
+            "directed": true, "multigraph": false, "graph": {},
+            "nodes": [
+                {"id": "alpha", "label": "alpha()", "source_file": "a.py"},
+                {"id": "beta", "label": "beta()", "source_file": "b.py"},
+                {"id": "gamma", "label": "gamma()", "source_file": "c.py"}
+            ],
+            "links": [
+                {"source": "alpha", "target": "beta", "relation": "calls", "confidence": "INFERRED", "confidence_score": 0.6},
+                {"source": "beta", "target": "gamma", "relation": "calls", "confidence": "EXTRACTED", "confidence_score": 1.0}
+            ]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let r = run(&["path", "alpha()", "gamma()", "--graph", graph.to_str().unwrap()]);
+    assert_eq!(r.exit_code, 0, "{}", r.stderr);
+    assert!(r.stdout.contains("--calls [INFERRED 0.60]--> beta()"), "{}", r.stdout);
+    assert!(r.stdout.contains("--calls [EXTRACTED]--> gamma()"), "{}", r.stdout);
+    assert!(
+        r.stdout
+            .trim_end()
+            .ends_with("Path confidence: INFERRED (weakest hop 1: calls, score 0.6)"),
+        "{}",
+        r.stdout
+    );
+}

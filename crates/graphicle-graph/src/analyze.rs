@@ -634,7 +634,20 @@ pub fn suggest_questions(
         }
     }
     if !isolated.is_empty() {
-        questions.push(json!({"type":"isolated_nodes","question":format!("What connects {} to the rest of the system?",quoted_names(isolated.iter().take(3).map(|i|label(graph,*i)))),"why":format!("{} weakly-connected nodes found - possible documentation gaps or missing edges.",isolated.len())}));
+        // Documentation gaps are a possible reason only when the graph has a
+        // semantic layer (Graphify 0.9.100).
+        let has_semantic_layer = graph.nodes.iter().any(|n| {
+            matches!(
+                n.attributes.get("file_type").and_then(Value::as_str),
+                Some("document" | "paper" | "image")
+            )
+        });
+        let reason = if has_semantic_layer {
+            "possible documentation gaps or missing edges"
+        } else {
+            "possible missing edges"
+        };
+        questions.push(json!({"type":"isolated_nodes","question":format!("What connects {} to the rest of the system?",quoted_names(isolated.iter().take(3).map(|i|label(graph,*i)))),"why":format!("{} weakly-connected nodes found - {reason}.",isolated.len())}));
     }
     for (cid, nodes) in communities {
         let score = cluster::cohesion_score(graph, nodes);

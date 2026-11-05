@@ -109,7 +109,7 @@ pub fn neighbor_lines(g: &Graph, i: usize, relation_filter: &str) -> Vec<String>
                     if incoming { "<--" } else { "-->" },
                     label_text(g, nb),
                     sanitize(&relation),
-                    sanitize(&get("confidence"))
+                    sanitize(&crate::serve_search::confidence_tag(&e.attributes))
                 ));
             }
         }
