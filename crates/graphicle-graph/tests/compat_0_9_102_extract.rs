@@ -211,3 +211,21 @@ fn ts_typed_tagged_template_keeps_later_declarations() {
     )]);
     assert!(nodes(&r).iter().any(|n| n["label"] == "after()"), "{:?}", nodes(&r).iter().map(|n| &n["label"]).collect::<Vec<_>>());
 }
+
+#[test]
+fn js_class_extends_through_a_cjs_require_binding() {
+    for export in ["module.exports = Base;\n", "module.exports = exports = Base;\n"] {
+        let f = Fixture::new();
+        let r = f.extract_files(&[
+            ("base.js", &format!("class Base {{ hello() {{}} }}\n{export}")),
+            ("a.js", "const Base = require('./base');\nclass A extends Base {}\nmodule.exports = A;\n"),
+        ]);
+        let targets = edges(&r)
+            .iter()
+            .filter(|e| e["relation"] == "inherits" && label_of(&r, &e["source"]) == "A")
+            .filter_map(|e| node(&r, &e["target"]))
+            .map(|n| n["source_file"].as_str().unwrap_or("").to_string())
+            .collect::<Vec<_>>();
+        assert!(targets.iter().any(|f| f.ends_with("base.js")), "{export}: {targets:?}");
+    }
+}

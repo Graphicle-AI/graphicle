@@ -647,6 +647,40 @@ fn js_declarations_imports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: 
                 });
             }
         }
+        // CommonJS (Graphify 0.9.102, #4688): `module.exports = Name` and
+        // `exports.X = ...` are exports, and a whole-module `const X =
+        // require('./m')` is a default import, as ESM `import X from './m'`.
+        if n.kind_name() == "expression_statement" {
+            cjs_export_facts(n, s, line, f);
+            continue;
+        }
+        if matches!(n.kind_name(), "lexical_declaration" | "variable_declaration") {
+            for declarator in children(n)
+                .into_iter()
+                .filter(|c| c.kind_name() == "variable_declarator")
+            {
+                let Some(local) = cjs_require_binding(declarator, s) else {
+                    continue;
+                };
+                let Some((_, raw)) = require_call_and_specifier(declarator.child_by_field_name("value"), s)
+                else {
+                    continue;
+                };
+                let Some(target) =
+                    js::resolve_js_module_path(&raw, path.parent()).map(|p| resolved(&p))
+                else {
+                    continue;
+                };
+                let target = f.target(target);
+                f.imports.push(JsImport {
+                    local_name: local.into(),
+                    imported_name: "default".into(),
+                    target,
+                    line,
+                });
+            }
+            continue;
+        }
         if n.kind_name() == "import_statement"
             && let Some(raw) = module_specifier(n, s)
             && let Some(target) =
@@ -655,7 +689,15 @@ fn js_declarations_imports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: 
             let specifiers = named_specifiers(n, s, "import_specifier");
             let default =
                 first_child(n, &["import_clause"]).and_then(|c| first_child(c, &["identifier"]));
-            if specifiers.is_empty() && default.is_none() {
+            // TS `import X = require("./m")`: a default import (0.9.102).
+            let required = children(n)
+                .into_iter()
+                .filter(|c| c.kind_name() == "import_require_clause")
+                .filter_map(|c| first_child(c, &["identifier"]))
+                .map(|name| read_text(name, s))
+                .filter(|name| !name.is_empty())
+                .collect::<Vec<_>>();
+            if specifiers.is_empty() && default.is_none() && required.is_empty() {
                 continue;
             }
             let target = f.target(target);
@@ -675,6 +717,14 @@ fn js_declarations_imports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: 
                     line,
                 });
             }
+            for name in required {
+                f.imports.push(JsImport {
+                    local_name: name.into(),
+                    imported_name: "default".into(),
+                    target,
+                    line,
+                });
+            }
         }
     }
     for &n in nodes {
@@ -686,6 +736,135 @@ fn js_declarations_imports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: 
             });
         }
     }
+}
+/// `_js_require_call_and_specifier` (Graphify 0.9.102): the call and the
+/// specifier of a literal `require('...')` (or `require('...').x`).
+fn require_call_and_specifier<'t>(value: Option<Node<'t>>, s: &[u8]) -> Option<(Node<'t>, String)> {
+    let mut node = value?;
+    if node.kind_name() == "member_expression" {
+        node = node.child_by_field_name("object")?;
+    }
+    if node.kind_name() != "call_expression" {
+        return None;
+    }
+    let function = node.child_by_field_name("function")?;
+    if function.kind_name() != "identifier" || read_text(function, s) != "require" {
+        return None;
+    }
+    let args = node.child_by_field_name("arguments")?;
+    let raw = children(args)
+        .into_iter()
+        .find(|a| a.kind_name() == "string")
+        .map(|a| read_text(a, s).trim_matches(['\'', '"', '`', ' ']).to_string())?;
+    (!raw.is_empty()).then_some((node, raw))
+}
+/// `_js_cjs_require_bindings`: the local name of a whole-module
+/// `const X = require('./m')` declarator (not `require('./m').y` or a
+/// destructuring, which already import structurally).
+fn cjs_require_binding(declarator: Node<'_>, s: &[u8]) -> Option<String> {
+    let value = declarator
+        .child_by_field_name("value")
+        .filter(|v| v.kind_name() == "call_expression")?;
+    require_call_and_specifier(Some(value), s)?;
+    let name = declarator
+        .child_by_field_name("name")
+        .filter(|n| n.kind_name() == "identifier")?;
+    let local = read_text(name, s);
+    (!local.is_empty()).then_some(local)
+}
+/// `_js_cjs_default_export_local`: the local name a `module.exports = ...`
+/// right side exports, through chained assignments (`module.exports =
+/// exports = Foo`, Graphify 0.9.102).
+fn cjs_default_export_local(right: Node<'_>, s: &[u8]) -> Option<String> {
+    let mut node = right;
+    while node.kind_name() == "assignment_expression" {
+        node = node.child_by_field_name("right")?;
+    }
+    let name = match node.kind_name() {
+        "identifier" => Some(node),
+        "class"
+        | "class_declaration"
+        | "function"
+        | "function_declaration"
+        | "generator_function"
+        | "generator_function_declaration" => node.child_by_field_name("name"),
+        _ => None,
+    }?;
+    Some(read_text(name, s)).filter(|n| !n.is_empty())
+}
+/// `_js_cjs_export_facts`: `module.exports = Name` is the default export
+/// (and `Name`), `module.exports = { a, b: c }` names its keys, and
+/// `exports.X = ...` / `module.exports.X = ...` exports `X`; a bare
+/// `exports = Name` only rebinds the local `exports` (Graphify 0.9.102).
+fn cjs_export_facts(n: Node<'_>, s: &[u8], line: i64, f: &mut JsFileFacts) {
+    let mut export = |exported: String, local: String| {
+        f.exports.push(JsExport {
+            exported_name: exported.into(),
+            local_name: Some(local.into()),
+            target: None,
+            target_name: None,
+            line,
+            type_only: false,
+        });
+    };
+    let Some(assign) = children(n)
+        .into_iter()
+        .find(|c| c.kind_name() == "assignment_expression")
+    else {
+        return;
+    };
+    let (Some(left), Some(right)) = (
+        assign.child_by_field_name("left"),
+        assign.child_by_field_name("right"),
+    ) else {
+        return;
+    };
+    if read_text(left, s) == "module.exports" {
+        if let Some(local) = cjs_default_export_local(right, s) {
+            export("default".into(), local.clone());
+            if local != "default" {
+                export(local.clone(), local);
+            }
+        } else if right.kind_name() == "object" {
+            for prop in children(right) {
+                if prop.kind_name() == "shorthand_property_identifier" {
+                    let name = read_text(prop, s);
+                    if !name.is_empty() {
+                        export(name.clone(), name);
+                    }
+                } else if prop.kind_name() == "pair"
+                    && let Some(key) = prop.child_by_field_name("key")
+                {
+                    let exported = read_text(key, s);
+                    let local = prop
+                        .child_by_field_name("value")
+                        .filter(|v| v.kind_name() == "identifier")
+                        .map(|v| read_text(v, s))
+                        .filter(|v| !v.is_empty())
+                        .unwrap_or_else(|| exported.clone());
+                    if !exported.is_empty() {
+                        export(exported, local);
+                    }
+                }
+            }
+        }
+        return;
+    }
+    if left.kind_name() != "member_expression" {
+        return;
+    }
+    let (Some(object), Some(property)) = (
+        left.child_by_field_name("object"),
+        left.child_by_field_name("property"),
+    ) else {
+        return;
+    };
+    let exported = read_text(property, s);
+    if exported.is_empty() || !matches!(read_text(object, s).as_str(), "exports" | "module.exports") {
+        return;
+    }
+    let local = cjs_default_export_local(right, s).unwrap_or_else(|| exported.clone());
+    export(exported, local);
 }
 fn js_exports(path: &Path, parsed: &Parsed, nodes: &[Node<'_>], f: &mut JsFileFacts) {
     let s = &parsed.source;

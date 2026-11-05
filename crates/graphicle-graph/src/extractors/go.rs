@@ -862,7 +862,7 @@ impl<'tree> Extractor<'_, 'tree> {
         // `s.field` is the receiver's field only while `s` still names it.
         let self_bound = self_name
             .as_deref()
-            .is_some_and(|n| typed(types, n) == scope.self_type);
+            .is_some_and(|n| typed(&*types, n) == scope.self_type);
         if node.kind() == "call_expression" {
             let mut callee = None;
             let mut member = false;
@@ -891,7 +891,7 @@ impl<'tree> Extractor<'_, 'tree> {
                             .map(str::to_string);
                     } else if let Some(op) = operand_node {
                         if op.kind() == "identifier" {
-                            member_receiver_type = typed(types, &operand);
+                            member_receiver_type = typed(&*types, &operand);
                             // A type named as the receiver (`T.M`), unless a
                             // binding shadows it.
                             if !types.contains_key(&operand) && self.local_type_names.contains(&operand) {
@@ -993,7 +993,7 @@ impl<'tree> Extractor<'_, 'tree> {
                         if self.imports.contains_key(&name) {
                             continue;
                         }
-                        let receiver_type = typed(types, &name);
+                        let receiver_type = typed(&*types, &name);
                         (name, receiver_type, None)
                     } else if operand.kind() == "selector_expression" {
                         // `s.field.Handle`, typed through the field only when

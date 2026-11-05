@@ -166,7 +166,7 @@ fn implicit_implements<E: Rec>(nodes: &[Value], edges: &[E]) -> Vec<(String, Str
             .filter(|owner| {
                 needed.is_subset(&method_names[owner])
                     && (!same_package_only
-                        || by_id.get(owner).map(|n| directory(n)) == Some(package.clone()))
+                        || by_id.get(owner).map(|n| directory(*n)) == Some(package.clone()))
             })
             .collect::<Vec<_>>();
         if !implementers.is_empty() && implementers.len() <= MAX_IMPLICIT_IMPLEMENTERS {
