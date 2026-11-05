@@ -523,11 +523,12 @@ impl<'a, 't> Engine<'a, 't> {
             let line = n.start_position().row + 1;
             for alias in cpp_alias_names(n, self.source) {
                 let id = make_id([self.stem.as_str(), alias.as_str()]);
-                let fresh = !self.seen.contains(&id);
-                // Graphify 0.9.98, #4854.
+                // The registry may salt the id (Graphify 0.9.98, #4854): a
+                // node was minted when the seen set grew (0.9.101).
+                let known = self.seen.len();
                 let id = self.decl_id(&id, &alias, "alias");
                 self.add_node(&id, &alias, line, None, Value::Null);
-                if fresh {
+                if self.seen.len() > known {
                     let file = self.file.clone();
                     self.edge(&file, &id, "contains", line, None, Value::Null);
                 }

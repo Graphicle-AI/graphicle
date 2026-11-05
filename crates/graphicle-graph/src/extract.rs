@@ -1849,6 +1849,15 @@ fn assemble_records(
     // the call edges bound below and the ~10^5-10^6 repointed Go imports are
     // cloned and added in that form. Passes that read only JSON get it back
     // losslessly for their run (`EdgeList`).
+    // Qualified C++ definitions owned by a class their file includes
+    // (Graphify 0.9.101): before the bare-name and member passes.
+    per_dispatch!(&mut per, p => members::cpp_out_of_line_methods(
+        &mut p[..],
+        &nodes,
+        &mut edges,
+        &options.resolution_context_nodes,
+        &options.resolution_context_edges,
+    ));
     let mut edges = EdgeList::Values(edges);
     stamp_python_fixture_paths(&mut per, root);
     if options.resolution_context_nodes.is_empty() && options.resolution_context_edges.is_empty() {

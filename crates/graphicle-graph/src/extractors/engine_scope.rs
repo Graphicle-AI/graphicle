@@ -844,6 +844,154 @@ pub fn get_cpp_func_name(n: Node<'_>, source: &[u8]) -> Option<String> {
     }
     first_child(n, &["identifier"]).map(|n| read_text(n, source))
 }
+/// `_cpp_parameter_types` (Graphify 0.9.101, #3215): `param -> Class` from
+/// the enclosing function's parameter list, by the rules of
+/// [`cpp_local_var_types`]; an entry is never overwritten.
+pub fn cpp_parameter_types(body: Node<'_>, source: &[u8], table: &mut BTreeMap<String, String>) {
+    let mut function = body.parent();
+    while let Some(f) = function.filter(|f| f.kind_name() != "function_definition") {
+        function = f.parent();
+    }
+    let mut declarator = function.and_then(|f| f.child_by_field_name("declarator"));
+    while let Some(d) = declarator.filter(|d| d.kind_name() != "function_declarator") {
+        declarator = d.child_by_field_name("declarator");
+    }
+    let Some(params) = declarator.and_then(|d| d.child_by_field_name("parameters")) else {
+        return;
+    };
+    for p in children(params) {
+        if p.kind_name() != "parameter_declaration" {
+            continue;
+        }
+        let Some(ty) = p
+            .child_by_field_name("type")
+            .filter(|t| matches!(t.kind_name(), "type_identifier" | "qualified_identifier"))
+        else {
+            continue;
+        };
+        let text = read_text(ty, source);
+        let type_name = text.rsplit("::").next().unwrap_or("").trim().to_string();
+        let Some(var) = p
+            .child_by_field_name("declarator")
+            .and_then(|d| super::engine_declarator::cpp_declarator_name(d, source))
+        else {
+            continue;
+        };
+        if !var.is_empty()
+            && type_name.chars().next().is_some_and(char::is_uppercase)
+            && !table.contains_key(&var)
+        {
+            table.insert(var, type_name);
+        }
+    }
+}
+/// `_cpp_field_types` (Graphify 0.9.101, #3215): `field -> Class` from the
+/// class and struct member declarations of the file; a field name declared
+/// with two types maps to `""`, ambiguous.
+pub fn cpp_field_types(root: Node<'_>, source: &[u8], table: &mut BTreeMap<String, String>) {
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind_name() == "field_declaration"
+            && let Some(ty) = n
+                .child_by_field_name("type")
+                .filter(|t| matches!(t.kind_name(), "type_identifier" | "qualified_identifier"))
+        {
+            let text = read_text(ty, source);
+            let type_name = text.rsplit("::").next().unwrap_or("").trim().to_string();
+            if let Some(var) = n
+                .child_by_field_name("declarator")
+                .and_then(|d| super::engine_declarator::cpp_declarator_name(d, source))
+                .filter(|v| !v.is_empty())
+                && type_name.chars().next().is_some_and(char::is_uppercase)
+            {
+                let kept = match table.get(&var) {
+                    Some(previous) if *previous != type_name => String::new(),
+                    _ => type_name,
+                };
+                table.insert(var, kept);
+            }
+        }
+        stack.extend(children(n));
+    }
+}
+/// `_cpp_qualified_name` (Graphify 0.9.101): the literal enclosing
+/// namespace and type identity of a declaration; an anonymous scope makes it
+/// unknown (`""`).
+pub fn cpp_qualified_name(node: Node<'_>, name: &str, source: &[u8]) -> String {
+    let mut parents = vec![];
+    let mut parent = node.parent();
+    while let Some(p) = parent {
+        if matches!(
+            p.kind_name(),
+            "namespace_definition" | "class_specifier" | "struct_specifier"
+        ) {
+            let Some(part) = p.child_by_field_name("name") else {
+                return String::new();
+            };
+            parents.push(read_text(part, source));
+        }
+        parent = p.parent();
+    }
+    parents.reverse();
+    parents.push(name.to_string());
+    parents.join("::")
+}
+/// `_cpp_local_binding_ranges` (Graphify 0.9.101): the byte ranges in which
+/// each named local or parameter of a C++ function is in scope; a call of
+/// such a name is a local callable value, not a corpus function.
+pub fn cpp_local_binding_ranges(body: Node<'_>, source: &[u8]) -> BTreeMap<String, Vec<(usize, usize)>> {
+    const SCOPES: [&str; 8] = [
+        "compound_statement",
+        "for_statement",
+        "for_range_loop",
+        "if_statement",
+        "switch_statement",
+        "catch_clause",
+        "function_definition",
+        "lambda_expression",
+    ];
+    let mut ranges: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
+    let mut stack = vec![body];
+    if let Some(declarator) = body
+        .parent()
+        .filter(|f| f.kind_name() == "function_definition")
+        .and_then(|f| f.child_by_field_name("declarator"))
+    {
+        stack.push(declarator);
+    }
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind_name(),
+            "class_specifier" | "struct_specifier" | "function_definition"
+        ) {
+            continue;
+        }
+        if matches!(
+            node.kind_name(),
+            "declaration" | "parameter_declaration" | "optional_parameter_declaration"
+        ) {
+            let mut scope = node.parent();
+            while let Some(s) = scope.filter(|s| !SCOPES.contains(&s.kind_name())) {
+                scope = s.parent();
+            }
+            if let Some(scope) = scope {
+                let mut cursor = node.walk();
+                for declarator in node.children_by_field_name("declarator", &mut cursor) {
+                    if let Some(name) = super::engine_declarator::cpp_declarator_name(declarator, source)
+                        .filter(|n| !n.is_empty())
+                    {
+                        ranges
+                            .entry(name)
+                            .or_default()
+                            .push((declarator.start_byte(), scope.end_byte()));
+                    }
+                }
+            }
+        }
+        stack.extend(named(node));
+    }
+    ranges
+}
 pub fn cpp_local_var_types(body: Node<'_>, source: &[u8], table: &mut BTreeMap<String, String>) {
     let mut stack = vec![body];
     while let Some(n) = stack.pop() {

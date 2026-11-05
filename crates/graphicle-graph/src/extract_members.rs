@@ -768,6 +768,32 @@ fn typed_member_edges<'p, P: PerFile, E: Rec>(
             if direct.is_none() {
                 continue;
             }
+        } else if lang == "cpp" && upper(receiver) {
+            // `Foo::bar()` names a type, but a capitalized receiver is often a
+            // variable (the parameter `T`, the field `Inner`): without one
+            // type of that name, the file's table types it (Graphify
+            // 0.9.101, #3215).
+            let found = defs
+                .get(&key(receiver, lang))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if let [one] = found {
+                direct = Some(*one);
+            } else {
+                let typed = table_type(file, receiver);
+                if typed.is_empty() {
+                    if found.is_empty() {
+                        parked.push((caller.to_string(), callee.to_string(), receiver.to_string(), raw));
+                    }
+                    continue;
+                }
+                let Some([one]) = defs.get(&key(&typed, lang)).map(Vec::as_slice) else {
+                    continue;
+                };
+                direct = Some(*one);
+                exact = false;
+                ty = typed;
+            }
         } else if upper(receiver) {
             ty = receiver.into();
         } else {
@@ -908,6 +934,143 @@ fn typed_member_edges<'p, P: PerFile, E: Rec>(
         }
     }
     Some((added, parked))
+}
+/// `_attach_cpp_out_of_line_methods` (Graphify 0.9.101): a qualified C++
+/// definition (`void Foo::bar() {}`) gets a `method` edge from the class it
+/// names only when exactly one class of that literal identity, declaring
+/// `bar` and contained by a file the definition's file is or includes, owns
+/// it. A bare call in such a definition to a member of a candidate owner is
+/// kept out of the global bare-name pass (a `this` member call).
+pub fn cpp_out_of_line_methods<P: PerFile>(
+    per: &mut [P],
+    nodes: &[Value],
+    edges: &mut Vec<Value>,
+    context_nodes: &[Value],
+    context_edges: &[Value],
+) {
+    const SUFFIXES: [&str; 8] = [".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".cu"];
+    let qualified_definition = |n: &Value| {
+        let label = s(n, "label");
+        label.ends_with("()")
+            && label.contains("::")
+            && SUFFIXES.contains(&crate::path_syntax::suffix(s(n, "source_file")).to_lowercase().as_str())
+            && s(n, "_cpp_qualified").contains("::")
+    };
+    if !nodes.iter().any(qualified_definition) {
+        return;
+    }
+    let mut by_id: FxHashMap<&str, &Value> = FxHashMap::default();
+    for n in context_nodes.iter().chain(nodes) {
+        by_id.insert(s(n, "id"), n);
+    }
+    let mut file_ids: FxHashMap<&str, &str> = FxHashMap::default();
+    for n in context_nodes.iter().chain(nodes) {
+        let sf = s(n, "source_file");
+        if !sf.is_empty()
+            && by_id.get(s(n, "id")).is_some_and(|m| std::ptr::eq(*m, n))
+            && s(n, "label") == Path::new(sf).file_name().map_or("", |f| f.to_str().unwrap_or(""))
+        {
+            file_ids.insert(sf, s(n, "id"));
+        }
+    }
+    let mut imports: FxHashMap<&str, FxHashSet<&str>> = FxHashMap::default();
+    let mut class_files: FxHashMap<&str, &str> = FxHashMap::default();
+    let mut members: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    let mut owner_order: Vec<&str> = vec![];
+    let mut owned: FxHashSet<&str> = FxHashSet::default();
+    let all_edges = edges.iter().chain(context_edges).collect::<Vec<_>>();
+    for e in &all_edges {
+        let (source, target) = (s(e, "source"), s(e, "target"));
+        if source.is_empty() || target.is_empty() {
+            continue;
+        }
+        match s(e, "relation") {
+            "imports" => {
+                imports.entry(source).or_default().insert(target);
+            }
+            "contains" if by_id.get(target).is_some_and(|n| truthy(&n["_callable_class"])) => {
+                class_files.insert(target, source);
+            }
+            "method" | "defines" => {
+                let label = by_id.get(target).map_or("", |n| s(n, "label"));
+                if label.len() >= 3 && label.starts_with('.') && label.ends_with("()") {
+                    if !members.contains_key(source) {
+                        owner_order.push(source);
+                    }
+                    members
+                        .entry(source)
+                        .or_default()
+                        .insert(label[1..label.len() - 2].to_string());
+                    owned.insert(target);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut by_name: FxHashMap<&str, Vec<&str>> = FxHashMap::default();
+    for owner in &owner_order {
+        let identity = by_id.get(owner).map_or("", |n| s(n, "_cpp_qualified"));
+        if !identity.is_empty() {
+            by_name.entry(identity).or_default().push(owner);
+        }
+    }
+    let mut visible_members: FxHashMap<String, BTreeSet<String>> = FxHashMap::default();
+    let mut added = vec![];
+    for n in nodes {
+        if owned.contains(s(n, "id")) || !qualified_definition(n) {
+            continue;
+        }
+        let Some((scope, method)) = s(n, "_cpp_qualified").rsplit_once("::") else {
+            continue;
+        };
+        let sf = s(n, "source_file");
+        let Some(&own_file) = file_ids.get(sf) else {
+            continue;
+        };
+        let visible = |file: &str| {
+            file == own_file || imports.get(own_file).is_some_and(|i| i.contains(file))
+        };
+        let candidates = by_name
+            .get(scope)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|owner| {
+                members[owner].contains(method)
+                    && class_files.get(owner).is_some_and(|f| visible(*f))
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            continue;
+        }
+        visible_members.insert(
+            s(n, "id").to_string(),
+            candidates
+                .iter()
+                .flat_map(|c| members[c].iter().cloned())
+                .collect(),
+        );
+        if let [owner] = candidates.as_slice() {
+            added.push(json!({"source":owner,"target":s(n, "id"),"relation":"method","confidence":"EXTRACTED","source_file":sf,"source_location":n.get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
+        }
+    }
+    drop(all_edges);
+    edges.extend(added);
+    if visible_members.is_empty() {
+        return;
+    }
+    for r in per.iter_mut() {
+        for call in r.raw_calls_mut().into_iter().flatten() {
+            let caller = rs(call, "caller_nid");
+            let visible = visible_members
+                .get(caller)
+                .is_some_and(|m| m.contains(rs(call, "callee")));
+            if rs(call, "lang") == "cpp" && !truthy(at(call, "is_member_call")) && visible {
+                call.rec_set("is_member_call", Value::Bool(true));
+                call.rec_set("receiver", json!("this"));
+            }
+        }
+    }
 }
 /// `_resolve_csharp_member_calls` (#1609, #1620): a member call bound to its
 /// receiver's declared type with the namespace/using/alias scoping of the C#

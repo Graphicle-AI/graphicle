@@ -139,6 +139,10 @@ impl<'a, 't> Engine<'a, 't> {
         // A class whose id is the file's gets its own (Graphify 0.9.98, #4854).
         let id = self.decl_id(&id, &name, "type");
         self.add_node(&id, &name, line, None, meta.clone());
+        if self.is("cpp") {
+            let qualified = cpp_qualified_name(n, &name, self.source);
+            self.note_cpp_qualified(&id, qualified);
+        }
         if self.is("ruby")
             && meta.as_object().is_some_and(|m| !m.is_empty())
             && let Some(node) = self.nodes.iter_mut().find(|v| v["id"] == id)

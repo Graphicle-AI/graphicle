@@ -53,6 +53,12 @@ pub(crate) struct Engine<'a, 't> {
     pub csharp_member_groups: BTreeMap<String, BTreeSet<String>>,
     pub labels: Table,
     pub labels_ci: Table,
+    /// C++: per function, the in-scope byte ranges of its named locals and
+    /// parameters (Graphify 0.9.101).
+    pub cpp_local_bindings: BTreeMap<String, BTreeMap<String, Vec<(usize, usize)>>>,
+    /// C++: the literal qualified identity of each class and out-of-line
+    /// definition, `""` when two disagree (Graphify 0.9.101).
+    pub cpp_qualified: BTreeMap<String, String>,
     /// Python: the labels of the file's non-method definitions; a bare `f()`
     /// in a method body never names a method (Graphify 0.9.101).
     pub python_free_labels: Table,
@@ -288,6 +294,15 @@ impl<'a, 't> Engine<'a, 't> {
     pub fn decl_id(&mut self, nid: &str, name: &str, kind: &str) -> String {
         let seen = &self.seen;
         self.decl.resolve(nid, name, kind, |id| seen.contains(id))
+    }
+    /// One identity per id; two that disagree make it unknown (Graphify
+    /// 0.9.101).
+    pub fn note_cpp_qualified(&mut self, id: &str, qualified: String) {
+        let kept = match self.cpp_qualified.get(id) {
+            Some(previous) if *previous != qualified => String::new(),
+            _ => qualified,
+        };
+        self.cpp_qualified.insert(id.to_string(), kept);
     }
     pub fn ensure(&mut self, name: &str, origin: bool) -> String {
         // A name the file declares once binds that declaration (Graphify
@@ -652,6 +667,10 @@ impl<'a, 't> Engine<'a, 't> {
             // #4854).
             id = self.decl_id(&id, &sanitized, "fn");
         }
+        if self.is("cpp") && name.contains("::") {
+            let qualified = cpp_qualified_name(n, &name, self.source);
+            self.note_cpp_qualified(&id, qualified);
+        }
         let mut meta = Value::Null;
         if let Some((_, _, overload_meta)) = &overload {
             meta = overload_meta.clone();
@@ -998,6 +1017,8 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         csharp_member_groups: BTreeMap::new(),
         labels: Table::new(),
         labels_ci: Table::new(),
+        cpp_local_bindings: BTreeMap::new(),
+        cpp_qualified: BTreeMap::new(),
         python_free_labels: Table::new(),
         seen_calls: BTreeSet::new(),
         seen_indirect: BTreeSet::new(),

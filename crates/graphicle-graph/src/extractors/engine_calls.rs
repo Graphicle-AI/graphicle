@@ -1110,6 +1110,24 @@ impl<'a, 't> Engine<'a, 't> {
                 }
             }
             let mut call = call;
+            // C++: a call of a local or parameter in scope is a callable value,
+            // never a corpus function (Graphify 0.9.101).
+            if self.is("cpp")
+                && n.child_by_field_name("function")
+                    .is_some_and(|f| f.kind_name() == "identifier")
+                && let Some(name) = call.name.as_deref()
+                && self
+                    .cpp_local_bindings
+                    .get(caller)
+                    .and_then(|b| b.get(name))
+                    .is_some_and(|ranges| {
+                        ranges
+                            .iter()
+                            .any(|&(start, end)| start <= n.start_byte() && n.start_byte() < end)
+                    })
+            {
+                call.name = None;
+            }
             // Lua: `self:other()` in a method body calls a sibling on the same
             // table; only the literal `self` receiver is rewritten (#3991).
             let mut lua_self_qualified = false;
@@ -1158,6 +1176,15 @@ impl<'a, 't> Engine<'a, 't> {
                         // the bare-name map would bind the caller's own
                         // same-named method (0.9.90).
                         || (self.is("c_sharp") && call.member)
+                        // C++ `x.m()` names a method of x's type: a receiver the
+                        // type table types defers to the member resolver
+                        // instead of the file's same-named method (0.9.101).
+                        || (self.is("cpp")
+                            && call.member
+                            && !call.scoped
+                            && call.receiver.as_deref().is_some_and(|r| {
+                                r != "this" && self.type_table.contains_key(r)
+                            }))
                         || (call.member
                             && receiver.is_some_and(|r| {
                                 upper(r) || call.this_field || self.is("c_sharp")
@@ -1939,10 +1966,34 @@ impl<'a, 't> Engine<'a, 't> {
             }
             receiver_tables.insert(*body, table);
         }
-        for (_, body) in &self.bodies {
-            if self.is("cpp") {
-                cpp_local_var_types(*body, self.source, &mut self.type_table);
+        if self.is("cpp") {
+            // Each function's table (a local shadows a parameter there), then
+            // the class fields; a name typed differently in two places is
+            // ambiguous and dropped (Graphify 0.9.101, #3215).
+            let mut conflicting = BTreeSet::new();
+            let mut fold = |table: BTreeMap<String, String>, type_table: &mut Table| {
+                for (var, ty) in table {
+                    if ty.is_empty() || type_table.entry(var.clone()).or_insert(ty.clone()) != &ty {
+                        conflicting.insert(var);
+                    }
+                }
+            };
+            for (caller, body) in &self.bodies {
+                let mut table = BTreeMap::new();
+                cpp_local_var_types(*body, self.source, &mut table);
+                cpp_parameter_types(*body, self.source, &mut table);
+                fold(table, &mut self.type_table);
+                self.cpp_local_bindings
+                    .insert(caller.clone(), cpp_local_binding_ranges(*body, self.source));
             }
+            let mut fields = BTreeMap::new();
+            cpp_field_types(root, self.source, &mut fields);
+            fold(fields, &mut self.type_table);
+            for var in conflicting {
+                self.type_table.remove(&var);
+            }
+        }
+        for (_, body) in &self.bodies {
             if self.is("swift") {
                 swift_local_var_types(
                     *body,
@@ -2053,6 +2104,10 @@ impl<'a, 't> Engine<'a, 't> {
             ts_mark_public_twins(root, self.source, &mut self.nodes, &edges);
         }
         for n in &mut self.nodes {
+            let id = n["id"].as_str().unwrap_or("");
+            if let Some(qualified) = self.cpp_qualified.get(id) {
+                n["_cpp_qualified"] = json!(qualified);
+            }
             let id = n["id"].as_str().unwrap_or("");
             if self.callable.contains(id) {
                 let class = self.classes.contains(id);

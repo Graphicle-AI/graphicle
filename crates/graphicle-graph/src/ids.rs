@@ -156,6 +156,7 @@ impl DeclIdRegistry {
         self.owners.insert(candidate.clone(), key.clone());
         self.assigned.insert(key, candidate.clone());
         self.salted.insert(candidate.clone());
+        self.spelled.insert(candidate.clone(), name.to_string());
         self.by_name
             .entry((kind.to_string(), normalize_id(name)))
             .or_default()
@@ -167,6 +168,17 @@ impl DeclIdRegistry {
     /// several.
     pub fn lookup(&self, name: &str) -> Option<String> {
         let norm = normalize_id(name);
+        // A declaration spelled exactly like the reference wins over one that
+        // only normalizes alike, whatever its kind (Graphify 0.9.101).
+        let exact = ["type", "fn", "var", "ns", "alias"]
+            .iter()
+            .filter_map(|kind| self.by_name.get(&(kind.to_string(), norm.clone())))
+            .flatten()
+            .filter(|id| self.spelled.get(*id).map(String::as_str) == Some(name))
+            .collect::<std::collections::BTreeSet<_>>();
+        if exact.len() == 1 {
+            return exact.into_iter().next().cloned();
+        }
         for kind in ["type", "fn", "var", "ns", "alias"] {
             if let Some(ids) = self.by_name.get(&(kind.to_string(), norm.clone()))
                 && !ids.is_empty()
