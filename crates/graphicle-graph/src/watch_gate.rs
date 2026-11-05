@@ -77,7 +77,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -668,6 +668,26 @@ pub struct Seen<'a> {
     /// Whether a file failed to extract in a way a retry may pass: any
     /// failure its content does not decide (`extract::CONTENT_FAILURE`).
     pub retryable: bool,
+    /// Whether the graph the rebuild started from stands for a full rebuild:
+    /// always for a full rebuild; for an incremental `update` (Graphify
+    /// 0.9.102, #4740) only when a record vouched for that graph
+    /// ([`record_vouches`]).
+    pub vouched: bool,
+}
+
+/// Whether a record, valid or stale, vouches for graph.json as it was read
+/// (`graph`): the last full rebuild found nothing to change in it and no
+/// command wrote it since. An incremental update of that graph that finds
+/// nothing to change leaves the same graph a full rebuild would, so it may
+/// record too.
+pub fn record_vouches(out: &Path, graph: &Option<FileStat>) -> bool {
+    let Some(graph) = graph else {
+        return false;
+    };
+    std::fs::read_to_string(out.join(STATE_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Record>(&text).ok())
+        .is_some_and(|record| record.schema == SCHEMA && &record.graph == graph)
 }
 
 /// Record a full rebuild of `detected` that found nothing to change, with
@@ -704,6 +724,9 @@ fn write_record(
     let manifest = seen.manifest.clone().ok_or("manifest.json not written")?;
     if seen.retryable {
         return Err("a file failed to extract and may pass on a retry");
+    }
+    if !seen.vouched {
+        return Err("an incremental update of a graph no record vouches for");
     }
     if FileStat::of(&out.join("graph.json")).as_ref() != Some(&graph) {
         return Err("graph.json changed since it was read");
@@ -979,6 +1002,7 @@ mod tests {
                 graph: graph_seen,
                 manifest: manifest_seen,
                 retryable,
+                vouched: true,
             };
             let made = record(&out, &state, &detected, &seen, 1, 0);
             assert_eq!(made.is_ok(), recorded());
@@ -1049,6 +1073,7 @@ mod tests {
                 graph: FileStat::of(&out.join("graph.json")),
                 manifest: FileStat::of(&out.join("manifest.json")),
                 retryable: false,
+                vouched: true,
             };
             record(&out, &state, &detected, &seen, 1, 0)
         };
@@ -1101,6 +1126,7 @@ mod tests {
             graph: FileStat::of(&out.join("graph.json")),
             manifest: FileStat::of(&out.join("manifest.json")),
             retryable: false,
+            vouched: true,
         };
         assert_eq!(record(&out, &state, &detected, &seen, 0, 0), Ok(()));
         let check = || {
@@ -1143,12 +1169,29 @@ struct Base {
     settings: String,
     above: String,
     manifest: FileStat,
+    /// The files whose content failed to extract (a parse error, a size
+    /// limit), with their stats then. The manifest stamps none of them, so
+    /// without this each would count as changed on every update; one that
+    /// still has these stats fails the same way again.
+    #[serde(default)]
+    failed: BTreeMap<String, FileStat>,
+}
+
+/// The content-failed files the baseline lists, with their stats then
+/// (empty without a baseline).
+pub fn base_failed(out: &Path) -> BTreeMap<String, FileStat> {
+    std::fs::read_to_string(out.join(BASE_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Base>(&text).ok())
+        .map(|base| base.failed)
+        .unwrap_or_default()
 }
 
 /// Note the baseline after a rebuild stamped manifest.json, or remove it
 /// when the rebuild has no [`State`] (`--precise`, a workspace above the
-/// root) or the manifest cannot be read.
-pub fn note_base(out: &Path, state: Option<&State>) {
+/// root) or the manifest cannot be read. `failed` lists the files whose
+/// content failed ([`base_failed`]).
+pub fn note_base(out: &Path, state: Option<&State>, failed: &BTreeMap<String, FileStat>) {
     let manifest = FileStat::of(&out.join("manifest.json"));
     let (Some(state), Some(manifest)) = (state, manifest) else {
         let _ = std::fs::remove_file(out.join(BASE_FILE));
@@ -1160,6 +1203,7 @@ pub fn note_base(out: &Path, state: Option<&State>) {
         settings: state.settings.clone(),
         above: state.above.clone(),
         manifest,
+        failed: failed.clone(),
     };
     let written = serde_json::to_string(&base)
         .ok()

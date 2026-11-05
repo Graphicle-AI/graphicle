@@ -1887,7 +1887,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         )
         .ok(),
     };
-    let mut state = state.ok();
+    let state = state.ok();
     let mut scanned = None;
     let changed = match pending {
         Ok(pending) => {
@@ -1951,10 +1951,27 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     // manifest and vouches for the whole graph. Without a manifest, or when
     // the engine build, the settings, the configuration above the root or
     // the manifest's writer changed since the last rebuild, this stays the
-    // full rebuild, and so does `--force`. A derived rebuild is incremental:
-    // it records no early stop. An empty change set takes the full update
-    // too, which finds nothing to change and records the early stop.
+    // full rebuild, and so does `--force`. A derived rebuild that finds
+    // nothing to change records the early stop only when a record vouched
+    // for the graph it started from (`watch_gate::record_vouches`). An empty
+    // change set takes the full update, which can record it. Files whose
+    // content failed last time and have not changed since are not counted
+    // as changed (`watch_gate::base_failed`).
     let mut derived = None;
+    // Files whose content failed last time, with their stats then: the
+    // manifest stamps none of them, and one that has not changed fails again.
+    let prior_failed = crate::watch_gate::base_failed(out);
+    let absolute = |p: &str| {
+        let p = Path::new(p);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            project_root.join(p)
+        }
+    };
+    // Whether the graph read is one a record vouched for: an incremental
+    // update of it that finds nothing to change may record the early stop.
+    let mut vouched = true;
     if o.incremental && o.changed_paths.is_none() && !o.force {
         let baseline = base_state
             .as_ref()
@@ -1983,6 +2000,13 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                         .filter_map(Value::as_str)
                         .map(PathBuf::from),
                 );
+                changed.retain(|p| {
+                    let p = absolute(&p.to_string_lossy());
+                    let key = p.to_string_lossy().into_owned();
+                    prior_failed.get(&key).is_none_or(|stat| {
+                        crate::watch_gate::FileStat::of(&p).as_ref() != Some(stat)
+                    })
+                });
                 let scanned: usize = detected["files"]
                     .as_object()
                     .into_iter()
@@ -2005,7 +2029,12 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                         changed.len()
                     ));
                     derived = Some(changed);
-                    state = None;
+                    vouched = crate::watch_gate::record_vouches(out, &graph_seen);
+                    if !vouched {
+                        // Nothing can be recorded: a stale record must not
+                        // outlive this update either.
+                        crate::watch_gate::forget(out);
+                    }
                 }
             }
             Ok(()) => {}
@@ -2329,6 +2358,27 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         .filter_map(Value::as_str)
         .collect::<BTreeSet<_>>();
     let retryable = failed.iter().any(|f| !content_failed.contains(f.as_str()));
+    // The baseline's content-failed files: this extraction's, and for an
+    // incremental update the earlier ones it did not re-extract.
+    let mut failed_now: BTreeMap<String, crate::watch_gate::FileStat> = BTreeMap::new();
+    if let Some(changed) = &derived {
+        let redone: BTreeSet<String> = changed
+            .iter()
+            .map(|p| absolute(&p.to_string_lossy()).to_string_lossy().into_owned())
+            .collect();
+        failed_now.extend(
+            prior_failed
+                .iter()
+                .filter(|(path, _)| !redone.contains(*path))
+                .map(|(path, stat)| (path.clone(), stat.clone())),
+        );
+    }
+    for path in content_failed.iter().copied() {
+        let path = absolute(path);
+        if let Some(stat) = crate::watch_gate::FileStat::of(&path) {
+            failed_now.insert(path.to_string_lossy().into_owned(), stat);
+        }
+    }
     // An error loading the ignore rules surfaces here, after extraction.
     ignore_states?;
     if graph_path.exists()
@@ -2440,7 +2490,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         fs::write(out.join(".graphicle_root"), root_marker_value(path)?)
             .map_err(crate::Error::from)?;
         stamp_manifest(out, &detected, &watch_root, &failed)?;
-        crate::watch_gate::note_base(out, base_state.as_ref());
+        crate::watch_gate::note_base(out, base_state.as_ref(), &failed_now);
         let manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         result.success = true;
         result.nodes = items_ref(&candidate, "nodes").len();
@@ -2453,6 +2503,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 graph: graph_seen,
                 manifest: manifest_seen,
                 retryable,
+                vouched,
             };
             let made =
                 crate::watch_gate::record(out, state, &detected, &seen, result.nodes, result.edges);
@@ -2480,7 +2531,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     timer.mark("topology_compare");
     if topology_unchanged {
         stamp_manifest(out, &detected, &watch_root, &failed)?;
-        crate::watch_gate::note_base(out, base_state.as_ref());
+        crate::watch_gate::note_base(out, base_state.as_ref(), &failed_now);
         let manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         reconcile_stored_html(out, &graph_path, &mut result.messages);
         result.success = true;
@@ -2492,6 +2543,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 graph: graph_seen,
                 manifest: manifest_seen,
                 retryable,
+                vouched,
             };
             let made =
                 crate::watch_gate::record(out, state, &detected, &seen, result.nodes, result.edges);
@@ -2672,7 +2724,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         fs::write(out.join(".graphicle_root"), root_marker_value(path)?)
             .map_err(crate::Error::from)?;
         stamp_manifest(out, &detected, &watch_root, &failed)?;
-        crate::watch_gate::note_base(out, base_state.as_ref());
+        crate::watch_gate::note_base(out, base_state.as_ref(), &failed_now);
         manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         timer.mark("manifest");
         if let Some(warm) = warm {
@@ -2721,6 +2773,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             graph: graph_seen,
             manifest: manifest_seen,
             retryable,
+            vouched,
         };
         let made =
             crate::watch_gate::record(out, state, &detected, &seen, graph_nodes, graph_edges);

@@ -170,19 +170,21 @@ fn an_update_with_nothing_changed_writes_what_the_full_rebuild_writes() {
     let project = Project::new();
     let root = project.root.to_string_lossy().into_owned();
     // The measurement's commands: a code-only extract, a first update and an
-    // update with nothing changed. The first update writes a new graph, so
-    // the second takes the full rebuild too; it finds nothing to change.
+    // update with nothing changed. A code-only graph stays code-only on
+    // update (Graphify 0.9.101, #4923), so the first update may find the
+    // graph the extract wrote and nothing to change; when it writes a new
+    // graph, the second takes the full rebuild too and finds nothing to
+    // change.
     project.run(&["extract", &root, "--code-only", "--force"], &[]);
     let first = project.update();
-    assert!(
-        !first.contains(EARLY) && !first.contains(UNCHANGED),
-        "{first}"
-    );
-    let second = project.update();
-    assert!(
-        second.contains(UNCHANGED) && !second.contains(EARLY),
-        "{second}"
-    );
+    assert!(!first.contains(EARLY), "{first}");
+    if !first.contains(UNCHANGED) {
+        let second = project.update();
+        assert!(
+            second.contains(UNCHANGED) && !second.contains(EARLY),
+            "{second}"
+        );
+    }
     let built = project.outputs();
     assert!(built.contains_key("graph.json") && built.contains_key("manifest.json"));
     let graph_time = std::fs::metadata(project.out.join("graph.json"))

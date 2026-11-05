@@ -185,7 +185,7 @@ fn lone_help_after_query_or_explain_prints_usage() {
         for flag in ["--help", "-h"] {
             let r = run(&[command, flag]);
             assert_eq!(r.exit_code, 0, "{}", r.stderr);
-            assert!(r.stdout.contains(&format!("Usage: ")) && r.stdout.contains(command), "{}", r.stdout);
+            assert!(r.stdout.contains("Usage: ") && r.stdout.contains(command), "{}", r.stdout);
             assert!(!r.stdout.contains("No node matching"), "{}", r.stdout);
         }
     }

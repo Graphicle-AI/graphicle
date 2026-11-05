@@ -79,11 +79,8 @@ fn a_deleted_document_takes_its_nodes_with_it() {
         let _ = std::fs::remove_dir_all(&out);
         write_project(&project);
         let source = spelled(&project);
-        run(
-            &home,
-            setting,
-            &["extract", &source, "--code-only", "--force"],
-        );
+        // An update builds the graph: a code-only extract would keep it
+        // code-only, documents out (Graphify 0.9.101, #4923).
         run(&home, setting, &["update", &source]);
         let graph = std::fs::read_to_string(out.join("graph.json")).unwrap();
         assert!(graph.contains("release_notes"), "{setting:?}: {graph}");
@@ -115,11 +112,8 @@ fn extract_after_update_names_no_kept_source_for_a_converted_document() {
         let _ = std::fs::remove_dir_all(&project);
         let _ = std::fs::remove_dir_all(&out);
         write_project(&project);
-        run(
-            &home,
-            setting,
-            &["extract", &source, "--code-only", "--force"],
-        );
+        // An update builds the graph: a code-only extract would keep it
+        // code-only, documents out (Graphify 0.9.101, #4923).
         run(&home, setting, &["update", &source]);
         let graph = std::fs::read_to_string(out.join("graph.json")).unwrap();
         assert!(graph.contains("ext_notes_"), "{setting:?}: {graph}");
