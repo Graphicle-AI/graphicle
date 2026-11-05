@@ -528,7 +528,7 @@ mod tests {
         assert_eq!(labels(&result), ["ci.yml", "on", "push", "jobs", "build"]);
         // `1` and `"1"` are two keys; `1` and `true` are one.
         let result = extract("values.yaml", "1: a\n'1': b\ntrue: c\nx: {y: 1}\n");
-        assert_eq!(labels(&result), ["values.yaml", "1", "x", "y"]);
+        assert_eq!(labels(&result), ["values.yaml", "1", "true", "x", "y"]);
         assert_eq!(result["edges"].as_array().unwrap().len(), 4);
     }
 

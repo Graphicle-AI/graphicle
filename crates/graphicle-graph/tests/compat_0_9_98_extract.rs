@@ -154,7 +154,13 @@ fn assert_clean(result: &Value, expected: &[(&str, &str)]) {
 
 #[test]
 fn declarations_named_like_their_file_keep_their_own_nodes() {
-    let cases: [(&str, &str, &[(&str, &str)], &[((&str, &str), &str, (&str, &str))]); 6] = [
+    type Case<'a> = (
+        &'a str,
+        &'a str,
+        &'a [(&'a str, &'a str)],
+        &'a [((&'a str, &'a str), &'a str, (&'a str, &'a str))],
+    );
+    let cases: [Case<'_>; 6] = [
         (
             "a.js",
             "class Js { run() { return 1; } }\n",

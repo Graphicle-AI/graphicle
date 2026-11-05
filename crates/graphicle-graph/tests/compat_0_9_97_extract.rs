@@ -306,21 +306,24 @@ fn cobol_end_program_restores_the_enclosing_program() {
 
 #[test]
 fn ocaml_and_chained_modules_and_classes_are_walked() {
+    // The extractor itself, as upstream's test calls it.
     let f = Fixture::new();
-    let r = f.extract_files(&[(
+    let run = |name: &str, text: &str| {
+        graphicle::extractors::ocaml::extract_ocaml(&f.write(name, text))
+    };
+    let r = run(
         "pair.ml",
         "module Alpha = struct\n  let f x = x\nend\nand Beta = struct\n  let g x = x\nend\n",
-    )]);
+    );
     assert!(["Alpha", "f", "Beta", "g"].iter().all(|l| labels(&r).contains(*l)), "{r}");
     assert!(pairs(&r, "contains").contains(&("Beta".into(), "g".into())));
     assert_eq!(by_label(&r, "Beta")["source_location"], "L4");
-    let f = Fixture::new();
-    let r = f.extract_files(&[(
+    let r = run(
         "cls.ml",
         "class alpha = object\n  method m = 1\nend\nand beta = object\n  method n = 2\nend\n",
-    )]);
+    );
     let methods = pairs(&r, "method");
-    assert!(methods.contains(&("alpha".into(), "m".into())) && methods.contains(&("beta".into(), "n".into())), "{methods:?}");
+    assert!(methods.contains(&("alpha".into(), "m".into())) && methods.contains(&("beta".into(), "n".into())), "{r}");
 }
 
 #[test]
