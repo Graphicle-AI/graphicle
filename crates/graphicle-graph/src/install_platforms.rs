@@ -326,6 +326,21 @@ pub fn install(name: &str, o: &Options) -> Result<Vec<String>> {
     }
     let dst = copy_skill(name, &actual)?;
     let mut messages = vec![format!("Skill installed: {}", dst.display())];
+    // Gemini CLI prefers ~/.agents/skills over ~/.gemini/skills for a skill
+    // of the same name, and a Windows install before Graphify 0.9.99 wrote
+    // there (#2800). It may belong to the `agents` platform, so it is named,
+    // not deleted.
+    if name == "gemini"
+        && !o.project
+        && let Ok(shadow) = crate::install::destination("agents", o)
+        && shadow.exists()
+    {
+        messages.push(format!(
+            "note: Gemini CLI loads {} ahead of this install. If an older `{} install --platform gemini` wrote it, delete that folder; if you use the `agents` platform, keep it.",
+            shadow.display(),
+            crate::cli::program()
+        ));
+    }
     if ["claude", "windows"].contains(&name) {
         let target = if o.project {
             o.project_dir.join(".claude/CLAUDE.md")

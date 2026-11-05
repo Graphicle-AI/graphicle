@@ -135,13 +135,10 @@ pub fn destination(name: &str, o: &Options) -> Result<PathBuf> {
     let name = canonical(name);
     let root = if o.project { &o.project_dir } else { &o.home };
     let rel = match name {
-        "gemini" => {
-            if !o.project && o.windows {
-                ".agents/skills/graphicle/SKILL.md"
-            } else {
-                ".gemini/skills/graphicle/SKILL.md"
-            }
-        }
+        // Gemini CLI reads ~/.gemini/skills on every OS; ~/.agents/skills is
+        // the `agents` platform's, and sharing it let each overwrite and
+        // uninstall the other's skill (Graphify 0.9.99, #2800).
+        "gemini" => ".gemini/skills/graphicle/SKILL.md",
         "opencode" => {
             if o.project {
                 ".opencode/skills/graphicle/SKILL.md"
