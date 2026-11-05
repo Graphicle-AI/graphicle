@@ -2170,7 +2170,12 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         let mut candidate = Value::Object(candidate);
         // The raw merged extraction gets build_from_json's endpoint rules:
         // import stubs, normalization twins, no dangling edge (#4189).
-        build::finalize_raw_graph_endpoints(&mut candidate);
+        let dropped = build::finalize_raw_graph_endpoints(&mut candidate);
+        if dropped > 0 {
+            result
+                .messages
+                .push(build::schema_invalid_edges_warning(dropped));
+        }
         if legacy_layout
             || canonical_graph_key(&existing, false) != canonical_graph_key(&candidate, false)
         {

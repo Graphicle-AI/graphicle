@@ -154,7 +154,14 @@ impl Detector {
             if !in_memory {
                 let configured = state.configured_names.contains(name.as_ref())
                     && fsutil::resolve_missing(&child).is_ok_and(|p| p == state.configured_output);
-                if configured || ty::is_noise_dir(&name, Some(dp)) {
+                // A linked worktree whose main checkout is also inside the scan
+                // root is a second copy of the same repository (Graphify
+                // 0.9.97, #4683).
+                if configured
+                    || ty::is_noise_dir(&name, Some(dp))
+                    || ig::linked_worktree_main_root(&child)
+                        .is_some_and(|main| ig::resolves_under_root(&main, &rules.root))
+                {
                     state.noise.push(format!(
                         "{}{s}",
                         fsutil::path_string(&child),

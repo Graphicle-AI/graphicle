@@ -152,7 +152,17 @@ pub fn mint_external_stubs_in_data(data: &mut Value) {
 /// typed stub, every other edge without two declared endpoints is dropped,
 /// and a stub no edge or hyperedge references any more is dropped, as a fresh
 /// build would not have it.
-pub fn finalize_raw_graph_endpoints(data: &mut Value) {
+/// `[graphicle] WARNING` for edges dropped because they still had no
+/// `relation` after alias folding (Graphify 0.9.97, #4809).
+pub fn schema_invalid_edges_warning(dropped: usize) -> String {
+    format!(
+        "[graphicle] WARNING: dropped {dropped} schema-invalid edge(s) missing required field 'relation'."
+    )
+}
+/// Returns the number of edges dropped for having no `relation` once their
+/// aliases are folded (Graphify 0.9.97, #4809); the caller reports it with
+/// [`schema_invalid_edges_warning`].
+pub fn finalize_raw_graph_endpoints(data: &mut Value) -> usize {
     let key = if data.get("links").is_some_and(Value::is_array) {
         "links"
     } else {
@@ -161,7 +171,12 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
     if !data.get("nodes").is_some_and(Value::is_array)
         || !data.get(key).is_some_and(Value::is_array)
     {
-        return;
+        return 0;
+    }
+    // Fold the edge aliases as build_from_json does before validation, so
+    // the relation check below sees `type`/`label` spellings (#4809).
+    for edge in data[key].as_array_mut().unwrap().iter_mut() {
+        crate::build_normalize::fold_edge_aliases(edge);
     }
     let declared_ids = |data: &Value| {
         data["nodes"]
@@ -224,11 +239,16 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
     let mut referenced = BTreeSet::new();
     let links = std::mem::take(data[key].as_array_mut().unwrap());
     let mut kept = Vec::with_capacity(links.len());
+    let mut dropped_schema_edges = 0usize;
     for mut edge in links {
         let Some(object) = edge.as_object_mut() else {
             kept.push(edge);
             continue;
         };
+        if !object.contains_key("relation") {
+            dropped_schema_edges += 1;
+            continue;
+        }
         let mut attached = true;
         for (primary, alias) in [("source", "from"), ("target", "to")] {
             let field = if object.contains_key(primary) {
@@ -291,6 +311,7 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
                     .is_some_and(|id| referenced.contains(&id))
         });
     }
+    dropped_schema_edges
 }
 /// The normalized method name of an AST `.name()` label (#3705).
 fn method_name(label: &str) -> String {
@@ -1181,6 +1202,7 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
     // once instead of doubling (each doubling copies every slot while the
     // old and the new list are both live).
     graph.reserve_edges(edges.len());
+    let mut dropped_schema_edges = 0usize;
     for i in order {
         // Each edge is taken out of the list once: its attributes move into
         // the graph instead of being copied.
@@ -1234,6 +1256,13 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
         let (Some(u), Some(v)) = (u, v) else {
             continue;
         };
+        // Relation aliases are folded before validation; a still-missing
+        // relation has no trustworthy default, so the edge is dropped rather
+        // than persisted (Graphify 0.9.97, #4809).
+        if attrs.get("relation").is_none() {
+            dropped_schema_edges += 1;
+            continue;
+        }
         for key in ["source", "target", "target_file", "local_alias"] {
             // The last two are rare: skip hashing the key when absent.
             if attrs.get(key).is_some() {
@@ -1392,6 +1421,11 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
             }
         }
         graph.add_edge(src, tgt, None, attrs)?;
+    }
+    if dropped_schema_edges > 0 {
+        messages
+            .stderr
+            .push(schema_invalid_edges_warning(dropped_schema_edges));
     }
     Ok(())
 }

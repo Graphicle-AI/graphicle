@@ -838,7 +838,10 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
             // external module gets a typed stub node, and any other edge
             // without two declared endpoints is dropped instead of shipping a
             // phantom (Graphify 0.9.80, #4189).
-            build::finalize_raw_graph_endpoints(&mut merged);
+            let dropped = build::finalize_raw_graph_endpoints(&mut merged);
+            if dropped > 0 {
+                d.stderr.push(build::schema_invalid_edges_warning(dropped));
+            }
             let source = ar(&merged["nodes"])
                 .iter()
                 .map(|n| (n["id"].to_string(), n["source_file"].clone()))

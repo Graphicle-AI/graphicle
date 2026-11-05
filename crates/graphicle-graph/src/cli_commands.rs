@@ -17,6 +17,11 @@ use std::{
     },
     time::{Duration, Instant},
 };
+/// `query` usage, printed for a lone `--help` (Graphify 0.9.97, #4830).
+pub const QUERY_USAGE: &str =
+    "query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--depth N] [--graph PATH]";
+/// `explain` usage, printed for a lone `--help` (Graphify 0.9.97).
+pub const EXPLAIN_USAGE: &str = "explain \"<node>\" [--all] [--graph PATH]";
 /// `retrieve <question> [--graph PATH] [--budget N] [--root DIR] [--include-tests] [--json [--explain]]`.
 pub fn retrieve(a: &Args, out: &mut Output) -> Result<()> {
     let question = a.require(
@@ -84,7 +89,7 @@ fn query_loaded(
     let gp = gp.to_path_buf();
     match command {
         "query" => {
-            a.require(0, "query <question> [--seed X] [--graph PATH]")?;
+            a.require(0, QUERY_USAGE)?;
             let mode = if a.flag("dfs") { "dfs" } else { "bfs" };
             let budget = a.number("budget", 2000)?;
             let seeds = a.all("seed");
@@ -158,7 +163,7 @@ fn query_loaded(
             }
         }
         "explain" => {
-            a.require(0, "explain <node> [--all] [--graph PATH]")?;
+            a.require(0, EXPLAIN_USAGE)?;
             let show_all = a.flag("all");
             let i = match crate::serve_find::resolve(&g, index, q) {
                 Ok(i) => i,

@@ -110,3 +110,29 @@ fn shared_module_nodes_are_no_id_collision() {
     let out = dedup(&[module("a.swift"), other], &[]);
     assert!(out.stderr.iter().any(|l| l.contains("minted by two different files")), "{:?}", out.stderr);
 }
+
+#[test]
+fn edges_missing_relation_are_dropped() {
+    // test_build.py and test_no_cluster_undeclared_endpoints.py (Graphify
+    // 0.9.97, #4809): an edge with no relation after alias folding is
+    // dropped and reported, on the clustered and on the raw path; a `type`
+    // alias still counts as a relation.
+    let extraction = json!({
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": "code", "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_type": "code", "source_file": "a.py"}
+        ],
+        "edges": [
+            {"source": "a", "target": "b", "confidence": "EXTRACTED", "source_file": "a.py"},
+            {"source": "b", "target": "a", "type": "calls", "confidence": "EXTRACTED", "source_file": "a.py"}
+        ]
+    });
+    let mut d = graphicle::build::Diagnostics::default();
+    let g = graphicle::build::build_from_json(&mut extraction.clone(), true, None, &mut d).unwrap();
+    assert_eq!(g.edge_count(), 1);
+    assert!(d.stderr.iter().any(|l| l.contains("dropped 1 schema-invalid edge(s) missing required field relation")), "{:?}", d.stderr);
+    let mut raw = extraction;
+    assert_eq!(graphicle::build::finalize_raw_graph_endpoints(&mut raw), 1);
+    assert_eq!(raw["edges"].as_array().unwrap().len(), 1);
+    assert_eq!(raw["edges"][0]["relation"], "calls");
+}

@@ -132,3 +132,61 @@ fn msbuild_obj_and_bin_are_pruned_only_on_msbuild_evidence() {
     let files = scanned(dir.path());
     assert!(files.iter().any(|f| f.ends_with("src/bin/tool.rs")), "{files:?}");
 }
+
+#[test]
+fn query_terms_drop_get_question_filler() {
+    // test_serve.py (Graphify 0.9.97, #4684).
+    use graphicle::query_terms::query_terms;
+    assert_eq!(query_terms("how does payroll.approve get authorized"), ["payroll", "approve", "authorized"]);
+    for verb in ["gets", "got", "getting"] {
+        assert_eq!(query_terms(&format!("payroll {verb} authorized")), ["payroll", "authorized"]);
+    }
+    assert_eq!(query_terms("get"), ["get"]);
+    assert_eq!(query_terms("how do I get it"), ["how", "get"]);
+}
+
+/// A repository `app` with a linked worktree `app-feature` beside it, laid
+/// out as `git worktree add` leaves them (no git process needed).
+fn workspace_with_worktree(ws: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
+    let app = ws.join("app");
+    let wt = ws.join("app-feature");
+    write(&app.join("src/a.py"), "x = 1\n");
+    write(&app.join(".git/HEAD"), "ref: refs/heads/main\n");
+    write(&app.join(".git/worktrees/app-feature/commondir"), "../..\n");
+    write(&wt.join("src/a.py"), "x = 1\n");
+    write(
+        &wt.join(".git"),
+        &format!("gitdir: {}\n", app.join(".git/worktrees/app-feature").display()),
+    );
+    (app, wt)
+}
+
+#[test]
+fn sibling_linked_worktree_is_pruned() {
+    // test_detect.py (Graphify 0.9.97, #4683): a second copy of a scanned
+    // repository is pruned; scanning the worktree itself still indexes it.
+    let dir = tempfile::tempdir().unwrap();
+    let ws = dir.path().join("ws");
+    let (_app, wt) = workspace_with_worktree(&ws);
+    let files = scanned(&ws);
+    assert!(files.iter().any(|f| f.ends_with("app/src/a.py")), "{files:?}");
+    assert!(!files.iter().any(|f| f.contains("app-feature/")), "{files:?}");
+    let files = scanned(&wt);
+    assert!(files.iter().any(|f| f.ends_with("src/a.py")), "{files:?}");
+    // A worktree whose main checkout is outside the root stays indexed.
+    let files = scanned(&wt.parent().unwrap().join("app-feature"));
+    assert!(!files.is_empty());
+}
+
+#[test]
+fn lone_help_after_query_or_explain_prints_usage() {
+    // test_cli_help.py (Graphify 0.9.97, #4830).
+    for command in ["query", "explain"] {
+        for flag in ["--help", "-h"] {
+            let r = run(&[command, flag]);
+            assert_eq!(r.exit_code, 0, "{}", r.stderr);
+            assert!(r.stdout.contains(&format!("Usage: ")) && r.stdout.contains(command), "{}", r.stdout);
+            assert!(!r.stdout.contains("No node matching"), "{}", r.stdout);
+        }
+    }
+}

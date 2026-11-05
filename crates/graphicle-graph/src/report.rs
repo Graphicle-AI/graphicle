@@ -62,28 +62,12 @@ pub fn portable_root_label(root: &str) -> String {
         .unwrap_or_default();
     if resolved.is_empty() { raw } else { resolved }
 }
+/// The community hub wikilink target, computed as the `_COMMUNITY_*.md`
+/// filename is (`export::obsidian_safe_stem`), so the two never drift apart
+/// (Graphify 0.9.97). Only the export's path-length budget, which needs the
+/// real output folder, is not applied here.
 pub fn safe_community_name(label: &str) -> String {
-    let clean = label
-        .replace("\r\n", " ")
-        .replace(['\r', '\n'], " ")
-        .chars()
-        .filter(|c| !"\\/*?:\"<>|#^[]".contains(*c))
-        .collect::<String>();
-    let mut clean = clean
-        .trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
-        .to_string();
-    let lower = clean.to_lowercase();
-    for suffix in [".md", ".mdx", ".markdown"] {
-        if lower.ends_with(suffix) {
-            clean.truncate(clean.rfind('.').unwrap());
-            break;
-        }
-    }
-    if clean.is_empty() {
-        "unnamed".into()
-    } else {
-        clean
-    }
+    crate::export::obsidian_safe_stem(label, 200)
 }
 pub fn load_learning_for_report(path: &Path) -> Option<Value> {
     (|| -> Result<Option<Value>> {
