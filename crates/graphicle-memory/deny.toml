@@ -85,4 +85,5 @@ ignore = [
     { id = "RUSTSEC-2025-0090", reason = "unic-emoji-char via rustpython-parser; no vulnerability" },
     { id = "RUSTSEC-2025-0098", reason = "unic-ucd-version via rustpython-parser; no vulnerability" },
     { id = "RUSTSEC-2025-0100", reason = "unic-ucd-ident via rustpython-parser; no vulnerability" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils 0.1.0 (unmaintained, archived) via aws-smithy-http, aws-smithy-runtime and aws-smithy-types, the AWS SDK of the bedrock feature; no vulnerability" },
 ]
