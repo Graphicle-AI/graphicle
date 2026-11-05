@@ -2429,15 +2429,17 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             call_like.insert((caller, target));
             seen.insert(caller, target);
             let context = rs(raw, "context");
+            let context = if context.is_empty() { "collection" } else { context };
+            let location = raw.rec_get("source_location").cloned();
             added.push(json!({
                 "source": caller,
                 "target": target,
                 "relation": "indirect_call",
-                "context": if context.is_empty() { "collection" } else { context },
+                "context": context,
                 "confidence": "INFERRED",
                 "confidence_score": 0.85,
                 "source_file": rs(raw, "source_file"),
-                "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
+                "source_location": location.unwrap_or(Value::Null),
                 "weight": 1.0,
             }));
             return;
