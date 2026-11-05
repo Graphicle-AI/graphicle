@@ -51,3 +51,5 @@ The commit ids are those of Graphicle's development repository, with the times t
 - **One graph for every absolute output folder outside the project** (0.1.12). The nodes of converted Office documents no longer take their ids from the path of an output folder given by an absolute path, which gave pandas three different graphs in the 0.1.11 benchmarks, and the benchmark page gives that cause. Written 3 November, 10:00 to 13:31 UTC.
 - **Also during the event** (0.1.12). This page's wording for the drafts written before the kickoff (31 October, 13:44 UTC); the README's new top and its 13-codebase charts, and the benchmark page's section on 0.1.11 against Graphify 0.9.100 (2 November, 02:52 to 07:17 UTC); and an exception for RUSTSEC-2026-0429 in zip 8 (2 November, 12:37 UTC), which the move to zip 9 removes.
 - **The 0.1.12 release** itself: the version numbers, the 0.1.12 notes and this list, on top of the work above.
+
+The event ended on 4 November 2026. Releases after 0.1.12 are not part of the entry, and this page lists nothing after it.
