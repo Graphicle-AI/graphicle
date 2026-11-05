@@ -303,7 +303,25 @@ pub fn plan(
             ];
             request.body = json!({"model":model,"max_tokens":max_tokens,"messages":[{"role":"user","content":if extract.is_some(){source::anthropic_content(user,images)}else{json!(user)}}]});
             if let Some(s) = system {
-                request.body["system"] = json!(s)
+                // The extraction system prompt is the same on every call, so
+                // it is marked cacheable: later calls bill it as a cache read
+                // (Graphify 0.9.100, #4835). GRAPHICLE_CLAUDE_PROMPT_CACHE=0
+                // turns this off for an endpoint that rejects it.
+                let raw = cfg::trim(cfg::get(env, "GRAPHICLE_CLAUDE_PROMPT_CACHE")).to_lowercase();
+                let cache = match raw.as_str() {
+                    "" | "1" | "true" | "yes" | "on" => true,
+                    "0" | "false" | "no" | "off" => false,
+                    _ => {
+                        return Err(Error::value(
+                            "GRAPHICLE_CLAUDE_PROMPT_CACHE must be 1/true/yes/on or 0/false/no/off",
+                        ));
+                    }
+                };
+                request.body["system"] = if cache {
+                    json!([{"type": "text", "text": s, "cache_control": {"type": "ephemeral"}}])
+                } else {
+                    json!(s)
+                };
             }
         }
         _ => {
