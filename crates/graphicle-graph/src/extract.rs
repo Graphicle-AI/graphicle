@@ -2141,7 +2141,7 @@ impl<'a> JvmScope<'a> {
         if !external {
             return candidates;
         }
-        let by_name = imported(&make_id([callee]));
+        let by_name = imported(&extractors::base::make_id([callee]));
         candidates
             .into_iter()
             .filter(|c| {

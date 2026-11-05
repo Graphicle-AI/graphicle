@@ -502,7 +502,7 @@ pub fn python_local_class_bindings(
     }
     let mut scan = Scan {
         source,
-        bindings: PythonBindings::new(),
+        bindings: BTreeMap::new(),
         poison_only: false,
     };
     let params = body

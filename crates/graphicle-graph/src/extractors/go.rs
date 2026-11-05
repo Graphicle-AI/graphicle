@@ -282,6 +282,46 @@ fn inferred_composite_bindings<'t>(
     }
     out
 }
+/// `_go_struct_field_types` (Graphify 0.9.99, #3368): `struct -> {field ->
+/// TypeName}` for every struct the file declares, by the rule of the flat
+/// receiver table, keyed by the struct.
+fn struct_field_types(root: Node<'_>, source: &[u8]) -> BTreeMap<String, BTreeMap<String, String>> {
+    let mut by_struct = BTreeMap::new();
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if matches!(n.kind(), "function_declaration" | "method_declaration") {
+            continue;
+        }
+        if n.kind() == "type_spec" {
+            if let (Some(name), Some(body)) =
+                (n.child_by_field_name("name"), n.child_by_field_name("type"))
+                && body.kind() == "struct_type"
+            {
+                let mut fields = BTreeMap::new();
+                for list in children(body).filter(|c| c.kind() == "field_declaration_list") {
+                    for field in children(list).filter(|c| c.kind() == "field_declaration") {
+                        let Some(type_name) =
+                            single_type_name(field.child_by_field_name("type"), source)
+                        else {
+                            continue;
+                        };
+                        for c in children(field).filter(|c| c.kind() == "field_identifier") {
+                            fields
+                                .entry(read_text(c, source))
+                                .or_insert_with(|| type_name.clone());
+                        }
+                    }
+                }
+                if !fields.is_empty() {
+                    by_struct.insert(read_text(name, source), fields);
+                }
+            }
+            continue;
+        }
+        stack.extend(children(n));
+    }
+    by_struct
+}
 /// A function body to walk for calls: the caller, the body, the method's
 /// receiver name and type, and the function's own-scope type table.
 struct Body<'tree> {
