@@ -404,6 +404,49 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
     });
     let detection = detection?;
     let total_files = detection["total_files"].as_i64().unwrap_or(0);
+    // Paths the ignore rules skipped, a pruned folder once (Graphify
+    // 0.9.102), so missing source can be traced to a rule.
+    let mut ignored: Vec<&str> = detection["ignored"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    ignored.sort();
+    if !ignored.is_empty() {
+        let examples = ignored
+            .iter()
+            .take(3)
+            .map(|entry| {
+                let mut rel = Path::new(entry)
+                    .strip_prefix(&target)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| entry.replace('\\', "/"));
+                if entry.ends_with(std::path::MAIN_SEPARATOR) && !rel.ends_with('/') {
+                    rel.push('/');
+                }
+                crate::python_compat::repr_string(&rel)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if ignored.len() > 3 {
+            format!(" (+{} more)", ignored.len() - 3)
+        } else {
+            String::new()
+        };
+        out.line(format!(
+            "[graphicle extract] {} path(s) ignored by ignore rules (pruned directories count once): {examples}{more}",
+            ignored.len()
+        ));
+        out.line(format!(
+            "[graphicle extract] Review ignore rules if source is missing; {}; .graphicleignore and --exclude still apply.",
+            if gitignore {
+                "--no-gitignore bypasses VCS ignore rules only"
+            } else {
+                "VCS ignore rules disabled"
+            }
+        ));
+    }
     let files = detection.get("files").cloned().unwrap_or(json!({}));
     let selection = if incremental {
         &detection["new_files"]

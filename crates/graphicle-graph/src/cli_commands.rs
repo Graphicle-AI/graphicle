@@ -256,10 +256,13 @@ fn query_loaded(
             for incoming in [false, true] {
                 for nb in search::neighbors(&g, i, incoming) {
                     let (u, v) = if incoming { (nb, i) } else { (i, nb) };
-                    let e = build::edge_data(&g, &g.nodes[u].id, &g.nodes[v].id)?.clone();
-                    let src = e.get("_src").unwrap_or(&g.nodes[u].id);
-                    let forward = src == &g.nodes[i].id;
-                    connections.push((forward, nb, e));
+                    // One connection per parallel edge (Graphify 0.9.100).
+                    for e in build::edge_datas(&g, &g.nodes[u].id, &g.nodes[v].id)? {
+                        let e = e.clone();
+                        let src = e.get("_src").unwrap_or(&g.nodes[u].id);
+                        let forward = src == &g.nodes[i].id;
+                        connections.push((forward, nb, e));
+                    }
                 }
             }
             if !connections.is_empty() {
