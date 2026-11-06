@@ -16,7 +16,7 @@ how retrieval ranks and packs evidence.
 
 | File | What it holds |
 |---|---|
-| `postgres.json` | Names the store's schema in the PostgreSQL database (see [The store](#the-store)). The store itself (sources and their revisions, memory, jobs and the recorded graph history) is in PostgreSQL |
+| `reviews.sqlite3` | The store: sources and their revisions, memory, jobs and the recorded graph history. With PostgreSQL (see [The store](#the-store)) the folder has `postgres.json` instead, which names the store's schema |
 | `local-session.json` | The local workspace's ID, its owner access key and the current project. It is readable by you only; keep it private |
 | `vault.key` | The key that encrypts provider credentials saved in the app |
 | `models.json` | Optional model profiles (see below) |
@@ -29,64 +29,123 @@ how retrieval ranks and packs evidence.
 `graphicle sync` creates the local workspace the first time it runs, so you do
 not need `graphicle init`.
 
-To back up while the app is running, run `graphicle backup /safe/place/graphicle.backup`,
+To back up while the app is running, run `graphicle backup /safe/place/graphicle.sqlite3`,
 or `graphicle backup` to write it to the data folder's `backups/` folder (a
 backup there goes with the data folder, so keep a copy elsewhere too).
 `graphicle offboard --project PROJECT` removes one project from the store and
 from the backups in `backups/`, with a hash-chained receipt; without
 `--apply PLAN_HASH` it only shows its plan.
-`graphicle --data-dir NEW_FOLDER restore /safe/place/graphicle.backup`
+`graphicle --data-dir NEW_FOLDER restore /safe/place/graphicle.sqlite3`
 restores into a new folder and never overwrites existing data. A backup leaves
 out provider secrets and the vault key, so reconnect providers after a restore.
-A backup is one file: every table of one snapshot of the store, in
-PostgreSQL's COPY text format, with a SHA-256 of the whole file at its end;
-`restore` checks the whole file before it changes anything.
 
 ## The store
 
-Graphicle keeps its store in PostgreSQL 16 or newer. Each data folder owns one schema of one database: the first command
-that needs a store creates the schema and writes its name to the folder's
-`postgres.json`. Two data folders, such as two instances on one server, never
-share tables, and moving a data folder keeps its store.
+By default the store is one SQLite file, `reviews.sqlite3` in the data
+folder: no database server, nothing to set up. Unless you set
+`GRAPHICLE_DATABASE_URL`, nothing on this page past this paragraph
+applies to you.
+
+A SQLite store runs in WAL mode. While writes go on, its write-ahead log
+(`reviews.sqlite3-wal`) is checkpointed and cut back once it passes 64
+MiB, waiting at most 2 seconds for readers to move to the latest
+snapshot. Before 0.1.15 the log could grow without bound while readers
+were always in flight (one service grew it to 8.3 GB).
+
+### PostgreSQL (optional)
+
+Graphicle can keep its store in PostgreSQL 16 or newer instead, for a
+service with many clients. It is used only when `GRAPHICLE_DATABASE_URL`
+is set; then each new data folder owns one schema of the database: the
+first command that needs a store creates the schema and writes its name
+to the folder's `postgres.json`. Two data folders, such as two instances
+on one server, never share tables, and moving a data folder keeps its
+store. A data folder with `postgres.json` is always a PostgreSQL store.
 
 | Setting | Default | What it does |
 |---|---|---|
-| `GRAPHICLE_DATABASE_URL` | `host=/var/run/postgresql,/tmp dbname=graphicle` | The server and database: a libpq connection string (`host=… port=… user=… dbname=…`) or a `postgresql://` URL. The user needs `CREATE` on the database, to create each data folder's schema |
-| `GRAPHICLE_DATABASE_POOL` | `32` | Connections each Graphicle process keeps open to one store at most (2 to 1000). Connections are opened when needed and closed after two idle minutes |
+| `GRAPHICLE_DATABASE_URL` | unset (SQLite) | The server and database: a libpq connection string (`host=... port=... user=... dbname=...`) or a `postgresql://` URL |
+| `GRAPHICLE_DATABASE_POOL` | `32` | Connections each Graphicle process keeps open to the server at most (2 to 1000). Connections are opened when needed and closed after a minute idle |
+| `GRAPHICLE_DATABASE_STATEMENT_TIMEOUT` | `600` | Seconds one statement may run (`statement_timeout`); `0` for no limit. A session left idle inside a transaction for 10 minutes is ended |
+| `GRAPHICLE_DATABASE_SSLROOTCERT` | system roots | A PEM file of the certificate authorities that sign the server's certificate (libpq's `PGSSLROOTCERT` is read too) |
+| `GRAPHICLE_DATABASE_ALLOW_PLAINTEXT` | unset | `1` allows `sslmode=disable` to a server on another machine |
 
-The database should use the `C` collation (`CREATE DATABASE graphicle
-TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C'`), so that paths
-and names sort as they did in earlier versions.
+**Connections.** A server that is not on this machine (any host other
+than a Unix socket, `localhost` or a loopback address) is always reached
+over TLS, with its certificate checked against the system's certificate
+authorities (or `GRAPHICLE_DATABASE_SSLROOTCERT`) and against its host
+name, as libpq's `sslmode=verify-full` does; `sslmode=verify-full`,
+`verify-ca`, `require` and `prefer` all mean that. Graphicle refuses
+`sslmode=disable` to such a server unless
+`GRAPHICLE_DATABASE_ALLOW_PLAINTEXT=1` is set. A Unix socket or
+localhost uses TLS only with `sslmode=require`.
 
-Writers take the store's write lock (a PostgreSQL advisory lock) for the
-length of their transaction, so a store's writes run one at a time; reads use
-a snapshot and never wait for writers. The per-request usage counters are
-the exception: they lock only their own row, so requests are not held up
-behind a long write such as indexing. A writer that waits more than 10
-seconds for the lock fails with "database is locked". A project's
-status (`graphicle status --json`, the `repository_status` tool) reports the
-answering process's use of the lock under `write_lock`: holds and waits of 2
-seconds or more, with the code location
-(`GRAPHICLE_PHASE_TIMINGS=1` also logs each one). Each connection's
-`application_name` is the command that opened it (`graphicle serve`,
-`graphicle sync`), so `pg_stat_activity` shows which process holds the
-lock.
+**Credentials.** Keep the password out of `GRAPHICLE_DATABASE_URL`: use
+peer authentication over the Unix socket, or a password file
+(`~/.pgpass`, or the file `PGPASSFILE` names, readable only by you),
+which Graphicle reads as libpq does when the address has no password.
+Other libpq environment variables (`PGHOST`, `PGPASSWORD`) are not read.
+Graphicle never writes the address or a password to a file, a log, an
+error or `doctor` output; an error that would carry the password has it
+replaced by `***`.
 
-**Stores of Graphicle 0.1.12 and earlier** are SQLite files
-(`reviews.sqlite3`). A data folder that holds one and no `postgres.json` is
-refused until it is copied in: `graphicle --data-dir FOLDER import-sqlite`
-copies the folder's `reviews.sqlite3` (or `import-sqlite PATH`, another file)
-into a new store for the folder, in one transaction, and leaves the SQLite
-file as it is. SQLite backups of those versions are imported the same way into
-a new data folder.
+**The role.** Graphicle needs a role that may log in and create schemas
+in its database, and nothing more: not a superuser, and no `CREATEDB` or
+`CREATEROLE`.
 
-**Deletion.** SQLite stores overwrote deleted rows (`secure_delete`).
-PostgreSQL does not: a deleted row's bytes stay in the table's free space
-until it is reused, in the server's write-ahead log until it recycles the
-segment, and in any archive of it. Deletion receipts say so
-(`storage.secure_delete: false`); after a deletion Graphicle vacuums the
-store's tables. Keep the database on an encrypted volume if deleted data must
-not be recoverable from the disk.
+```sql
+CREATE ROLE graphicle LOGIN;
+CREATE DATABASE graphicle OWNER graphicle
+  TEMPLATE template0 ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C';
+```
+
+The owner of the database may create schemas in it. Every table,
+function and trigger Graphicle creates is in the data folder's schema,
+and every connection's `search_path` names only that schema.
+`import-sqlite`, `backup`, `restore` and migrations need nothing more.
+The `C` collation keeps paths and names sorting as they do in SQLite.
+
+**Locks.** Writers take the store's write lock (a PostgreSQL advisory
+lock) for the length of their transaction, so a store's writes run one
+at a time; reads use a snapshot and never wait for writers. The
+per-request usage counters are the exception: they lock only their own
+row, so requests are not held up behind a long write such as indexing. A
+writer that waits more than 10 seconds for the lock fails with "database
+is locked". A project's status (`graphicle status --json`, the
+`repository_status` tool) reports the answering process's use of the
+lock under `write_lock`: holds and waits of 2 seconds or more, with the
+code location (`GRAPHICLE_PHASE_TIMINGS=1` also logs each one). Each
+connection's `application_name` is the command that opened it
+(`graphicle serve`, `graphicle sync`), so `pg_stat_activity` shows which
+process holds the lock.
+
+**Moving a SQLite store.** With `GRAPHICLE_DATABASE_URL` set, a data
+folder that has only `reviews.sqlite3` is refused until it is copied in:
+`graphicle --data-dir FOLDER import-sqlite` copies the folder's
+`reviews.sqlite3` (or `import-sqlite PATH`, another file) into a new
+store for the folder, from one snapshot of the file and in one
+transaction, and leaves the SQLite file as it is. Without the setting,
+Graphicle keeps using the SQLite file and `import-sqlite` refuses to
+run.
+
+**Backups.** A PostgreSQL store's backup is one file
+(`graphicle-<time>.backup`): every table of one snapshot of the store,
+in PostgreSQL's COPY text format, with a SHA-256 of the whole file at
+its end; `restore` checks the whole file before it changes anything, and
+loads only into the new data folder's own schema. A backup is made in a
+scratch schema of the same database, which is dropped when it is done.
+
+**Deletion.** A SQLite store overwrites deleted rows (`secure_delete`)
+and then truncates its write-ahead log, and deletion receipts say
+`storage.secure_delete: true`. PostgreSQL cannot: a deleted row's bytes
+stay in the table's free space until it is reused, in the server's
+write-ahead log until it recycles the segment, and in any WAL archive or
+base backup of it. Receipts of a PostgreSQL store say
+`storage.secure_delete: false`, and after a deletion Graphicle vacuums
+the store's tables. Keep the database on an encrypted volume, and expire
+WAL archives and base backups, if deleted data must not be recoverable.
+Provider secrets stay encrypted with the data folder's `vault.key` in
+either store; the key never goes to the database.
 
 ## Models
 

@@ -5,68 +5,58 @@ library (`graphicle-memory`) and the `graphicle` program.
 
 ## Unreleased
 
-### The store is PostgreSQL
+### PostgreSQL as an optional store
 
-The store is now a PostgreSQL 16 (or newer) database instead of
-`reviews.sqlite3`. Each data folder has its own schema, named in
-`postgres.json` in the data folder. `GRAPHICLE_DATABASE_URL` says which
-server to use (default: the local socket, database `graphicle`), and
-`GRAPHICLE_DATABASE_POOL` caps each process's connections (default 32).
-[docs/configuration.md](docs/configuration.md#the-store) has the settings and
-`deploy/` has a PostgreSQL configuration for a 12 GB host.
+The store is still one SQLite file, `reviews.sqlite3`, by default;
+nothing changes unless you set `GRAPHICLE_DATABASE_URL`. With it set,
+Graphicle keeps new stores in PostgreSQL 16 or newer, one schema per
+data folder, named in the folder's `postgres.json`. Andrei Merlescu
+wrote the PostgreSQL store, its connection layer, `import-sqlite`, the
+backup archive and the load harness (#19). See
+[docs/configuration.md](docs/configuration.md#the-store).
 
-This removes the SQLite WAL growth behind the 2026-11-03 outage. A SQLite
-checkpoint could not reset the WAL while readers were always in flight, so
-the WAL grew by everything written (8.3 GB). PostgreSQL recycles its WAL at
-its own checkpoints, whatever readers are doing; its size is bounded by
-`max_wal_size`.
+- A server on another machine is reached only over TLS, with its
+  certificate and host name checked; `sslmode=disable` to such a server
+  is refused unless `GRAPHICLE_DATABASE_ALLOW_PLAINTEXT=1` is set. A
+  Unix socket or localhost needs no TLS.
+- The address and password never appear in errors, logs or files
+  Graphicle writes, and test commands that `fix` runs do not inherit the
+  address. Graphicle reads a password file (`~/.pgpass` or `PGPASSFILE`)
+  as libpq does, so the password can stay out of the address.
+- Graphicle needs a role that may create schemas in its database and
+  nothing more: no superuser. Every connection's `search_path` names
+  only the data folder's schema, and restore loads only into it.
+- Sessions get a statement timeout (600 seconds by default,
+  `GRAPHICLE_DATABASE_STATEMENT_TIMEOUT`) and are ended when idle in a
+  transaction for 10 minutes.
+- `graphicle import-sqlite` copies a data folder's SQLite store into
+  PostgreSQL once, from one snapshot of the file; the SQLite file is
+  left as it is. It runs only with `GRAPHICLE_DATABASE_URL` set.
+- A PostgreSQL store's deletion receipts say `secure_delete: false`:
+  deleted bytes can stay in free space, the server's write-ahead log and
+  its archives until they are reused. SQLite stores still overwrite
+  them.
 
-Commands, flags, the HTTP and MCP APIs, and their output are unchanged.
-Writers still take one write lock per store, as with SQLite. Readers use
-snapshots and never wait for it.
+### SQLite stores under constant reads
 
-### After upgrading
-
-- Create the database once: `createdb graphicle` (as a role that can
-  create schemas in it).
-- Copy each existing store once with `graphicle --data-dir DIR
-  import-sqlite`. It reads `DIR/reviews.sqlite3` (or the file you name)
-  read-only, checks it, and copies every row into a new PostgreSQL store for
-  the folder. The SQLite file is left as it was. Graphicle no longer reads
-  it, and refuses to open a data folder that has only a SQLite store.
-- Backups (`graphicle backup`, offboarding) are now `.backup` archives: a
-  JSON header, each table in PostgreSQL's COPY text format, and a SHA-256
-  trailer that restore checks. Backups made by 0.1.12 (SQLite files) can be
-  restored by importing them with `import-sqlite` into a new data folder.
-
-### Changed
-
-- Deleting a connector's data can no longer promise that deleted bytes are
-  overwritten on disk: PostgreSQL has no `secure_delete`. Receipts now say
-  `"secure_delete": false`. Deleted rows are vacuumed straight away, and the
-  space is reused.
-- The FTS5 table `repo_search` is gone. It was kept up to date but nothing
-  queried it.
-- Each connection's `application_name` is the Graphicle command that opened
-  it (`graphicle serve`, `graphicle sync`), so `pg_stat_activity` tells the
-  processes sharing a store apart.
-- An MCP message no longer takes the write lock to check that its project
-  exists, and neither do the `graph_as_of`, episode and cross-project edge
-  tools. They read a snapshot. Before, every MCP message on a project
-  connection queued for the lock behind indexing, and some failed with
-  "database is locked" after 10 s.
-- Each HTTP request's usage counters (the workspace's daily request count,
-  errors and time) are updated under their own row's lock instead of the
-  store's write lock. The monthly request budget is still checked against
-  every request before it. These two writes were most of the waits above.
-- `write_lock` in a project's status also counts waits for the lock of 2 s
-  or more (`slow_waits`, `longest_wait_seconds`, `longest_wait_at`).
+- The write-ahead log no longer grows without bound while readers are
+  always in flight. SQLite's own checkpoint could copy pages back but
+  never restart the log, so it grew by everything written (8.3 GB on one
+  service). The store now checkpoints and truncates the log once it
+  passes 64 MiB, waiting at most 2 seconds for readers.
+- An MCP message no longer takes the write lock to check that its
+  project exists, and neither do the `graph_as_of`, episode and
+  cross-project edge tools: they read a snapshot. Before, every MCP
+  message on a project connection queued for the lock behind indexing,
+  and some failed with "database is locked" after 10 s.
+- `write_lock` in a project's status also counts waits for the lock of 2
+  s or more (`slow_waits`, `longest_wait_seconds`, `longest_wait_at`).
 
 ### Added
 
-- `bench/store-load/`: a load harness that indexes a large repository into a
-  store while 10 to 33 clients read from it over MCP. It records read latency
-  and failures, memory, WAL size and fsyncs.
+- `bench/store-load/`: a load harness that indexes a large repository
+  into a store while 10 to 33 clients read from it over MCP. It records
+  read latency and failures, memory, WAL size and fsyncs.
 
 ## 0.1.13 - 2026-11-05
 

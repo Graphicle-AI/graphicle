@@ -5,37 +5,10 @@ services:
       dockerfile: deploy/Dockerfile
     image: graphicle:0.1.0
     command: ["serve", "--port", "8854", "--public-origin", "https://${GRAPHICLE_DOMAIN:?Set the public domain}"]
-    environment:
-      GRAPHICLE_DATABASE_URL: "host=/var/run/postgresql dbname=graphicle user=graphicle"
-    volumes:
-      - graphicle-data:/var/lib/graphicle
-      - postgres-socket:/var/run/postgresql
-    depends_on:
-      postgres:
-        condition: service_healthy
+    volumes: ["graphicle-data:/var/lib/graphicle"]
     # Caddy shares this network namespace. The app port stays on loopback.
     ports: ["80:80", "443:443", "443:443/udp"]
     cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    restart: unless-stopped
-  postgres:
-    image: postgres:16.10-alpine
-    environment:
-      POSTGRES_USER: graphicle
-      POSTGRES_DB: graphicle
-      POSTGRES_HOST_AUTH_METHOD: trust
-      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
-    # Only the socket is shared; no TCP port is published.
-    command: ["postgres", "-c", "listen_addresses=", "-c", "config_file=/etc/postgresql/postgresql.conf",
-              "-c", "hba_file=/var/lib/postgresql/data/pg_hba.conf", "-c", "ident_file=/var/lib/postgresql/data/pg_ident.conf"]
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - postgres-socket:/var/run/postgresql
-      - ./postgresql.graphicle.conf:/etc/postgresql/postgresql.conf:ro
-    healthcheck:
-      test: ["CMD", "pg_isready", "-U", "graphicle", "-d", "graphicle"]
-      interval: 5s
-      retries: 20
     security_opt: ["no-new-privileges:true"]
     restart: unless-stopped
   caddy:
@@ -54,7 +27,5 @@ services:
     restart: unless-stopped
 volumes:
   graphicle-data:
-  postgres-data:
-  postgres-socket:
   caddy-data:
   caddy-config:
