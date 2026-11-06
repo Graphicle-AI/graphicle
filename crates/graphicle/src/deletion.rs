@@ -317,12 +317,19 @@ fn delete_rowids(db: &Connection, table: &str, rowids: &[i64]) -> Result<usize> 
     Ok(rowids.len())
 }
 
+/// Each table with its definition: on SQLite its schema text, which tells
+/// FTS indexes apart; on PostgreSQL, where there are none, no text.
+const TABLES_SQL: [&str; 2] = [
+    "SELECT name,coalesce(sql,'') AS sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+    "SELECT table_name AS name,'' AS sql FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
+];
+
 /// Every ordinary table with its text columns. FTS indexes (derived from
 /// repository files only) and the receipts themselves are excluded.
 fn tables(db: &Connection) -> Result<Vec<Table>> {
     let all = rows(
         db,
-        "SELECT table_name AS name,'' AS sql FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
+        TABLES_SQL[usize::from(db.engine() == crate::db::Engine::Postgres)],
         [],
     )?;
     let virtual_tables: Vec<&str> = all
@@ -554,12 +561,17 @@ fn excerpt(content: &str) -> Option<String> {
 }
 
 /// Whether deleted rows are overwritten where they were stored. SQLite
-/// stores (0.1.12 and earlier) ran with `secure_delete`; PostgreSQL keeps a
-/// deleted row's bytes in the table's free space and the server's
-/// write-ahead log until they are reused, so this is false: the receipt
-/// says so rather than claim it ([`checkpoint`] vacuums the tables).
-fn secure_delete(_db: &Connection) -> Result<bool> {
-    Ok(false)
+/// stores run with `secure_delete`, which zeroes deleted content in the
+/// database pages, and [`checkpoint`] then truncates the write-ahead log.
+/// PostgreSQL keeps a deleted row's bytes in the table's free space, the
+/// server's write-ahead log and any WAL archive or base backup until they
+/// are reused or expire, so on PostgreSQL this is false: the receipt says
+/// so rather than claim it ([`checkpoint`] vacuums the tables).
+fn secure_delete(db: &Connection) -> Result<bool> {
+    if db.engine() == crate::db::Engine::Postgres {
+        return Ok(false);
+    }
+    Ok(db.query_row("PRAGMA secure_delete", [], |r| r.get::<_, i64>(0))? == 1)
 }
 
 fn external(db: &Connection, repository: &str) -> Result<Vec<Value>> {
@@ -1622,7 +1634,7 @@ pub fn state(db: &Connection, workspace: &str, repository: &str) -> Result<Value
     let history = history(db)?;
     let all = rows(
         db,
-        "SELECT table_name AS name,'' AS sql FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
+        TABLES_SQL[usize::from(db.engine() == crate::db::Engine::Postgres)],
         [],
     )?;
     let virtual_tables: Vec<String> = all
@@ -1945,13 +1957,27 @@ fn chain(db: &Connection, workspace: &str) -> Result<Value> {
     Ok(json!({"length":length,"intact":intact,"head":previous}))
 }
 
-/// After a deletion commits, vacuum the store's tables, so that the rows
-/// deleted are removed from them and their space is reused. PostgreSQL
-/// manages its own write-ahead log (`wal_checkpoint` says so): the deleted
-/// bytes stay in its segments until the server recycles them, and in any
+/// After a deletion commits: on SQLite, flush deleted pages out of the
+/// write-ahead log (`secure_delete` has already zeroed them in the database
+/// pages). On PostgreSQL, vacuum the store's tables, so that the rows
+/// deleted are removed from them and their space is reused; the server
+/// manages its own write-ahead log (`wal_checkpoint` says so), and the
+/// deleted bytes stay in its segments until it recycles them, and in any
 /// archive of them.
 pub fn checkpoint(store: &Store) -> Result<Value> {
     let db = store.connect()?;
+    if db.engine() == crate::db::Engine::Sqlite {
+        let (busy, log, done) = db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        return Ok(
+            json!({"wal_checkpoint":if busy == 0 {"truncated"} else {"busy"},"log_frames":log,"checkpointed_frames":done}),
+        );
+    }
     let tables = crate::store::tables(&db)?;
     for table in &tables {
         db.execute_batch(&format!(
@@ -2093,9 +2119,15 @@ pub fn verify(store: &Store, workspace: &str, token: &str, args: &Value) -> Resu
 /// Receipts of this workspace, newest first, with the chain status.
 pub fn list(store: &Store, workspace: &str, token: &str) -> Result<Value> {
     store.authorized_read(workspace, token, "admin", |db, _| {
+        // SQLite's json_extract reads a JSON true as 1; the PostgreSQL
+        // store's as the text '1'.
         let receipts: Vec<Value> = rows(
             db,
-            "SELECT id,sequence,repository_id,operation,target,digest,previous,created_at,CASE WHEN json_extract(body,'$.verified_local')='1' THEN 1 ELSE 0 END AS verified_local,CASE WHEN json_extract(body,'$.external_pending')='1' THEN 1 ELSE 0 END AS external_pending FROM am_deletion_receipts WHERE workspace_id=? ORDER BY sequence DESC LIMIT 200",
+            if db.engine() == crate::db::Engine::Sqlite {
+                "SELECT id,sequence,repository_id,operation,target,digest,previous,created_at,json_extract(body,'$.verified_local') AS verified_local,json_extract(body,'$.external_pending') AS external_pending FROM am_deletion_receipts WHERE workspace_id=? ORDER BY sequence DESC LIMIT 200"
+            } else {
+            "SELECT id,sequence,repository_id,operation,target,digest,previous,created_at,CASE WHEN json_extract(body,'$.verified_local')='1' THEN 1 ELSE 0 END AS verified_local,CASE WHEN json_extract(body,'$.external_pending')='1' THEN 1 ELSE 0 END AS external_pending FROM am_deletion_receipts WHERE workspace_id=? ORDER BY sequence DESC LIMIT 200"
+            },
             [workspace],
         )?
         .into_iter()

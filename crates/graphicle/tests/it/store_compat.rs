@@ -435,14 +435,10 @@ fn a_store_without_the_team_tables_names_none_of_them() {
     store
         .backup(&store.directory.join("core-backup.sqlite3"))
         .unwrap();
-    let tables: i64 = store
-        .connect()
-        .unwrap()
-        .query_row(
-            "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN ('am_members','am_sso','am_subscriptions')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let db = store.connect().unwrap();
+    let tables = ["am_members", "am_sso", "am_subscriptions"]
+        .iter()
+        .filter(|t| graphicle_runtime::store::table_exists(&db, t).unwrap())
+        .count();
     assert_eq!(tables, 0);
 }

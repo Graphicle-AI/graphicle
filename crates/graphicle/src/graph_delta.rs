@@ -29,15 +29,14 @@ pub fn owner(attributes: &Attributes) -> &str {
 pub fn migrate(db: &Connection) -> Result<()> {
     let transaction = db.unchecked_transaction()?;
     let db = &*transaction;
-    let existed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='gf_projection_groups')", [], |r| r.get(0))?;
+    let existed = crate::store::table_exists(db, "gf_projection_groups")?;
     for table in ["gf_nodes", "gf_edges"] {
         ensure_column(db, table, "owner", "TEXT NOT NULL DEFAULT ''")?;
     }
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS gf_projection_groups (
             repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
-            owner TEXT NOT NULL, digest BYTEA,
+            owner TEXT NOT NULL, digest BLOB,
             PRIMARY KEY(repository_id,owner));
          CREATE INDEX IF NOT EXISTS gf_nodes_owner ON gf_nodes(repository_id,owner) WHERE valid_to_episode IS NULL;
          CREATE INDEX IF NOT EXISTS gf_edges_owner ON gf_edges(repository_id,owner) WHERE valid_to_episode IS NULL;"
@@ -58,7 +57,31 @@ pub fn migrate(db: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// SQLite's cache triggers, three per table, which a projection drops
+/// inside its savepoint and installs again.
+fn install_sqlite_triggers(db: &Connection) -> Result<()> {
+    for table in ["gf_nodes", "gf_edges"] {
+        db.execute_batch(&format!(
+            "CREATE TRIGGER IF NOT EXISTS {table}_group_insert AFTER INSERT ON {table} BEGIN
+                 INSERT INTO gf_projection_groups(repository_id,owner,digest) VALUES(NEW.repository_id,NEW.owner,NULL)
+                   ON CONFLICT(repository_id,owner) DO UPDATE SET digest=NULL WHERE digest IS NOT NULL;
+             END;
+             CREATE TRIGGER IF NOT EXISTS {table}_group_update AFTER UPDATE ON {table} BEGIN
+                 UPDATE gf_projection_groups SET digest=NULL WHERE repository_id=OLD.repository_id AND owner=OLD.owner AND digest IS NOT NULL;
+                 INSERT INTO gf_projection_groups(repository_id,owner,digest) VALUES(NEW.repository_id,NEW.owner,NULL)
+                   ON CONFLICT(repository_id,owner) DO UPDATE SET digest=NULL WHERE digest IS NOT NULL;
+             END;
+             CREATE TRIGGER IF NOT EXISTS {table}_group_delete AFTER DELETE ON {table} BEGIN
+                 UPDATE gf_projection_groups SET digest=NULL WHERE repository_id=OLD.repository_id AND owner=OLD.owner AND digest IS NOT NULL;
+             END;"))?;
+    }
+    Ok(())
+}
+
 fn install_triggers(db: &Connection) -> Result<()> {
+    if db.engine() == crate::db::Engine::Sqlite {
+        return install_sqlite_triggers(db);
+    }
     // One trigger function for both tables: a row written, changed or
     // removed outside a projection marks its group's cached digest stale.
     // A projection, which knows every group it changes, writes with
@@ -93,7 +116,13 @@ fn install_triggers(db: &Connection) -> Result<()> {
 
 /// Keep the authoritative projection and its cache publication atomic.
 ///
-/// Row triggers would cost a statement per inserted row. The projector
+/// On SQLite, row triggers impose a statement journal on every insert: the
+/// projector, which already knows every changed group, removes its cache
+/// triggers inside a savepoint. SQLite serializes writers and
+/// transactionally restores the schema on rollback; other connections never
+/// see a committed state without the triggers.
+///
+/// On PostgreSQL, row triggers would cost a statement per inserted row. The projector
 /// already knows every changed group, so its writes run in a savepoint with
 /// `graphicle.projecting` set for the transaction, which the triggers skip.
 /// The setting ends with the savepoint (released or rolled back); other
@@ -111,14 +140,28 @@ impl<'a> ProjectionWrite<'a> {
             db,
             committed: false,
         };
-        db.execute_batch("SET LOCAL graphicle.projecting = 'on'")?;
+        if db.engine() == crate::db::Engine::Sqlite {
+            for table in ["gf_nodes", "gf_edges"] {
+                for action in ["insert", "update", "delete"] {
+                    db.execute_batch(&format!("DROP TRIGGER IF EXISTS {table}_group_{action}"))?;
+                }
+            }
+        } else {
+            db.execute_batch("SET LOCAL graphicle.projecting = 'on'")?;
+        }
         Ok(write)
     }
 
     pub fn commit(mut self) -> Result<()> {
-        self.db.execute_batch(
-            "SET LOCAL graphicle.projecting = 'off'; RELEASE graphicle_graph_projection",
-        )?;
+        if self.db.engine() == crate::db::Engine::Sqlite {
+            install_sqlite_triggers(self.db)?;
+            self.db
+                .execute_batch("RELEASE graphicle_graph_projection")?;
+        } else {
+            self.db.execute_batch(
+                "SET LOCAL graphicle.projecting = 'off'; RELEASE graphicle_graph_projection",
+            )?;
+        }
         self.committed = true;
         Ok(())
     }

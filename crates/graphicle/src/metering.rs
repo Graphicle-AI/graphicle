@@ -1315,9 +1315,15 @@ pub fn summary(db: &Connection, workspace: &str, from: &str, to: &str) -> Result
     )?;
     let by_session = rows(
         db,
-        "SELECT session,credential_id,string_agg(DISTINCT channel, ',') AS channels,min(day) AS first_day,max(day) AS last_day,
+        &format!("SELECT session,credential_id,{} AS channels,min(day) AS first_day,max(day) AS last_day,
          sum(calls) AS calls,sum(tokens) AS tokens FROM am_served_usage
          WHERE workspace_id=? AND day>=? AND day<=? AND session<>'' GROUP BY session,credential_id ORDER BY tokens DESC,session LIMIT 50",
+            if db.engine() == crate::db::Engine::Sqlite {
+                "group_concat(DISTINCT channel)"
+            } else {
+                "string_agg(DISTINCT channel, ',')"
+            }
+        ),
         scope,
     )?;
     let by_project = rows(

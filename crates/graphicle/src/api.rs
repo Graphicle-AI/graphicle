@@ -2162,14 +2162,25 @@ pub fn manifest(
         .and_then(|path| std::fs::read(path).ok())
         .map(|bytes| sha(&bytes));
     let store = app.worker.store.authorized_read(workspace, capability, "read", |db, _| {
-        // Each table with its column definitions, the PostgreSQL store's
-        // counterpart of the SQLite schema text this hashed before.
-        let tables = rows(
+        // Each table with its definition: SQLite's schema text, or on
+        // PostgreSQL each table's columns and types.
+        let sqlite = db.engine() == crate::db::Engine::Sqlite;
+        let tables = if sqlite {
+            rows(
+                db,
+                "SELECT name,coalesce(sql,'') AS sql FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+                [],
+            )?
+        } else { rows(
             db,
             "SELECT t.table_name AS name, coalesce((SELECT string_agg(c.column_name||' '||c.data_type, ', ' ORDER BY c.ordinal_position) FROM information_schema.columns c WHERE c.table_schema=t.table_schema AND c.table_name=t.table_name),'') AS sql FROM information_schema.tables t WHERE t.table_schema=current_schema() AND t.table_type='BASE TABLE' ORDER BY t.table_name",
             [],
-        )?;
-        let user_version: i64 = 0;
+        )? };
+        let user_version: i64 = if sqlite {
+            db.query_row("PRAGMA user_version", [], |row| row.get(0))?
+        } else {
+            0
+        };
         Ok(json!({"tables":tables.len(),"tables_sha256":sha(json!(tables).to_string().as_bytes()),
             "user_version":user_version}))
     })?;

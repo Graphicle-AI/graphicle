@@ -602,7 +602,13 @@ fn failed_projection_rolls_back_rows_and_restores_cache_invalidation() {
     graph_projection::persist_with_report(&db, &f.repo, "one", &original, Some(&json!({})))
         .unwrap();
     assert!(db.is_autocommit());
-    db.execute_batch(
+    db.execute_batch(if db.engine() == graphicle_runtime::db::Engine::Sqlite {
+        "CREATE TABLE rollback_marker(value INTEGER);
+         CREATE TRIGGER reject_projection BEFORE INSERT ON gf_edges
+         WHEN NEW.valid_from_episode='failed' BEGIN
+             SELECT RAISE(ABORT,'forced projection failure');
+         END;"
+    } else {
         "CREATE TABLE rollback_marker(value BIGINT);
          CREATE FUNCTION reject_projection() RETURNS trigger LANGUAGE plpgsql AS $$
          BEGIN
@@ -612,8 +618,8 @@ fn failed_projection_rolls_back_rows_and_restores_cache_invalidation() {
              RETURN NEW;
          END $$;
          CREATE TRIGGER reject_projection BEFORE INSERT ON gf_edges
-         FOR EACH ROW EXECUTE FUNCTION reject_projection();",
-    )
+         FOR EACH ROW EXECUTE FUNCTION reject_projection();"
+    })
     .unwrap();
     let outer = db.unchecked_transaction().unwrap();
     outer

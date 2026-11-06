@@ -1,13 +1,16 @@
-//! `graphicle import-sqlite`: copy a SQLite store (`reviews.sqlite3`, from
-//! Graphicle 0.1.12 or earlier) into the data folder's PostgreSQL store,
-//! once. The only code that reads SQLite (feature `sqlite-import`).
+//! `graphicle import-sqlite`: copy a SQLite store (`reviews.sqlite3`) into
+//! the data folder's PostgreSQL store, once, when `GRAPHICLE_DATABASE_URL`
+//! names the server.
 //!
 //! The data folder must not have a PostgreSQL store yet. The SQLite file is
-//! opened read-only and checked (`PRAGMA quick_check`); the store is created
-//! at this program's schema; then every table both have is copied in one
-//! transaction, parents before children, each row's `rowid` kept, and the
-//! identity sequences are moved past the copied ids. A copy that fails
-//! leaves no store behind. The SQLite file is never changed or removed.
+//! opened read-only and checked (`PRAGMA quick_check`), and read in one
+//! snapshot, so a program still writing to it cannot leave the copy
+//! half-old; the store is created at this program's schema; then every
+//! table both have is copied in one transaction, parents before children,
+//! each row's `rowid` kept, and the identity sequences are moved past the
+//! copied ids. Text keeps NUL characters the way every write to the
+//! PostgreSQL store keeps them ([`crate::db`]). A copy that fails leaves no
+//! store behind. The SQLite file is never changed or removed.
 
 use crate::store::Store;
 use crate::{Error, Result};
@@ -61,16 +64,31 @@ fn copy_text(out: &mut Vec<u8>, value: ValueRef<'_>, column_type: &str) -> Resul
     Ok(())
 }
 
+/// U+10FFFF in UTF-8: the escape of the PostgreSQL store's text, which
+/// stores a NUL as it and `0`, and itself twice ([`crate::db`]).
+const NUL_ESCAPE: &[u8] = "\u{10FFFF}".as_bytes();
+
 fn escape(out: &mut Vec<u8>, text: &[u8]) {
-    for &b in text {
-        match b {
+    let mut i = 0;
+    while i < text.len() {
+        if text[i..].starts_with(NUL_ESCAPE) {
+            out.extend_from_slice(NUL_ESCAPE);
+            out.extend_from_slice(NUL_ESCAPE);
+            i += NUL_ESCAPE.len();
+            continue;
+        }
+        match text[i] {
             b'\\' => out.extend_from_slice(b"\\\\"),
             b'\n' => out.extend_from_slice(b"\\n"),
             b'\r' => out.extend_from_slice(b"\\r"),
             b'\t' => out.extend_from_slice(b"\\t"),
-            0 => {}
-            _ => out.push(b),
+            0 => {
+                out.extend_from_slice(NUL_ESCAPE);
+                out.push(b'0');
+            }
+            b => out.push(b),
         }
+        i += 1;
     }
 }
 
@@ -85,7 +103,13 @@ fn hex(out: &mut Vec<u8>, bytes: &[u8]) {
 /// Copy the SQLite store at `source` into a new PostgreSQL store for the
 /// data folder `directory`.
 pub fn import(source: &Path, directory: &Path) -> Result<Value> {
-    if crate::db::Database::exists(directory) {
+    if !crate::db::postgres_configured() {
+        return Err(Error::bad(format!(
+            "import-sqlite copies a SQLite store into PostgreSQL: set {} to the server first. Without it, Graphicle keeps using the SQLite store as it is",
+            crate::db::URL_ENV
+        )));
+    }
+    if directory.join(crate::db::SCHEMA_FILE).is_file() {
         return Err(Error::bad(
             "This data folder already has a PostgreSQL store; import into a new --data-dir",
         ));
@@ -103,6 +127,9 @@ pub fn import(source: &Path, directory: &Path) -> Result<Value> {
     .map_err(|e| Error::bad(format!("Could not open {}: {e}", source.display())))?;
     let sqlite_error =
         |e: rusqlite::Error| Error::bad(format!("Reading the SQLite store failed: {e}"));
+    // One snapshot for every read below: a writer that still has the file
+    // open cannot make the copy mix two states.
+    sqlite.execute_batch("BEGIN").map_err(sqlite_error)?;
     let check: String = sqlite
         .query_row("PRAGMA quick_check", [], |r| r.get(0))
         .map_err(sqlite_error)?;
@@ -140,7 +167,7 @@ pub fn import(source: &Path, directory: &Path) -> Result<Value> {
         )));
     }
     std::fs::create_dir_all(directory)?;
-    let store = Store::open(directory)?;
+    let store = Store::create_postgres(directory)?;
     let outcome = copy_all(&sqlite, &source_tables, &store);
     if outcome.is_err() {
         let _ = store.pool.drop_schema();

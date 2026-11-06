@@ -33,11 +33,7 @@ pub const RETAINED_TABLES: &[&str] = &["am_team_audit"];
 
 /// Whether this store has `table`.
 fn has(db: &Connection, table: &str) -> Result<bool> {
-    Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?)",
-        [table],
-        |r| r.get(0),
-    )?)
+    crate::store::table_exists(db, table)
 }
 
 /// Append each of `tables` that this store has and `list` does not name yet.
@@ -113,6 +109,14 @@ pub fn scrub_backup(db: &Connection) -> Result<()> {
     if statements.is_empty() {
         return Ok(());
     }
-    db.execute_batch(&format!("BEGIN; {} COMMIT;", statements.join(" ")))?;
+    if db.engine() == crate::db::Engine::Sqlite {
+        // A SQLite backup file: the store's settings, then one write.
+        db.execute_batch(&format!(
+            "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; BEGIN IMMEDIATE; {} COMMIT;",
+            statements.join(" ")
+        ))?;
+    } else {
+        db.execute_batch(&format!("BEGIN; {} COMMIT;", statements.join(" ")))?;
+    }
     Ok(())
 }

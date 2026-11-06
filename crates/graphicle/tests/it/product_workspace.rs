@@ -961,15 +961,7 @@ async fn team_commerce_and_identity_surface_follows_the_edition() {
         );
     }
     let db = f.store.connect().unwrap();
-    let table = |name: &str| -> bool {
-        db.query_row(
-            "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?",
-            [name],
-            |r| r.get::<_, i64>(0),
-        )
-        .unwrap()
-            == 1
-    };
+    let table = |name: &str| -> bool { graphicle_runtime::store::table_exists(&db, name).unwrap() };
     for name in [
         "am_members",
         "am_sso",

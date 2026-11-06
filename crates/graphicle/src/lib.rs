@@ -19,6 +19,7 @@ pub mod computer;
 pub mod connectors;
 pub mod core_capabilities;
 pub mod db;
+pub mod db_tls;
 pub mod deletion;
 pub mod disconnect;
 pub mod distributed;
@@ -40,7 +41,6 @@ pub mod graph_projection;
 pub mod graph_tools;
 pub mod identifier_arm;
 pub mod identifier_route;
-#[cfg(feature = "sqlite-import")]
 pub mod import_sqlite;
 pub mod indexed_query;
 pub mod ingestion;

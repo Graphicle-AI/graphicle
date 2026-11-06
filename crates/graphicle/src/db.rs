@@ -1,12 +1,23 @@
-//! The store's database: PostgreSQL, through a small connection layer shaped
-//! like the parts of `rusqlite` the store was written against, so that the
-//! code reading and writing the store keeps its shape.
+//! The store's database: SQLite by default, or PostgreSQL when
+//! `GRAPHICLE_DATABASE_URL` is set, through one small connection layer
+//! shaped like the parts of `rusqlite` the store was written against, so
+//! that the code reading and writing the store keeps its shape.
 //!
-//! - **Where.** `GRAPHICLE_DATABASE_URL` names the server (a libpq connection
-//!   string or a `postgresql://` URL). Each data folder owns one schema of
-//!   that database, named in the folder's `postgres.json` when the store is
-//!   created ([`Database::for_directory`]); two data folders (two instances)
-//!   never share tables, and moving a data folder keeps its schema.
+//! - **Which.** Without `GRAPHICLE_DATABASE_URL` a data folder's store is
+//!   the SQLite file `reviews.sqlite3` in it, as in every release before
+//!   PostgreSQL support: no server, nothing to configure
+//!   ([`Engine::Sqlite`]). With it, the store is in PostgreSQL
+//!   ([`Engine::Postgres`]). A data folder that has `postgres.json` is
+//!   always a PostgreSQL store, and one with `reviews.sqlite3` is copied
+//!   into PostgreSQL once with `graphicle import-sqlite`.
+//! - **Where (PostgreSQL).** `GRAPHICLE_DATABASE_URL` names the server (a
+//!   libpq connection string or a `postgresql://` URL). Each data folder
+//!   owns one schema of that database, named in the folder's
+//!   `postgres.json` when the store is created
+//!   ([`Database::for_directory`]); two data folders (two instances) never
+//!   share tables, and moving a data folder keeps its schema. A server that
+//!   is not on this machine is reached over TLS with its certificate and
+//!   host name checked ([`Settings`]).
 //! - **Transactions.** [`Connection::transaction`] serializes writers on the
 //!   schema's advisory lock, as SQLite's single write lock did, so a
 //!   read-then-write never races another writer; reads use a read-only
@@ -18,9 +29,13 @@
 //!   it (an integer bound to a `text` column is sent as its decimal text, as
 //!   SQLite's type affinity stored it), and every result type the schema uses
 //!   decodes to one of the five.
-//! - **SQL.** Statements are PostgreSQL. `?` and `?NNN` placeholders are
-//!   rewritten to `$1`, `$2`… outside quotes and comments ([`translate`]);
-//!   nothing else is rewritten.
+//! - **SQL.** Statements are written to run on both. On PostgreSQL, `?`
+//!   and `?NNN` placeholders are rewritten to `$1`, `$2`… outside quotes and
+//!   comments ([`translate`]) and SQLite table definitions take
+//!   PostgreSQL's types ([`sqlite_ddl`]); on SQLite, PostgreSQL casts
+//!   (`?1::text`), `LIMIT ALL` and `chr()` are written SQLite's way
+//!   ([`sqlite_sql`]). The few statements that differ more are chosen by
+//!   [`Connection::engine`] where they are.
 
 use postgres::types::{FromSql, IsNull, ToSql as PgToSql, Type, to_sql_checked};
 use std::{
@@ -36,9 +51,26 @@ use std::{
 /// The settings this module reads, with their defaults.
 pub const URL_ENV: &str = "GRAPHICLE_DATABASE_URL";
 pub const POOL_ENV: &str = "GRAPHICLE_DATABASE_POOL";
-/// The server when `GRAPHICLE_DATABASE_URL` is unset: the local server's
-/// socket, database `graphicle`, as the operating system user.
-pub const DEFAULT_URL: &str = "host=/var/run/postgresql,/tmp dbname=graphicle";
+/// Set to `1` to allow a connection without TLS to a server that is not on
+/// this machine (`sslmode=disable` with a remote host). Never needed for a
+/// Unix socket or localhost.
+pub const PLAINTEXT_ENV: &str = "GRAPHICLE_DATABASE_ALLOW_PLAINTEXT";
+/// A PEM file of the certificate authorities to trust for the server's
+/// certificate, in place of the system's (a private CA). Also read from
+/// libpq's `PGSSLROOTCERT`.
+pub const ROOT_CERT_ENV: &str = "GRAPHICLE_DATABASE_SSLROOTCERT";
+/// The longest one statement may run, in seconds (`statement_timeout`);
+/// 0 turns the limit off.
+pub const STATEMENT_TIMEOUT_ENV: &str = "GRAPHICLE_DATABASE_STATEMENT_TIMEOUT";
+pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(600);
+/// A session left idle inside a transaction this long is ended by the
+/// server, so a stuck client cannot hold back vacuum or hold locks.
+pub const IDLE_IN_TRANSACTION: Duration = Duration::from_secs(600);
+/// A SQLite store's file in its data folder.
+pub const SQLITE_FILE: &str = "reviews.sqlite3";
+/// A SQLite store's write-ahead log is checkpointed and truncated once it
+/// passes this size ([`Connection::bound_wal`]).
+pub const DEFAULT_WAL_LIMIT: u64 = 64 << 20;
 /// Connections each process keeps to one store at most.
 pub const DEFAULT_POOL: u32 = 32;
 /// The file in a data folder that names its schema.
@@ -64,6 +96,9 @@ pub enum Error {
     ToSqlConversionFailure(String),
     /// The server refused or failed the statement.
     Server { code: String, message: String },
+    /// SQLite refused or failed the statement: its extended result code,
+    /// and `rusqlite`'s text for the error.
+    Sqlite { code: Option<i32>, message: String },
     /// No connection could be made or taken from the pool.
     Connect(String),
     /// Anything else, with its text.
@@ -92,6 +127,7 @@ impl fmt::Display for Error {
                 write!(f, "attempt to write a readonly database ({message})")
             }
             Error::Server { message, .. } => f.write_str(message),
+            Error::Sqlite { message, .. } => f.write_str(message),
             Error::Connect(message) => write!(f, "Could not reach the database: {message}"),
             Error::Other(message) => f.write_str(message),
         }
@@ -114,7 +150,32 @@ impl Error {
     }
     /// Whether a unique or primary-key constraint refused the write.
     pub fn is_unique_violation(&self) -> bool {
+        // SQLITE_CONSTRAINT_PRIMARYKEY and SQLITE_CONSTRAINT_UNIQUE.
         self.code() == Some("23505")
+            || matches!(
+                self,
+                Error::Sqlite {
+                    code: Some(1555 | 2067),
+                    ..
+                }
+            )
+    }
+}
+
+impl From<rusqlite::Error> for Error {
+    fn from(error: rusqlite::Error) -> Self {
+        match error {
+            rusqlite::Error::QueryReturnedNoRows => Error::QueryReturnedNoRows,
+            rusqlite::Error::InvalidColumnType(index, name, _) => {
+                Error::InvalidColumnType(index, name, "the column's type")
+            }
+            rusqlite::Error::InvalidColumnName(name) => Error::InvalidColumn(name),
+            rusqlite::Error::InvalidColumnIndex(index) => Error::InvalidColumn(index.to_string()),
+            other => Error::Sqlite {
+                code: other.sqlite_error().map(|e| e.extended_code),
+                message: other.to_string(),
+            },
+        }
     }
 }
 
@@ -477,7 +538,11 @@ impl PgToSql for Value {
                 Value::Integer(v) => Ok(*v),
                 Value::Real(v) if v.fract() == 0.0 => Ok(*v as i64),
                 Value::Text(t) => Ok(t.trim().parse::<i64>()?),
-                _ => Err(format!("cannot send {self:?} as {ty}").into()),
+                _ => Err(format!(
+                    "cannot send a {} parameter as {ty}",
+                    self.as_ref().data_type()
+                )
+                .into()),
             }
         };
         let real = || -> std::result::Result<f64, Box<dyn std::error::Error + Sync + Send>> {
@@ -485,7 +550,11 @@ impl PgToSql for Value {
                 Value::Integer(v) => Ok(*v as f64),
                 Value::Real(v) => Ok(*v),
                 Value::Text(t) => Ok(t.trim().parse::<f64>()?),
-                _ => Err(format!("cannot send {self:?} as {ty}").into()),
+                _ => Err(format!(
+                    "cannot send a {} parameter as {ty}",
+                    self.as_ref().data_type()
+                )
+                .into()),
             }
         };
         let text = |out: &mut bytes::BytesMut| -> std::result::Result<(), Box<dyn std::error::Error + Sync + Send>> {
@@ -516,7 +585,13 @@ impl PgToSql for Value {
             Type::BYTEA => match self {
                 Value::Blob(b) => out.put_slice(b),
                 Value::Text(t) => out.put_slice(t.as_bytes()),
-                _ => return Err(format!("cannot send {self:?} as bytea").into()),
+                _ => {
+                    return Err(format!(
+                        "cannot send a {} parameter as bytea",
+                        self.as_ref().data_type()
+                    )
+                    .into());
+                }
             },
             Type::JSONB => {
                 out.put_u8(1);
@@ -998,6 +1073,134 @@ fn changes_schema(sql: &str) -> bool {
     .any(|k| upper.contains(k))
 }
 
+/// A table or column name Graphicle writes into SQL itself: letters,
+/// digits and underscores, not starting with a digit.
+pub fn valid_identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 63
+        && !name.as_bytes()[0].is_ascii_digit()
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// `sql`, written for both engines, as SQLite takes it: PostgreSQL casts
+/// (`?1::text`, `x::bigint[]`) left out, `LIMIT ALL` as `LIMIT -1` and
+/// `chr(n)` as `char(n)`, outside quoted text and comments. Anything else
+/// is left as it is.
+pub fn sqlite_sql(sql: &str) -> Cow<'_, str> {
+    let lower = sql.to_ascii_lowercase();
+    if !(sql.contains("::") || lower.contains("limit all") || lower.contains("chr(")) {
+        return Cow::Borrowed(sql);
+    }
+    static PATTERNS: OnceLock<[(regex::Regex, &'static str); 3]> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        let re = |p: &str| {
+            regex::Regex::new(p).unwrap_or_else(|_| regex::Regex::new("$^").expect("regex"))
+        };
+        [
+            (
+                re(r"(?i)::\s*(double\s+precision|[a-z_][a-z0-9_]*)(\s*\[\])?"),
+                "",
+            ),
+            (re(r"(?i)\bLIMIT\s+ALL\b"), "LIMIT -1"),
+            (re(r"(?i)\bchr\("), "char("),
+        ]
+    });
+    map_plain(sql, |part| {
+        let mut part = part.to_string();
+        for (pattern, with) in patterns {
+            part = pattern.replace_all(&part, *with).into_owned();
+        }
+        part
+    })
+}
+
+/// `sql` with `f` applied to the text outside quoted strings, quoted
+/// identifiers and `--` comments.
+fn map_plain(sql: &str, f: impl Fn(&str) -> String) -> Cow<'_, str> {
+    let mut out = String::with_capacity(sql.len() + 16);
+    let mut plain = String::new();
+    let mut chars = sql.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' | '"' => {
+                out.push_str(&f(&std::mem::take(&mut plain)));
+                out.push(c);
+                while let Some(q) = chars.next() {
+                    out.push(q);
+                    if q == c {
+                        if chars.peek() == Some(&c) {
+                            out.push(c);
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            '-' if chars.peek() == Some(&'-') => {
+                out.push_str(&f(&std::mem::take(&mut plain)));
+                out.push(c);
+                for q in chars.by_ref() {
+                    out.push(q);
+                    if q == '\n' {
+                        break;
+                    }
+                }
+            }
+            c => plain.push(c),
+        }
+    }
+    out.push_str(&f(&plain));
+    Cow::Owned(out)
+}
+
+/// A [`Value`] as a SQLite parameter.
+struct Lite<'a>(&'a Value);
+impl rusqlite::ToSql for Lite<'_> {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        use rusqlite::types::ValueRef as R;
+        Ok(rusqlite::types::ToSqlOutput::Borrowed(match self.0 {
+            Value::Null => R::Null,
+            Value::Integer(v) => R::Integer(*v),
+            Value::Real(v) => R::Real(*v),
+            Value::Text(v) => R::Text(v.as_bytes()),
+            Value::Blob(v) => R::Blob(v),
+        }))
+    }
+}
+
+/// A SQLite result value as a [`Value`]. Text that is not UTF-8 (SQLite
+/// stores what it is given) is kept as a blob rather than altered.
+fn from_lite(value: rusqlite::types::ValueRef<'_>) -> Value {
+    use rusqlite::types::ValueRef as R;
+    match value {
+        R::Null => Value::Null,
+        R::Integer(v) => Value::Integer(v),
+        R::Real(v) => Value::Real(v),
+        R::Text(t) => match std::str::from_utf8(t) {
+            Ok(text) => Value::Text(text.to_string()),
+            Err(_) => Value::Blob(t.to_vec()),
+        },
+        R::Blob(b) => Value::Blob(b.to_vec()),
+    }
+}
+
+/// How long a SQLite write-ahead-log checkpoint waits for readers.
+pub const CHECKPOINT_WAIT: Duration = Duration::from_secs(2);
+static WAL_CHECKPOINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static WAL_CHECKPOINTS_BUSY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// This process's SQLite write-ahead-log checkpoints
+/// ([`Connection::bound_wal`]): how many ran, and how many found readers
+/// still on an older snapshot after [`CHECKPOINT_WAIT`].
+pub fn wal_report() -> serde_json::Value {
+    serde_json::json!({
+        "wal_checkpoints": WAL_CHECKPOINTS.load(std::sync::atomic::Ordering::Relaxed),
+        "wal_checkpoints_busy": WAL_CHECKPOINTS_BUSY.load(std::sync::atomic::Ordering::Relaxed),
+        "wal_limit_bytes": DEFAULT_WAL_LIMIT,
+    })
+}
+
 /// Table definitions written for SQLite (an extension's tables, an older
 /// test's) in PostgreSQL's types: `INTEGER` as `BIGINT` (SQLite integers
 /// are 64-bit), `REAL` as `DOUBLE PRECISION`, `BLOB` as `BYTEA`,
@@ -1075,11 +1278,46 @@ pub fn sqlite_ddl(sql: &str) -> Cow<'_, str> {
 // ---------------------------------------------------------------------------
 // The database of a data folder, and its pool
 
-/// The server address and pool size, from the environment.
-#[derive(Clone, Debug)]
+/// Which database a store is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Engine {
+    /// A SQLite file (`reviews.sqlite3`): the default.
+    Sqlite,
+    /// A schema of a PostgreSQL database (`GRAPHICLE_DATABASE_URL`).
+    Postgres,
+}
+
+/// Whether `GRAPHICLE_DATABASE_URL` is set: new stores go to PostgreSQL.
+pub fn postgres_configured() -> bool {
+    std::env::var_os(URL_ENV).is_some_and(|v| !v.to_string_lossy().trim().is_empty())
+}
+
+/// The server address, pool size and connection policy, from the
+/// environment. Its `Debug` never shows the address, which may hold a
+/// password.
+#[derive(Clone)]
 pub struct Settings {
     pub url: String,
     pub pool: u32,
+    /// `GRAPHICLE_DATABASE_ALLOW_PLAINTEXT=1`: a remote server may be
+    /// reached without TLS when the address asks for `sslmode=disable`.
+    pub allow_plaintext: bool,
+    /// Certificate authorities to trust instead of the system's.
+    pub root_cert: Option<PathBuf>,
+    /// `statement_timeout` of every session; zero for none.
+    pub statement_timeout: Duration,
+}
+
+impl fmt::Debug for Settings {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Settings")
+            .field("url", &"(not shown)")
+            .field("pool", &self.pool)
+            .field("allow_plaintext", &self.allow_plaintext)
+            .field("root_cert", &self.root_cert)
+            .field("statement_timeout", &self.statement_timeout)
+            .finish()
+    }
 }
 
 impl Settings {
@@ -1087,7 +1325,11 @@ impl Settings {
         let url = std::env::var(URL_ENV)
             .ok()
             .filter(|v| !v.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_URL.into());
+            .ok_or_else(|| {
+                Error::Other(format!(
+                    "This store is in PostgreSQL; set {URL_ENV} to its server (see docs/configuration.md)"
+                ))
+            })?;
         let pool = match std::env::var(POOL_ENV) {
             Ok(v) if !v.trim().is_empty() => v
                 .trim()
@@ -1101,8 +1343,186 @@ impl Settings {
                 })?,
             _ => DEFAULT_POOL,
         };
-        Ok(Self { url, pool })
+        let statement_timeout = match std::env::var(STATEMENT_TIMEOUT_ENV) {
+            Ok(v) if !v.trim().is_empty() => v
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .filter(|n| *n <= 86_400)
+                .map(Duration::from_secs)
+                .ok_or_else(|| {
+                    Error::Other(format!(
+                        "{STATEMENT_TIMEOUT_ENV} takes a number of seconds from 0 to 86400"
+                    ))
+                })?,
+            _ => DEFAULT_STATEMENT_TIMEOUT,
+        };
+        let root_cert = [ROOT_CERT_ENV, "PGSSLROOTCERT"]
+            .iter()
+            .find_map(|name| std::env::var_os(name).filter(|v| !v.is_empty()))
+            .map(PathBuf::from);
+        Ok(Self {
+            url,
+            pool,
+            allow_plaintext: std::env::var(PLAINTEXT_ENV).is_ok_and(|v| v.trim() == "1"),
+            root_cert,
+            statement_timeout,
+        })
     }
+
+    /// The parsed address, with the TLS this policy requires of it.
+    /// libpq's `sslmode=verify-full` and `verify-ca` are accepted and read
+    /// as `require`: a certificate is always checked against its host name.
+    fn config(&self) -> Result<(postgres::Config, bool)> {
+        let url = self
+            .url
+            .replace("sslmode=verify-full", "sslmode=require")
+            .replace("sslmode=verify-ca", "sslmode=require");
+        let mut config: postgres::Config = url
+            .parse()
+            .map_err(|e: postgres::Error| Error::Connect(redact(&e.to_string(), &self.url)))?;
+        let tls = tls_policy(&mut config, self.allow_plaintext)?;
+        if config.get_password().is_none()
+            && let Some(password) = pgpass_password(&config)
+        {
+            config.password(password);
+        }
+        Ok((config, tls))
+    }
+}
+
+/// The password for `config` from the libpq password file (`PGPASSFILE`,
+/// or `~/.pgpass`), read as libpq reads it: `host:port:database:user:password`
+/// lines, `*` matching anything, `\:` and `\\` escaped, `localhost` for a
+/// Unix socket, and the file ignored unless only its owner can read it.
+fn pgpass_password(config: &postgres::Config) -> Option<String> {
+    let path = std::env::var_os("PGPASSFILE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pgpass")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&path).ok()?;
+        if !meta.is_file() || meta.permissions().mode() & 0o077 != 0 {
+            return None;
+        }
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    let host = match config.get_hosts().first() {
+        Some(postgres::config::Host::Tcp(name)) => name.clone(),
+        _ => "localhost".to_string(),
+    };
+    let port = config
+        .get_ports()
+        .first()
+        .copied()
+        .unwrap_or(5432)
+        .to_string();
+    let user = config.get_user()?.to_string();
+    let database = config.get_dbname().unwrap_or(&user).to_string();
+    pgpass_lookup(&text, &[host, port, database, user])
+}
+
+/// The password a password file's text gives for `wanted` (host, port,
+/// database, user).
+fn pgpass_lookup(text: &str, wanted: &[String; 4]) -> Option<String> {
+    for line in text.lines() {
+        if line.starts_with('#') || line.trim().is_empty() {
+            continue;
+        }
+        let mut fields = Vec::new();
+        let mut field = String::new();
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            match c {
+                '\\' => {
+                    if let Some(next) = chars.next() {
+                        field.push(next);
+                    }
+                }
+                ':' if fields.len() < 4 => fields.push(std::mem::take(&mut field)),
+                c => field.push(c),
+            }
+        }
+        fields.push(field);
+        if fields.len() == 5
+            && fields[..4]
+                .iter()
+                .zip(wanted)
+                .all(|(have, want)| have == "*" || have == want)
+        {
+            return fields.pop();
+        }
+    }
+    None
+}
+
+/// Whether every host `config` names is this machine: a Unix socket, or
+/// `localhost` and the loopback addresses.
+fn local_only(config: &postgres::Config) -> bool {
+    let loopback = |name: &str| {
+        name.eq_ignore_ascii_case("localhost")
+            || name
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
+    };
+    let hosts_local = config.get_hosts().iter().all(|host| match host {
+        postgres::config::Host::Tcp(name) => loopback(name),
+        #[cfg(unix)]
+        postgres::config::Host::Unix(_) => true,
+    });
+    let addresses_local = config.get_hostaddrs().iter().all(|ip| ip.is_loopback());
+    hosts_local && addresses_local
+}
+
+/// Decide whether the connection uses TLS: required (with the certificate
+/// and host name checked) for any host that is not this machine, unless the
+/// address says `sslmode=disable` and plaintext was explicitly allowed;
+/// optional on a Unix socket or localhost, where `sslmode=require` still
+/// asks for it.
+fn tls_policy(config: &mut postgres::Config, allow_plaintext: bool) -> Result<bool> {
+    use postgres::config::SslMode;
+    let mode = config.get_ssl_mode();
+    if local_only(config) {
+        return Ok(matches!(mode, SslMode::Require));
+    }
+    if matches!(mode, SslMode::Disable) {
+        if allow_plaintext {
+            return Ok(false);
+        }
+        return Err(Error::Connect(format!(
+            "the database server is not on this machine and the address asks for no TLS (sslmode=disable); remove it, or set {PLAINTEXT_ENV}=1 to send the store unencrypted"
+        )));
+    }
+    config.ssl_mode(SslMode::Require);
+    Ok(true)
+}
+
+/// `message` with the password of `url`, if it has one, replaced: a
+/// connection error never carries the secret it was given.
+pub fn redact(message: &str, url: &str) -> String {
+    let mut out = message.to_string();
+    let parsed: Option<postgres::Config> = url.parse().ok();
+    let mut secrets: Vec<String> = Vec::new();
+    if let Some(password) = parsed.as_ref().and_then(|c| c.get_password()) {
+        secrets.push(String::from_utf8_lossy(password).into_owned());
+    }
+    // A URL that does not parse may still hold `:password@`.
+    if let Some(rest) = url.split("://").nth(1)
+        && let Some(userinfo) = rest.split('@').next().filter(|_| rest.contains('@'))
+        && let Some((_, password)) = userinfo.split_once(':')
+    {
+        secrets.push(password.to_string());
+    }
+    for secret in secrets.into_iter().filter(|s| s.len() >= 2) {
+        out = out.replace(&secret, "***");
+    }
+    if out.contains(url) && url.len() > 8 {
+        out = out.replace(url, "(the database address)");
+    }
+    out
 }
 
 /// What `postgres.json` in a data folder holds.
@@ -1111,12 +1531,23 @@ struct SchemaFile {
     schema: String,
 }
 
-/// One store: a schema of the configured database, and this process's
-/// connections to it.
+/// Where a store's rows are.
+enum Backend {
+    /// This process's connections to the PostgreSQL server.
+    Postgres(r2d2::Pool<Manager>),
+    /// A SQLite file; `store` when it is a data folder's store (foreign
+    /// keys and `secure_delete` on, as every release set them), otherwise
+    /// a cache file opened as it is, never through a symlink.
+    Sqlite { path: PathBuf, store: bool },
+}
+
+/// One store: a schema of the configured database, or a SQLite file, and
+/// this process's connections to it.
 pub struct Database {
+    /// The PostgreSQL schema (`main` for SQLite).
     pub schema: String,
     /// The file that names the schema (`postgres.json` of a data folder, or
-    /// a cache file), when the store was opened through one.
+    /// a cache file), or the SQLite file.
     pub file: Option<PathBuf>,
     /// A schema made for one connection ([`Connection::open_in_memory`]),
     /// dropped with it.
@@ -1126,12 +1557,15 @@ pub struct Database {
     /// Bumped by every schema change this process makes to the store
     /// (DDL), which outdates every session's prepared statements for it.
     generation: Arc<std::sync::atomic::AtomicU64>,
-    pool: r2d2::Pool<Manager>,
+    /// A SQLite store's write-ahead log limit in bytes (0: none).
+    wal_limit: std::sync::atomic::AtomicU64,
+    backend: Backend,
 }
 
 impl fmt::Debug for Database {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Database")
+            .field("engine", &self.engine())
             .field("schema", &self.schema)
             .finish()
     }
@@ -1151,6 +1585,37 @@ type Registry = Mutex<HashMap<(String, String), Arc<Database>>>;
 static DATABASES: OnceLock<Registry> = OnceLock::new();
 
 impl Database {
+    /// Which database this store is in.
+    pub fn engine(&self) -> Engine {
+        match self.backend {
+            Backend::Postgres(_) => Engine::Postgres,
+            Backend::Sqlite { .. } => Engine::Sqlite,
+        }
+    }
+
+    /// A SQLite file as a store (`store`) or a cache.
+    pub fn sqlite(path: &Path, store: bool) -> Arc<Database> {
+        Arc::new(Database {
+            schema: "main".into(),
+            file: Some(path.to_path_buf()),
+            temporary: false,
+            lock_key: 0,
+            generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            wal_limit: std::sync::atomic::AtomicU64::new(DEFAULT_WAL_LIMIT),
+            backend: Backend::Sqlite {
+                path: path.to_path_buf(),
+                store,
+            },
+        })
+    }
+
+    /// Set (or, with `None`, turn off) the size at which a SQLite store's
+    /// write-ahead log is checkpointed and truncated. For tests and tools.
+    pub fn set_wal_limit(&self, bytes: Option<u64>) {
+        self.wal_limit
+            .store(bytes.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// The schema named in `directory`'s `postgres.json`, when the folder
     /// has a store.
     pub fn schema_of(directory: &Path) -> Result<Option<String>> {
@@ -1190,28 +1655,70 @@ impl Database {
         Ok(Some(file.schema))
     }
 
-    /// Whether `directory` has a store (its `postgres.json`).
+    /// Whether `directory` has a store: its `postgres.json`, or its SQLite
+    /// file.
     pub fn exists(directory: &Path) -> bool {
-        directory.join(SCHEMA_FILE).is_file()
+        directory.join(SCHEMA_FILE).is_file() || directory.join(SQLITE_FILE).is_file()
     }
 
-    /// The store of `directory`, created (schema and `postgres.json`) when
-    /// `create` and the folder has none yet.
+    /// Which database `directory`'s store is in, or would be created in:
+    /// PostgreSQL when the folder has `postgres.json`, or has no SQLite
+    /// store and `GRAPHICLE_DATABASE_URL` is set; SQLite otherwise.
+    pub fn engine_of(directory: &Path) -> Engine {
+        if directory.join(SCHEMA_FILE).is_file()
+            || (postgres_configured() && !directory.join(SQLITE_FILE).is_file())
+        {
+            Engine::Postgres
+        } else {
+            Engine::Sqlite
+        }
+    }
+
+    /// The store of `directory`, created (schema and `postgres.json`, or
+    /// the SQLite file) when `create` and the folder has none yet.
     pub fn for_directory(directory: &Path, create: bool) -> Result<Arc<Database>> {
-        Self::for_file(&directory.join(SCHEMA_FILE), create)
+        match Self::engine_of(directory) {
+            Engine::Postgres => Self::for_file(&directory.join(SCHEMA_FILE), create),
+            Engine::Sqlite => {
+                let path = directory.join(SQLITE_FILE);
+                if path.is_symlink() {
+                    return Err(Error::Other("Database cannot be a symlink".into()));
+                }
+                if !create && !path.is_file() {
+                    return Err(Error::Other("This data folder has no store".into()));
+                }
+                Ok(Self::sqlite(&path, true))
+            }
+        }
     }
 
     /// The store that the file at `path` names (a data folder's
     /// `postgres.json`, or a cache file such as `GRAPHICLE_EMBEDDING_CACHE`),
     /// created with a new schema when `create` and the file does not exist.
+    /// Without `GRAPHICLE_DATABASE_URL`, a cache file is a SQLite file.
     pub fn for_file(path: &Path, create: bool) -> Result<Arc<Database>> {
+        let named = path
+            .file_name()
+            .is_some_and(|name| name == std::ffi::OsStr::new(SCHEMA_FILE));
+        if !named && !postgres_configured() {
+            if path.is_symlink() {
+                return Err(Error::Other(format!(
+                    "{} cannot be a symlink",
+                    path.display()
+                )));
+            }
+            if !create && !path.is_file() {
+                return Err(Error::Other(format!("{} does not exist", path.display())));
+            }
+            return Ok(Self::sqlite(path, false));
+        }
         let settings = Settings::from_environment()?;
         let schema = match Self::schema_in(path)? {
             Some(schema) => schema,
             None if create => {
                 let schema = format!("g_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
                 admin(
-                    &settings.url,
+                    &settings,
                     &format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""),
                 )?;
                 let file = serde_json::to_vec_pretty(&SchemaFile {
@@ -1221,7 +1728,7 @@ impl Database {
                 if let Err(error) = write_private(path, &file) {
                     // Another process created it first: use its schema.
                     let _ = admin(
-                        &settings.url,
+                        &settings,
                         &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
                     );
                     match Self::schema_in(path)? {
@@ -1242,13 +1749,17 @@ impl Database {
                 .get_or_init(|| Mutex::new(HashMap::new()))
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
+            let Backend::Postgres(pool) = &database.backend else {
+                return Err(Error::Other("Not a PostgreSQL store".into()));
+            };
             let replaced = Arc::new(Database {
                 schema: database.schema.clone(),
                 file: Some(path.to_path_buf()),
                 temporary: false,
                 lock_key: database.lock_key,
                 generation: database.generation.clone(),
-                pool: database.pool.clone(),
+                wal_limit: std::sync::atomic::AtomicU64::new(0),
+                backend: Backend::Postgres(pool.clone()),
             });
             all.insert((settings.url.clone(), schema), replaced.clone());
             return Ok(replaced);
@@ -1276,24 +1787,49 @@ impl Database {
             temporary: false,
             lock_key: lock_key(schema),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            pool,
+            wal_limit: std::sync::atomic::AtomicU64::new(0),
+            backend: Backend::Postgres(pool),
         });
         all.insert(key, database.clone());
         Ok(database)
     }
 
-    /// A connection from the pool, with the default busy timeout.
+    /// A connection, with the default busy timeout: from the pool for
+    /// PostgreSQL, or a new one to the SQLite file.
     pub fn connect(self: &Arc<Self>) -> Result<Connection> {
-        let pool = &self.pool;
+        let pool = match &self.backend {
+            Backend::Postgres(pool) => pool,
+            Backend::Sqlite { path, store } => {
+                let lite = if *store {
+                    let lite = rusqlite::Connection::open(path)?;
+                    lite.busy_timeout(DEFAULT_BUSY)?;
+                    lite.pragma_update(None, "foreign_keys", true)?;
+                    lite.pragma_update(None, "secure_delete", true)?;
+                    // A write-ahead log that a checkpoint reset is cut back
+                    // to this size rather than kept at its largest.
+                    lite.pragma_update(None, "journal_size_limit", DEFAULT_WAL_LIMIT as i64)?;
+                    lite
+                } else {
+                    rusqlite::Connection::open_with_flags(
+                        path,
+                        rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+                    )?
+                };
+                return Ok(Connection::sqlite(self.clone(), lite));
+            }
+        };
         let session = blocking(|| pool.get()).map_err(|e| Error::Connect(e.to_string()))?;
         let connection = Connection {
             session: RefCell::new(Some(session)),
+            lite: None,
             database: self.clone(),
             in_transaction: Cell::new(false),
             implicit: RefCell::new(None),
             savepoints: Cell::new(0),
             changes: Cell::new(0),
             busy: Cell::new(DEFAULT_BUSY),
+            query_only: Cell::new(false),
+            allocated: RefCell::new(HashMap::new()),
         };
         let schema = self.schema.clone();
         let generation = self.generation.load(std::sync::atomic::Ordering::Acquire);
@@ -1317,11 +1853,14 @@ impl Database {
     }
 
     /// Drop the schema and everything in it (`graphicle offboard` of a whole
-    /// store, tests).
+    /// store, tests). PostgreSQL stores only.
     pub fn drop_schema(&self) -> Result<()> {
+        if self.engine() != Engine::Postgres {
+            return Err(Error::Other("Not a PostgreSQL store".into()));
+        }
         let settings = Settings::from_environment()?;
         admin(
-            &settings.url,
+            &settings,
             &format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE", self.schema),
         )
     }
@@ -1371,9 +1910,9 @@ fn lock_key(schema: &str) -> i64 {
 
 /// Run `sql` on a connection of its own, outside any store's schema
 /// (creating and dropping schemas).
-pub fn admin(url: &str, sql: &str) -> Result<()> {
+pub fn admin(settings: &Settings, sql: &str) -> Result<()> {
     blocking(|| {
-        let mut client = connect_raw(url)?;
+        let mut client = connect_raw(settings)?;
         client.batch_execute(sql)?;
         Ok(())
     })
@@ -1428,26 +1967,8 @@ pub fn text_array<S: AsRef<str>>(values: &[S]) -> String {
 
 /// A connection outside any store's schema. Blocks: call it through
 /// [`blocking`] from async code.
-fn connect_raw(url: &str) -> Result<postgres::Client> {
-    let config: postgres::Config = url
-        .parse()
-        .map_err(|e: postgres::Error| Error::Connect(e.to_string()))?;
-    connect_config(&config)
-}
-
-fn connect_config(config: &postgres::Config) -> Result<postgres::Client> {
-    let mut config = config.clone();
-    if config.get_application_name().is_none() {
-        config.application_name(&application_name());
-    }
-    if config.get_user().is_none()
-        && let Some(user) = std::env::var_os("USER").or_else(|| std::env::var_os("LOGNAME"))
-    {
-        config.user(&user.to_string_lossy());
-    }
-    config
-        .connect(postgres::NoTls)
-        .map_err(|e| Error::Connect(e.to_string()))
+fn connect_raw(settings: &Settings) -> Result<postgres::Client> {
+    Manager::new(settings)?.client()
 }
 
 impl Drop for Database {
@@ -1456,7 +1977,7 @@ impl Drop for Database {
             && let Ok(settings) = Settings::from_environment()
         {
             let _ = admin(
-                &settings.url,
+                &settings,
                 &format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE", self.schema),
             );
         }
@@ -1548,6 +2069,61 @@ pub fn blocking<T: Send>(f: impl FnOnce() -> T + Send) -> T {
 
 struct Manager {
     config: postgres::Config,
+    /// TLS for this server ([`tls_policy`]): the client configuration that
+    /// checks its certificate and host name.
+    tls: Option<crate::db_tls::MakeRustls>,
+    statement_timeout: Duration,
+    /// The address as given, to keep its password out of error text.
+    url: String,
+}
+
+impl Manager {
+    fn new(settings: &Settings) -> Result<Self> {
+        let (mut config, tls) = settings.config()?;
+        if config.get_application_name().is_none() {
+            config.application_name(&application_name());
+        }
+        if config.get_user().is_none()
+            && let Some(user) = std::env::var_os("USER").or_else(|| std::env::var_os("LOGNAME"))
+        {
+            config.user(&user.to_string_lossy());
+        }
+        if config.get_password().is_none()
+            && let Some(password) = pgpass_password(&config)
+        {
+            config.password(password);
+        }
+        let tls = if tls {
+            Some(crate::db_tls::MakeRustls::new(
+                settings.root_cert.as_deref(),
+            )?)
+        } else {
+            None
+        };
+        Ok(Self {
+            config,
+            tls,
+            statement_timeout: settings.statement_timeout,
+            url: settings.url.clone(),
+        })
+    }
+
+    /// A new client, with this store's session limits.
+    fn client(&self) -> Result<postgres::Client> {
+        let connected = match &self.tls {
+            Some(tls) => self.config.connect(tls.clone()),
+            None => self.config.connect(postgres::NoTls),
+        };
+        let mut client =
+            connected.map_err(|e| Error::Connect(redact(&e.to_string(), &self.url)))?;
+        client.batch_execute(&format!(
+            "SET lock_timeout = {}; SET statement_timeout = {}; SET idle_in_transaction_session_timeout = {}",
+            DEFAULT_BUSY.as_millis(),
+            self.statement_timeout.as_millis(),
+            IDLE_IN_TRANSACTION.as_millis()
+        ))?;
+        Ok(client)
+    }
 }
 
 static POOLS: OnceLock<Mutex<HashMap<String, r2d2::Pool<Manager>>>> = OnceLock::new();
@@ -1565,17 +2141,14 @@ fn shared_pool(settings: &Settings) -> Result<r2d2::Pool<Manager>> {
     if let Some(pool) = pools.get(&settings.url) {
         return Ok(pool.clone());
     }
-    let config: postgres::Config = settings
-        .url
-        .parse()
-        .map_err(|e: postgres::Error| Error::Connect(e.to_string()))?;
+    let manager = Manager::new(settings)?;
     let pool = r2d2::Pool::builder()
         .max_size(settings.pool)
         .min_idle(Some(0))
         .test_on_check_out(false)
         .idle_timeout(Some(Duration::from_secs(60)))
         .connection_timeout(Duration::from_secs(30))
-        .build_unchecked(Manager { config });
+        .build_unchecked(manager);
     pools.insert(settings.url.clone(), pool.clone());
     Ok(pool)
 }
@@ -1584,8 +2157,7 @@ impl r2d2::ManageConnection for Manager {
     type Connection = Session;
     type Error = Error;
     fn connect(&self) -> Result<Session> {
-        let mut client = connect_config(&self.config)?;
-        client.batch_execute(&format!("SET lock_timeout = {}", DEFAULT_BUSY.as_millis()))?;
+        let client = self.client()?;
         Ok(Session {
             client,
             schema: String::new(),
@@ -1623,6 +2195,8 @@ pub enum TransactionBehavior {
 /// it when dropped.
 pub struct Connection {
     session: RefCell<Option<r2d2::PooledConnection<Manager>>>,
+    /// The SQLite connection, for a SQLite store.
+    lite: Option<rusqlite::Connection>,
     database: Arc<Database>,
     in_transaction: Cell<bool>,
     /// The savepoint that began the open transaction, when a `SAVEPOINT`
@@ -1631,6 +2205,10 @@ pub struct Connection {
     savepoints: Cell<u32>,
     changes: Cell<u64>,
     busy: Cell<Duration>,
+    /// SQLite: `query_only` is on for the open read transaction.
+    query_only: Cell<bool>,
+    /// SQLite: the last id [`Connection::next_ids`] handed out, by table.
+    allocated: RefCell<HashMap<String, i64>>,
 }
 
 impl fmt::Debug for Connection {
@@ -1649,19 +2227,143 @@ impl Connection {
     /// connection (`rusqlite`'s in-memory database, for tests and scratch
     /// work).
     pub fn open_in_memory() -> Result<Connection> {
+        if !postgres_configured() {
+            let database = Database::sqlite(Path::new(":memory:"), false);
+            return Ok(Connection::sqlite(
+                database,
+                rusqlite::Connection::open_in_memory()?,
+            ));
+        }
         let settings = Settings::from_environment()?;
         let schema = format!("g_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
-        admin(&settings.url, &format!("CREATE SCHEMA \"{schema}\""))?;
+        admin(&settings, &format!("CREATE SCHEMA \"{schema}\""))?;
         let pool = shared_pool(&settings)?;
         let database = Arc::new(Database {
             lock_key: lock_key(&schema),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            wal_limit: std::sync::atomic::AtomicU64::new(0),
             schema,
             file: None,
             temporary: true,
-            pool,
+            backend: Backend::Postgres(pool),
         });
         database.connect()
+    }
+
+    /// A connection over an open SQLite connection.
+    fn sqlite(database: Arc<Database>, lite: rusqlite::Connection) -> Connection {
+        Connection {
+            session: RefCell::new(None),
+            lite: Some(lite),
+            database,
+            in_transaction: Cell::new(false),
+            implicit: RefCell::new(None),
+            savepoints: Cell::new(0),
+            changes: Cell::new(0),
+            busy: Cell::new(DEFAULT_BUSY),
+            query_only: Cell::new(false),
+            allocated: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// A connection over a SQLite connection the caller opened (a backup
+    /// file opened read-only or immutable), for the store's code to read.
+    pub fn from_sqlite(lite: rusqlite::Connection, path: &Path) -> Connection {
+        Connection::sqlite(Database::sqlite(path, false), lite)
+    }
+
+    /// Which database this connection's store is in.
+    pub fn engine(&self) -> Engine {
+        if self.lite.is_some() {
+            Engine::Sqlite
+        } else {
+            Engine::Postgres
+        }
+    }
+
+    /// The SQLite connection under this one, for a SQLite store (the
+    /// backup API, functions only SQLite has).
+    pub fn sqlite_connection(&self) -> Option<&rusqlite::Connection> {
+        self.lite.as_ref()
+    }
+
+    /// Run transaction-control or other parameterless SQL on either engine.
+    fn control(&self, sql: &str) -> Result<()> {
+        if let Some(lite) = &self.lite {
+            return Ok(lite.execute_batch(sql)?);
+        }
+        self.with(|session| Ok(session.client.batch_execute(sql)?))
+    }
+
+    /// SQLite: run `sql` with `values`, mapping each row.
+    fn lite_query(
+        lite: &rusqlite::Connection,
+        sql: &str,
+        values: &[Value],
+    ) -> Result<(Arc<Vec<String>>, Vec<Row>)> {
+        let sql = sqlite_sql(sql);
+        let mut statement = lite.prepare_cached(&sql)?;
+        let columns: Arc<Vec<String>> = Arc::new(
+            statement
+                .column_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+        let width = columns.len();
+        let mut rows = statement.query(rusqlite::params_from_iter(values.iter().map(Lite)))?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let mut values = Vec::with_capacity(width);
+            for i in 0..width {
+                values.push(from_lite(row.get_ref(i)?));
+            }
+            out.push(Row {
+                columns: columns.clone(),
+                values,
+            });
+        }
+        Ok((columns, out))
+    }
+
+    /// SQLite: when this store's write-ahead log has passed its limit,
+    /// checkpoint it and cut it back (`wal_checkpoint(TRUNCATE)`), waiting at
+    /// most [`CHECKPOINT_WAIT`] for readers to move to the latest snapshot.
+    /// Run after a write transaction commits. With readers always in
+    /// flight, SQLite's own automatic checkpoint (PASSIVE) can copy pages
+    /// back but never reset the log, which then grows by everything
+    /// written. Returns whether a checkpoint ran and finished.
+    pub fn bound_wal(&self) -> Result<Option<bool>> {
+        let Some(lite) = &self.lite else {
+            return Ok(None);
+        };
+        let limit = self
+            .database
+            .wal_limit
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let Some(file) = &self.database.file else {
+            return Ok(None);
+        };
+        if limit == 0 || !self.is_autocommit() {
+            return Ok(None);
+        }
+        let mut wal = file.clone().into_os_string();
+        wal.push("-wal");
+        let size = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+        if size <= limit {
+            return Ok(None);
+        }
+        lite.busy_timeout(CHECKPOINT_WAIT)?;
+        let outcome = lite.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+            r.get::<_, i64>(0)
+        });
+        lite.busy_timeout(self.busy.get())?;
+        let busy = outcome?;
+        WAL_CHECKPOINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if busy != 0 {
+            WAL_CHECKPOINTS_BUSY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        Ok(Some(busy == 0))
     }
 
     /// The store this connection belongs to.
@@ -1673,6 +2375,9 @@ impl Connection {
     /// `Connection::path`): a data folder's `postgres.json`, whose folder
     /// holds the store's other files.
     pub fn path(&self) -> Option<&str> {
+        if let Some(lite) = &self.lite {
+            return lite.path().filter(|p| !p.is_empty());
+        }
         self.database.file.as_deref().and_then(Path::to_str)
     }
 
@@ -1734,6 +2439,13 @@ impl Connection {
 
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> Result<usize> {
         let values = params.values()?;
+        if let Some(lite) = &self.lite {
+            let sql = sqlite_sql(sql);
+            let mut statement = lite.prepare_cached(&sql)?;
+            let n = statement.execute(rusqlite::params_from_iter(values.iter().map(Lite)))?;
+            self.changes.set(n as u64);
+            return Ok(n);
+        }
         let n = self.run(sql, &values, |client, statement, refs| {
             client.execute(statement, refs)
         })?;
@@ -1743,6 +2455,11 @@ impl Connection {
 
     /// Run statements with no parameters, separated by semicolons.
     pub fn execute_batch(&self, sql: &str) -> Result<()> {
+        if let Some(lite) = &self.lite {
+            lite.execute_batch(&sqlite_sql(sql))?;
+            self.in_transaction.set(!lite.is_autocommit());
+            return Ok(());
+        }
         let trimmed = sql.trim().trim_end_matches(';').trim();
         // SQLite's `BEGIN IMMEDIATE`: a transaction that holds the write lock.
         if trimmed.eq_ignore_ascii_case("BEGIN IMMEDIATE")
@@ -1821,6 +2538,14 @@ impl Connection {
 
     fn query_all<P: Params>(&self, sql: &str, params: P) -> Result<Rows> {
         let values = params.values()?;
+        if let Some(lite) = &self.lite {
+            let (_, rows) = Self::lite_query(lite, sql, &values)?;
+            return Ok(Rows {
+                rows,
+                next: 0,
+                current: None,
+            });
+        }
         let (columns, rows) = self.run(sql, &values, |client, statement, refs| {
             let rows = client.query(statement, refs)?;
             Ok((
@@ -1873,6 +2598,19 @@ impl Connection {
     /// A statement (`prepare` and `prepare_cached` are the same: every
     /// connection caches its prepared statements).
     pub fn prepare(&self, sql: &str) -> Result<Statement<'_>> {
+        if let Some(lite) = &self.lite {
+            let columns = lite
+                .prepare_cached(&sqlite_sql(sql))?
+                .column_names()
+                .into_iter()
+                .map(str::to_string)
+                .collect();
+            return Ok(Statement {
+                connection: self,
+                sql: sql.to_string(),
+                columns,
+            });
+        }
         let named = sql.to_ascii_lowercase().contains("rowid");
         let columns = self.with(|session| {
             let (statement, _) = session.statement(sql)?;
@@ -1895,9 +2633,15 @@ impl Connection {
 
     /// Rows changed by the last `execute`.
     pub fn changes(&self) -> u64 {
+        if let Some(lite) = &self.lite {
+            return lite.changes();
+        }
         self.changes.get()
     }
     pub fn is_autocommit(&self) -> bool {
+        if let Some(lite) = &self.lite {
+            return lite.is_autocommit();
+        }
         !self.in_transaction.get()
     }
 
@@ -1907,6 +2651,9 @@ impl Connection {
         self.apply_busy()
     }
     fn apply_busy(&self) -> Result<()> {
+        if let Some(lite) = &self.lite {
+            return Ok(lite.busy_timeout(self.busy.get())?);
+        }
         let ms = self.busy.get().as_millis().clamp(1, i32::MAX as u128);
         self.with(|session| {
             // Foreign keys are on for every connection handed out.
@@ -1935,10 +2682,14 @@ impl Connection {
     /// accepted and ignored; any other pragma is refused.
     pub fn pragma_update<V: ToSql>(
         &self,
-        _schema: Option<&str>,
+        schema: Option<&str>,
         name: &str,
         value: V,
     ) -> Result<()> {
+        if let Some(lite) = &self.lite {
+            let value = value.to_sql()?;
+            return Ok(lite.pragma_update(schema, name, Lite(&value))?);
+        }
         if name == "foreign_keys" {
             // Off (tests that write a store as an older program left it):
             // the session stops enforcing foreign keys until it is handed
@@ -1971,6 +2722,23 @@ impl Connection {
             return Err(Error::Other(
                 "cannot start a transaction within a transaction".into(),
             ));
+        }
+        if let Some(lite) = &self.lite {
+            if read_only {
+                lite.execute_batch("PRAGMA query_only=ON")?;
+                self.query_only.set(true);
+            }
+            let begin = match (read_only, behavior) {
+                (true, _) | (false, TransactionBehavior::Deferred) => "BEGIN DEFERRED",
+                (false, TransactionBehavior::Immediate) => "BEGIN IMMEDIATE",
+                (false, TransactionBehavior::Exclusive) => "BEGIN EXCLUSIVE",
+            };
+            if let Err(error) = lite.execute_batch(begin) {
+                self.end_query_only();
+                return Err(error.into());
+            }
+            self.in_transaction.set(true);
+            return Ok(());
         }
         let key = self.database.lock_key;
         self.with(|session| {
@@ -2019,7 +2787,7 @@ impl Connection {
             let depth = self.savepoints.get() + 1;
             self.savepoints.set(depth);
             let name = format!("graphicle_nested_{depth}");
-            self.with(|session| Ok(session.client.batch_execute(&format!("SAVEPOINT {name}"))?))?;
+            self.control(&format!("SAVEPOINT {name}"))?;
             return Ok(Transaction {
                 connection: self,
                 finished: false,
@@ -2041,11 +2809,11 @@ impl Connection {
                 "cannot start a transaction within a transaction".into(),
             ));
         }
-        self.with(|session| {
-            Ok(session
-                .client
-                .batch_execute("BEGIN ISOLATION LEVEL REPEATABLE READ")?)
-        })?;
+        if self.lite.is_some() {
+            self.control("BEGIN DEFERRED")?;
+        } else {
+            self.control("BEGIN ISOLATION LEVEL REPEATABLE READ")?;
+        }
         self.in_transaction.set(true);
         Ok(Transaction {
             connection: self,
@@ -2063,11 +2831,13 @@ impl Connection {
                 "cannot start a transaction within a transaction".into(),
             ));
         }
-        self.with(|session| {
-            Ok(session
-                .client
-                .batch_execute("BEGIN ISOLATION LEVEL READ COMMITTED")?)
-        })?;
+        // SQLite has one write lock: the counter takes it, as every write
+        // did before.
+        if self.lite.is_some() {
+            self.control("BEGIN IMMEDIATE")?;
+        } else {
+            self.control("BEGIN ISOLATION LEVEL READ COMMITTED")?;
+        }
         self.in_transaction.set(true);
         Ok(Transaction {
             connection: self,
@@ -2086,6 +2856,15 @@ impl Connection {
         })
     }
 
+    /// SQLite: turn `query_only` off after a read transaction.
+    fn end_query_only(&self) {
+        if self.query_only.replace(false)
+            && let Some(lite) = &self.lite
+        {
+            let _ = lite.execute_batch("PRAGMA query_only=OFF");
+        }
+    }
+
     /// A writer that sends rows in multi-row statements ([`Batch`]).
     pub fn batch<'c>(&'c self, head: &str, width: usize, tail: &str) -> Batch<'c> {
         Batch::new(self, head, width, tail)
@@ -2094,6 +2873,27 @@ impl Connection {
     /// `n` fresh values of `table`'s identity column `column`, in one round
     /// trip (ids for rows a [`Batch`] will insert with their ids).
     pub fn next_ids(&self, table: &str, column: &str, n: usize) -> Result<Vec<i64>> {
+        if self.lite.is_some() {
+            // SQLite has no sequence to take ids from: inside the write
+            // transaction, the ids after both the table's largest and its
+            // AUTOINCREMENT record, and after any this connection handed out
+            // that are not written yet.
+            if !valid_identifier(table) || !valid_identifier(column) {
+                return Err(Error::Other(format!("Invalid table {table}")));
+            }
+            let found: i64 = self.query_row(
+                &format!(
+                    "SELECT max(coalesce((SELECT max({column}) FROM {table}),0),coalesce((SELECT seq FROM sqlite_sequence WHERE name=?),0))"
+                ),
+                [table],
+                |r| r.get(0),
+            )?;
+            let mut allocated = self.allocated.borrow_mut();
+            let last = allocated.entry(table.to_string()).or_insert(0);
+            let start = found.max(*last);
+            *last = start + n as i64;
+            return Ok((1..=n as i64).map(|i| start + i).collect());
+        }
         let rows = self.query_all(
             "SELECT nextval(pg_get_serial_sequence($1, $2)) FROM generate_series(1, $3)",
             params![table, column, n as i64],
@@ -2103,6 +2903,9 @@ impl Connection {
 
     /// Bulk-copy rows in (`COPY … FROM STDIN`) from `data`.
     pub fn copy_in(&self, sql: &str, data: &mut (dyn std::io::Read + Send)) -> Result<u64> {
+        if self.lite.is_some() {
+            return Err(Error::Other("COPY needs a PostgreSQL store".into()));
+        }
         self.with(|session| {
             let mut writer = session.client.copy_in(sql)?;
             std::io::copy(data, &mut writer).map_err(|e| Error::Other(e.to_string()))?;
@@ -2111,6 +2914,9 @@ impl Connection {
     }
     /// Bulk-copy rows out (`COPY … TO STDOUT`) into `out`.
     pub fn copy_out(&self, sql: &str, out: &mut (dyn std::io::Write + Send)) -> Result<()> {
+        if self.lite.is_some() {
+            return Err(Error::Other("COPY needs a PostgreSQL store".into()));
+        }
         self.with(|session| {
             let mut reader = session.client.copy_out(sql)?;
             std::io::copy(&mut reader, out).map_err(|e| Error::Other(e.to_string()))?;
@@ -2147,11 +2953,15 @@ impl Transaction<'_> {
             Some(name) => format!("RELEASE SAVEPOINT {name}"),
             None => "COMMIT".to_string(),
         };
-        let outcome = self
-            .connection
-            .with(|session| session.client.batch_execute(&sql).map_err(Error::from));
+        let outcome = self.connection.control(&sql);
         if self.savepoint.is_none() {
+            if outcome.is_err() && self.connection.lite.is_some() {
+                // A commit SQLite refused (busy) leaves the transaction
+                // open: roll it back, as rusqlite's did on drop.
+                let _ = self.connection.control("ROLLBACK");
+            }
             self.connection.in_transaction.set(false);
+            self.connection.end_query_only();
         }
         outcome
     }
@@ -2164,11 +2974,10 @@ impl Transaction<'_> {
             Some(name) => format!("ROLLBACK TO SAVEPOINT {name}; RELEASE SAVEPOINT {name}"),
             None => "ROLLBACK".to_string(),
         };
-        let outcome = self
-            .connection
-            .with(|session| session.client.batch_execute(&sql).map_err(Error::from));
+        let outcome = self.connection.control(&sql);
         if self.savepoint.is_none() {
             self.connection.in_transaction.set(false);
+            self.connection.end_query_only();
         }
         outcome
     }
@@ -2254,6 +3063,7 @@ impl<'c> Batch<'c> {
             return Ok(());
         }
         let rows = self.values.len() / self.width;
+        let sqlite = self.connection.engine() == Engine::Sqlite;
         let mut sql =
             String::with_capacity(self.head.len() + rows * self.width * 6 + self.tail.len());
         sql.push_str(&self.head);
@@ -2264,8 +3074,12 @@ impl<'c> Batch<'c> {
                 if column > 0 {
                     sql.push(',');
                 }
-                sql.push('$');
-                sql.push_str(&n.to_string());
+                if sqlite {
+                    sql.push('?');
+                } else {
+                    sql.push('$');
+                    sql.push_str(&n.to_string());
+                }
                 n += 1;
             }
             sql.push(')');
@@ -2435,6 +3249,10 @@ pub mod types {
 /// delete changes it (SQLite's `PRAGMA data_version`, for tests that check
 /// that an operation wrote nothing).
 pub fn data_version(db: &Connection) -> Result<String> {
+    if db.engine() == Engine::Sqlite {
+        let version: i64 = db.query_row("PRAGMA data_version", [], |r| r.get(0))?;
+        return Ok(version.to_string());
+    }
     let tables: Vec<String> = {
         let mut statement = db.prepare(
             "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
@@ -2462,10 +3280,29 @@ pub fn open_existing(directory: impl AsRef<Path>) -> Result<Connection> {
     Database::for_directory(directory.as_ref(), false)?.connect()
 }
 
-/// The data folder's store file path, for messages and the files that
-/// travel with a data folder.
+/// Whether the file at `path` is a SQLite database (its 16-byte header).
+pub fn is_sqlite_file(path: &Path) -> bool {
+    use std::io::Read;
+    let mut header = [0u8; 16];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .is_ok()
+        && &header == b"SQLite format 3\0"
+}
+
+/// A data folder's `postgres.json`, which names its PostgreSQL schema.
 pub fn schema_file(directory: &Path) -> PathBuf {
     directory.join(SCHEMA_FILE)
+}
+
+/// The data folder's store file, for messages and the files that travel
+/// with a data folder: `reviews.sqlite3`, or `postgres.json` for a
+/// PostgreSQL store ([`Database::engine_of`]).
+pub fn store_file(directory: &Path) -> PathBuf {
+    match Database::engine_of(directory) {
+        Engine::Postgres => directory.join(SCHEMA_FILE),
+        Engine::Sqlite => directory.join(SQLITE_FILE),
+    }
 }
 
 #[cfg(test)]
@@ -2576,5 +3413,130 @@ mod tests {
         assert!(!valid_schema("g_0123456789ABCDEF01234567"));
         assert!(!valid_schema("public"));
         assert!(!valid_schema("g_x\"; DROP SCHEMA public; --"));
+    }
+
+    fn policy(url: &str, allow_plaintext: bool) -> Result<bool> {
+        let mut config: postgres::Config = url.parse().unwrap();
+        tls_policy(&mut config, allow_plaintext)
+    }
+
+    #[test]
+    fn a_remote_server_needs_tls() {
+        // This machine: TLS only when the address asks for it.
+        assert!(!policy("host=/var/run/postgresql dbname=g", false).unwrap());
+        assert!(!policy("host=localhost dbname=g", false).unwrap());
+        assert!(!policy("postgresql://u@127.0.0.1/g", false).unwrap());
+        assert!(!policy("host=::1 dbname=g", false).unwrap());
+        assert!(policy("host=localhost sslmode=require dbname=g", false).unwrap());
+        // Another machine: TLS, checked, whatever the address prefers.
+        assert!(policy("host=db.example.com dbname=g", false).unwrap());
+        assert!(policy("host=db.example.com sslmode=prefer dbname=g", false).unwrap());
+        assert!(policy("postgresql://u:p@10.1.2.3:5432/g", false).unwrap());
+        // A local name with a remote address is remote.
+        assert!(policy("host=localhost hostaddr=10.1.2.3 dbname=g", false).unwrap());
+        // No TLS to another machine only when explicitly allowed.
+        let refused =
+            policy("host=db.example.com sslmode=disable dbname=g", false).expect_err("refused");
+        assert!(refused.to_string().contains(PLAINTEXT_ENV), "{refused}");
+        assert!(!policy("host=db.example.com sslmode=disable dbname=g", true).unwrap());
+    }
+
+    #[test]
+    fn verify_full_is_read_as_require() {
+        let settings = Settings {
+            url: "host=db.example.com sslmode=verify-full dbname=g".into(),
+            pool: 2,
+            allow_plaintext: false,
+            root_cert: None,
+            statement_timeout: DEFAULT_STATEMENT_TIMEOUT,
+        };
+        let (config, tls) = settings.config().unwrap();
+        assert!(tls);
+        assert!(matches!(
+            config.get_ssl_mode(),
+            postgres::config::SslMode::Require
+        ));
+    }
+
+    #[test]
+    fn passwords_never_reach_error_text_or_debug_output() {
+        let url = "postgresql://graphicle:s3cret-pass@db.example.com/g";
+        let message = format!("could not connect with {url}: password s3cret-pass refused");
+        let redacted = redact(&message, url);
+        assert!(!redacted.contains("s3cret-pass"), "{redacted}");
+        let keyword = "host=db.example.com password=hunter22x user=g";
+        assert!(!redact("bad password hunter22x", keyword).contains("hunter22x"));
+        let settings = Settings {
+            url: url.into(),
+            pool: 2,
+            allow_plaintext: false,
+            root_cert: None,
+            statement_timeout: DEFAULT_STATEMENT_TIMEOUT,
+        };
+        let shown = format!("{settings:?}");
+        assert!(
+            !shown.contains("s3cret-pass") && !shown.contains("db.example.com"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn sqlite_statements_drop_postgresql_casts() {
+        assert_eq!(
+            sqlite_sql("SELECT x FROM t WHERE (?2::text IS NULL OR a=?2) LIMIT ALL OFFSET 5"),
+            "SELECT x FROM t WHERE (?2 IS NULL OR a=?2) LIMIT -1 OFFSET 5"
+        );
+        assert_eq!(sqlite_sql("SELECT a||chr(10)||b"), "SELECT a||char(10)||b");
+        // Quoted text is left as it is.
+        assert_eq!(
+            sqlite_sql("SELECT '::text', 'LIMIT ALL'"),
+            "SELECT '::text', 'LIMIT ALL'"
+        );
+        assert_eq!(sqlite_sql("SELECT 1"), "SELECT 1");
+    }
+
+    #[test]
+    fn password_files_are_read_as_libpq_reads_them() {
+        let text = "# comment\nother:5432:*:g:nope\ndb.example.com:*:graphicle:g:pa\\:ss\n*:*:*:*:fallback\n";
+        let wanted = |host: &str| [host, "5432", "graphicle", "g"].map(str::to_string);
+        assert_eq!(
+            pgpass_lookup(text, &wanted("db.example.com")).as_deref(),
+            Some("pa:ss")
+        );
+        assert_eq!(
+            pgpass_lookup(text, &wanted("elsewhere")).as_deref(),
+            Some("fallback")
+        );
+        assert_eq!(pgpass_lookup("other:5432:*:g:nope\n", &wanted("db")), None);
+    }
+
+    #[test]
+    fn plain_identifiers_only() {
+        assert!(valid_identifier("gf_edges"));
+        assert!(!valid_identifier("gf_edges; DROP TABLE x"));
+        assert!(!valid_identifier("1abc"));
+        assert!(!valid_identifier(""));
+    }
+
+    #[test]
+    fn without_a_database_url_a_store_is_a_sqlite_file() {
+        if postgres_configured() {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(Database::engine_of(dir.path()), Engine::Sqlite);
+        let database = Database::for_directory(dir.path(), true).unwrap();
+        assert_eq!(database.engine(), Engine::Sqlite);
+        let db = database.connect().unwrap();
+        db.execute_batch("CREATE TABLE t(a INTEGER)").unwrap();
+        assert!(dir.path().join(SQLITE_FILE).is_file());
+        assert!(!dir.path().join(SCHEMA_FILE).exists());
+        // A folder with postgres.json is a PostgreSQL store, which needs the
+        // server's address.
+        let other = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join(SCHEMA_FILE), b"").unwrap();
+        assert_eq!(Database::engine_of(other.path()), Engine::Postgres);
+        let refused = Database::for_directory(other.path(), true).expect_err("refused");
+        assert!(refused.to_string().contains(URL_ENV), "{refused}");
     }
 }

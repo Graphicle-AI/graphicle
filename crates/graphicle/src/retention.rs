@@ -538,7 +538,11 @@ pub fn stats(db: &Connection, repository: &str) -> Result<Value> {
         |r| r.get(0),
     )?;
     let database_bytes: i64 = db.query_row(
-        "SELECT coalesce(sum(pg_total_relation_size(format('%I.%I', table_schema, table_name)::regclass)),0)::bigint FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE'",
+        if db.engine() == crate::db::Engine::Sqlite {
+            "SELECT page_count*page_size FROM pragma_page_count(), pragma_page_size()"
+        } else {
+            "SELECT coalesce(sum(pg_total_relation_size(format('%I.%I', table_schema, table_name)::regclass)),0)::bigint FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE'"
+        },
         [],
         |r| r.get(0),
     )?;

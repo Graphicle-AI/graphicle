@@ -39,10 +39,33 @@ EXISTS (
     )
 )"#;
 
-static READY_JOB_QUERY: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "SELECT kind FROM am_jobs j WHERE j.state IN ('queued','retry') AND j.not_before<=?1 AND NOT {RUNNING_CONFLICT} ORDER BY j.priority DESC,j.created_at LIMIT 1"
+/// [`RUNNING_CONFLICT`] for SQLite, which compares the values' bytes.
+const SQLITE_RUNNING_CONFLICT: &str = r#"
+EXISTS (
+    SELECT 1 FROM am_jobs r
+    WHERE r.repository_id=j.repository_id AND r.state='running'
+    AND NOT coalesce(
+        j.kind='observer_notes' AND r.kind='observer_notes'
+        AND json_type(j.payload,'$.parallel_sources')='true'
+        AND json_type(r.payload,'$.parallel_sources')='true'
+        AND json_type(j.payload,'$.include')='array'
+        AND json_type(r.payload,'$.include')='array'
+        AND json_array_length(j.payload,'$.include')>0
+        AND json_array_length(r.payload,'$.include')>0
+        AND NOT EXISTS (
+            SELECT 1 FROM json_each(j.payload,'$.include') a
+            CROSS JOIN json_each(r.payload,'$.include') b
+            WHERE substr(CAST(a.value AS BLOB),1,length(CAST(b.value AS BLOB)))=CAST(b.value AS BLOB)
+               OR substr(CAST(b.value AS BLOB),1,length(CAST(a.value AS BLOB)))=CAST(a.value AS BLOB)
+        ), 0
     )
+)"#;
+
+/// The queries, `[SQLite, PostgreSQL]`.
+static READY_JOB_QUERY: LazyLock<[String; 2]> = LazyLock::new(|| {
+    [SQLITE_RUNNING_CONFLICT, RUNNING_CONFLICT].map(|conflict| format!(
+        "SELECT kind FROM am_jobs j WHERE j.state IN ('queued','retry') AND j.not_before<=?1 AND NOT {conflict} ORDER BY j.priority DESC,j.created_at LIMIT 1"
+    ))
 });
 
 // ?5 is false when this program cannot sync provider permissions: then the
@@ -51,10 +74,10 @@ static READY_JOB_QUERY: LazyLock<String> = LazyLock::new(|| {
 // ?6 lists the job kinds this program knows: a job of any other kind (queued
 // by an extension this program lacks) is left queued for a program that runs
 // it, and never hides known work behind the candidate cap.
-static LEASE_JOB_QUERY: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "SELECT j.*,p.workspace_id FROM am_jobs j JOIN repo_projects p ON p.id=j.repository_id WHERE j.state IN ('queued','retry') AND j.not_before<=?1 AND j.kind NOT IN (SELECT value FROM json_each(?2)) AND j.kind IN (SELECT value FROM json_each(?6)) AND (?3::text IS NULL OR (j.repository_id=?3 AND j.kind=?4)) AND (?5 OR j.kind!='connector' OR NOT EXISTS (SELECT 1 FROM am_connectors c WHERE c.repository_id=j.repository_id AND c.id=json_extract(j.payload,'$.connector_id') AND json_extract(c.config,'$.permission_mode')='provider')) AND NOT {RUNNING_CONFLICT} ORDER BY j.priority DESC,j.created_at LIMIT 100"
-    )
+static LEASE_JOB_QUERY: LazyLock<[String; 2]> = LazyLock::new(|| {
+    [SQLITE_RUNNING_CONFLICT, RUNNING_CONFLICT].map(|conflict| format!(
+        "SELECT j.*,p.workspace_id FROM am_jobs j JOIN repo_projects p ON p.id=j.repository_id WHERE j.state IN ('queued','retry') AND j.not_before<=?1 AND j.kind NOT IN (SELECT value FROM json_each(?2)) AND j.kind IN (SELECT value FROM json_each(?6)) AND (?3::text IS NULL OR (j.repository_id=?3 AND j.kind=?4)) AND (?5 OR j.kind!='connector' OR NOT EXISTS (SELECT 1 FROM am_connectors c WHERE c.repository_id=j.repository_id AND c.id=json_extract(j.payload,'$.connector_id') AND json_extract(c.config,'$.permission_mode')='provider')) AND NOT {conflict} ORDER BY j.priority DESC,j.created_at LIMIT 100"
+    ))
 });
 
 /// Digest of the code job results depend on, recorded in job payloads (a
@@ -1296,7 +1319,12 @@ impl Store {
         {
             self.transaction(|db| expire_leases(db, &stamp))?;
         }
-        Ok(one(&db, &READY_JOB_QUERY, [&stamp])?.map(|row| s(&row, "kind").to_string()))
+        Ok(one(
+            &db,
+            &READY_JOB_QUERY[usize::from(db.engine() == crate::db::Engine::Postgres)],
+            [&stamp],
+        )?
+        .map(|row| s(&row, "kind").to_string()))
     }
     /// Lease the next ready job whose kind is not in `excluded` (G08 admission).
     /// Running work blocks other jobs in the same repository. Only explicitly
@@ -1326,7 +1354,7 @@ impl Store {
             expire_leases(db, &stamp)?;
             // Apply admission/repository filters before the candidate cap so
             // unrelated ready jobs cannot hide all eligible work.
-            for mut row in rows(db,&LEASE_JOB_QUERY,params![stamp,json!(excluded).to_string(),only.map(|v|v.0),only.map(|v|v.1),provider_sync,json!(known_kinds()).to_string()])? {
+            for mut row in rows(db,&LEASE_JOB_QUERY[usize::from(db.engine() == crate::db::Engine::Postgres)],params![stamp,json!(excluded).to_string(),only.map(|v|v.0),only.map(|v|v.1),provider_sync,json!(known_kinds()).to_string()])? {
                 // Known kinds only (?6); a kind unknown here stays queued.
                 let Ok(permission)=permission(s(&row,"kind")) else {continue};
                 if authorize_hash(db,s(&row,"workspace_id"),s(&row,"principal_hash"),permission).is_err() {

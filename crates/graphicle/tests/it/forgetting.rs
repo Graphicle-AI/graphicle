@@ -199,8 +199,20 @@ impl Fixture {
     /// world shares everything that happened before this point.
     fn fork(&self) -> Self {
         let dir = TempDir::new().unwrap();
-        let store = Store::open(dir.path()).unwrap();
-        graphicle_runtime::archive::copy_store(&self.store, &store).unwrap();
+        let store = if self.store.engine() == graphicle_runtime::db::Engine::Sqlite {
+            self.store
+                .connect()
+                .unwrap()
+                .sqlite_connection()
+                .unwrap()
+                .backup(rusqlite::MAIN_DB, dir.path().join("reviews.sqlite3"), None)
+                .unwrap();
+            Store::open(dir.path()).unwrap()
+        } else {
+            let store = Store::open(dir.path()).unwrap();
+            graphicle_runtime::archive::copy_store(&self.store, &store).unwrap();
+            store
+        };
         let key = self._dir.path().join("vault.key");
         if key.exists() {
             std::fs::copy(key, dir.path().join("vault.key")).unwrap();

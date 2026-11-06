@@ -1458,6 +1458,9 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
             "Restore into a new --data-dir; an existing store cannot be replaced",
         ));
     }
+    if !crate::db::postgres_configured() {
+        return restore_sqlite(backup, directory);
+    }
     // The whole archive is checked before the data folder is made.
     crate::archive::read(backup, |_, _| Ok(()))?;
     let mut builder = std::fs::DirBuilder::new();
@@ -1477,6 +1480,53 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
         let _ = store.pool.drop_schema();
         let _ = std::fs::remove_file(crate::db::schema_file(directory));
         return Err(error);
+    }
+    Ok(
+        json!({"restored":true,"data_dir":directory,"next":"Use graphicle login with your saved workspace access key. Reconnect source accounts and model API keys in Connections; device credentials are excluded from portable backups."}),
+    )
+}
+
+/// [`restore`] of a SQLite backup into a new SQLite store, as every SQLite
+/// release did it.
+fn restore_sqlite(backup: &std::path::Path, directory: &std::path::Path) -> Result<Value> {
+    #[cfg(unix)]
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let source =
+        rusqlite::Connection::open_with_flags(backup, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(crate::db::Error::from)?;
+    let integrity: String = source
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(crate::db::Error::from)?;
+    let schema: bool = source
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='repo_projects')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(crate::db::Error::from)?;
+    if integrity != "ok" || !schema {
+        return Err(Error::bad("This is not a valid Graphicle store backup"));
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    builder.mode(0o700);
+    builder.create(directory)?;
+    if std::fs::symlink_metadata(directory)?
+        .file_type()
+        .is_symlink()
+    {
+        return Err(Error::bad("Store directory must not be a symlink"));
+    }
+    let destination = directory.join(crate::db::SQLITE_FILE);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(&destination)?;
+    if let Err(error) = source.backup(rusqlite::MAIN_DB, &destination, None) {
+        let _ = std::fs::remove_file(&destination);
+        return Err(crate::db::Error::from(error).into());
     }
     Ok(
         json!({"restored":true,"data_dir":directory,"next":"Use graphicle login with your saved workspace access key. Reconnect source accounts and model API keys in Connections; device credentials are excluded from portable backups."}),

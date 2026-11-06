@@ -31,11 +31,11 @@
 //! list a project's flagged mentions), recall ([`annotate`]: one `Note:`
 //! line on an excerpt that holds a flagged mention) and `graphicle wiki
 //! check`.
+use crate::db::{Connection, params};
 use crate::{
     Result,
     store::{rows, s},
 };
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
 

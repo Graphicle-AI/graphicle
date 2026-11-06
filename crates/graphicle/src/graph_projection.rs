@@ -2483,6 +2483,16 @@ pub fn pr_scratch_projects(db: &Connection, workspace: &str) -> Result<BTreeSet<
 /// Close the live rows `ids` of `table` in `episode` (set their
 /// `valid_to_episode` and `expired_at`), a thousand per statement.
 fn close_rows(db: &Connection, table: &str, episode: &str, stamp: &str, ids: &[i64]) -> Result<()> {
+    if db.engine() == crate::db::Engine::Sqlite {
+        // SQLite has no arrays: the ids as a JSON array.
+        for chunk in ids.chunks(crate::db::Batch::ROWS) {
+            db.execute(
+                &format!("UPDATE {table} SET valid_to_episode=?,expired_at=? WHERE id IN (SELECT value FROM json_each(?))"),
+                params![episode, stamp, json!(chunk).to_string()],
+            )?;
+        }
+        return Ok(());
+    }
     for chunk in ids.chunks(crate::db::Batch::ROWS) {
         let list = format!(
             "{{{}}}",
@@ -2502,19 +2512,34 @@ fn close_rows(db: &Connection, table: &str, episode: &str, stamp: &str, ids: &[i
 
 /// Whether [`mark_legacy_pr_projects`] has a project to mark.
 pub fn legacy_pr_projects_pending(db: &Connection) -> Result<bool> {
+    let (operator, pattern) = legacy_pattern(db);
     Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_projects p WHERE p.project_key ~ ? \
-         AND NOT EXISTS(SELECT 1 FROM repo_project_roles r WHERE r.repository_id=p.id))",
-        ["^git:[0-9a-f]{64}$"],
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM repo_projects p WHERE p.project_key {operator} ? \
+             AND NOT EXISTS(SELECT 1 FROM repo_project_roles r WHERE r.repository_id=p.id))"
+        ),
+        [pattern],
         |r| r.get(0),
     )?)
 }
 
+/// A PR scratch copy's project key, `git:` and 64 hex digits, as SQLite's
+/// GLOB or PostgreSQL's regular expression.
+fn legacy_pattern(db: &Connection) -> (&'static str, String) {
+    if db.engine() == crate::db::Engine::Sqlite {
+        ("GLOB", format!("git:{}", "[0-9a-f]".repeat(64)))
+    } else {
+        ("~", "^git:[0-9a-f]{64}$".to_string())
+    }
+}
+
 pub fn mark_legacy_pr_projects(db: &Connection) -> Result<usize> {
-    let pattern = "^git:[0-9a-f]{64}$";
+    let (operator, pattern) = legacy_pattern(db);
     Ok(db.execute(
-        "INSERT INTO repo_project_roles(repository_id,role,created_at) \
-         SELECT id,?1,?2 FROM repo_projects WHERE project_key ~ ?3 ON CONFLICT DO NOTHING",
+        &format!(
+            "INSERT INTO repo_project_roles(repository_id,role,created_at) \
+             SELECT id,?1,?2 FROM repo_projects WHERE project_key {operator} ?3 ON CONFLICT DO NOTHING"
+        ),
         params![PR_SCRATCH, now(), pattern],
     )?)
 }

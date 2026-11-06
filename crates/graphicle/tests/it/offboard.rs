@@ -394,12 +394,11 @@ fn offboarding_a_backup_from_before_the_passage_index() {
     assert_eq!(projects(&kept), vec![b]);
     assert!(!holds(&kept, "zebracorn-alpha-7731"));
     assert!(holds(&kept, "quokka-beta-5512"));
-    let mut tables = 0;
-    graphicle_runtime::archive::read(&kept, |section, _| {
-        tables += i64::from(section.table.starts_with("am_passage"));
-        Ok(())
-    })
-    .unwrap();
+    let tables = graphicle_runtime::archive::backup_tables(&kept)
+        .unwrap()
+        .iter()
+        .filter(|t| t.starts_with("am_passage"))
+        .count();
     assert_eq!(tables, 0);
 }
 

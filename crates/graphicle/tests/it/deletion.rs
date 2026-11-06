@@ -245,7 +245,12 @@ fn connector_deletion_returns_a_verified_receipt_covering_derived_state() {
     assert_eq!(residue["verbatim_text"]["matches"], json!([]));
     assert_eq!(receipt["serving_probe"]["visible_documents"], 0);
     assert_eq!(receipt["sources"]["count"], 2);
-    assert_eq!(receipt["storage"]["secure_delete"], true);
+    // SQLite overwrites deleted rows (`secure_delete`); PostgreSQL cannot,
+    // and the receipt says so.
+    assert_eq!(
+        receipt["storage"]["secure_delete"],
+        f.store.engine() == graphicle_runtime::db::Engine::Sqlite
+    );
     // The receipt proves coverage without keeping what it deleted.
     let text = receipt.to_string();
     for private in [

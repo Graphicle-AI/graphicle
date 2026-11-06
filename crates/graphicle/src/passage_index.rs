@@ -65,18 +65,18 @@ pub(crate) fn migrate(db: &Connection) -> Result<()> {
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS am_passage_segments (
             repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
-            segment BIGINT NOT NULL, format BIGINT NOT NULL,
-            files BIGINT NOT NULL, passages BIGINT NOT NULL, created_at TEXT NOT NULL,
+            segment INTEGER NOT NULL, format INTEGER NOT NULL,
+            files INTEGER NOT NULL, passages INTEGER NOT NULL, created_at TEXT NOT NULL,
             PRIMARY KEY(repository_id,segment));
          CREATE TABLE IF NOT EXISTS am_passage_files (
             repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
             path TEXT NOT NULL, sha256 TEXT NOT NULL,
-            segment BIGINT NOT NULL, ordinal BIGINT NOT NULL, spans BYTEA NOT NULL,
+            segment INTEGER NOT NULL, ordinal INTEGER NOT NULL, spans BLOB NOT NULL,
             PRIMARY KEY(repository_id,path));
          CREATE TABLE IF NOT EXISTS am_passage_terms (
             repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
-            segment BIGINT NOT NULL, term TEXT NOT NULL,
-            postings BYTEA NOT NULL, PRIMARY KEY(repository_id,segment,term));",
+            segment INTEGER NOT NULL, term TEXT NOT NULL,
+            postings BLOB NOT NULL, PRIMARY KEY(repository_id,segment,term)) WITHOUT ROWID;",
     )?;
     Ok(())
 }
@@ -377,11 +377,7 @@ fn segments(db: &Connection, repository: &str) -> Result<Vec<Segment>> {
 
 /// Whether the database has `table`.
 fn has_table(db: &Connection, table: &str) -> Result<bool> {
-    Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?)",
-        [table],
-        |r| r.get(0),
-    )?)
+    crate::store::table_exists(db, table)
 }
 
 /// Remove a project's whole index: the rows of each index table the

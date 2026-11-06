@@ -129,7 +129,8 @@ pub fn lock_report() -> Value {
 #[derive(Clone)]
 pub struct Store {
     pub directory: Arc<PathBuf>,
-    /// The data folder's `postgres.json`, which names the store's schema.
+    /// The store's file: `reviews.sqlite3`, or for a PostgreSQL store the
+    /// data folder's `postgres.json`, which names its schema.
     pub database: Arc<PathBuf>,
     /// This process's connections to the store ([`crate::db`]).
     pub pool: Arc<crate::db::Database>,
@@ -365,11 +366,45 @@ pub fn analysis_report(db: &Connection, repository: &str) -> Result<(Vec<Value>,
 }
 
 impl Store {
-    /// The store of the data folder `directory`: its schema of the configured
-    /// PostgreSQL database ([`crate::db`]), created on first use and brought
-    /// up to this program's tables.
+    /// The store of the data folder `directory`: its SQLite file, or its
+    /// schema of the configured PostgreSQL database ([`crate::db`]),
+    /// created on first use and brought up to this program's tables.
     pub fn open(directory: impl AsRef<Path>) -> Result<Self> {
-        let directory = directory.as_ref();
+        Self::open_with(directory.as_ref(), false)
+    }
+
+    /// A new PostgreSQL store for `directory`, beside the SQLite store it
+    /// may hold (`graphicle import-sqlite`, which copies that one in).
+    pub fn create_postgres(directory: &Path) -> Result<Self> {
+        if !crate::db::postgres_configured() {
+            return Err(Error::bad(format!("Set {} first", crate::db::URL_ENV)));
+        }
+        if directory.join(crate::db::SCHEMA_FILE).is_file() {
+            return Err(Error::bad(
+                "This data folder already has a PostgreSQL store",
+            ));
+        }
+        // Make the folder's engine PostgreSQL before the store is opened:
+        // the schema file, empty, reserves the name with its permissions.
+        std::fs::create_dir_all(directory)?;
+        {
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            options.open(crate::db::schema_file(directory))?;
+        }
+        let opened = Self::open_with(directory, true);
+        if opened.is_err() {
+            let _ = std::fs::remove_file(crate::db::schema_file(directory));
+        }
+        opened
+    }
+
+    fn open_with(directory: &Path, beside_sqlite: bool) -> Result<Self> {
         if directory.is_symlink() {
             return Err(Error::bad("Data directory cannot be a symlink"));
         }
@@ -379,24 +414,39 @@ impl Store {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
         }
-        if !crate::db::Database::exists(directory) && directory.join("reviews.sqlite3").is_file() {
-            // Never start an empty store beside the data a SQLite store
-            // holds: it would look like the data were lost.
+        if crate::db::postgres_configured()
+            && !beside_sqlite
+            && !directory.join(crate::db::SCHEMA_FILE).is_file()
+            && directory.join(crate::db::SQLITE_FILE).is_file()
+        {
+            // GRAPHICLE_DATABASE_URL asks for PostgreSQL, and this folder's
+            // store is SQLite: never start an empty store beside it (it
+            // would look like the data were lost), and never use the SQLite
+            // store while the setting says otherwise.
             return Err(Error::bad(format!(
-                "{} holds a SQLite store from Graphicle 0.1.12 or earlier; copy it into PostgreSQL first with graphicle --data-dir {} import-sqlite",
+                "{} holds a SQLite store; copy it into PostgreSQL first with graphicle --data-dir {} import-sqlite, or unset {} to keep using it",
                 directory.display(),
-                directory.display()
+                directory.display(),
+                crate::db::URL_ENV
             )));
         }
         let pool = crate::db::Database::for_directory(directory, true)?;
         let store = Self {
             directory: Arc::new(directory.to_path_buf()),
-            database: Arc::new(crate::db::schema_file(directory)),
+            database: Arc::new(crate::db::store_file(directory)),
             pool,
             wake: Arc::new(tokio::sync::Notify::new()),
             limits: None,
         };
         store.migrate()?;
+        #[cfg(unix)]
+        if store.pool.engine() == crate::db::Engine::Sqlite {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                store.database.as_ref(),
+                std::fs::Permissions::from_mode(0o600),
+            )?;
+        }
         Ok(store)
     }
 
@@ -410,7 +460,7 @@ impl Store {
         let pool = crate::db::Database::for_directory(directory, false)?;
         Ok(Some(Self {
             directory: Arc::new(directory.to_path_buf()),
-            database: Arc::new(crate::db::schema_file(directory)),
+            database: Arc::new(crate::db::store_file(directory)),
             pool,
             wake: Arc::new(tokio::sync::Notify::new()),
             limits: None,
@@ -425,15 +475,90 @@ impl Store {
     fn migrate(&self) -> Result<()> {
         migrate_pool(&self.pool)
     }
-    /// This store's schema name.
+    /// This store's schema name (`main` for SQLite).
     pub fn schema(&self) -> &str {
         &self.pool.schema
     }
+    /// Which database this store is in.
+    pub fn engine(&self) -> crate::db::Engine {
+        self.pool.engine()
+    }
 }
+
+/// The migrations every store runs, on either engine, after its readers
+/// table: each `CREATE … IF NOT EXISTS`, column added later and data
+/// migration.
+fn run_migrations(db: &Connection) -> Result<()> {
+    let sqlite = db.engine() == crate::db::Engine::Sqlite;
+    db.execute_batch(include_str!("schema.sql"))?;
+    if sqlite {
+        // SQLite stores have kept an FTS5 index of passage text since the
+        // first release. Nothing queries it; PostgreSQL stores have none.
+        db.execute_batch(SQLITE_SEARCH)?;
+    }
+    db.execute_batch(include_str!("workflow_schema.sql"))?;
+    db.execute_batch(include_str!("expansion_schema.sql"))?;
+    db.execute_batch(include_str!("projection_schema.sql"))?;
+    ensure_column(db, "gf_episodes", "parent_episode", "TEXT")?;
+    db.execute_batch(include_str!("temporal_schema.sql"))?;
+    crate::temporal_graph::migrate(db)?;
+    crate::graph_delta::migrate(db)?;
+    db.execute_batch(include_str!("product_schema.sql"))?;
+    crate::work_state::migrate(db)?;
+    // Each folder's freshness record.
+    crate::fresh::migrate(db)?;
+    // Documents' mention links to code symbols.
+    crate::doc_links::migrate(db)?;
+    // Each project's passage index, which `context` reads.
+    crate::passage_index::migrate(db)?;
+    ensure_column(
+        db,
+        "gf_cross_unresolved",
+        "exporter_episodes",
+        "TEXT NOT NULL DEFAULT '{}'",
+    )?;
+    // Coverage rows carry the granularity of the upload that produced
+    // them (`test` or `file`); rows written before the column existed
+    // were all per-test.
+    ensure_column(
+        db,
+        "gf_test_coverage",
+        "granularity",
+        "TEXT NOT NULL DEFAULT 'test'",
+    )?;
+    // Projects earlier `graphicle pr` runs registered are PR scratch
+    // copies: they no longer make imports ambiguous.
+    crate::graph_projection::mark_legacy_pr_projects(db)?;
+    // Extension tables last: they may reference core tables. Stores
+    // keep every table, so an edition without an extension ignores its
+    // tables.
+    crate::extension::installed().migrate(db)?;
+    Ok(())
+}
+
+/// The FTS5 index of `repo_chunks` that SQLite stores keep.
+const SQLITE_SEARCH: &str = "
+                CREATE VIRTUAL TABLE IF NOT EXISTS repo_search USING fts5(index_text,
+                    content='repo_chunks', content_rowid='id', tokenize='porter unicode61');
+                CREATE TRIGGER IF NOT EXISTS repo_chunks_insert AFTER INSERT ON repo_chunks BEGIN
+                    INSERT INTO repo_search(rowid,index_text) VALUES(new.id,new.index_text);
+                END;
+                CREATE TRIGGER IF NOT EXISTS repo_chunks_delete AFTER DELETE ON repo_chunks BEGIN
+                    INSERT INTO repo_search(repo_search,rowid,index_text) VALUES('delete',old.id,old.index_text);
+                END;";
 
 /// Bring the schema of `pool` up to this program's tables ([`Store::open`];
 /// also the scratch schemas of [`crate::archive`]).
 pub fn migrate_pool(pool: &Arc<crate::db::Database>) -> Result<()> {
+    if pool.engine() == crate::db::Engine::Sqlite {
+        // As every SQLite release opened its store: refuse a store for a
+        // newer program, then every migration, each idempotent.
+        let db = pool.connect()?;
+        check_reader(&db)?;
+        db.pragma_update(None, "journal_mode", "WAL")?;
+        db.execute_batch(READERS)?;
+        return run_migrations(&db);
+    }
     {
         let digest = schema_digest();
         let mut db = pool.connect()?;
@@ -450,45 +575,9 @@ pub fn migrate_pool(pool: &Arc<crate::db::Database>) -> Result<()> {
             db.execute_batch("SET LOCAL client_min_messages = warning")?;
             db.execute_batch(include_str!("functions.sql"))?;
             db.execute_batch(READERS)?;
+            db.execute_batch(STORE_SCHEMA)?;
             ensure_column(db, "store_schema", "tables", "BIGINT NOT NULL DEFAULT 0")?;
-            db.execute_batch(include_str!("schema.sql"))?;
-            db.execute_batch(include_str!("workflow_schema.sql"))?;
-            db.execute_batch(include_str!("expansion_schema.sql"))?;
-            db.execute_batch(include_str!("projection_schema.sql"))?;
-            ensure_column(db, "gf_episodes", "parent_episode", "TEXT")?;
-            db.execute_batch(include_str!("temporal_schema.sql"))?;
-            crate::temporal_graph::migrate(db)?;
-            crate::graph_delta::migrate(db)?;
-            db.execute_batch(include_str!("product_schema.sql"))?;
-            crate::work_state::migrate(db)?;
-            // Each folder's freshness record.
-            crate::fresh::migrate(db)?;
-            // Documents' mention links to code symbols.
-            crate::doc_links::migrate(db)?;
-            // Each project's passage index, which `context` reads.
-            crate::passage_index::migrate(db)?;
-            ensure_column(
-                db,
-                "gf_cross_unresolved",
-                "exporter_episodes",
-                "TEXT NOT NULL DEFAULT '{}'",
-            )?;
-            // Coverage rows carry the granularity of the upload that produced
-            // them (`test` or `file`); rows written before the column existed
-            // were all per-test.
-            ensure_column(
-                db,
-                "gf_test_coverage",
-                "granularity",
-                "TEXT NOT NULL DEFAULT 'test'",
-            )?;
-            // Projects earlier `graphicle pr` runs registered are PR scratch
-            // copies: they no longer make imports ambiguous.
-            crate::graph_projection::mark_legacy_pr_projects(db)?;
-            // Extension tables last: they may reference core tables. Stores
-            // keep every table, so an edition without an extension ignores its
-            // tables.
-            crate::extension::installed().migrate(db)?;
+            run_migrations(db)?;
             // Every table gets its `rowid` last, so that it follows the
             // columns positional inserts name.
             db.execute_batch("SELECT graphicle_add_rowids()")?;
@@ -536,12 +625,16 @@ impl Store {
         record_wait(at, asked.elapsed());
         let transaction = transaction?;
         let started = Instant::now();
-        let outcome = (move || {
+        let outcome = (|| {
             let value = f(&transaction)?;
             transaction.commit()?;
             Ok(value)
         })();
         record_hold(at, started.elapsed());
+        if outcome.is_ok() {
+            // SQLite: keep the write-ahead log bounded under constant reads.
+            let _ = db.bound_wal();
+        }
         outcome
     }
     /// A write transaction that does not take the store's write lock: for
@@ -553,11 +646,13 @@ impl Store {
         let transaction = db.row_lock_transaction()?;
         let value = f(&transaction)?;
         transaction.commit()?;
+        let _ = db.bound_wal();
         Ok(value)
     }
-    /// A read-only snapshot (`REPEATABLE READ READ ONLY`): it never takes or
-    /// waits for the write lock, so long reads run beside writers and each
-    /// other. A write inside it fails at once.
+    /// A read-only snapshot (`REPEATABLE READ READ ONLY` on PostgreSQL;
+    /// `BEGIN DEFERRED` with `query_only` in SQLite's WAL mode): it never
+    /// takes or waits for the write lock, so long reads run beside writers
+    /// and each other. A write inside it fails at once.
     pub fn read<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         let mut db = self.connect()?;
         let transaction = db.read_transaction()?;
@@ -1100,9 +1195,12 @@ pub const READER_FORMAT: i64 = 1;
 
 /// The formats a store requires of the programs that open it, by reason.
 const READERS: &str = "CREATE TABLE IF NOT EXISTS store_readers (
- reason TEXT PRIMARY KEY, format BIGINT NOT NULL, version TEXT NOT NULL,
- updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS store_schema (
+ reason TEXT PRIMARY KEY, format INTEGER NOT NULL, version TEXT NOT NULL,
+ updated_at TEXT NOT NULL);";
+
+/// PostgreSQL stores record the schema digest they were migrated to, so
+/// that opening one at this program's schema changes nothing.
+const STORE_SCHEMA: &str = "CREATE TABLE IF NOT EXISTS store_schema (
  id BIGINT PRIMARY KEY CHECK (id = 1), digest TEXT NOT NULL, version TEXT NOT NULL,
  tables BIGINT NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);";
 
@@ -1160,6 +1258,12 @@ fn check_reader(db: &Connection) -> Result<()> {
 /// `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a column
 /// added later is appended here when `pragma_table_info` lacks it.
 pub fn ensure_column(db: &Connection, table: &str, column: &str, ddl: &str) -> Result<()> {
+    if db.engine() == crate::db::Engine::Sqlite {
+        if !column_exists(db, table, column)? {
+            db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"))?;
+        }
+        return Ok(());
+    }
     if !column_exists(db, table, column)? {
         db.execute_batch(&format!(
             "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {}",
@@ -1186,6 +1290,13 @@ pub fn column_type(ddl: &str) -> String {
 
 /// Whether the store has table `name` (SQLite's `sqlite_master` lookup).
 pub fn table_exists(db: &Connection, name: &str) -> Result<bool> {
+    if db.engine() == crate::db::Engine::Sqlite {
+        return Ok(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=?)",
+            [name],
+            |r| r.get(0),
+        )?);
+    }
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?)",
         [name],
@@ -1195,6 +1306,13 @@ pub fn table_exists(db: &Connection, name: &str) -> Result<bool> {
 
 /// Whether table `table` of the store has column `column`.
 pub fn column_exists(db: &Connection, table: &str, column: &str) -> Result<bool> {
+    if db.engine() == crate::db::Engine::Sqlite {
+        return Ok(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name=?)",
+            params![table, column],
+            |r| r.get(0),
+        )?);
+    }
     Ok(db.query_row(
         "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? AND column_name=?)",
         params![table, column],
@@ -1207,6 +1325,17 @@ pub fn column_exists(db: &Connection, table: &str, column: &str) -> Result<bool>
 /// SQLite's words where the store uses them (`INTEGER`, `TEXT`, `REAL`,
 /// `BLOB`).
 pub fn table_columns(db: &Connection, table: &str) -> Result<Vec<(String, String, i64)>> {
+    if db.engine() == crate::db::Engine::Sqlite {
+        let mut statement = db.prepare_cached("SELECT name,type,pk FROM pragma_table_info(?)")?;
+        let rows = statement.query_map([table], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
+        })?;
+        return Ok(rows.collect::<std::result::Result<_, _>>()?);
+    }
     let mut statement = db.prepare_cached(
         "SELECT c.column_name, c.data_type,
                 coalesce((SELECT k.ordinal_position FROM information_schema.table_constraints t
@@ -1244,6 +1373,13 @@ pub fn table_info(db: &Connection, table: &str) -> Result<Vec<Value>> {
 
 /// The store's tables, by name.
 pub fn tables(db: &Connection) -> Result<Vec<String>> {
+    if db.engine() == crate::db::Engine::Sqlite {
+        let mut statement = db.prepare_cached(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )?;
+        let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
+        return Ok(rows.collect::<std::result::Result<_, _>>()?);
+    }
     let mut statement = db.prepare_cached(
         "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
     )?;
@@ -1420,11 +1556,7 @@ pub fn permitted(db: &Connection, p: &Principal, permission: &str) -> Result<boo
 /// portable backup of it is opened; a program with it leaves the credential
 /// to its extensions' hooks. Empty when the store declares none.
 pub fn required_capabilities(db: &Connection, credential: &str) -> Result<Vec<String>> {
-    let declared: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='credential_requirements')",
-        [],
-        |r| r.get(0),
-    )?;
+    let declared = table_exists(db, "credential_requirements")?;
     if !declared {
         return Ok(Vec::new());
     }
@@ -1646,16 +1778,16 @@ mod reader_format_tests {
         assert!(Store::open(dir.path()).is_ok());
         let db = store.connect().unwrap();
         require_reader(&db, "later", READER_FORMAT + 1, "9.9.9").unwrap();
-        // The row's version (`xmin`, the transaction that last wrote it)
-        // tells whether it was rewritten; SQLite's `total_changes()` has no
-        // PostgreSQL counterpart.
+        // Whether the row was rewritten: SQLite's `total_changes()`, or on
+        // PostgreSQL the row's version (`xmin`, the transaction that last
+        // wrote it).
         let written = |db: &crate::db::Connection| -> String {
-            db.query_row(
-                "SELECT xmin::text FROM store_readers WHERE reason='later'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap()
+            let sql = if db.engine() == crate::db::Engine::Sqlite {
+                "SELECT CAST(total_changes() AS TEXT)"
+            } else {
+                "SELECT xmin::text FROM store_readers WHERE reason='later'"
+            };
+            db.query_row(sql, [], |r| r.get(0)).unwrap()
         };
         let changed = written(&db);
         // Unchanged records are not rewritten.

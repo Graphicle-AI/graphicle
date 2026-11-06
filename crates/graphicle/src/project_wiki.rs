@@ -48,6 +48,7 @@
 //!   output limit is billed), else at its worst case, and
 //!   [`FAILURES_IN_A_ROW`] failures stop the run. A profile without a
 //!   price runs only on this machine.
+use crate::db::Connection;
 use crate::{
     Error, Result,
     local::Session,
@@ -55,7 +56,6 @@ use crate::{
     model,
     store::{Principal, Store, s},
 };
-use rusqlite::Connection;
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet},

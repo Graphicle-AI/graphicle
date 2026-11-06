@@ -384,7 +384,18 @@ pub fn record_graph_nodes<'a>(
             }
         }
     }
-    for chunk in forgotten.chunks(crate::db::Batch::ROWS) {
+    if db.engine() == crate::db::Engine::Sqlite {
+        let mut forget = db.prepare_cached(
+            "DELETE FROM gf_dependencies WHERE workspace=? AND dependent_kind=? AND dependent_id=?",
+        )?;
+        for dependent in &forgotten {
+            forget.execute(params![workspace, GRAPH_NODE, dependent])?;
+        }
+    }
+    for chunk in forgotten
+        .chunks(crate::db::Batch::ROWS)
+        .filter(|_| db.engine() == crate::db::Engine::Postgres)
+    {
         // One primary-key lookup per id, in one round trip
         // (`graphicle_forget_dependents` in functions.sql).
         db.query_row(

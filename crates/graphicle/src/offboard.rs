@@ -71,8 +71,14 @@ pub fn backup_path(store: &Store) -> Result<PathBuf> {
             std::fs::create_dir(&folder)?;
         }
     }
+    // A SQLite store's backup is a SQLite file; a PostgreSQL store's, an
+    // archive.
+    let suffix = match store.engine() {
+        crate::db::Engine::Sqlite => "sqlite3",
+        crate::db::Engine::Postgres => "backup",
+    };
     Ok(folder.join(format!(
-        "graphicle-{}.backup",
+        "graphicle-{}.{suffix}",
         chrono::Utc::now().format("%Y%m%dT%H%M%S%.3fZ")
     )))
 }
@@ -234,9 +240,32 @@ fn held_in(db: &Connection, project: &str, scope: &[String], workspace: &str) ->
     })
 }
 
-/// [`held_in`] for a backup file, read into a scratch copy so that reading
-/// it changes nothing; `None` when it is not a readable Graphicle backup.
+/// [`held_in`] for a backup file: a SQLite file opened immutable, or an
+/// archive read into a scratch copy, so that reading it changes nothing;
+/// `None` when it is not a readable Graphicle backup.
 fn held(path: &Path, project: &str, scope: &[String], workspace: &str) -> Option<Held> {
+    if crate::db::is_sqlite_file(path) {
+        let mut uri = String::from("file:");
+        for c in path.to_str()?.chars() {
+            match c {
+                '%' => uri.push_str("%25"),
+                '?' => uri.push_str("%3f"),
+                '#' => uri.push_str("%23"),
+                c => uri.push(c),
+            }
+        }
+        uri.push_str("?immutable=1");
+        let lite = rusqlite::Connection::open_with_flags(
+            &uri,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+        )
+        .ok()?;
+        let db = Connection::from_sqlite(lite, path);
+        return held_in(&db, project, scope, workspace).ok();
+    }
+    if !crate::db::postgres_configured() {
+        return None;
+    }
     let scratch = crate::archive::open_scratch(path).ok()?;
     let db = scratch.connect().ok()?;
     held_in(&db, project, scope, workspace).ok()
@@ -559,6 +588,9 @@ fn scrub(
     if before != planned_sha256 {
         return Err(changed());
     }
+    if crate::db::is_sqlite_file(&path) {
+        return scrub_sqlite(p, project, scope, relative, &path, before, bytes_before);
+    }
     // The backup is edited in a scratch copy, then written over the file
     // whole once the copy is checked.
     let copy = crate::archive::open_scratch(&path)?;
@@ -602,6 +634,81 @@ fn scrub(
         Err(error) => error.message,
     };
     let (after, bytes_after) = file_sha256(&path)?;
+    let verified =
+        integrity == "ok" && left == 0 && receipts.iter().all(|r| r["verified_local"] == true);
+    Ok(json!({
+        "path": relative,
+        "sha256_before": before,
+        "bytes_before": bytes_before,
+        "sha256_after": after,
+        "bytes_after": bytes_after,
+        "projects_removed": order.len(),
+        "other_projects_kept": held.others,
+        "integrity": integrity,
+        "verified": verified,
+        "receipts": receipts,
+    }))
+}
+
+/// [`scrub`] of a SQLite backup file, edited in place with
+/// `secure_delete`, then compacted and checked, as every SQLite release did.
+fn scrub_sqlite(
+    p: &Principal,
+    project: &str,
+    scope: &[String],
+    relative: &str,
+    path: &Path,
+    before: String,
+    bytes_before: u64,
+) -> Result<Value> {
+    let changed = || {
+        Error::conflict(format!(
+            "{relative} changed since the plan was shown; run graphicle offboard again"
+        ))
+    };
+    let lite = rusqlite::Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(crate::db::Error::from)?;
+    let mut db = Connection::from_sqlite(lite, path);
+    db.busy_timeout(std::time::Duration::from_secs(10))?;
+    db.pragma_update(None, "foreign_keys", true)?;
+    db.pragma_update(None, "secure_delete", true)?;
+    let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let held = held_in(&transaction, project, scope, &p.workspace)?;
+    if held.foreign {
+        return Err(changed());
+    }
+    // The PR scratch copies first, then the project, as `project.delete`.
+    let mut order = held.ids.clone();
+    order.sort_by_key(|id| id == project);
+    let mut receipts = Vec::with_capacity(order.len());
+    for id in &order {
+        let receipt = crate::maintenance::delete_project(
+            &transaction,
+            p,
+            id,
+            json!({"offboarding": {"backup": relative}}),
+            false,
+        )?;
+        receipts.push(json!({
+            "sequence": receipt["sequence"],
+            "digest": receipt["digest"],
+            "verified_local": receipt["verified_local"],
+        }));
+    }
+    transaction.execute(
+        "UPDATE am_projection_cleanup SET state='paused',lease_token=NULL,lease_until=NULL WHERE state!='complete'",
+        [],
+    )?;
+    transaction.commit()?;
+    db.execute_batch("VACUUM;")?;
+    db.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    let integrity: String = db.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    let left = held_in(&db, project, scope, &p.workspace)?.ids.len();
+    drop(db);
+    let (after, bytes_after) = file_sha256(path)?;
     let verified =
         integrity == "ok" && left == 0 && receipts.iter().all(|r| r["verified_local"] == true);
     Ok(json!({

@@ -20,23 +20,23 @@ test = false
 # This crate builds the Core edition. Another edition depends on it and adds
 # its features through the extension registry (src/extension.rs).
 [features]
-default = ["sqlite-import"]
 local-inference = ["dep:ort"]
-# `graphicle import-sqlite`: copy a SQLite store (0.1.12 and earlier) into
-# PostgreSQL. The only code that reads SQLite.
-sqlite-import = ["dep:rusqlite"]
 
 [dependencies]
 graphicle-memory = { path = "../graphicle-memory" }
 graphicle = { path = "../graphicle-graph" }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "fs", "io-util", "io-std"] }
-# The store is PostgreSQL (src/db.rs). SQLite is read only by
-# `graphicle import-sqlite`, which copies a store of 0.1.12 or earlier in.
+# The store (src/db.rs): a SQLite file by default; PostgreSQL when
+# GRAPHICLE_DATABASE_URL is set, over TLS (rustls with ring, as reqwest
+# uses) for any server that is not on this machine.
+rusqlite = { version = "0.37", features = ["bundled", "backup"] }
 postgres = "0.19"
 r2d2 = "0.8"
 bytes = "1"
-rusqlite = { version = "0.37", features = ["bundled"], optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-native-certs = "0.8"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }

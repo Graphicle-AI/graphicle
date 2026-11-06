@@ -636,16 +636,11 @@ fn deletion_honours_the_extension_history_and_retained_tables() {
 #[test]
 fn store_open_runs_extension_migrations_after_the_core_schema() {
     let f = Fixture::new();
-    let tables: i64 = f
-        .store
-        .connect()
-        .unwrap()
-        .query_row(
-            "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN ('probe_rows','workspaces')",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
+    let db = f.store.connect().unwrap();
+    let tables = ["probe_rows", "workspaces"]
+        .iter()
+        .filter(|t| graphicle_runtime::store::table_exists(&db, t).unwrap())
+        .count();
     assert_eq!(tables, 2);
     // Reopening is idempotent.
     Store::open(f.store.directory.as_ref()).unwrap();
@@ -1601,7 +1596,7 @@ async fn extension_commands_run_first_with_a_lazily_opened_store() {
     .await
     .unwrap();
     assert!(recorded(&format!("cli:hello:{}", data.display())));
-    assert!(data.join("postgres.json").is_file());
+    assert!(graphicle_runtime::db::Database::exists(&data));
     // Core commands still run when an extension is installed.
     let core = dir.path().join("core");
     Box::pin(graphicle_runtime::cli::run(args(&[

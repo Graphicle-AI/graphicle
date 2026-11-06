@@ -119,6 +119,9 @@ const KEY_VARIABLES: &[&str] = &[
     "GEMINI_API_KEY",
     "GOOGLE_API_KEY",
     "AZURE_OPENAI_API_KEY",
+    // The PostgreSQL store's address, which may hold its password: a test
+    // or driver never needs the store.
+    crate::db::URL_ENV,
 ];
 
 /// What `fix` is asked for.

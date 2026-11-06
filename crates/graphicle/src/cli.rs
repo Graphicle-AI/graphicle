@@ -760,7 +760,6 @@ enum Command {
     /// earlier) into this data folder's new PostgreSQL store. Without PATH,
     /// the data folder's own `reviews.sqlite3`. The SQLite file is left as
     /// it is.
-    #[cfg(feature = "sqlite-import")]
     ImportSqlite { path: Option<PathBuf> },
     /// Show or change settings, such as the answer model.
     ///
@@ -1206,7 +1205,6 @@ where
     if let Command::Restore { path } = command {
         return print(&local::restore(&path, &directory)?);
     }
-    #[cfg(feature = "sqlite-import")]
     if let Command::ImportSqlite { path } = command {
         let path = path.unwrap_or_else(|| directory.join("reviews.sqlite3"));
         return print(&crate::import_sqlite::import(&path, &directory)?);
@@ -1490,7 +1488,6 @@ where
         }
         Command::DocumentWorker { .. } => unreachable!(),
         Command::Restore { .. } => unreachable!(),
-        #[cfg(feature = "sqlite-import")]
         Command::ImportSqlite { .. } => unreachable!(),
         Command::RedisWorker { .. } => unreachable!(),
         Command::Init { name } => {

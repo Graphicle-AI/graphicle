@@ -135,7 +135,7 @@ pub fn verify(
 }
 fn remember(store: &Store, feed: &str, value: &Value) -> Result<()> {
     store.transaction(|db| {
-        db.execute_batch("CREATE TABLE IF NOT EXISTS am_release_seen(feed_key TEXT PRIMARY KEY,sequence BIGINT NOT NULL,manifest_sha256 TEXT NOT NULL)")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS am_release_seen(feed_key TEXT PRIMARY KEY,sequence INTEGER NOT NULL,manifest_sha256 TEXT NOT NULL)")?;
         let key=digest(&json!([feed,value["publisher_key_id"]]));let sequence=value["sequence"].as_i64().ok_or_else(||Error::bad("Invalid release sequence"))?;
         if let Some(old)=one(db,"SELECT sequence,manifest_sha256 FROM am_release_seen WHERE feed_key=?",[&key])?
             && (old["sequence"].as_i64().unwrap()>sequence || (old["sequence"]==sequence && old["manifest_sha256"]!=value["manifest_sha256"])){return Err(Error::conflict("Release feed moved backwards or reused its sequence with different content"));}

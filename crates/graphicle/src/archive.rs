@@ -32,12 +32,15 @@ const MAGIC: &str = "GRAPHICLE-STORE-ARCHIVE 1\n";
 pub const FORMAT: &str = "graphicle.store-archive.v1";
 const CHUNK: usize = 1 << 20;
 
-/// A schema made for one piece of work and dropped with it.
+/// A schema made for one piece of work and dropped with it (or, for a
+/// SQLite backup file, a private copy of the file, removed with it).
 pub struct Scratch {
     pub database: Arc<Database>,
     /// The tables of the archive it was loaded from ([`open_scratch`]):
     /// written back, an archive keeps the tables it had.
     pub tables: Option<BTreeSet<String>>,
+    /// The folder of a SQLite copy.
+    copy: Option<tempfile::TempDir>,
 }
 
 impl Scratch {
@@ -45,10 +48,24 @@ impl Scratch {
     pub fn new() -> Result<Self> {
         let settings = Settings::from_environment()?;
         let schema = format!("g_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
-        crate::db::admin(&settings.url, &format!("CREATE SCHEMA \"{schema}\""))?;
+        // Marked as scratch with its creation time, so that one a crash
+        // left behind (a copy of a store that later deletions would never
+        // reach) is dropped by the next scratch made a day later.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        crate::db::admin(
+            &settings,
+            &format!(
+                "CREATE SCHEMA \"{schema}\"; COMMENT ON SCHEMA \"{schema}\" IS 'graphicle scratch {now}'"
+            ),
+        )?;
+        let database = Database::open(&settings, &schema)?;
+        let _ = drop_stale_scratch(&database.connect()?, now);
         Ok(Self {
-            database: Database::open(&settings, &schema)?,
+            database,
             tables: None,
+            copy: None,
         })
     }
     pub fn connect(&self) -> Result<Connection> {
@@ -58,8 +75,33 @@ impl Scratch {
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = self.database.drop_schema();
+        if self.copy.is_none() {
+            let _ = self.database.drop_schema();
+        }
     }
+}
+
+/// Drop the scratch schemas of this role made more than a day before `now`.
+fn drop_stale_scratch(db: &Connection, now: u64) -> Result<()> {
+    let mut statement = db.prepare(
+        "SELECT n.nspname, d.description FROM pg_namespace n
+         JOIN pg_description d ON d.objoid=n.oid AND d.classoid='pg_namespace'::regclass
+         WHERE d.description LIKE 'graphicle scratch %' AND n.nspowner=(SELECT oid FROM pg_roles WHERE rolname=current_user)",
+    )?;
+    let found =
+        statement.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for row in found {
+        let (schema, description) = row?;
+        let made = description
+            .rsplit(' ')
+            .next()
+            .and_then(|t| t.parse::<u64>().ok())
+            .unwrap_or(u64::MAX);
+        if crate::db::valid_schema(&schema) && made.saturating_add(86_400) < now {
+            db.execute_batch(&format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"))?;
+        }
+    }
+    Ok(())
 }
 
 /// A table of a schema: its name, the columns an archive carries (all but
@@ -71,8 +113,31 @@ struct Table {
     references: BTreeSet<String>,
 }
 
+/// `name` quoted as one SQL identifier.
 fn quote(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// `table` of the connection's own schema, qualified: an unqualified name
+/// would resolve to a `pg_catalog` table of that name first.
+fn qualified(db: &Connection, table: &str) -> String {
+    format!("{}.{}", quote(&db.database().schema), quote(table))
+}
+
+/// A table or column name an archive may carry: a plain identifier, and
+/// never one of PostgreSQL's own (`pg_…`).
+fn plain_name(name: &str) -> bool {
+    crate::db::valid_identifier(name) && !name.to_ascii_lowercase().starts_with("pg_")
+}
+
+/// One line of an archive, at most 1 MiB, hashed unless it is the trailer.
+fn read_line_bounded(input: &mut BufReader<std::fs::File>, line: &mut String) -> Result<usize> {
+    line.clear();
+    let n = input.by_ref().take(1 << 20).read_line(line)?;
+    if n >= 1 << 20 && !line.ends_with('\n') {
+        return Err(Error::bad("This is not a valid Graphicle store backup"));
+    }
+    Ok(n)
 }
 
 /// The tables of the connection's schema, parents before the tables whose
@@ -175,9 +240,12 @@ pub fn snapshot_into(from: &mut Connection, to: &Scratch) -> Result<()> {
             .collect();
         let db = to.connect()?;
         for name in theirs.difference(&ours) {
+            if !plain_name(name) {
+                continue;
+            }
             db.execute_batch(&format!(
                 "CREATE TABLE {} (LIKE {}.{} INCLUDING ALL)",
-                quote(name),
+                qualified(&db, name),
                 quote(&source),
                 quote(name)
             ))?;
@@ -202,7 +270,7 @@ pub fn snapshot_into(from: &mut Connection, to: &Scratch) -> Result<()> {
             "INSERT INTO {}.{} ({cols}) OVERRIDING SYSTEM VALUE SELECT {cols} FROM {}",
             quote(&target),
             quote(&table.name),
-            quote(&table.name),
+            qualified(&tx, &table.name),
             cols = columns.join(",")
         ))?;
     }
@@ -236,7 +304,7 @@ pub fn copy_store(from: &crate::store::Store, to: &crate::store::Store) -> Resul
             "INSERT INTO {}.{} ({cols}) OVERRIDING SYSTEM VALUE SELECT {cols} FROM {}",
             quote(&target),
             quote(&table.name),
-            quote(&table.name),
+            qualified(&tx, &table.name),
             cols = columns.join(",")
         ))?;
     }
@@ -371,7 +439,7 @@ fn write_to(
             &format!(
                 "COPY (SELECT {} FROM {} ORDER BY 1) TO STDOUT",
                 columns.join(","),
-                quote(&table.name)
+                qualified(db, &table.name)
             ),
             &mut framed,
         )?;
@@ -431,9 +499,7 @@ pub fn read(
                      hasher: &mut Sha256,
                      line: &mut String|
      -> Result<()> {
-        line.clear();
-        let n = input.read_line(line)?;
-        if n == 0 || n > 1 << 20 {
+        if read_line_bounded(input, line)? == 0 {
             return Err(invalid());
         }
         hasher.update(line.as_bytes());
@@ -451,8 +517,7 @@ pub fn read(
     let mut tables = 0usize;
     loop {
         // The trailer is not hashed: read it raw.
-        line.clear();
-        if input.read_line(&mut line)? == 0 {
+        if read_line_bounded(&mut input, &mut line)? == 0 {
             return Err(invalid());
         }
         let value: Value = serde_json::from_str(&line).map_err(|_| invalid())?;
@@ -551,12 +616,17 @@ pub fn load(db: &mut Connection, path: &Path) -> Result<Value> {
     // Rows are copied as they are: the projection-group triggers, which
     // mark a group stale on any other write, stay out of it.
     tx.execute_batch("SET LOCAL graphicle.projecting = 'on'")?;
-    let names: Vec<String> = present.keys().map(|n| quote(n)).collect();
+    let names: Vec<String> = present.keys().map(|n| qualified(&tx, n)).collect();
     if !names.is_empty() {
         tx.execute_batch(&format!("TRUNCATE {} CASCADE", names.join(",")))?;
     }
     let mut loaded = 0usize;
     read(path, |section, rows| {
+        // Names come from the file: only plain identifiers, never
+        // PostgreSQL's own, and always in this schema.
+        if !plain_name(&section.table) || !section.columns.iter().all(|c| plain_name(c)) {
+            return Err(Error::bad("This is not a valid Graphicle store backup"));
+        }
         let columns: Vec<String> = match present.get(&section.table) {
             Some(table) => {
                 let columns: Vec<String> = section
@@ -593,7 +663,7 @@ pub fn load(db: &mut Connection, path: &Path) -> Result<Value> {
                     .collect();
                 tx.execute_batch(&format!(
                     "CREATE TABLE {} ({})",
-                    quote(&section.table),
+                    qualified(&tx, &section.table),
                     definition.join(",")
                 ))?;
                 section.columns.iter().map(|c| quote(c)).collect()
@@ -602,7 +672,7 @@ pub fn load(db: &mut Connection, path: &Path) -> Result<Value> {
         tx.copy_in(
             &format!(
                 "COPY {} ({}) FROM STDIN",
-                quote(&section.table),
+                qualified(&tx, &section.table),
                 columns.join(",")
             ),
             rows,
@@ -631,18 +701,47 @@ pub fn reset_identities(db: &Connection) -> Result<()> {
             &format!(
                 "SELECT setval(pg_get_serial_sequence(?, ?), coalesce((SELECT max({c}) FROM {t}), 0) + 1, false)",
                 c = quote(&column),
-                t = quote(&table)
+                t = qualified(db, &table)
             ),
-            crate::params![quote(&table), column],
+            crate::params![qualified(db, &table), column],
             |_| Ok(()),
         )?;
     }
     Ok(())
 }
 
+/// The tables a backup holds: a SQLite backup's, or an archive's.
+pub fn backup_tables(path: &Path) -> Result<BTreeSet<String>> {
+    if crate::db::is_sqlite_file(path) {
+        let db = Database::sqlite(path, false).connect()?;
+        return Ok(crate::store::tables(&db)?.into_iter().collect());
+    }
+    let mut names = BTreeSet::new();
+    read(path, |section, _| {
+        names.insert(section.table.clone());
+        Ok(())
+    })?;
+    Ok(names)
+}
+
 /// Load an archive into a new scratch schema with this program's tables:
 /// the copy that offboarding reads and edits.
 pub fn open_scratch(path: &Path) -> Result<Scratch> {
+    if crate::db::is_sqlite_file(path) {
+        // A SQLite backup: a private copy of the file.
+        let folder = tempfile::tempdir()?;
+        let copy = folder.path().join("backup.sqlite3");
+        std::fs::copy(path, &copy)?;
+        let database = Database::sqlite(&copy, false);
+        let names: BTreeSet<String> = crate::store::tables(&database.connect()?)?
+            .into_iter()
+            .collect();
+        return Ok(Scratch {
+            database,
+            tables: Some(names),
+            copy: Some(folder),
+        });
+    }
     let mut scratch = Scratch::new()?;
     crate::store::migrate_pool(&scratch.database)?;
     load(&mut scratch.connect()?, path)?;
@@ -658,6 +757,16 @@ pub fn open_scratch(path: &Path) -> Result<Scratch> {
 /// Rewrite the archive at `path` with only the tables `keep` accepts (an
 /// archive of an older store, which had fewer tables, in tests).
 pub fn retain_tables(path: &Path, keep: impl Fn(&str) -> bool) -> Result<()> {
+    if crate::db::is_sqlite_file(path) {
+        let db = Database::sqlite(path, false).connect()?;
+        for table in crate::store::tables(&db)? {
+            if !keep(&table) && crate::db::valid_identifier(&table) {
+                db.execute_batch(&format!("DROP TABLE {table}"))?;
+            }
+        }
+        db.execute_batch("VACUUM")?;
+        return Ok(());
+    }
     let scratch = open_scratch(path)?;
     let only: BTreeSet<String> = scratch
         .tables

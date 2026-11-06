@@ -111,6 +111,8 @@ fn read_only(directory: &Path) -> Option<(crate::db::Connection, crate::store::P
     let db = store.connect().ok()?;
     db.busy_timeout(std::time::Duration::from_millis(200))
         .ok()?;
+    // SQLite: refuse any write on this connection.
+    db.pragma_update(None, "query_only", true).ok()?;
     let principal = crate::store::authorize_hash(
         &db,
         &session.workspace,

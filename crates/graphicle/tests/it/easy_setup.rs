@@ -1954,7 +1954,10 @@ fn uninstall_disconnects_and_purges_only_when_confirmed() {
     let refused = m.run(&m.repo, &["uninstall", "--purge"]);
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("--yes"));
-    assert!(m.data.join("postgres.json").is_file(), "nothing purged");
+    assert!(
+        graphicle_runtime::db::Database::exists(&m.data),
+        "nothing purged"
+    );
     let report = m.graphicle(&["uninstall", "--purge", "--yes"]);
     assert_eq!(report["purged"], true, "{report:#}");
     assert!(!m.data.exists());

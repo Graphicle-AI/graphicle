@@ -43,8 +43,12 @@ fn an_existing_cache_and_its_sidecars_are_owner_only() {
         path.with_extension("sqlite-wal"),
         path.with_extension("sqlite-shm"),
     ];
+    // A SQLite cache in WAL mode has them already; a PostgreSQL one has
+    // only what an older SQLite cache left.
     for path in &paths[1..] {
-        std::fs::write(path, b"").unwrap();
+        if !path.exists() {
+            std::fs::write(path, b"").unwrap();
+        }
     }
     for path in &paths {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
