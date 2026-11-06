@@ -4,13 +4,13 @@
 //! ranking and packing settings survive each initial and follow-up search.
 //! Local scorers use the same implementation as interactive context, with
 //! pinned profiles, job reservations and actual CPU usage in the ledger.
+use crate::db::params;
 use crate::{
     Error, Result, digest, id, integer,
     jobs::{self, Job, Worker},
     model, now, query,
     store::one,
 };
-use rusqlite::params;
 use serde_json::{Value, json};
 
 const PROFILES: [&str; 1] = ["local_reranker_profile"];

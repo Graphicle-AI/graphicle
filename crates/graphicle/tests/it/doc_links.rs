@@ -1208,7 +1208,7 @@ async fn connector_code_marks_link_without_changing_text_or_staling_memories() {
                 Ok(store::one(
                     db,
                     "SELECT content,sha256,metadata FROM am_connector_docs WHERE connector_id=? AND id=?",
-                    rusqlite::params![connectors[0], id],
+                    graphicle_runtime::params![connectors[0], id],
                 )?
                 .unwrap())
             })

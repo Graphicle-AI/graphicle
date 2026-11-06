@@ -1,5 +1,6 @@
 //! Browser workspace, versioned HTTP entry points, and an atomic ingress budget.
 //! Model-call budgets remain the responsibility of the workflow engine.
+use crate::db::params;
 use crate::{
     Error, Result,
     api::{self, App},
@@ -15,7 +16,6 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{Datelike, Utc};
-use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Instant;
@@ -210,7 +210,7 @@ fn day() -> String {
 }
 
 fn limits(
-    db: &rusqlite::Connection,
+    db: &crate::db::Connection,
     workspace: &str,
 ) -> Result<(Option<u64>, Option<u64>, Option<u64>)> {
     let budget = one(
@@ -380,24 +380,37 @@ impl Store {
         })
     }
 
+    /// Count one request against the workspace's monthly budget, or refuse
+    /// it when the budget is used up. A counter transaction
+    /// ([`Store::counter`]): every HTTP request comes here, and it must not
+    /// queue behind the store's write lock while a project is indexed.
     pub fn reserve_request(&self, workspace: &str, cap: &str) -> Result<(String, Option<u64>)> {
-        self.authorized(workspace, cap, "read", |db, p| {
+        if cap.len() > 512 {
+            return Err(Error::denied());
+        }
+        let hash = graphicle_memory::text::sha256(cap.as_bytes());
+        self.counter(|db| {
+            let p = crate::store::authorize_hash(db, workspace, &hash, "read")?;
             let date = day();
             let start = format!("{}-01", &date[..7]);
-            let used:i64 = db.query_row("SELECT coalesce(sum(requests),0) FROM am_usage WHERE workspace_id=? AND day>=?",
+            // Today's row is counted first: its row lock orders the
+            // workspace's concurrent requests, so each one's sum includes
+            // every request before it. A refused request rolls back.
+            db.execute("INSERT INTO am_usage(workspace_id,day,requests) VALUES(?,?,1)
+                ON CONFLICT(workspace_id,day) DO UPDATE SET requests=am_usage.requests+1",params![p.workspace,date])?;
+            let counted:i64 = db.query_row("SELECT coalesce(sum(requests),0) FROM am_usage WHERE workspace_id=? AND day>=?",
                 params![p.workspace,start], |r| r.get(0))?;
+            let used = counted.saturating_sub(1).max(0) as u64;
             let limit = limits(db, &p.workspace)?.2;
-            if limit.is_some_and(|n| used as u64 >= n) {
+            if limit.is_some_and(|n| used >= n) {
                 return Err(Error { status:StatusCode::TOO_MANY_REQUESTS,
                     message:"Workspace request budget reached. The owner can review Usage; export, deletion and cancellation remain available.".into(),
                     provider_failure:None });
             }
-            db.execute("INSERT INTO am_usage(workspace_id,day,requests) VALUES(?,?,1)
-                ON CONFLICT(workspace_id,day) DO UPDATE SET requests=requests+1",params![p.workspace,date])?;
             // Daily counters retain 25 months; they never grow with individual requests.
             let cutoff = (Utc::now() - chrono::Duration::days(760)).format("%Y-%m-%d").to_string();
             db.execute("DELETE FROM am_usage WHERE workspace_id=? AND day<?", params![p.workspace,cutoff])?;
-            Ok((date,limit.map(|n| n.saturating_sub(used as u64 + 1))))
+            Ok((date,limit.map(|n| n.saturating_sub(used + 1))))
         })
     }
     fn finish_request(
@@ -407,7 +420,7 @@ impl Store {
         failed: bool,
         elapsed: u64,
     ) -> Result<()> {
-        self.transaction(|db| {
+        self.counter(|db| {
             db.execute("UPDATE am_usage SET errors=errors+?,elapsed_ms=elapsed_ms+? WHERE workspace_id=? AND day=?",
                 params![i64::from(failed),elapsed.min(i64::MAX as u64),workspace,date])?;
             Ok(())

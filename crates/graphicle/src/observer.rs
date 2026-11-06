@@ -14,6 +14,7 @@
 //!
 //! The instructions port a research observer that raised the same thinking
 //! reader's accuracy on LongMemEval-S (with a local judge).
+use crate::db::{Connection, params};
 use crate::store::{decode, one, rows, s};
 use crate::{Error, Result, digest, integer, now, string};
 use crate::{
@@ -22,7 +23,6 @@ use crate::{
     memory, model, workflows,
 };
 use graphicle_memory::text;
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -300,7 +300,7 @@ pub async fn execute(worker: &Worker, original: &Job) -> Result<Value> {
         let data = json!(notes);
         jobs::guarded(&worker.store, &job, |db, p, _| {
             db.execute(
-                "INSERT OR REPLACE INTO am_observer_notes(repository_id,source_id,source_sha256,source_version,step_key,model_key,principal_hash,job_id,source_order,session_date,notes,dropped,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO am_observer_notes(repository_id,source_id,source_sha256,source_version,step_key,model_key,principal_hash,job_id,source_order,session_date,notes,dropped,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(repository_id,source_id) DO UPDATE SET source_sha256=excluded.source_sha256,source_version=excluded.source_version,step_key=excluded.step_key,model_key=excluded.model_key,principal_hash=excluded.principal_hash,job_id=excluded.job_id,source_order=excluded.source_order,session_date=excluded.session_date,notes=excluded.notes,dropped=excluded.dropped,created_at=excluded.created_at",
                 params![job.repository, s(doc, "id"), s(doc, "sha256"), s(doc, "version"), key,
                     model::key(profile), job.principal_hash, job.id,
                     episode_order(doc).unwrap_or_default(), session_date(doc),

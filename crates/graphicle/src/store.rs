@@ -1,9 +1,9 @@
 //! Native ownership of the same source/revision tables used by the original host.
-use crate::{Error, Result, digest, id, integer, native, now, string};
-use rusqlite::{
+use crate::db::{
     Connection, OptionalExtension, Params, Transaction, TransactionBehavior, params,
     types::ValueRef,
 };
+use crate::{Error, Result, digest, id, integer, native, now, string};
 use serde_json::{Map, Value, json};
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
@@ -28,6 +28,10 @@ struct LockStats {
     longest_at: String,
     slow: u64,
     recent: VecDeque<(String, f64)>,
+    /// Write transactions that waited [`SLOW_HOLD`] or more for the lock.
+    slow_waits: u64,
+    longest_wait: Duration,
+    longest_wait_at: String,
 }
 static LOCKS: Mutex<LockStats> = Mutex::new(LockStats {
     transactions: 0,
@@ -36,6 +40,9 @@ static LOCKS: Mutex<LockStats> = Mutex::new(LockStats {
     longest_at: String::new(),
     slow: 0,
     recent: VecDeque::new(),
+    slow_waits: 0,
+    longest_wait: Duration::ZERO,
+    longest_wait_at: String::new(),
 });
 
 /// A call site's file relative to its crate (`src/jobs.rs`). Cargo gives
@@ -84,20 +91,48 @@ fn record_hold(at: &Location<'_>, held: Duration) {
     }
 }
 
+/// A write transaction at `at` waited `waited` for the write lock (another
+/// writer, in this process or another, held it).
+fn record_wait(at: &Location<'_>, waited: Duration) {
+    if waited < SLOW_HOLD {
+        return;
+    }
+    let site = format!("{}:{}", crate_relative(at.file()), at.line());
+    let mut stats = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    stats.slow_waits += 1;
+    if waited > stats.longest_wait {
+        stats.longest_wait = waited;
+        stats.longest_wait_at = site.clone();
+    }
+    drop(stats);
+    if crate::phase::enabled() {
+        eprintln!(
+            "graphicle: waited {:.1} s for the write lock at {site}",
+            waited.as_secs_f64()
+        );
+    }
+}
+
 /// Write-lock use by this process: how many write transactions ran, how long
-/// they held the lock, the longest hold and recent slow holds by call site.
+/// they held the lock, the longest hold, recent slow holds by call site, and
+/// how often and where a transaction waited long for it.
 pub fn lock_report() -> Value {
     let stats = LOCKS.lock().unwrap_or_else(PoisonError::into_inner);
     json!({"write_transactions":stats.transactions,"held_seconds":stats.held.as_secs_f64(),
         "longest_seconds":stats.longest.as_secs_f64(),"longest_at":stats.longest_at,
         "slow_threshold_seconds":SLOW_HOLD.as_secs_f64(),"slow_holds":stats.slow,
+        "slow_waits":stats.slow_waits,"longest_wait_seconds":stats.longest_wait.as_secs_f64(),
+        "longest_wait_at":stats.longest_wait_at,
         "recent_slow":stats.recent.iter().map(|(at,s)|json!({"at":at,"seconds":s})).collect::<Vec<_>>()})
 }
 
 #[derive(Clone)]
 pub struct Store {
     pub directory: Arc<PathBuf>,
+    /// The data folder's `postgres.json`, which names the store's schema.
     pub database: Arc<PathBuf>,
+    /// This process's connections to the store ([`crate::db`]).
+    pub pool: Arc<crate::db::Database>,
     /// Signalled when a job is queued, so an idle worker in this process
     /// starts it at once instead of at its next poll.
     pub wake: Arc<tokio::sync::Notify>,
@@ -330,81 +365,146 @@ pub fn analysis_report(db: &Connection, repository: &str) -> Result<(Vec<Value>,
 }
 
 impl Store {
+    /// The store of the data folder `directory`: its schema of the configured
+    /// PostgreSQL database ([`crate::db`]), created on first use and brought
+    /// up to this program's tables.
     pub fn open(directory: impl AsRef<Path>) -> Result<Self> {
         let directory = directory.as_ref();
         if directory.is_symlink() {
             return Err(Error::bad("Data directory cannot be a symlink"));
         }
         std::fs::create_dir_all(directory)?;
-        let database = directory.join("reviews.sqlite3");
-        if database.is_symlink() {
-            return Err(Error::bad("Database cannot be a symlink"));
-        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(directory, std::fs::Permissions::from_mode(0o700))?;
         }
+        if !crate::db::Database::exists(directory) && directory.join("reviews.sqlite3").is_file() {
+            // Never start an empty store beside the data a SQLite store
+            // holds: it would look like the data were lost.
+            return Err(Error::bad(format!(
+                "{} holds a SQLite store from Graphicle 0.1.12 or earlier; copy it into PostgreSQL first with graphicle --data-dir {} import-sqlite",
+                directory.display(),
+                directory.display()
+            )));
+        }
+        let pool = crate::db::Database::for_directory(directory, true)?;
         let store = Self {
             directory: Arc::new(directory.to_path_buf()),
-            database: Arc::new(database),
+            database: Arc::new(crate::db::schema_file(directory)),
+            pool,
             wake: Arc::new(tokio::sync::Notify::new()),
             limits: None,
         };
-        let db = store.connect()?;
+        store.migrate()?;
+        Ok(store)
+    }
+
+    /// The store of `directory` when it has one, without creating or
+    /// migrating anything (read-only commands, offboarding).
+    pub fn existing(directory: impl AsRef<Path>) -> Result<Option<Self>> {
+        let directory = directory.as_ref();
+        if !crate::db::Database::exists(directory) {
+            return Ok(None);
+        }
+        let pool = crate::db::Database::for_directory(directory, false)?;
+        Ok(Some(Self {
+            directory: Arc::new(directory.to_path_buf()),
+            database: Arc::new(crate::db::schema_file(directory)),
+            pool,
+            wake: Arc::new(tokio::sync::Notify::new()),
+            limits: None,
+        }))
+    }
+
+    /// Bring the schema up to this program's tables. A store already at
+    /// this program's schema digest changes nothing and takes no lock; else
+    /// every migration runs in one transaction that holds the write lock,
+    /// so two processes opening a store at once never race, and a migration
+    /// that fails changes nothing.
+    fn migrate(&self) -> Result<()> {
+        migrate_pool(&self.pool)
+    }
+    /// This store's schema name.
+    pub fn schema(&self) -> &str {
+        &self.pool.schema
+    }
+}
+
+/// Bring the schema of `pool` up to this program's tables ([`Store::open`];
+/// also the scratch schemas of [`crate::archive`]).
+pub fn migrate_pool(pool: &Arc<crate::db::Database>) -> Result<()> {
+    {
+        let digest = schema_digest();
+        let mut db = pool.connect()?;
         // A store that needs a newer program is refused before anything in
         // it changes.
         check_reader(&db)?;
-        db.pragma_update(None, "journal_mode", "WAL")?;
-        db.execute_batch(READERS)?;
-        db.execute_batch(include_str!("schema.sql"))?;
-        db.execute_batch(include_str!("workflow_schema.sql"))?;
-        db.execute_batch(include_str!("expansion_schema.sql"))?;
-        db.execute_batch(include_str!("projection_schema.sql"))?;
-        ensure_column(&db, "gf_episodes", "parent_episode", "TEXT")?;
-        db.execute_batch(include_str!("temporal_schema.sql"))?;
-        crate::temporal_graph::migrate(&db)?;
-        crate::graph_delta::migrate(&db)?;
-        db.execute_batch(include_str!("product_schema.sql"))?;
-        crate::work_state::migrate(&db)?;
-        // Each folder's freshness record.
-        crate::fresh::migrate(&db)?;
-        // Documents' mention links to code symbols.
-        crate::doc_links::migrate(&db)?;
-        // Each project's passage index, which `context` reads.
-        crate::passage_index::migrate(&db)?;
-        ensure_column(
-            &db,
-            "gf_cross_unresolved",
-            "exporter_episodes",
-            "TEXT NOT NULL DEFAULT '{}'",
-        )?;
-        // Coverage rows carry the granularity of the upload that produced
-        // them (`test` or `file`); rows written before the column existed
-        // were all per-test.
-        ensure_column(
-            &db,
-            "gf_test_coverage",
-            "granularity",
-            "TEXT NOT NULL DEFAULT 'test'",
-        )?;
-        // Projects earlier `graphicle pr` runs registered are PR scratch
-        // copies: they no longer make imports ambiguous.
-        crate::graph_projection::mark_legacy_pr_projects(&db)?;
-        // Extension tables last: they may reference core tables. Stores
-        // keep every table, so an edition without an extension ignores its
-        // tables.
-        crate::extension::installed().migrate(&db)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(
-                store.database.as_ref(),
-                std::fs::Permissions::from_mode(0o600),
+        if schema_current(&db, &digest)? {
+            return Ok(());
+        }
+        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_reader(&tx)?;
+        if !schema_current(&tx, &digest)? {
+            let db: &Connection = &tx;
+            db.execute_batch("SET LOCAL client_min_messages = warning")?;
+            db.execute_batch(include_str!("functions.sql"))?;
+            db.execute_batch(READERS)?;
+            ensure_column(db, "store_schema", "tables", "BIGINT NOT NULL DEFAULT 0")?;
+            db.execute_batch(include_str!("schema.sql"))?;
+            db.execute_batch(include_str!("workflow_schema.sql"))?;
+            db.execute_batch(include_str!("expansion_schema.sql"))?;
+            db.execute_batch(include_str!("projection_schema.sql"))?;
+            ensure_column(db, "gf_episodes", "parent_episode", "TEXT")?;
+            db.execute_batch(include_str!("temporal_schema.sql"))?;
+            crate::temporal_graph::migrate(db)?;
+            crate::graph_delta::migrate(db)?;
+            db.execute_batch(include_str!("product_schema.sql"))?;
+            crate::work_state::migrate(db)?;
+            // Each folder's freshness record.
+            crate::fresh::migrate(db)?;
+            // Documents' mention links to code symbols.
+            crate::doc_links::migrate(db)?;
+            // Each project's passage index, which `context` reads.
+            crate::passage_index::migrate(db)?;
+            ensure_column(
+                db,
+                "gf_cross_unresolved",
+                "exporter_episodes",
+                "TEXT NOT NULL DEFAULT '{}'",
+            )?;
+            // Coverage rows carry the granularity of the upload that produced
+            // them (`test` or `file`); rows written before the column existed
+            // were all per-test.
+            ensure_column(
+                db,
+                "gf_test_coverage",
+                "granularity",
+                "TEXT NOT NULL DEFAULT 'test'",
+            )?;
+            // Projects earlier `graphicle pr` runs registered are PR scratch
+            // copies: they no longer make imports ambiguous.
+            crate::graph_projection::mark_legacy_pr_projects(db)?;
+            // Extension tables last: they may reference core tables. Stores
+            // keep every table, so an edition without an extension ignores its
+            // tables.
+            crate::extension::installed().migrate(db)?;
+            // Every table gets its `rowid` last, so that it follows the
+            // columns positional inserts name.
+            db.execute_batch("SELECT graphicle_add_rowids()")?;
+            let count = tables(db)?.len() as i64;
+            db.execute(
+                "INSERT INTO store_schema(id,digest,version,tables,updated_at) VALUES(1,?,?,?,?)
+                 ON CONFLICT(id) DO UPDATE SET digest=excluded.digest,version=excluded.version,tables=excluded.tables,updated_at=excluded.updated_at",
+                params![digest, env!("CARGO_PKG_VERSION"), count, now()],
             )?;
         }
-        Ok(store)
+        tx.commit()?;
+        Ok(())
     }
+}
+
+impl Store {
     /// This store with the size limits of the running program's
     /// configuration file and environment ([`crate::limits`]).
     pub fn with_limits(mut self, limits: crate::limits::Limits) -> Self {
@@ -419,21 +519,22 @@ impl Store {
             None => crate::limits::Limits::from_environment(&BTreeMap::new()),
         }
     }
+    /// A connection from this process's pool for the store.
     pub fn connect(&self) -> Result<Connection> {
-        let db = Connection::open(self.database.as_ref())?;
-        db.busy_timeout(Duration::from_secs(10))?;
-        db.pragma_update(None, "foreign_keys", true)?;
-        db.pragma_update(None, "secure_delete", true)?;
-        Ok(db)
+        Ok(self.pool.connect()?)
     }
-    /// A write transaction (`BEGIN IMMEDIATE`): it takes SQLite's single write
-    /// lock up front, so a read-then-write never fails to upgrade. Keep the
-    /// work inside short; long holds are logged with the caller's location.
+    /// A write transaction: it takes the store's write lock up front (as
+    /// SQLite's `BEGIN IMMEDIATE` did), so a read-then-write never races
+    /// another writer. Keep the work inside short; long holds are logged
+    /// with the caller's location.
     #[track_caller]
     pub fn transaction<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         let at = Location::caller();
         let mut db = self.connect()?;
-        let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let asked = Instant::now();
+        let transaction = db.transaction_with_behavior(TransactionBehavior::Immediate);
+        record_wait(at, asked.elapsed());
+        let transaction = transaction?;
         let started = Instant::now();
         let outcome = (move || {
             let value = f(&transaction)?;
@@ -443,14 +544,23 @@ impl Store {
         record_hold(at, started.elapsed());
         outcome
     }
-    /// A read-only snapshot (`BEGIN DEFERRED` with `query_only`). In WAL mode
-    /// it neither takes nor waits for the write lock, so long reads run beside
-    /// writers and each other. A write inside it fails at once instead of
-    /// upgrading the transaction and failing only under concurrency.
+    /// A write transaction that does not take the store's write lock: for
+    /// counters (one row, updated in place), whose row lock is enough to
+    /// order concurrent updates. Its writes never wait behind a long writer
+    /// such as an indexing job.
+    pub fn counter<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        let mut db = self.connect()?;
+        let transaction = db.row_lock_transaction()?;
+        let value = f(&transaction)?;
+        transaction.commit()?;
+        Ok(value)
+    }
+    /// A read-only snapshot (`REPEATABLE READ READ ONLY`): it never takes or
+    /// waits for the write lock, so long reads run beside writers and each
+    /// other. A write inside it fails at once.
     pub fn read<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
         let mut db = self.connect()?;
-        db.pragma_update(None, "query_only", true)?;
-        let transaction = db.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let transaction = db.read_transaction()?;
         let value = f(&transaction)?;
         transaction.commit()?;
         Ok(value)
@@ -569,7 +679,7 @@ impl Store {
         self.authorized(workspace, token, "collect", |db, p| {
             let repository = repo(db, p, repository)?;
             db.execute(
-                "INSERT OR IGNORE INTO repo_project_roles(repository_id,role,created_at) VALUES(?,?,?)",
+                "INSERT INTO repo_project_roles(repository_id,role,created_at) VALUES(?,?,?) ON CONFLICT DO NOTHING",
                 params![s(&repository, "id"), crate::graph_projection::PR_SCRATCH, now()],
             )?;
             Ok(json!({"id":repository["id"],"role":crate::graph_projection::PR_SCRATCH}))
@@ -724,7 +834,7 @@ impl Store {
                     return Err(Error::conflict("Source does not match its manifest"));
                 }
                 db.execute(
-                    "INSERT OR IGNORE INTO repo_objects VALUES(?,?,?,?)",
+                    "INSERT INTO repo_objects VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
                     params![identifier, sha, content, content.len()],
                 )?;
                 accepted.push(name.to_string());
@@ -879,8 +989,8 @@ impl Store {
                 if state == "aborted" {
                     return Err(Error::conflict("Sync was aborted"));
                 }
-                let mut insert_parse = db.prepare_cached("INSERT OR REPLACE INTO repo_parses VALUES(?,?,?,?,?)")?;
-                let mut insert_chunk = db.prepare_cached("INSERT OR IGNORE INTO repo_chunks(repository_id,path,sha256,line,end_line,index_text) VALUES(?,?,?,?,?,?)")?;
+                let mut insert_parse = db.prepare_cached("INSERT INTO repo_parses VALUES(?,?,?,?,?) ON CONFLICT(repository_id,path,sha256) DO UPDATE SET revision=excluded.revision,data=excluded.data")?;
+                let mut insert_chunk = db.prepare_cached("INSERT INTO repo_chunks(repository_id,path,sha256,line,end_line,index_text) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING")?;
                 for (document, (analysis, chunks)) in batch.iter().zip(&rows) {
                     if let Some((revision, analysis)) = analysis {
                         insert_parse.execute(params![identifier, document.path, document.sha, revision, analysis])?;
@@ -906,7 +1016,7 @@ impl Store {
             let mut insert_head=db.prepare_cached("INSERT INTO repo_heads VALUES(?,?,?)")?;
             for document in &documents {insert_head.execute(params![identifier,document.path,document.sha])?;}
             drop(insert_head);
-            db.execute("INSERT OR IGNORE INTO repo_snapshots VALUES(?,?,?,?,?)",params![identifier,s(&sync,"snapshot"),s(&sync,"manifest"),s(&sync,"metadata"),now()])?;
+            db.execute("INSERT INTO repo_snapshots VALUES(?,?,?,?,?) ON CONFLICT DO NOTHING",params![identifier,s(&sync,"snapshot"),s(&sync,"manifest"),s(&sync,"metadata"),now()])?;
             db.execute("UPDATE repo_projects SET snapshot=?,generation=generation+1,metadata=?,updated_at=? WHERE id=?",params![s(&sync,"snapshot"),s(&sync,"metadata"),now(),identifier])?;
             db.execute("UPDATE repo_syncs SET state='complete' WHERE id=?",[s(&sync,"id")])?;
             invalidate(db,identifier)?;
@@ -945,7 +1055,7 @@ pub fn credential_sources(
         "SELECT d.connector_id,d.id FROM am_connector_docs d \
          JOIN am_connectors c ON c.id=d.connector_id \
          JOIN repo_projects r ON r.id=c.repository_id \
-         JOIN json_each(d.acl,'$.credentials') reader \
+         CROSS JOIN json_each(d.acl,'$.credentials') reader \
          WHERE r.workspace_id=? AND d.present=1 AND reader.value=?",
         params![workspace, credential],
     )? {
@@ -960,7 +1070,7 @@ pub fn credential_sources(
          JOIN am_connectors c ON c.id=d.connector_id \
          JOIN repo_projects r ON r.id=c.repository_id \
          JOIN am_source_permissions p ON p.connector_id=d.connector_id AND p.source_id=d.id \
-         JOIN json_each(p.principals) grant_ \
+         CROSS JOIN json_each(p.principals) grant_ \
          JOIN am_provider_identities i ON i.workspace_id=r.workspace_id AND i.provider=coalesce(json_extract(?,'$.\"'||c.kind||'\"'),c.kind) AND i.credential_id=? \
          LEFT JOIN am_provider_emails e ON e.workspace_id=i.workspace_id AND e.provider=i.provider AND e.external_id=i.external_id \
          LEFT JOIN am_oauth_accounts o ON o.workspace_id=i.workspace_id AND o.provider=i.provider AND o.external_id=i.external_id AND o.state='active' \
@@ -990,8 +1100,11 @@ pub const READER_FORMAT: i64 = 1;
 
 /// The formats a store requires of the programs that open it, by reason.
 const READERS: &str = "CREATE TABLE IF NOT EXISTS store_readers (
- reason TEXT PRIMARY KEY, format INTEGER NOT NULL, version TEXT NOT NULL,
- updated_at TEXT NOT NULL);";
+ reason TEXT PRIMARY KEY, format BIGINT NOT NULL, version TEXT NOT NULL,
+ updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS store_schema (
+ id BIGINT PRIMARY KEY CHECK (id = 1), digest TEXT NOT NULL, version TEXT NOT NULL,
+ tables BIGINT NOT NULL DEFAULT 0, updated_at TEXT NOT NULL);";
 
 /// Record, under `reason`, that a program must read store format `format`
 /// (first released in Graphicle `version`) to honour what this store holds,
@@ -1024,12 +1137,7 @@ pub fn require_reader(db: &Connection, reason: &str, format: i64, version: &str)
 /// Refuse a store that requires a newer store format than this program reads
 /// ([`require_reader`]).
 fn check_reader(db: &Connection) -> Result<()> {
-    let declared: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='store_readers')",
-        [],
-        |r| r.get(0),
-    )?;
-    if !declared {
+    if !table_exists(db, "store_readers")? {
         return Ok(());
     }
     let needed: Option<(i64, String)> = db
@@ -1052,13 +1160,143 @@ fn check_reader(db: &Connection) -> Result<()> {
 /// `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a column
 /// added later is appended here when `pragma_table_info` lacks it.
 pub fn ensure_column(db: &Connection, table: &str, column: &str, ddl: &str) -> Result<()> {
-    let present = rows(db, &format!("PRAGMA table_info({table})"), [])?
-        .iter()
-        .any(|row| s(row, "name") == column);
-    if !present {
-        db.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"))?;
+    if !column_exists(db, table, column)? {
+        db.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {}",
+            column_type(ddl)
+        ))?;
     }
     Ok(())
+}
+
+/// A column definition written for SQLite in PostgreSQL's types (64-bit
+/// integers, doubles, bytes), as the schema files use.
+pub fn column_type(ddl: &str) -> String {
+    let mut out = Vec::new();
+    for word in ddl.split(' ') {
+        out.push(match word.to_ascii_uppercase().as_str() {
+            "INTEGER" => "BIGINT",
+            "REAL" => "DOUBLE PRECISION",
+            "BLOB" => "BYTEA",
+            _ => word,
+        });
+    }
+    out.join(" ")
+}
+
+/// Whether the store has table `name` (SQLite's `sqlite_master` lookup).
+pub fn table_exists(db: &Connection, name: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?)",
+        [name],
+        |r| r.get(0),
+    )?)
+}
+
+/// Whether table `table` of the store has column `column`.
+pub fn column_exists(db: &Connection, table: &str, column: &str) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? AND column_name=?)",
+        params![table, column],
+        |r| r.get(0),
+    )?)
+}
+
+/// The columns of `table`: `(name, type, primary-key position or 0)`, in
+/// order (SQLite's `pragma_table_info`). Types are PostgreSQL's names in
+/// SQLite's words where the store uses them (`INTEGER`, `TEXT`, `REAL`,
+/// `BLOB`).
+pub fn table_columns(db: &Connection, table: &str) -> Result<Vec<(String, String, i64)>> {
+    let mut statement = db.prepare_cached(
+        "SELECT c.column_name, c.data_type,
+                coalesce((SELECT k.ordinal_position FROM information_schema.table_constraints t
+                          JOIN information_schema.key_column_usage k ON k.constraint_name=t.constraint_name AND k.table_schema=t.table_schema AND k.table_name=t.table_name
+                          WHERE t.table_schema=c.table_schema AND t.table_name=c.table_name AND t.constraint_type='PRIMARY KEY' AND k.column_name=c.column_name),0)
+         FROM information_schema.columns c WHERE c.table_schema=current_schema() AND c.table_name=? ORDER BY c.ordinal_position",
+    )?;
+    let rows = statement.query_map([table], |r| {
+        let kind: String = r.get(1)?;
+        let kind = match kind.as_str() {
+            "bigint" | "integer" | "smallint" => "INTEGER",
+            "double precision" | "real" => "REAL",
+            "bytea" => "BLOB",
+            _ => "TEXT",
+        };
+        Ok((
+            r.get::<_, String>(0)?,
+            kind.to_string(),
+            r.get::<_, i64>(2)?,
+        ))
+    })?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+/// [`table_columns`] as rows `{name, type, pk}`, the shape SQLite's
+/// `pragma_table_info` had. The hidden `rowid` is left out, as SQLite left
+/// it out.
+pub fn table_info(db: &Connection, table: &str) -> Result<Vec<Value>> {
+    Ok(table_columns(db, table)?
+        .into_iter()
+        .filter(|(name, _, _)| name != "rowid")
+        .map(|(name, kind, pk)| json!({"name":name,"type":kind,"pk":pk}))
+        .collect())
+}
+
+/// The store's tables, by name.
+pub fn tables(db: &Connection) -> Result<Vec<String>> {
+    let mut statement = db.prepare_cached(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE' ORDER BY table_name",
+    )?;
+    let rows = statement.query_map([], |r| r.get::<_, String>(0))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+/// The digest of the schema this program creates: a store recorded at it
+/// needs no migration ([`Store::open`]).
+fn schema_digest() -> String {
+    let mut text = String::from(env!("CARGO_PKG_VERSION"));
+    for part in [
+        include_str!("functions.sql"),
+        READERS,
+        include_str!("schema.sql"),
+        include_str!("workflow_schema.sql"),
+        include_str!("expansion_schema.sql"),
+        include_str!("projection_schema.sql"),
+        include_str!("temporal_schema.sql"),
+        include_str!("product_schema.sql"),
+    ] {
+        text.push_str(part);
+    }
+    for name in crate::extension::installed().names() {
+        text.push_str(name);
+    }
+    graphicle_memory::text::sha256(text.as_bytes())
+}
+
+/// Whether opening the store has nothing to migrate: it records this
+/// program's schema digest, still has the tables it had then, and no data
+/// migration has work to do (documents' links to relink after a rules
+/// change, projects of earlier `graphicle pr` runs to mark). Otherwise
+/// [`migrate_pool`] runs every migration, as each open did with SQLite.
+fn schema_current(db: &Connection, digest: &str) -> Result<bool> {
+    if !table_exists(db, "store_schema")? {
+        return Ok(false);
+    }
+    let recorded: Option<(String, i64)> = db
+        .query_row(
+            "SELECT digest,tables FROM store_schema WHERE id=1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let Some((recorded, count)) = recorded else {
+        return Ok(false);
+    };
+    if recorded != digest || count != tables(db)?.len() as i64 {
+        return Ok(false);
+    }
+    Ok(!crate::doc_links::relink_pending(db)?
+        && !crate::graph_projection::legacy_pr_projects_pending(db)?)
 }
 
 /// The principal `hash` authenticates in `workspace`, whatever its role
@@ -1183,7 +1421,7 @@ pub fn permitted(db: &Connection, p: &Principal, permission: &str) -> Result<boo
 /// to its extensions' hooks. Empty when the store declares none.
 pub fn required_capabilities(db: &Connection, credential: &str) -> Result<Vec<String>> {
     let declared: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name='credential_requirements')",
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name='credential_requirements')",
         [],
         |r| r.get(0),
     )?;
@@ -1408,14 +1646,21 @@ mod reader_format_tests {
         assert!(Store::open(dir.path()).is_ok());
         let db = store.connect().unwrap();
         require_reader(&db, "later", READER_FORMAT + 1, "9.9.9").unwrap();
-        let changed: i64 = db
-            .query_row("SELECT total_changes()", [], |r| r.get(0))
-            .unwrap();
+        // The row's version (`xmin`, the transaction that last wrote it)
+        // tells whether it was rewritten; SQLite's `total_changes()` has no
+        // PostgreSQL counterpart.
+        let written = |db: &crate::db::Connection| -> String {
+            db.query_row(
+                "SELECT xmin::text FROM store_readers WHERE reason='later'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let changed = written(&db);
         // Unchanged records are not rewritten.
         require_reader(&db, "later", READER_FORMAT + 1, "9.9.9").unwrap();
-        let again: i64 = db
-            .query_row("SELECT total_changes()", [], |r| r.get(0))
-            .unwrap();
+        let again = written(&db);
         assert_eq!(changed, again);
         drop(db);
         let error = Store::open(dir.path()).err().expect("refused");

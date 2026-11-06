@@ -107,7 +107,7 @@ fn memories_past_the_recall_bound_list_and_recall_the_newest() {
     assert!(total > 10_000, "past the former listing cap");
     {
         // The row shape `memory::save` writes; revision history is not read here.
-        let mut db = rusqlite::Connection::open(f.dir.path().join("reviews.sqlite3")).unwrap();
+        let mut db = graphicle_runtime::db::open_existing(f.dir.path()).unwrap();
         let tx = db.transaction().unwrap();
         for i in 0..total {
             let (title, body) = match i {
@@ -132,7 +132,7 @@ fn memories_past_the_recall_bound_list_and_recall_the_newest() {
             };
             tx.execute(
                 "INSERT INTO repo_memories(id,repository_id,kind,revision,state,title,body,data,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                rusqlite::params![format!("m{i:05}"), f.repo, "fact", 1, "reviewed", title, body, "{}", updated, updated],
+                graphicle_runtime::params![format!("m{i:05}"), f.repo, "fact", 1, "reviewed", title, body, "{}", updated, updated],
             )
             .unwrap();
         }

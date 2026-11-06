@@ -20,8 +20,8 @@
 //!
 //! Interactive operations (`context`, `search`, `impact`, ...) are never
 //! queued; `Store::enqueue` refuses them explicitly.
+use crate::db::Connection;
 use crate::{Error, Result, model};
-use rusqlite::Connection;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 

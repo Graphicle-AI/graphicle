@@ -825,7 +825,7 @@ fn a_folders_html_is_synced_and_packed_as_it_is() {
             .read(|db| {
                 Ok(db.query_row(
                     "SELECT o.content,(SELECT count(*) FROM am_binary_heads b WHERE b.repository_id=h.repository_id AND b.path=h.path) FROM repo_heads h JOIN repo_objects o ON o.repository_id=h.repository_id AND o.sha256=h.sha256 WHERE h.repository_id=? AND h.path=?",
-                    rusqlite::params![project, path],
+                    graphicle_runtime::params![project, path],
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
                 )?)
             })
@@ -897,16 +897,16 @@ fn html_an_earlier_build_converted_is_synced_again() {
     store
         .transaction(|db| {
             db.execute(
-                "INSERT OR IGNORE INTO repo_objects VALUES(?,?,?,?)",
-                rusqlite::params![project, s(&converted, "text_sha256"), text, text.len() as i64],
+                "INSERT INTO repo_objects VALUES(?,?,?,?) ON CONFLICT DO NOTHING",
+                graphicle_runtime::params![project, s(&converted, "text_sha256"), text, text.len() as i64],
             )?;
             db.execute(
                 "UPDATE repo_heads SET sha256=? WHERE repository_id=? AND path='t.html'",
-                rusqlite::params![s(&converted, "text_sha256"), project],
+                graphicle_runtime::params![s(&converted, "text_sha256"), project],
             )?;
             db.execute(
                 "INSERT INTO am_binary_heads VALUES(?,?,?,?,?)",
-                rusqlite::params![
+                graphicle_runtime::params![
                     project,
                     "t.html",
                     s(&converted, "text_sha256"),

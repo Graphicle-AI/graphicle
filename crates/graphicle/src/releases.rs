@@ -3,13 +3,13 @@
 //! Each installer in a feed names its edition ("core" or "pro"); a program
 //! only takes the installer of its own edition, so an update never swaps one
 //! edition for the other (both install as the same application).
+use crate::db::params;
 use crate::{
     Error, Result, digest, model,
     store::{Store, one, s},
     string,
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
-use rusqlite::params;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{io::Write, path::Path};
@@ -135,7 +135,7 @@ pub fn verify(
 }
 fn remember(store: &Store, feed: &str, value: &Value) -> Result<()> {
     store.transaction(|db| {
-        db.execute_batch("CREATE TABLE IF NOT EXISTS am_release_seen(feed_key TEXT PRIMARY KEY,sequence INTEGER NOT NULL,manifest_sha256 TEXT NOT NULL)")?;
+        db.execute_batch("CREATE TABLE IF NOT EXISTS am_release_seen(feed_key TEXT PRIMARY KEY,sequence BIGINT NOT NULL,manifest_sha256 TEXT NOT NULL)")?;
         let key=digest(&json!([feed,value["publisher_key_id"]]));let sequence=value["sequence"].as_i64().ok_or_else(||Error::bad("Invalid release sequence"))?;
         if let Some(old)=one(db,"SELECT sequence,manifest_sha256 FROM am_release_seen WHERE feed_key=?",[&key])?
             && (old["sequence"].as_i64().unwrap()>sequence || (old["sequence"]==sequence && old["manifest_sha256"]!=value["manifest_sha256"])){return Err(Error::conflict("Release feed moved backwards or reused its sequence with different content"));}

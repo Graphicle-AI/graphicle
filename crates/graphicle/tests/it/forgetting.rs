@@ -199,17 +199,14 @@ impl Fixture {
     /// world shares everything that happened before this point.
     fn fork(&self) -> Self {
         let dir = TempDir::new().unwrap();
-        self.store
-            .connect()
-            .unwrap()
-            .backup(rusqlite::MAIN_DB, dir.path().join("reviews.sqlite3"), None)
-            .unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        graphicle_runtime::archive::copy_store(&self.store, &store).unwrap();
         let key = self._dir.path().join("vault.key");
         if key.exists() {
             std::fs::copy(key, dir.path().join("vault.key")).unwrap();
         }
         Self {
-            store: Store::open(dir.path()).unwrap(),
+            store,
             _dir: dir,
             workspace: self.workspace.clone(),
             key: self.key.clone(),
@@ -363,9 +360,11 @@ fn dump(f: &Fixture, table: &str) -> Vec<String> {
             let mut map = serde_json::Map::new();
             for (i, name) in names.iter().enumerate() {
                 let value = match row.get_ref(i)? {
-                    rusqlite::types::ValueRef::Text(t) => json!(String::from_utf8_lossy(t)),
-                    rusqlite::types::ValueRef::Integer(n) => json!(n),
-                    rusqlite::types::ValueRef::Real(n) => json!(n),
+                    graphicle_runtime::db::types::ValueRef::Text(t) => {
+                        json!(String::from_utf8_lossy(t))
+                    }
+                    graphicle_runtime::db::types::ValueRef::Integer(n) => json!(n),
+                    graphicle_runtime::db::types::ValueRef::Real(n) => json!(n),
                     _ => Value::Null,
                 };
                 map.insert(name.clone(), value);
@@ -552,7 +551,7 @@ async fn a_record_written_from_forgotten_text_breaks_equivalence_and_is_reported
         .transaction(|db| {
             db.execute(
                 "INSERT INTO gf_heldout VALUES('h1',?1,?2,'Copied from chat: My cardiologist in Harrogate changed my beta blocker dose to 50 mg. Still right?','yes',?3)",
-                rusqlite::params![a.workspace, a.repo, graphicle_runtime::now()],
+                graphicle_runtime::params![a.workspace, a.repo, graphicle_runtime::now()],
             )?;
             Ok(())
         })

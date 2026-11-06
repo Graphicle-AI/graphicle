@@ -1,4 +1,5 @@
 //! Bounded document decoding. Binary originals and extracted text have different identities.
+use crate::db::params;
 use crate::{Error, Result};
 use crate::{
     id, now,
@@ -8,7 +9,6 @@ use crate::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use calamine::{Reader, open_workbook_auto_from_rs};
 use quick_xml::{Reader as XmlReader, events::Event};
-use rusqlite::params;
 use serde_json::{Value, json};
 use std::{
     io::{Cursor, Read},
@@ -734,7 +734,7 @@ impl Store {
             crate::connectors::stage(db,&connector,&scan,&json!({"id":source_id,"title":name,"content":parsed["text"],"source_timestamp":args["source_timestamp"],"metadata":{"original_sha256":parsed["original_sha256"],"parser":parsed["parser"],"original_bytes":bytes.len(),"coordinates":parsed["coordinates"]}}))?;
             crate::connectors::activate(db,&connector,&scan,false)?;
             crate::doc_links::after_sync(db,s(&repository,"id"),s(&connector,"id"),p)?;
-            db.execute("INSERT OR IGNORE INTO am_original_documents VALUES(?,?,?,?,?,?,?,?,?)",params![s(&repository,"id"),s(&connector,"id"),full_id,s(&parsed,"original_sha256"),name,s(&parsed,"parser"),s(&parsed,"text_sha256"),bytes,now()])?;
+            db.execute("INSERT INTO am_original_documents VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",params![s(&repository,"id"),s(&connector,"id"),full_id,s(&parsed,"original_sha256"),name,s(&parsed,"parser"),s(&parsed,"text_sha256"),bytes,now()])?;
             Ok(json!({"source_id":full_id,"original_sha256":parsed["original_sha256"],"text_sha256":parsed["text_sha256"],"parser":parsed["parser"],"original_retained":true}))
         })
     }

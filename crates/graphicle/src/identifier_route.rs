@@ -27,12 +27,12 @@
 //! project packet's `route` says which path ran and why ([`REPORT`]). The
 //! route's packet has no excerpts: its `evidence` and `sources` are empty.
 use crate::code_graph_arm::{self, Located, Reading};
+use crate::db::Connection;
 use crate::store::{Principal, s};
 use crate::{Error, Result, graph_projection, integer, string};
 use graphicle::graph::Graph;
 use graphicle::record::Properties;
 use graphicle_memory::graph::span;
-use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;

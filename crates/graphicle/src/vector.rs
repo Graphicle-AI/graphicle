@@ -1,4 +1,5 @@
 //! Optional Qdrant index. Only identities and vectors are projected; original text stays canonical.
+use crate::db::params;
 use crate::{
     Error, Result,
     jobs::{self, Job, Worker},
@@ -6,7 +7,6 @@ use crate::{
     store::{Store, decode, one, repo, rows, s},
     string,
 };
-use rusqlite::params;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 fn point(identity: &str) -> String {
@@ -39,7 +39,7 @@ pub fn configure(store: &Store, workspace: &str, token: &str, args: &Value) -> R
         return Err(Error::bad("Use an alphanumeric collection name"));
     }
     let config = json!({"endpoint":endpoint,"collection":collection,"credential_ref":reference});
-    store.authorized(workspace,token,"admin",|db,p|{let repository=repo(db,p,string(args,"repository_id",100)?)?;if let Ok(old)=self::config(db,s(&repository,"id"))&& old!=config{crate::projection::enqueue_config(db,workspace,s(&repository,"id"),"qdrant",&old,"backend_reconfigured")?;}db.execute("INSERT OR REPLACE INTO am_backends VALUES(?,?,?)",params![s(&repository,"id"),"qdrant",config.to_string()])?;Ok(json!({"configured":true,"stored_remotely":"vectors and opaque source identities; no original text"}))})
+    store.authorized(workspace,token,"admin",|db,p|{let repository=repo(db,p,string(args,"repository_id",100)?)?;if let Ok(old)=self::config(db,s(&repository,"id"))&& old!=config{crate::projection::enqueue_config(db,workspace,s(&repository,"id"),"qdrant",&old,"backend_reconfigured")?;}db.execute("INSERT INTO am_backends VALUES(?,?,?) ON CONFLICT(repository_id,kind) DO UPDATE SET config=excluded.config",params![s(&repository,"id"),"qdrant",config.to_string()])?;Ok(json!({"configured":true,"stored_remotely":"vectors and opaque source identities; no original text"}))})
 }
 async fn request(
     store: &Store,
@@ -74,7 +74,7 @@ async fn request(
     }
     model::bounded_json(response).await
 }
-fn config(db: &rusqlite::Connection, repository: &str) -> Result<Value> {
+fn config(db: &crate::db::Connection, repository: &str) -> Result<Value> {
     let mut row = one(
         db,
         "SELECT config FROM am_backends WHERE repository_id=? AND kind='qdrant'",

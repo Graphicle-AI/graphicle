@@ -1,4 +1,5 @@
 //! Model-driven workflows over a frozen, authorized source view.
+use crate::db::params;
 use crate::{Error, Result, digest, id, integer, native, now, string};
 use crate::{
     claims,
@@ -6,7 +7,6 @@ use crate::{
     memory, model, query,
     store::{decode, one, rows, s},
 };
-use rusqlite::params;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -406,7 +406,7 @@ pub async fn extract(worker: &Worker, job: &Job) -> Result<Value> {
     )
 }
 fn inherit_visibility(
-    db: &rusqlite::Connection,
+    db: &crate::db::Connection,
     memory_id: &str,
     documents: &[Value],
 ) -> Result<()> {
@@ -715,12 +715,12 @@ async fn semantic_rankings_role(
         jobs::guarded(&worker.store, job, |db, _, _| {
             for (i, vector) in pending.iter().zip(batch.iter()) {
                 db.execute(
-                    "INSERT OR REPLACE INTO am_query_cache VALUES(?,?,?)",
+                    "INSERT INTO am_query_cache VALUES(?,?,?) ON CONFLICT(repository_id,request_hash) DO UPDATE SET result=excluded.result",
                     params![job.repository, hashes[*i], serde_json::to_string(vector)?],
                 )?;
                 query_vectors[*i] = Some(vector.clone());
             }
-            db.execute("DELETE FROM am_query_cache WHERE repository_id=? AND rowid IN (SELECT rowid FROM am_query_cache WHERE repository_id=? ORDER BY rowid DESC LIMIT -1 OFFSET 500)",params![job.repository,job.repository])?;
+            db.execute("DELETE FROM am_query_cache WHERE repository_id=? AND rowid IN (SELECT rowid FROM am_query_cache WHERE repository_id=? ORDER BY rowid DESC LIMIT ALL OFFSET 500)",params![job.repository,job.repository])?;
             Ok(())
         })?;
     }
@@ -1205,7 +1205,7 @@ fn store_vectors(
         }
         for (row, vector) in rows.iter().zip(vectors) {
             db.execute(
-                "INSERT OR REPLACE INTO am_vectors VALUES(?,?,?,?,?,?)",
+                "INSERT INTO am_vectors VALUES(?,?,?,?,?,?) ON CONFLICT(repository_id,identity,model_key) DO UPDATE SET source_sha=excluded.source_sha,dimensions=excluded.dimensions,vector=excluded.vector",
                 params![
                     job.repository,
                     s(row, "identity"),

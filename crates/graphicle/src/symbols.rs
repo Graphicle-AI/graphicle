@@ -36,6 +36,7 @@
 //! occurrences written before their file's symbols were projected, pinned to
 //! their symbols by the next projection of that content ([`pin_pending`]).
 //! Pins go with their memory; the other tables with their project.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result, graph_projection, now,
     store::{rows, s},
@@ -43,7 +44,6 @@ use crate::{
 };
 use graphicle::graph::Graph;
 use graphicle_memory::graph::{identity::LogicalIdentity, span};
-use rusqlite::{Connection, params};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
@@ -115,7 +115,7 @@ fn tail(qualified: &str) -> &str {
 const COLUMNS: &str =
     "stable_id,revision,relpath,qualified_name,kind,ordinal,node_id,line_start,line_next,sha256";
 
-fn select(db: &Connection, filter: &str, arguments: impl rusqlite::Params) -> Result<Vec<Live>> {
+fn select(db: &Connection, filter: &str, arguments: impl crate::db::Params) -> Result<Vec<Live>> {
     let mut statement = db.prepare_cached(&format!(
         "SELECT {COLUMNS} FROM gf_symbol_heads WHERE {filter}"
     ))?;
@@ -135,7 +135,7 @@ fn select(db: &Connection, filter: &str, arguments: impl rusqlite::Params) -> Re
             sha256: row.get(9)?,
         })
     })?;
-    Ok(found.collect::<rusqlite::Result<Vec<_>>>()?)
+    Ok(found.collect::<crate::db::Result<Vec<_>>>()?)
 }
 
 /// The live code symbols with these `stable_id`s.
@@ -357,11 +357,25 @@ fn replace(
         }
     };
     {
-        let mut insert = db.prepare_cached(
-            "INSERT OR REPLACE INTO gf_symbol_heads(repository_id,stable_id,revision,relpath,qualified_name,kind,ordinal,node_id,line_start,line_next,sha256) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-        )?;
+        // In multi-row statements. One statement may not update a row twice,
+        // so a stable id listed twice is written once, at its first place,
+        // with its last row (what the row-at-a-time upsert left).
+        let mut last: HashMap<&str, usize> = HashMap::new();
+        for (at, row) in new.iter().enumerate() {
+            last.insert(row.stable_id.as_str(), at);
+        }
+        let mut insert = db.batch(
+            "INSERT INTO gf_symbol_heads(repository_id,stable_id,revision,relpath,qualified_name,kind,ordinal,node_id,line_start,line_next,sha256) VALUES",
+            11,
+            " ON CONFLICT(repository_id,stable_id) DO UPDATE SET revision=excluded.revision,relpath=excluded.relpath,qualified_name=excluded.qualified_name,kind=excluded.kind,ordinal=excluded.ordinal,node_id=excluded.node_id,line_start=excluded.line_start,line_next=excluded.line_next,sha256=excluded.sha256",
+        );
+        let mut written: HashSet<&str> = HashSet::new();
         for row in &new {
-            insert.execute(params![
+            if !written.insert(row.stable_id.as_str()) {
+                continue;
+            }
+            let row = &new[last[row.stable_id.as_str()]];
+            insert.push(params![
                 repository,
                 row.stable_id,
                 row.revision,
@@ -375,6 +389,7 @@ fn replace(
                 row.sha256
             ])?;
         }
+        insert.flush()?;
     }
     record_moves(db, repository, episode, &old, &new)?;
     db.execute(
@@ -419,7 +434,7 @@ fn record_moves(
     }
     let stamp = now();
     let mut insert = db.prepare_cached(
-        "INSERT OR REPLACE INTO gf_symbol_moves(repository_id,from_stable_id,to_stable_id,revision,episode,created_at) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO gf_symbol_moves(repository_id,from_stable_id,to_stable_id,revision,episode,created_at) VALUES(?,?,?,?,?,?) ON CONFLICT(repository_id,from_stable_id) DO UPDATE SET to_stable_id=excluded.to_stable_id,revision=excluded.revision,episode=excluded.episode,created_at=excluded.created_at",
     )?;
     for (key, from) in &left {
         if let (1, Some(to)) = (from.len(), arrived.get(key).filter(|to| to.len() == 1)) {
@@ -964,7 +979,7 @@ pub fn record_pins(db: &Connection, repository: &str, memory: &str, data: &Value
     let stamp = now();
     for entry in pending {
         db.execute(
-            "INSERT OR IGNORE INTO gf_symbol_pins(repository_id,memory_id,relpath,sha256,byte_start,byte_end,state,created_at) VALUES(?,?,?,?,?,?,'pending',?)",
+            "INSERT INTO gf_symbol_pins(repository_id,memory_id,relpath,sha256,byte_start,byte_end,state,created_at) VALUES(?,?,?,?,?,?,'pending',?) ON CONFLICT DO NOTHING",
             params![
                 repository,
                 memory,

@@ -1647,7 +1647,7 @@ impl ScoreSource for QueryFile {
 }
 
 /// The query file of `episode`: `gf-cache/<project>/query/<episode>.query`.
-pub fn path(db: &rusqlite::Connection, repository: &str, episode: &str) -> Option<PathBuf> {
+pub fn path(db: &crate::db::Connection, repository: &str, episode: &str) -> Option<PathBuf> {
     crate::query_graph::file_of(db, repository, episode, "query")
 }
 
@@ -1709,7 +1709,7 @@ static OPEN: Mutex<Option<HashMap<PathBuf, Cached>>> = Mutex::new(None);
 /// The query file of `episode` when this build wrote one, it is whole and
 /// enabled; a process keeps it open (a server's later questions reuse it)
 /// until a read finds it corrupt.
-pub fn open(db: &rusqlite::Connection, repository: &str, episode: &str) -> Option<Arc<QueryFile>> {
+pub fn open(db: &crate::db::Connection, repository: &str, episode: &str) -> Option<Arc<QueryFile>> {
     if !enabled() {
         return None;
     }

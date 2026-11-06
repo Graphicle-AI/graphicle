@@ -1,6 +1,6 @@
+use crate::db::{Connection, OptionalExtension, params};
 use crate::store::{self, Principal, Store, decode, one, repo, rows, s};
 use crate::{Error, Result, digest, id, integer, native, now, string};
-use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 

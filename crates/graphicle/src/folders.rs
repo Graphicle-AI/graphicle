@@ -23,11 +23,11 @@
 //! `graphicle pr` keeps its commit trees in a PR scratch project linked to
 //! the folder's project ([`Store::pr_scratch_for`]), so the folder's project
 //! keeps its heads and its episodes.
+use crate::db::{Connection, params};
 use crate::graph_projection::{PR_SCRATCH, repo_readable};
 use crate::platform::CanonicalExt;
 use crate::store::{Principal, Store, one, repo, s};
 use crate::{Error, Result, digest, id, now};
-use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -457,11 +457,11 @@ impl Store {
                 }
             };
             db.execute(
-                "INSERT OR IGNORE INTO repo_project_roles(repository_id,role,created_at) VALUES(?,?,?)",
+                "INSERT INTO repo_project_roles(repository_id,role,created_at) VALUES(?,?,?) ON CONFLICT DO NOTHING",
                 params![identifier, PR_SCRATCH, now()],
             )?;
             db.execute(
-                "INSERT OR IGNORE INTO repo_pr_scratch(repository_id,project_id,created_at) VALUES(?,?,?)",
+                "INSERT INTO repo_pr_scratch(repository_id,project_id,created_at) VALUES(?,?,?) ON CONFLICT DO NOTHING",
                 params![identifier, project, now()],
             )?;
             Ok(json!({"id":identifier,"project":project,"created":created}))

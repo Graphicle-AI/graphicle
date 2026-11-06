@@ -1,12 +1,15 @@
+use graphicle_runtime::db::params;
 use graphicle_runtime::embedding_cache::Cache;
-use rusqlite::{Connection, params};
 
 #[test]
 fn malformed_sqlite_values_are_cache_misses() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("vectors.sqlite");
     let cache = Cache::open(&path, "model").unwrap();
-    let db = Connection::open(&path).unwrap();
+    let db = graphicle_runtime::db::Database::for_file(&path, false)
+        .unwrap()
+        .connect()
+        .unwrap();
     let text = "private source";
     db.execute(
         "INSERT INTO am_embedding_cache(model_key,text_sha256,vector) VALUES(?,?,?)",
@@ -26,15 +29,23 @@ fn an_existing_cache_and_its_sidecars_are_owner_only() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("vectors.sqlite");
-    let db = Connection::open(&path).unwrap();
-    db.pragma_update(None, "journal_mode", "WAL").unwrap();
-    db.execute_batch("CREATE TABLE retained(value); INSERT INTO retained VALUES(1)")
+    // An existing cache: its file, and sidecars an earlier (SQLite) cache
+    // left beside it, all readable by others.
+    drop(Cache::open(&path, "model").unwrap());
+    let db = graphicle_runtime::db::Database::for_file(&path, false)
+        .unwrap()
+        .connect()
+        .unwrap();
+    db.execute_batch("CREATE TABLE retained(value BIGINT); INSERT INTO retained VALUES(1)")
         .unwrap();
     let paths = [
         path.clone(),
         path.with_extension("sqlite-wal"),
         path.with_extension("sqlite-shm"),
     ];
+    for path in &paths[1..] {
+        std::fs::write(path, b"").unwrap();
+    }
     for path in &paths {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
     }

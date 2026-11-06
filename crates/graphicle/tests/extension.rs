@@ -8,6 +8,7 @@ use axum::{
     http::{HeaderMap, Request, StatusCode, header},
     routing::{get, post},
 };
+use graphicle_runtime::db::{Connection, OptionalExtension};
 use graphicle_runtime::{
     Error, Result,
     api::{self, App},
@@ -21,7 +22,6 @@ use graphicle_runtime::{
     model,
     store::{Principal, Store, one, s},
 };
-use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Map, Value, json};
 use std::{
     ffi::OsString,
@@ -369,8 +369,8 @@ impl Extension for Probe {
         let stamp = graphicle_runtime::now();
         let id = format!("{FOLLOW}-{episode}");
         db.execute(
-            "INSERT OR IGNORE INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,priority,max_attempts,not_before,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',-1,3,?,?,?)",
-            rusqlite::params![id, repository, FOLLOW, id, json!({"episode":episode}).to_string(), principal.hash, stamp, stamp, stamp],
+            "INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,priority,max_attempts,not_before,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',-1,3,?,?,?) ON CONFLICT DO NOTHING",
+            graphicle_runtime::params![id, repository, FOLLOW, id, json!({"episode":episode}).to_string(), principal.hash, stamp, stamp, stamp],
         )?;
         if name == "Probe fails" {
             return Err(Error::bad("probe hook failed"));
@@ -641,7 +641,7 @@ fn store_open_runs_extension_migrations_after_the_core_schema() {
         .connect()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('probe_rows','workspaces')",
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN ('probe_rows','workspaces')",
             [],
             |r| r.get(0),
         )
@@ -1138,7 +1138,8 @@ fn backups_are_scrubbed_by_the_extension_too() {
         db.query_row("SELECT count(*) FROM probe_rows", [], |r| r.get(0))
             .unwrap()
     };
-    assert_eq!(count(&Connection::open(&file).unwrap()), 0);
+    let backup = graphicle_runtime::archive::open_scratch(&file).unwrap();
+    assert_eq!(count(&backup.connect().unwrap()), 0);
     assert_eq!(count(&f.store.connect().unwrap()), 1);
 }
 
@@ -1234,7 +1235,7 @@ async fn declared_job_kinds_are_leased_and_unknown_kinds_wait() {
     for (id, kind, priority) in [("unknown-job", "future_kind", 5), ("probe-job", "probe", 0)] {
         db.execute(
             "INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,priority,max_attempts,not_before,created_at,updated_at) VALUES(?,?,?,?,'{}',?,'queued',?,3,?,?,?)",
-            rusqlite::params![id, f.repo, kind, id, principal, priority, stamp, stamp, stamp],
+            graphicle_runtime::params![id, f.repo, kind, id, principal, priority, stamp, stamp, stamp],
         )
         .unwrap();
     }
@@ -1339,7 +1340,7 @@ fn the_projection_drain_runs_the_work_extensions_queue_after_a_projection() {
     let (state, result): (String, String) = db
         .query_row(
             "SELECT state,result FROM am_jobs WHERE repository_id=? AND kind=?",
-            rusqlite::params![follows, FOLLOW],
+            graphicle_runtime::params![follows, FOLLOW],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .unwrap();
@@ -1361,7 +1362,7 @@ fn the_projection_drain_runs_the_work_extensions_queue_after_a_projection() {
     let queued: i64 = db
         .query_row(
             "SELECT count(*) FROM am_jobs WHERE repository_id=? AND kind=?",
-            rusqlite::params![fails, FOLLOW],
+            graphicle_runtime::params![fails, FOLLOW],
             |r| r.get(0),
         )
         .unwrap();
@@ -1600,7 +1601,7 @@ async fn extension_commands_run_first_with_a_lazily_opened_store() {
     .await
     .unwrap();
     assert!(recorded(&format!("cli:hello:{}", data.display())));
-    assert!(data.join("reviews.sqlite3").is_file());
+    assert!(data.join("postgres.json").is_file());
     // Core commands still run when an extension is installed.
     let core = dir.path().join("core");
     Box::pin(graphicle_runtime::cli::run(args(&[

@@ -176,9 +176,9 @@ impl Fixture {
                 (0..columns)
                     .map(|i| {
                         Ok(match row.get_ref(i)? {
-                            rusqlite::types::ValueRef::Null => Value::Null,
-                            rusqlite::types::ValueRef::Integer(n) => json!(n),
-                            rusqlite::types::ValueRef::Text(t) => {
+                            graphicle_runtime::db::types::ValueRef::Null => Value::Null,
+                            graphicle_runtime::db::types::ValueRef::Integer(n) => json!(n),
+                            graphicle_runtime::db::types::ValueRef::Text(t) => {
                                 json!(String::from_utf8_lossy(t).into_owned())
                             }
                             other => json!(format!("{other:?}")),

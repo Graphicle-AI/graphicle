@@ -1,5 +1,6 @@
 //! Projection of a repository head set into the typed code graph and its
 //! bi-temporal `gf_*` tables. One resident graph per `(repository_id, episode)`.
+use crate::db::{Connection, params};
 use crate::platform::CanonicalExt;
 use crate::{
     Error, Result, digest, now,
@@ -13,7 +14,6 @@ use graphicle::{
     session::{GraphHandle, registry},
 };
 use graphicle_memory::graph::identity::{self, IdentityOptions};
-use rusqlite::{Connection, params};
 use serde::Serialize;
 use serde_json::{Map, Value, json};
 use std::{
@@ -452,11 +452,14 @@ pub fn persist_with_report(
             live_nodes.insert(node_id, (id, digest_of(attributes.as_bytes())));
         }
     }
-    let mut close_node =
-        db.prepare_cached("UPDATE gf_nodes SET valid_to_episode=?,expired_at=? WHERE id=?")?;
-    let mut insert_node = db.prepare_cached(
-        "INSERT INTO gf_nodes(repository_id,node_id,attributes,valid_from_episode,created_at,owner) VALUES(?,?,?,?,?,?)",
-    )?;
+    // Rows go to the store in multi-row statements (`crate::db::Batch`):
+    // one round trip per thousand rows keeps the write transaction short.
+    let mut closed_node_ids: Vec<i64> = Vec::new();
+    let mut insert_node = db.batch(
+        "INSERT INTO gf_nodes(repository_id,node_id,attributes,valid_from_episode,created_at,owner) VALUES",
+        6,
+        "",
+    );
     let nodes = graph.nodes();
     let node_ids: Vec<String> = nodes.iter().map(|node| text(&node.id)).collect();
     // Dependency bookkeeping for the nodes this episode inserted or closed;
@@ -472,9 +475,9 @@ pub fn persist_with_report(
             Some((_, existing)) if existing == digest_of(attributes.as_bytes()) => {}
             other => {
                 if let Some((id, _)) = other {
-                    close_node.execute(params![episode, stamp, id])?;
+                    closed_node_ids.push(id);
                 }
-                insert_node.execute(params![
+                insert_node.push(params![
                     repository,
                     node_ids[index],
                     attributes,
@@ -486,9 +489,9 @@ pub fn persist_with_report(
             }
         }
     }
-    for (id, _) in live_nodes.values() {
-        close_node.execute(params![episode, stamp, id])?;
-    }
+    closed_node_ids.extend(live_nodes.values().map(|(id, _)| *id));
+    insert_node.flush()?;
+    close_rows(db, "gf_nodes", episode, &stamp, &closed_node_ids)?;
     let closed_nodes: Vec<String> = live_nodes.into_keys().collect();
 
     let mut live_edges: HashMap<Vec<u8>, (i64, Digest)> = HashMap::new();
@@ -511,16 +514,21 @@ pub fn persist_with_report(
             live_edges.insert(identity.clone(), (id, digest_of(attributes.as_bytes())));
         }
     }
-    let mut close_edge =
-        db.prepare_cached("UPDATE gf_edges SET valid_to_episode=?,expired_at=? WHERE id=?")?;
-    let mut insert_edge = db.prepare_cached(
-        "INSERT INTO gf_edges(repository_id,source,target,relation,key,attributes,valid_from_episode,created_at,owner) VALUES(?,?,?,?,?,?,?,?,?)",
-    )?;
-    // Plain INSERT: the edge row id is fresh, so there is nothing to replace,
-    // and `OR REPLACE` would make SQLite open a statement journal per row.
-    let mut insert_source = db.prepare_cached(
-        "INSERT INTO gf_edge_sources(repository_id,edge_row_id,relpath,source_location,derivation) VALUES(?,?,?,?,?)",
-    )?;
+    let mut closed_edge_ids: Vec<i64> = Vec::new();
+    // Edge rows are inserted with ids taken from their sequence ahead, a
+    // thousand at a time, so that their sources can name them in the same
+    // batches.
+    let mut insert_edge = db.batch(
+        "INSERT INTO gf_edges(id,repository_id,source,target,relation,key,attributes,valid_from_episode,created_at,owner) VALUES",
+        10,
+        "",
+    );
+    let mut insert_source = db.batch(
+        "INSERT INTO gf_edge_sources(repository_id,edge_row_id,relpath,source_location,derivation) VALUES",
+        5,
+        "",
+    );
+    let mut fresh_ids: std::collections::VecDeque<i64> = std::collections::VecDeque::new();
     // Persisted row id of every graph edge, in `iter_edges` order, for the
     // contradiction check of the edges closed below.
     let mut row_ids: Vec<Option<i64>> = Vec::with_capacity(graph.edge_count());
@@ -552,9 +560,16 @@ pub fn persist_with_report(
             Some((id, existing)) if existing == digest_of(attributes.as_bytes()) => id,
             other => {
                 if let Some((id, _)) = other {
-                    close_edge.execute(params![episode, stamp, id])?;
+                    closed_edge_ids.push(id);
                 }
-                insert_edge.execute(params![
+                if fresh_ids.is_empty() {
+                    fresh_ids.extend(db.next_ids("gf_edges", "id", crate::db::Batch::ROWS)?);
+                }
+                let id = fresh_ids
+                    .pop_front()
+                    .ok_or_else(|| Error::bad("No edge id was allocated"))?;
+                insert_edge.push(params![
+                    id,
                     repository,
                     node_ids[source],
                     node_ids[target],
@@ -565,7 +580,6 @@ pub fn persist_with_report(
                     stamp,
                     crate::graph_delta::owner(&edge.attributes)
                 ])?;
-                let id = db.last_insert_rowid();
                 let field = |key: &str| {
                     edge.attributes
                         .get(key)
@@ -573,7 +587,12 @@ pub fn persist_with_report(
                         .map(text)
                         .unwrap_or_default()
                 };
-                insert_source.execute(params![
+                // A source row names its edge row: the edge batch goes
+                // first whenever the source batch is about to be sent.
+                if insert_source.full_after_one() {
+                    insert_edge.flush()?;
+                }
+                insert_source.push(params![
                     repository,
                     id,
                     field("source_file"),
@@ -585,6 +604,9 @@ pub fn persist_with_report(
         };
         row_ids.push(Some(row_id));
     }
+    insert_edge.flush()?;
+    insert_source.flush()?;
+    close_rows(db, "gf_edges", episode, &stamp, &closed_edge_ids)?;
     if !live_edges.is_empty() {
         // Cardinality-one relations in the new graph: (relation, subject) →
         // the subject's targets with their persisted row ids. Only needed
@@ -633,8 +655,8 @@ pub fn persist_with_report(
         closed.sort_unstable();
         let mut old_edge =
             db.prepare_cached("SELECT source,target,relation,attributes FROM gf_edges WHERE id=?")?;
+        close_rows(db, "gf_edges", episode, &stamp, &closed)?;
         for id in &closed {
-            close_edge.execute(params![episode, stamp, id])?;
             let (source, target, relation, attributes): (String, String, String, String) =
                 old_edge.query_row([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
             record_contradiction(
@@ -649,9 +671,7 @@ pub fn persist_with_report(
         }
     }
     drop(row_ids);
-    drop(close_node);
     drop(insert_node);
-    drop(close_edge);
     drop(insert_edge);
     drop(insert_source);
     // Live nodes are fresh derivations of their source files.
@@ -695,18 +715,15 @@ pub fn persist_with_report(
 type Digest = [u8; 16];
 
 /// Borrow a TEXT column without copying it out of the row.
-fn column_str<'a>(row: &'a rusqlite::Row<'_>, index: usize) -> rusqlite::Result<&'a str> {
-    row.get_ref(index)?.as_str().map_err(rusqlite::Error::from)
+fn column_str(row: &crate::db::Row, index: usize) -> crate::db::Result<&str> {
+    row.get_ref(index)?.as_str().map_err(crate::db::Error::from)
 }
 
 /// Borrow a nullable TEXT column.
-fn column_opt_str<'a>(
-    row: &'a rusqlite::Row<'_>,
-    index: usize,
-) -> rusqlite::Result<Option<&'a str>> {
+fn column_opt_str(row: &crate::db::Row, index: usize) -> crate::db::Result<Option<&str>> {
     row.get_ref(index)?
         .as_str_or_null()
-        .map_err(rusqlite::Error::from)
+        .map_err(crate::db::Error::from)
 }
 
 /// Truncated SHA-256 of an attribute blob: enough to compare live rows with
@@ -1086,13 +1103,15 @@ fn persist_unresolved_calls(
     let Some(calls) = graph.attributes()[UNRESOLVED_CALLS].as_array() else {
         return Ok(());
     };
-    let mut insert = db.prepare_cached(
-        "INSERT INTO gf_unresolved_calls(repository_id,episode,caller,callee,call,created_at) VALUES(?,?,?,?,?,?)",
-    )?;
+    let mut insert = db.batch(
+        "INSERT INTO gf_unresolved_calls(repository_id,episode,caller,callee,call,created_at) VALUES",
+        6,
+        "",
+    );
     for call in calls {
         let caller = call["caller"].as_str().unwrap_or("");
         let callee = call["callee"].as_str().unwrap_or("");
-        insert.execute(params![
+        insert.push(params![
             repository,
             episode,
             caller,
@@ -1101,6 +1120,7 @@ fn persist_unresolved_calls(
             stamp,
         ])?;
     }
+    insert.flush()?;
     Ok(())
 }
 
@@ -1371,7 +1391,7 @@ impl Store {
     /// Episodes and labels of a repository, for the `graph_episodes` MCP tool.
     pub fn episode_listing(&self, workspace: &str, token: &str, repository: &str) -> Result<Value> {
         let mut listing = self.graph_episodes(workspace, token, repository)?;
-        self.authorized(workspace, token, "read", |db, p| {
+        self.authorized_read(workspace, token, "read", |db, p| {
             let repository = repo(db, p, repository)?;
             listing["repo"] = json!(s(&repository, "name"));
             listing["count"] = json!(episodes(db, s(&repository, "id"))?.len());
@@ -1384,7 +1404,7 @@ impl Store {
         Ok(json!(project_store(self, workspace, token, repository)?))
     }
     pub fn graph_episodes(&self, workspace: &str, token: &str, repository: &str) -> Result<Value> {
-        self.authorized(workspace, token, "read", |db, p| {
+        self.authorized_read(workspace, token, "read", |db, p| {
             let repository = repo(db, p, repository)?;
             let identifier = s(&repository, "id");
             let mut listed = episodes(db, identifier)?;
@@ -1456,7 +1476,7 @@ impl Store {
                     .ok_or_else(|| Error::bad("Expected relation names"))?,
             ),
         };
-        self.authorized(workspace, token, "read", |db, p| {
+        self.authorized_read(workspace, token, "read", |db, p| {
             let repository = repo(db, p, repository)?;
             let identifier = s(&repository, "id");
             let view = crate::temporal_graph::select(db, workspace, identifier, args)?;
@@ -1885,7 +1905,7 @@ fn same_cross_edges(
 fn record_packages(db: &Connection, workspace: &str, repo: &Linkable) -> Result<()> {
     for package in &repo.index.packages {
         db.execute(
-            "INSERT OR REPLACE INTO gf_cross_packages(workspace_id,repository_id,episode,ecosystem,name,version,created_at) VALUES(?,?,?,?,?,?,?)",
+            "INSERT INTO gf_cross_packages(workspace_id,repository_id,episode,ecosystem,name,version,created_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(repository_id,episode,ecosystem,name) DO UPDATE SET workspace_id=excluded.workspace_id,version=excluded.version,created_at=excluded.created_at",
             params![
                 workspace,
                 repo.id,
@@ -2260,35 +2280,39 @@ fn link_workspace_with(db: &Connection, p: &Principal, incremental: bool) -> Res
                     params![to_episode, to_repo, importer.id, exporter.id, source_episode],
                 )?;
             }
+            // In multi-row statements: a large importer has tens of
+            // thousands of edges.
+            let mut insert = db.batch(
+                "INSERT INTO gf_cross_edges(workspace_id,source_repository_id,source_episode,source_node_id,source_stable_id,\
+                 target_repository_id,target_episode,target_node_id,target_stable_id,relation,confidence,derivation,\
+                 module_path,symbol,line,version_constraint,exporter_version,version_status,created_at) VALUES",
+                19,
+                "",
+            );
             for edge in &edges {
-                db.execute(
-                    "INSERT INTO gf_cross_edges(workspace_id,source_repository_id,source_episode,source_node_id,source_stable_id,\
-                     target_repository_id,target_episode,target_node_id,target_stable_id,relation,confidence,derivation,\
-                     module_path,symbol,line,version_constraint,exporter_version,version_status,created_at) \
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    params![
-                        workspace,
-                        importer.id,
-                        importer.episode,
-                        edge.source.node_id,
-                        edge.source.stable_id,
-                        exporter.id,
-                        exporter.episode,
-                        edge.target.node_id,
-                        edge.target.stable_id,
-                        edge.relation,
-                        edge.confidence,
-                        edge.derivation,
-                        edge.module_path,
-                        edge.symbol,
-                        edge.line.map(|l| l as i64),
-                        edge.version_constraint,
-                        edge.exporter_version,
-                        edge.version_status,
-                        stamp
-                    ],
-                )?;
+                insert.push(params![
+                    workspace,
+                    importer.id,
+                    importer.episode,
+                    edge.source.node_id,
+                    edge.source.stable_id,
+                    exporter.id,
+                    exporter.episode,
+                    edge.target.node_id,
+                    edge.target.stable_id,
+                    edge.relation,
+                    edge.confidence,
+                    edge.derivation,
+                    edge.module_path,
+                    edge.symbol,
+                    edge.line.map(|l| l as i64),
+                    edge.version_constraint,
+                    edge.exporter_version,
+                    edge.version_status,
+                    stamp
+                ])?;
             }
+            insert.flush()?;
             rewritten_any = true;
             edges_total += edges.len();
             pairs.push(json!({
@@ -2315,31 +2339,33 @@ fn link_workspace_with(db: &Connection, p: &Principal, incremental: bool) -> Res
                  WHERE source_repository_id=? AND valid_to_episode IS NULL",
                 params![importer.episode, importer.id, importer.id],
             )?;
+            let mut insert = db.batch(
+                "INSERT INTO gf_cross_unresolved(workspace_id,source_repository_id,source_episode,source_node_id,source_stable_id,\
+                 relpath,line,module_path,symbol,package,reason,candidates,exporter_episodes,version_constraint,exporter_version,created_at) VALUES",
+                16,
+                "",
+            );
             for u in &report.unresolved {
-                db.execute(
-                    "INSERT INTO gf_cross_unresolved(workspace_id,source_repository_id,source_episode,source_node_id,source_stable_id,\
-                     relpath,line,module_path,symbol,package,reason,candidates,exporter_episodes,version_constraint,exporter_version,created_at) \
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    params![
-                        workspace,
-                        importer.id,
-                        importer.episode,
-                        u.node_id,
-                        u.stable_id,
-                        u.relpath,
-                        u.line.map(|l| l as i64),
-                        u.module_path,
-                        u.symbol,
-                        u.package,
-                        u.reason,
-                        json!(u.candidates).to_string(),
-                        exporter_episodes,
-                        u.version_constraint,
-                        u.exporter_version,
-                        stamp
-                    ],
-                )?;
+                insert.push(params![
+                    workspace,
+                    importer.id,
+                    importer.episode,
+                    u.node_id,
+                    u.stable_id,
+                    u.relpath,
+                    u.line.map(|l| l as i64),
+                    u.module_path,
+                    u.symbol,
+                    u.package,
+                    u.reason,
+                    json!(u.candidates).to_string(),
+                    exporter_episodes,
+                    u.version_constraint,
+                    u.exporter_version,
+                    stamp
+                ])?;
             }
+            insert.flush()?;
         }
         // What this link read and wrote, for the next pass to compare. It
         // updates a stored row only, so a workspace without one gains none.
@@ -2454,11 +2480,41 @@ pub fn pr_scratch_projects(db: &Connection, workspace: &str) -> Result<BTreeSet<
 /// Mark the projects earlier `graphicle pr` runs registered as `pr_scratch`:
 /// their key is `git:` and the sha256 of the checkout path. Idempotent; no
 /// other data changes.
+/// Close the live rows `ids` of `table` in `episode` (set their
+/// `valid_to_episode` and `expired_at`), a thousand per statement.
+fn close_rows(db: &Connection, table: &str, episode: &str, stamp: &str, ids: &[i64]) -> Result<()> {
+    for chunk in ids.chunks(crate::db::Batch::ROWS) {
+        let list = format!(
+            "{{{}}}",
+            chunk
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        db.execute(
+            &format!("UPDATE {table} SET valid_to_episode=?,expired_at=? WHERE id = ANY(CAST(?::text AS bigint[]))"),
+            params![episode, stamp, list],
+        )?;
+    }
+    Ok(())
+}
+
+/// Whether [`mark_legacy_pr_projects`] has a project to mark.
+pub fn legacy_pr_projects_pending(db: &Connection) -> Result<bool> {
+    Ok(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM repo_projects p WHERE p.project_key ~ ? \
+         AND NOT EXISTS(SELECT 1 FROM repo_project_roles r WHERE r.repository_id=p.id))",
+        ["^git:[0-9a-f]{64}$"],
+        |r| r.get(0),
+    )?)
+}
+
 pub fn mark_legacy_pr_projects(db: &Connection) -> Result<usize> {
-    let pattern = format!("git:{}", "[0-9a-f]".repeat(64));
+    let pattern = "^git:[0-9a-f]{64}$";
     Ok(db.execute(
-        "INSERT OR IGNORE INTO repo_project_roles(repository_id,role,created_at) \
-         SELECT id,?1,?2 FROM repo_projects WHERE project_key GLOB ?3",
+        "INSERT INTO repo_project_roles(repository_id,role,created_at) \
+         SELECT id,?1,?2 FROM repo_projects WHERE project_key ~ ?3 ON CONFLICT DO NOTHING",
         params![PR_SCRATCH, now(), pattern],
     )?)
 }
@@ -2560,7 +2616,7 @@ pub fn cross_unresolved_toward(
 ) -> Result<Vec<Value>> {
     let packages: Vec<String> = rows(
         db,
-        "SELECT DISTINCT name FROM gf_cross_packages WHERE repository_id=?1 AND (?2 IS NULL OR episode=?2)",
+        "SELECT DISTINCT name FROM gf_cross_packages WHERE repository_id=?1 AND (?2::text IS NULL OR episode=?2)",
         params![repository, head_episode],
     )?
     .iter()
@@ -2572,8 +2628,8 @@ pub fn cross_unresolved_toward(
         "SELECT source_repository_id,source_episode,source_node_id,source_stable_id,relpath,line,module_path,symbol,\
          package,reason,candidates,version_constraint,exporter_version \
          FROM gf_cross_unresolved u WHERE workspace_id=?1 AND source_repository_id<>?2 \
-         AND ((?3 IS NULL AND valid_to_episode IS NULL) OR \
-              (?3 IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(u.exporter_episodes) e WHERE e.key=?2 AND e.value=?3))) ORDER BY id",
+         AND ((?3::text IS NULL AND valid_to_episode IS NULL) OR \
+              (?3::text IS NOT NULL AND EXISTS (SELECT 1 FROM json_each(u.exporter_episodes) e WHERE e.key=?2 AND e.value=?3))) ORDER BY id",
         params![p.workspace, repository, head_episode],
     )? {
         let candidates: Vec<String> =
@@ -2660,7 +2716,7 @@ impl Store {
         token: &str,
         repository: &str,
     ) -> Result<Value> {
-        self.authorized(workspace, token, "read", |db, p| {
+        self.authorized_read(workspace, token, "read", |db, p| {
             let repository = repo(db, p, repository)?;
             let identifier = s(&repository, "id");
             Ok(json!({

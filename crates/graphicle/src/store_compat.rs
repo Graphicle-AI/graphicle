@@ -22,8 +22,8 @@
 //! when the store has its table, so a store Core created is never changed.
 //! The table names here are intentional vocabulary: they describe data that
 //! may already be in a user's store, not features of Core.
+use crate::db::{Connection, params};
 use crate::{Result, now, store::one};
-use rusqlite::{Connection, params};
 
 /// The team tables of access history: sign-in attempts, browser sessions
 /// and the audit trail.
@@ -34,7 +34,7 @@ pub const RETAINED_TABLES: &[&str] = &["am_team_audit"];
 /// Whether this store has `table`.
 fn has(db: &Connection, table: &str) -> Result<bool> {
     Ok(db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?)",
+        "SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?)",
         [table],
         |r| r.get(0),
     )?)
@@ -113,9 +113,6 @@ pub fn scrub_backup(db: &Connection) -> Result<()> {
     if statements.is_empty() {
         return Ok(());
     }
-    db.execute_batch(&format!(
-        "PRAGMA foreign_keys=ON; PRAGMA secure_delete=ON; BEGIN IMMEDIATE; {} COMMIT;",
-        statements.join(" ")
-    ))?;
+    db.execute_batch(&format!("BEGIN; {} COMMIT;", statements.join(" ")))?;
     Ok(())
 }

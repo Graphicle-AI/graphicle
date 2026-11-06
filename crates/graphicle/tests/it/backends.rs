@@ -389,7 +389,7 @@ async fn real_qdrant_filters_fingerprints_and_authorized_candidate_ids() {
             .unwrap()
             .execute(
                 "INSERT INTO am_vectors VALUES(?,?,?,?,?,?)",
-                rusqlite::params![
+                graphicle_runtime::params![
                     f.project,
                     s(row, "identity"),
                     s(row, "source_sha"),

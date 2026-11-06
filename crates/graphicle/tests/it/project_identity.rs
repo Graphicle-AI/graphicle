@@ -777,7 +777,7 @@ fn legacy_workspace_source_links_are_not_read() {
     let db = f.store.connect().unwrap();
     db.execute(
         "INSERT INTO sources(id,workspace_id,name,role,content,sha256,created_at,version) VALUES('legacy-1',?1,'legacy.md','note','Legacy text.',?2,'2026-01-01',1)",
-        rusqlite::params![f.ws(), graphicle_memory::text::sha256(b"Legacy text.")],
+        graphicle_runtime::params![f.ws(), graphicle_memory::text::sha256(b"Legacy text.")],
     )
     .unwrap();
     db.execute(

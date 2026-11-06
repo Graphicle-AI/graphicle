@@ -1,11 +1,11 @@
 //! Verified deletion receipts: a connector or project deletion proves what it
 //! removed and what remains, reports residue it does not own, tracks external
 //! cleanup, and chains its receipts so rewriting is detectable.
+use graphicle_runtime::db::Params;
 use graphicle_runtime::{
     deletion, memory,
     store::{Store, s},
 };
-use rusqlite::Params;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 
@@ -135,7 +135,7 @@ fn derive(f: &Fixture, source: &str) {
         })
         .unwrap();
     let notes = json!([{"text":"Migration window is the third Friday.","evidence":[{"quote":SECRET,"byte_start":0,"byte_end":SECRET.len()}]}]).to_string();
-    f.sql("INSERT INTO am_observer_notes(repository_id,source_id,source_sha256,source_version,step_key,model_key,principal_hash,job_id,source_order,session_date,notes,dropped,created_at) VALUES(?1,?2,?3,'1','step','model','principal','job','',NULL,?4,0,?5)", rusqlite::params![repo, source, sha, notes, t]);
+    f.sql("INSERT INTO am_observer_notes(repository_id,source_id,source_sha256,source_version,step_key,model_key,principal_hash,job_id,source_order,session_date,notes,dropped,created_at) VALUES(?1,?2,?3,'1','step','model','principal','job','',NULL,?4,0,?5)", graphicle_runtime::params![repo, source, sha, notes, t]);
     // A reflection over that note and a kept source's: it consumed the
     // source, so it goes whole (no reflection workflow is run here; stores
     // can hold one).
@@ -143,13 +143,13 @@ fn derive(f: &Fixture, source: &str) {
     let items = json!([{"section":"timeline","text":"Migration window is the third Friday.","date":"","notes":[note]}]).to_string();
     let inputs = json!({ note: "note-digest" }).to_string();
     let consumed = json!([source, "file:README.md"]).to_string();
-    f.sql("INSERT INTO am_observer_reflections(repository_id,step_key,model_key,principal_hash,job_id,items,inputs,sources,dropped,created_at) VALUES(?1,'step','model','principal','job',?2,?3,?4,0,?5)", rusqlite::params![repo, items, inputs, consumed, t]);
+    f.sql("INSERT INTO am_observer_reflections(repository_id,step_key,model_key,principal_hash,job_id,items,inputs,sources,dropped,created_at) VALUES(?1,'step','model','principal','job',?2,?3,?4,0,?5)", graphicle_runtime::params![repo, items, inputs, consumed, t]);
     let attributes = json!({"document_id":source,"excerpt":SECRET}).to_string();
-    f.sql("INSERT INTO gf_anchor_edges(repository_id,episode,chunk_id,node_id,rung,confidence,attributes,created_at) VALUES(?1,'e1','chunk-plan',NULL,'lexical',0.5,?2,?3)", rusqlite::params![repo, attributes, t]);
+    f.sql("INSERT INTO gf_anchor_edges(repository_id,episode,chunk_id,node_id,rung,confidence,attributes,created_at) VALUES(?1,'e1','chunk-plan',NULL,'lexical',0.5,?2,?3)", graphicle_runtime::params![repo, attributes, t]);
     let passage = format!("{source}:0");
     f.sql(
         "INSERT INTO am_vectors VALUES(?1,?2,?3,'embedding-model',3,'[0.1,0.2,0.3]')",
-        rusqlite::params![repo, passage, sha],
+        graphicle_runtime::params![repo, passage, sha],
     );
     for (kind, dependent) in [
         ("anchor", format!("{repo}:chunk-plan")),
@@ -157,26 +157,26 @@ fn derive(f: &Fixture, source: &str) {
     ] {
         f.sql(
             "INSERT INTO gf_dependencies VALUES(?1,?2,?3,'document',?4,?5)",
-            rusqlite::params![ws, kind, dependent, source, t],
+            graphicle_runtime::params![ws, kind, dependent, source, t],
         );
         f.sql(
             "INSERT INTO gf_stale VALUES(?1,?2,?3,'source_changed',?4)",
-            rusqlite::params![ws, kind, dependent, t],
+            graphicle_runtime::params![ws, kind, dependent, t],
         );
     }
     let answer = json!({"answer":SECRET}).to_string();
     f.sql(
         "INSERT INTO am_model_cache VALUES(?1,'request','state',?2,?3)",
-        rusqlite::params![repo, answer, t],
+        graphicle_runtime::params![repo, answer, t],
     );
-    f.sql("INSERT INTO gf_hints(id,workspace,repository_id,scope,target,weight,state,evidence,created_at,updated_at) VALUES('h1',?1,?2,'query',?3,1.0,'candidate','{}',?4,?4)", rusqlite::params![ws, repo, source, t]);
+    f.sql("INSERT INTO gf_hints(id,workspace,repository_id,scope,target,weight,state,evidence,created_at,updated_at) VALUES('h1',?1,?2,'query',?3,1.0,'candidate','{}',?4,?4)", graphicle_runtime::params![ws, repo, source, t]);
     let served = json!([source, "file:README.md"]).to_string();
     f.sql(
         "INSERT INTO gf_served VALUES('r1',?1,?2,'When is the window?',?3,?4)",
-        rusqlite::params![ws, repo, served, t],
+        graphicle_runtime::params![ws, repo, served, t],
     );
     let targets = json!([source]).to_string();
-    f.sql("INSERT INTO gf_outcomes(id,workspace,repository_id,request_hash,outcome,targets,note,created_at) VALUES('o1',?1,?2,'r1','helpful',?3,'',?4)", rusqlite::params![ws, repo, targets, t]);
+    f.sql("INSERT INTO gf_outcomes(id,workspace,repository_id,request_hash,outcome,targets,note,created_at) VALUES('o1',?1,?2,'r1','helpful',?3,'',?4)", graphicle_runtime::params![ws, repo, targets, t]);
 }
 
 #[test]
@@ -294,10 +294,10 @@ fn residue_the_deletion_does_not_own_is_reported_not_hidden() {
     let question = format!("What does {source} say?");
     f.sql(
         "INSERT INTO gf_heldout VALUES('q1',?1,?2,?3,'x','2026-01-01')",
-        rusqlite::params![ws, repo, question],
+        graphicle_runtime::params![ws, repo, question],
     );
     let observation = format!("Noted: {SECRET}");
-    f.sql("INSERT INTO gf_observations(id,workspace,repository_id,sequence,scope,kind,text,grounding,source,created_at,retracted_at) VALUES('ob1',?1,?2,1,'project','fact',?3,'[]','user','2026-01-01',NULL)", rusqlite::params![ws, repo, observation]);
+    f.sql("INSERT INTO gf_observations(id,workspace,repository_id,sequence,scope,kind,text,grounding,source,created_at,retracted_at) VALUES('ob1',?1,?2,1,'project','fact',?3,'[]','user','2026-01-01',NULL)", graphicle_runtime::params![ws, repo, observation]);
     let receipt = f.delete_connector(&connector)["receipt"].clone();
     assert_eq!(receipt["verified_local"], false, "{receipt:#}");
     assert_eq!(receipt["complete"], false);
@@ -345,7 +345,7 @@ fn source_reverification_requires_tombstones_and_checks_historical_rows() {
     assert_eq!(f.verify(&receipt)["verified_local"], true);
     f.sql(
         "INSERT INTO am_connector_versions VALUES(?1,'plan','old',?2,'{}','2026-01-01')",
-        rusqlite::params![connector, SECRET],
+        graphicle_runtime::params![connector, SECRET],
     );
     assert_eq!(
         f.verify(&receipt)["verified_local"],
@@ -399,11 +399,11 @@ fn project_deletion_receipt_outlives_the_project_and_extends_the_chain() {
     let file = format!("{}:README.md", f.repo);
     f.sql(
         "INSERT INTO gf_dependencies VALUES(?1,'memory','m1','file',?2,'2026-01-01')",
-        rusqlite::params![f.workspace, file],
+        graphicle_runtime::params![f.workspace, file],
     );
     f.sql(
         "INSERT INTO gf_dependencies VALUES(?1,'memory','m2','document',?2,'2026-01-01')",
-        rusqlite::params![f.workspace, memo],
+        graphicle_runtime::params![f.workspace, memo],
     );
     let deleted = f
         .store

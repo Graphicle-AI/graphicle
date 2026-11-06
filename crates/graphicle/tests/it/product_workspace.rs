@@ -416,7 +416,7 @@ async fn served_tokens_are_reported_per_credential_and_agent_session() {
     db.execute(
         "INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,not_before,created_at,updated_at)
          VALUES('job-1',?,'answer','job-1','{}',?,'complete',?,?,?)",
-        rusqlite::params![
+        graphicle_runtime::params![
             f.repo,
             graphicle_memory::text::sha256(key.as_bytes()),
             stamp,
@@ -427,7 +427,7 @@ async fn served_tokens_are_reported_per_credential_and_agent_session() {
     .unwrap();
     db.execute(
         "INSERT INTO am_model_calls VALUES('call-1',?,'job-1','openai','gpt-test','h',1200,300,0,0,?)",
-        rusqlite::params![f.repo, stamp],
+        graphicle_runtime::params![f.repo, stamp],
     )
     .unwrap();
     let (_, usage, _) = call(&app, &format!("{}/usage", f.base()), &f.owner, None).await;
@@ -963,7 +963,7 @@ async fn team_commerce_and_identity_surface_follows_the_edition() {
     let db = f.store.connect().unwrap();
     let table = |name: &str| -> bool {
         db.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name=?",
+            "SELECT count(*) FROM information_schema.tables WHERE table_schema=current_schema() AND table_name=?",
             [name],
             |r| r.get::<_, i64>(0),
         )

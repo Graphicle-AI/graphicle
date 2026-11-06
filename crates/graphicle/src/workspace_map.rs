@@ -31,6 +31,7 @@
 //!   whose read fails; the other projects are mapped.
 //!
 //! Read-only: everything runs in the caller's read-only snapshot.
+use crate::db::Connection;
 use crate::{
     Error, Result, doc_links, graph_projection,
     graph_projection::CrossDirection,
@@ -38,7 +39,6 @@ use crate::{
     store::{Principal, Store, one, repo, rows, s},
     symbols,
 };
-use rusqlite::Connection;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 

@@ -1655,7 +1655,7 @@ fn the_guard_finds_code_with_and_without_the_live_symbol_table() {
         );
     };
     nudged("with the live-symbol table");
-    let db = rusqlite::Connection::open(data.join("reviews.sqlite3")).unwrap();
+    let db = graphicle_runtime::db::open_existing(&data).unwrap();
     let symbols: i64 = db
         .query_row("SELECT count(*) FROM gf_symbol_heads", [], |row| row.get(0))
         .unwrap();

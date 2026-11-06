@@ -12,11 +12,11 @@
 //! unresolved calls 2 (current + previous). Override per call with
 //! `retention` arguments or process-wide with `GRAPHICLE_RETENTION_COVERAGE`,
 //! `GRAPHICLE_RETENTION_CROSS_EDGES`, `GRAPHICLE_RETENTION_UNRESOLVED`.
+use crate::db::{Connection, params};
 use crate::{
     Error, Result,
     store::{Store, one, repo, rows, s},
 };
-use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -538,7 +538,7 @@ pub fn stats(db: &Connection, repository: &str) -> Result<Value> {
         |r| r.get(0),
     )?;
     let database_bytes: i64 = db.query_row(
-        "SELECT page_count*page_size FROM pragma_page_count(), pragma_page_size()",
+        "SELECT coalesce(sum(pg_total_relation_size(format('%I.%I', table_schema, table_name)::regclass)),0)::bigint FROM information_schema.tables WHERE table_schema=current_schema() AND table_type='BASE TABLE'",
         [],
         |r| r.get(0),
     )?;

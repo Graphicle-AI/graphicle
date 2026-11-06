@@ -5,8 +5,8 @@
 //! source changes, [`invalidate_source`] walks the dependency graph transitively and
 //! marks every dependent stale in `gf_stale`.  Readers report the workspace-wide
 //! [`Freshness`] so callers can see when an answer may rest on outdated artifacts.
+use crate::db::{Connection, OptionalExtension, params};
 use crate::{Result, now};
-use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -71,7 +71,7 @@ pub fn record_dependency(
         return Ok(());
     }
     db.execute(
-        "INSERT OR IGNORE INTO gf_dependencies(workspace,dependent_kind,dependent_id,source_kind,source_id,recorded_at) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO gf_dependencies(workspace,dependent_kind,dependent_id,source_kind,source_id,recorded_at) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING",
         params![workspace, dependent.0, dependent.1, source.0, source.1, now()],
     )?;
     Ok(())
@@ -364,23 +364,46 @@ pub fn record_graph_nodes<'a>(
     }
     clear_stale_prefix(db, workspace, GRAPH_NODE, &prefix)?;
     let stamp = now();
-    let mut forget = db.prepare_cached(
-        "DELETE FROM gf_dependencies WHERE workspace=? AND dependent_kind=? AND dependent_id=?",
-    )?;
-    let mut record = db.prepare_cached(
-        "INSERT OR IGNORE INTO gf_dependencies(workspace,dependent_kind,dependent_id,source_kind,source_id,recorded_at) VALUES(?,?,?,?,?,?)",
-    )?;
-    for node in closed {
-        forget.execute(params![workspace, GRAPH_NODE, node_id(repository, node)])?;
-    }
-    let mut recorded = 0;
+    // Each closed or inserted node's rows are forgotten, then each inserted
+    // node's `file` row recorded (a node listed twice keeps its last), in
+    // multi-row statements: a projection touches every node of its files.
+    let mut forgotten: Vec<String> = closed
+        .into_iter()
+        .map(|node| node_id(repository, node))
+        .collect();
+    let mut sources: Vec<(String, Option<&str>)> = Vec::new();
+    let mut place = std::collections::HashMap::<String, usize>::new();
     for (node, relpath) in inserted {
         let dependent = node_id(repository, node);
-        forget.execute(params![workspace, GRAPH_NODE, dependent])?;
+        forgotten.push(dependent.clone());
+        match place.get(&dependent) {
+            Some(&at) => sources[at].1 = relpath,
+            None => {
+                place.insert(dependent.clone(), sources.len());
+                sources.push((dependent, relpath));
+            }
+        }
+    }
+    for chunk in forgotten.chunks(crate::db::Batch::ROWS) {
+        // One primary-key lookup per id, in one round trip
+        // (`graphicle_forget_dependents` in functions.sql).
+        db.query_row(
+            "SELECT graphicle_forget_dependents(?, ?, CAST(?::text AS text[]))",
+            params![workspace, GRAPH_NODE, crate::db::text_array(chunk)],
+            |r| r.get::<_, i64>(0),
+        )?;
+    }
+    let mut record = db.batch(
+        "INSERT INTO gf_dependencies(workspace,dependent_kind,dependent_id,source_kind,source_id,recorded_at) VALUES",
+        6,
+        " ON CONFLICT DO NOTHING",
+    );
+    let mut recorded = 0;
+    for (dependent, relpath) in &sources {
         let Some(relpath) = relpath else {
             continue;
         };
-        record.execute(params![
+        record.push(params![
             workspace,
             GRAPH_NODE,
             dependent,
@@ -390,6 +413,7 @@ pub fn record_graph_nodes<'a>(
         ])?;
         recorded += 1;
     }
+    record.flush()?;
     Ok(recorded)
 }
 

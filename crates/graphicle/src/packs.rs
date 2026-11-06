@@ -20,6 +20,7 @@
 //! when a current source here holds it: the same source, or the file its
 //! anchored symbol moved to, inside that symbol. Everything else is dropped
 //! and counted by reason in the draft's `data.pack`.
+use crate::db::Connection;
 use crate::{
     Error, Result, memory,
     store::{one, s},
@@ -27,7 +28,6 @@ use crate::{
     symbols::{self, Landed},
 };
 use regex::{Regex, RegexBuilder};
-use rusqlite::Connection;
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::OnceLock;

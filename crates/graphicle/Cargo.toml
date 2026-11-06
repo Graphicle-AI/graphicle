@@ -20,14 +20,23 @@ test = false
 # This crate builds the Core edition. Another edition depends on it and adds
 # its features through the extension registry (src/extension.rs).
 [features]
+default = ["sqlite-import"]
 local-inference = ["dep:ort"]
+# `graphicle import-sqlite`: copy a SQLite store (0.1.12 and earlier) into
+# PostgreSQL. The only code that reads SQLite.
+sqlite-import = ["dep:rusqlite"]
 
 [dependencies]
 graphicle-memory = { path = "../graphicle-memory" }
 graphicle = { path = "../graphicle-graph" }
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync", "fs", "io-util", "io-std"] }
-rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+# The store is PostgreSQL (src/db.rs). SQLite is read only by
+# `graphicle import-sqlite`, which copies a store of 0.1.12 or earlier in.
+postgres = "0.19"
+r2d2 = "0.8"
+bytes = "1"
+rusqlite = { version = "0.37", features = ["bundled"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "rustls-tls-native-roots", "json", "gzip"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
