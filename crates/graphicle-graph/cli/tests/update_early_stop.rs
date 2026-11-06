@@ -395,6 +395,29 @@ fn a_file_its_content_fails_stops_early_until_it_changes() {
     assert!(early.contains(EARLY), "{early}");
 }
 
+/// A file whose content failed to extract is extracted again once it is
+/// fixed (Graphify 0.9.96, #4748): an incremental update counts a scanned
+/// file with no manifest row as changed unless it still has the stats it
+/// failed with, so the fix enters the graph instead of being skipped.
+#[test]
+fn a_fixed_file_its_content_failed_is_extracted_again() {
+    let project = Project::new();
+    let big = project.root.join("big.json");
+    std::fs::write(
+        &big,
+        format!("{{\"data\": \"{}\"}}\n", "x".repeat(1_100_000)),
+    )
+    .unwrap();
+    project.full_then_early("a file its content fails");
+    let manifest = std::fs::read_to_string(project.out.join("manifest.json")).unwrap();
+    assert!(!manifest.contains("big.json"), "{manifest}");
+    std::fs::write(&big, "{\"data\": \"fixed\"}\n").unwrap();
+    let fixed = project.update();
+    assert!(!fixed.contains(EARLY), "{fixed}");
+    let manifest = std::fs::read_to_string(project.out.join("manifest.json")).unwrap();
+    assert!(manifest.contains("big.json"), "{manifest}");
+}
+
 /// A file that cannot be read fails in a way a retry may pass: while it
 /// fails, no update is recorded; once it reads again, the full update takes
 /// it in and the update after the next stops early. A process that reads
