@@ -68,20 +68,20 @@ pub fn ruby_sanitize(name: &str) -> String {
 pub fn probe_python_module_candidate(p: &Path) -> Option<PathBuf> {
     use super::resolution_paths::probe_declared_python_module_candidate as declared;
     use crate::rcfile::effective_suffix;
-    if p.is_dir() {
+    if crate::inputs::is_dir(p) {
         let init = p.join("__init__.py");
-        if init.is_file() && effective_suffix(&init) == ".py" {
+        if crate::inputs::is_file(&init) && effective_suffix(&init) == ".py" {
             return Some(init);
         }
     }
-    if p.is_file() {
+    if crate::inputs::is_file(p) {
         return Some(p.to_path_buf());
     }
     if p.file_name().is_none() {
         return declared(p);
     }
     let q = p.with_extension("py");
-    if q.is_file() && effective_suffix(&q) == ".py" {
+    if crate::inputs::is_file(&q) && effective_suffix(&q) == ".py" {
         return Some(q);
     }
     declared(p)
@@ -123,7 +123,7 @@ pub fn import(
                 let raw = read_text(m, s);
                 let raw = raw.trim_matches(['\'', '"', '`', ' ']);
                 if let Some((mut id, mut target)) = js::resolve_js_import_target(raw, path) {
-                    if target.as_ref().is_some_and(|p| !p.is_file()) {
+                    if target.as_ref().is_some_and(|p| !crate::inputs::is_file(p)) {
                         id = make_id(["ref", raw]);
                         target = None;
                     }
@@ -436,7 +436,7 @@ fn python_import(
                     // absolute path would bake the checkout location into the
                     // graph, so it is the module name relative to the scan
                     // root, as an unresolved absolute import gets (0.9.78, #4157).
-                    let id = if target.is_file() {
+                    let id = if crate::inputs::is_file(&target) {
                         make_id([target.to_string_lossy().as_ref()])
                     } else {
                         make_id([missing_relative_module_name(&target, &root, &raw).as_str()])
@@ -466,7 +466,7 @@ fn python_import(
             e["_python_import_module"] = json!(raw);
             e["_python_import_bindings"] = json!(pairs(python_import_bindings(n, s)));
         }
-        if let Some(p) = target.filter(|p| p.is_file()) {
+        if let Some(p) = target.filter(|p| crate::inputs::is_file(p)) {
             e["target_file"] = json!(p);
         }
         if type_only {

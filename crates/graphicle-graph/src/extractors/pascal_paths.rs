@@ -20,6 +20,9 @@ fn parent(path: &Path) -> PathBuf {
     PathBuf::from(path_syntax::posix_join(&parts))
 }
 pub fn project_root(path: &Path) -> PathBuf {
+    // Units resolve over the folders above the file and the whole tree
+    // below its project root, kept for the life of the process.
+    crate::inputs::uncovered("Pascal units are looked up over the whole project");
     let mut current = parent(path);
     let mut best = current.clone();
     for _ in 0..12 {

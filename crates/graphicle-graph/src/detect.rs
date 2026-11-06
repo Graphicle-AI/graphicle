@@ -267,14 +267,20 @@ impl Detector {
         }
         walk.files.sort();
         drop(profiled);
-        let converted = options
-            .cache_root
-            .as_ref()
-            .map(|p| fsutil::resolve_missing(p).map_err(crate::Error::from))
-            .transpose()?
-            .unwrap_or_else(|| root.clone())
-            .join(&self.output)
-            .join("converted");
+        // Spelled without `..`: a relative output folder that leads outside
+        // the project (`GRAPHICLE_OUT=../out`) then names its sidecars as an
+        // absolute folder there does, so they are outside the scan root too
+        // (`extract_normalize::portable_spelling`).
+        let converted = ig::absolute_lexical(
+            &options
+                .cache_root
+                .as_ref()
+                .map(|p| fsutil::resolve_missing(p).map_err(crate::Error::from))
+                .transpose()?
+                .unwrap_or_else(|| root.clone())
+                .join(&self.output)
+                .join("converted"),
+        );
         let enabled = options
             .google_workspace
             .unwrap_or_else(|| gw::google_workspace_enabled(None));

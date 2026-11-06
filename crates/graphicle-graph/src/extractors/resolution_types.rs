@@ -1116,6 +1116,7 @@ impl GoMod {
             regex::Regex::new(r"(?m)^\s*module\s+([^\s]+)").expect("constant Go module regex")
         });
         let gm = dir.join("go.mod");
+        crate::inputs::content(&gm);
         if !gm.is_file() {
             return GoMod::Absent;
         }
@@ -1931,6 +1932,7 @@ mod go_module_tests {
         let dir = p.parent()?;
         for base in dir.ancestors() {
             let gm = base.join("go.mod");
+            crate::inputs::content(&gm);
             if !gm.is_file() {
                 continue;
             }

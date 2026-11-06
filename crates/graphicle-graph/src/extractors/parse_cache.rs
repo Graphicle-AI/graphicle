@@ -129,6 +129,7 @@ fn active(cache: &Cache) -> bool {
 
 /// Read a file, serving repeat reads from the run cache when one is active.
 pub fn read(path: &Path) -> io::Result<Source> {
+    crate::inputs::content(path);
     {
         let cache = lock();
         if !active(&cache) {

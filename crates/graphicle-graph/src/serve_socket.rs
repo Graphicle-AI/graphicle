@@ -62,7 +62,7 @@ static SERVING: AtomicBool = AtomicBool::new(false);
 /// request. Not listed: the socket's own `GRAPHICLE_SOCKET`, the MCP HTTP key
 /// `GRAPHICLE_MCP_API_KEY` (a secret no CLI answer depends on), and names
 /// read only at build time or by tests.
-const FORWARDED_ENV: &[&str] = &[
+pub(crate) const FORWARDED_ENV: &[&str] = &[
     "GRAPHICLE_ALLOW_LOCAL_PROVIDERS",
     "GRAPHICLE_AMBIGUOUS_SCALE",
     "GRAPHICLE_API_TIMEOUT",

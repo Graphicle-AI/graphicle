@@ -221,7 +221,7 @@ impl<'tree> Extractor<'tree, '_> {
         let script_dir = parent(&self.path);
         if raw.starts_with(['.', '/']) {
             let resolved = resolve(&script_dir.join(raw))?;
-            if resolved.exists() {
+            if crate::inputs::exists(&resolved) {
                 self.import_resolved(&resolved, raw, line, false);
             }
         } else if raw.contains('$') {
@@ -241,7 +241,7 @@ impl<'tree> Extractor<'tree, '_> {
                     && !suffix.split('/').any(|s| s == "..")
                 {
                     let resolved = resolve(&base.join(suffix))?;
-                    if resolved.is_file() {
+                    if crate::inputs::is_file(&resolved) {
                         self.import_resolved(
                             &resolved,
                             &fsutil::path_string(&resolved),
@@ -271,7 +271,7 @@ impl<'tree> Extractor<'tree, '_> {
                     } else {
                         (resolve(&base.join(&suffix))?, base.clone())
                     };
-                    if within_tree(&ceiling, &resolved) && resolved.is_file() {
+                    if within_tree(&ceiling, &resolved) && crate::inputs::is_file(&resolved) {
                         self.import_resolved(
                             &resolved,
                             &fsutil::path_string(&resolved),
@@ -282,7 +282,7 @@ impl<'tree> Extractor<'tree, '_> {
                 }
             }
         } else {
-            let sibling = if !raw.is_empty() && script_dir.join(raw).is_file() {
+            let sibling = if !raw.is_empty() && crate::inputs::is_file(&script_dir.join(raw)) {
                 resolve(&script_dir.join(raw)).ok()
             } else {
                 None
@@ -349,7 +349,7 @@ impl<'tree> Extractor<'tree, '_> {
             }
             if let Some(raw) = raw.filter(|s| !s.is_empty() && s.ends_with(".sh")) {
                 let resolved = resolve(&parent(&self.path).join(raw))?;
-                if resolved.is_file() {
+                if crate::inputs::is_file(&resolved) {
                     let mut target = resolved.clone();
                     if !self.path.is_absolute() {
                         let cwd = resolve(&std::env::current_dir().map_err(crate::Error::from)?)?;
@@ -405,7 +405,7 @@ impl<'tree> Extractor<'tree, '_> {
                 .filter(|raw| INVOKABLE_SCRIPT_EXTENSIONS.iter().any(|e| raw.ends_with(e)))
         {
             let resolved = resolve(&parent(&self.path).join(&raw))?;
-            if resolved.is_file() {
+            if crate::inputs::is_file(&resolved) {
                 let mut target = resolved.clone();
                 if !self.path.is_absolute() {
                     let cwd = resolve(&std::env::current_dir().map_err(crate::Error::from)?)?;

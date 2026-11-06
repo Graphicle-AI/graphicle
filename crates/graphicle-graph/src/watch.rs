@@ -1721,17 +1721,68 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     }
     let mut detector = detect::Detector::default();
     let graph_path = out.join("graph.json");
+    let detect_options = detect::DetectOptions {
+        follow_symlinks: Some(o.follow_symlinks),
+        extra_excludes: excludes.clone(),
+        gitignore,
+        ..Default::default()
+    };
+    // A full rebuild that finds nothing to change records what it read; the
+    // next one stops early when all of it is the same (`watch_gate`). The
+    // scan is then all it does: the stored graph is not read.
+    let state = match o.changed_paths {
+        Some(_) => Err("an incremental rebuild"),
+        None => crate::watch_gate::State::current(
+            path,
+            &watch_root,
+            &project_root,
+            out,
+            o,
+            &excludes,
+            gitignore,
+        ),
+    };
+    let pending = match (&state, o.force) {
+        (Ok(state), false) => crate::watch_gate::before_scan(out, &watch_root, state),
+        (Ok(_), true) => Err("--force"),
+        (Err(changed), _) => Err(*changed),
+    };
+    let state = state.ok();
+    let mut scanned = None;
+    let changed = match pending {
+        Ok(pending) => {
+            let detected = detector.detect(path, &detect_options)?;
+            match pending.after_scan(&detected) {
+                Ok(unchanged) => {
+                    timer.mark("detect");
+                    return stop_early(out, unchanged, result, timer);
+                }
+                Err(changed) => {
+                    scanned = Some(detected);
+                    changed
+                }
+            }
+        }
+        Err(changed) => changed,
+    };
+    if timer.enabled {
+        eprintln!("[graphicle timing] no early stop: {changed}");
+    }
     // The stored graph is parsed, and the ignore rules reconcile consults are
     // loaded (which may run `git ls-files`), while the corpus is detected:
     // none reads the others. A detection error still takes precedence, and an
     // error loading the ignore rules still surfaces after extraction.
-    let (detected, existing, mut ignore_states) = std::thread::scope(|scope| {
+    let (detected, (graph_seen, existing), mut ignore_states) = std::thread::scope(|scope| {
+        // graph.json's stats as it is read: the record vouches for this graph
+        // only (`watch_gate::record`).
         let loading = scope.spawn(|| {
-            if graph_path.exists() {
+            let seen = crate::watch_gate::FileStat::of(&graph_path);
+            let existing = if graph_path.exists() {
                 read_graph(&graph_path)
             } else {
                 Ok(json!({}))
-            }
+            };
+            (seen, existing)
         });
         let ignoring = scope.spawn(|| {
             let mut warning = detect::EncodingWarnings::default();
@@ -1739,15 +1790,10 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             let all = detect::IgnoreState::new(&watch_root, &excludes, gitignore, &mut warning)?;
             Ok::<_, crate::Error>((always, all, warning))
         });
-        let detected = detector.detect(
-            path,
-            &detect::DetectOptions {
-                follow_symlinks: Some(o.follow_symlinks),
-                extra_excludes: excludes.clone(),
-                gitignore,
-                ..Default::default()
-            },
-        );
+        let detected = match scanned {
+            Some(detected) => Ok(detected),
+            None => detector.detect(path, &detect_options),
+        };
         fn join<T>(handle: std::thread::ScopedJoinHandle<'_, T>) -> T {
             handle
                 .join()
@@ -1757,6 +1803,11 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         (detected, existing, join(ignoring))
     });
     let detected = detected?;
+    // The scanned files' stats before anything is extracted: a file that
+    // changes while this rebuild runs keeps it from being recorded.
+    let snapshot = state
+        .as_ref()
+        .map(|_| crate::watch_gate::Snapshot::begin(&detected));
     // The equality skips below compare parsed data, not layout: a multi-line
     // graph.json is still rewritten in the compact layout (0.9.86, #3413).
     let legacy_layout = graph_path.exists() && !paths::is_single_line(&graph_path).unwrap_or(false);
@@ -1781,7 +1832,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             .push("No code files found - nothing to rebuild.".into());
         return Ok(result);
     }
-    let sp = StoredSourcePaths::new(&existing, out, &project_root, &watch_root);
+    let sp = StoredSourcePaths::new(&existing, out, &project_root, &watch_root).with_scan(&code);
     let semantic = items_ref(&existing, "nodes")
         .iter()
         .filter(|n| {
@@ -2037,6 +2088,13 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         .filter_map(Value::as_str)
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
+    // A failure that the file's content does not decide may pass on a retry,
+    // which a record would skip (`watch_gate::record`).
+    let content_failed = items_ref(&extraction, "content_failed_sources")
+        .iter()
+        .filter_map(Value::as_str)
+        .collect::<BTreeSet<_>>();
+    let retryable = failed.iter().any(|f| !content_failed.contains(f.as_str()));
     // An error loading the ignore rules surfaces here, after extraction.
     ignore_states?;
     if graph_path.exists()
@@ -2143,9 +2201,23 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         fs::write(out.join(".graphicle_root"), root_marker_value(path)?)
             .map_err(crate::Error::from)?;
         stamp_manifest(out, &detected, &watch_root, &failed)?;
+        let manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         result.success = true;
         result.nodes = items_ref(&candidate, "nodes").len();
         result.edges = items_ref(&candidate, "links").len();
+        if result.changed {
+            crate::watch_gate::forget(out);
+        } else if let (Some(state), Some(snapshot)) = (&state, &snapshot) {
+            let seen = crate::watch_gate::Seen {
+                snapshot,
+                graph: graph_seen,
+                manifest: manifest_seen,
+                retryable,
+            };
+            let made =
+                crate::watch_gate::record(out, state, &detected, &seen, result.nodes, result.edges);
+            not_recorded(made, &timer);
+        }
         return Ok(result);
     }
     // The extraction's records move into the graph (nothing reads them
@@ -2168,10 +2240,22 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     timer.mark("topology_compare");
     if topology_unchanged {
         stamp_manifest(out, &detected, &watch_root, &failed)?;
+        let manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         reconcile_stored_html(out, &graph_path, &mut result.messages);
         result.success = true;
         result.nodes = graph.nodes.len();
         result.edges = graph.edge_count();
+        if let (Some(state), Some(snapshot)) = (&state, &snapshot) {
+            let seen = crate::watch_gate::Seen {
+                snapshot,
+                graph: graph_seen,
+                manifest: manifest_seen,
+                retryable,
+            };
+            let made =
+                crate::watch_gate::record(out, state, &detected, &seen, result.nodes, result.edges);
+            not_recorded(made, &timer);
+        }
         result
             .messages
             .push("No code-graph topology changes detected; outputs left untouched.".into());
@@ -2341,11 +2425,13 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     let prewarm = !unchanged && full;
     // The candidate document is read for the last time by the HTML below.
     let mut candidate = Some(candidate);
+    let mut manifest_seen = None;
     std::thread::scope(|scope| -> Result<()> {
         let warm = prewarm.then(|| scope.spawn(|| crate::cli::prewarm_query_snapshot(&graph_path)));
         fs::write(out.join(".graphicle_root"), root_marker_value(path)?)
             .map_err(crate::Error::from)?;
         stamp_manifest(out, &detected, &watch_root, &failed)?;
+        manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         timer.mark("manifest");
         if let Some(warm) = warm {
             let _ = warm.join();
@@ -2385,6 +2471,19 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         Ok(())
     })?;
     result.prewarmed = prewarm;
+    if !unchanged {
+        crate::watch_gate::forget(out);
+    } else if let (Some(state), Some(snapshot)) = (&state, &snapshot) {
+        let seen = crate::watch_gate::Seen {
+            snapshot,
+            graph: graph_seen,
+            manifest: manifest_seen,
+            retryable,
+        };
+        let made =
+            crate::watch_gate::record(out, state, &detected, &seen, graph_nodes, graph_edges);
+        not_recorded(made, &timer);
+    }
     timer.report(if full {
         "rebuild(full)"
     } else {
@@ -2394,6 +2493,39 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     result.changed = !unchanged;
     result.nodes = graph_nodes;
     result.edges = graph_edges;
+    Ok(result)
+}
+/// GRAPHICLE_WATCH_TIMING=1: why a full rebuild that found nothing to change
+/// left no record (`watch_gate::record`).
+fn not_recorded(made: std::result::Result<(), crate::watch_gate::Changed>, timer: &PhaseTimer) {
+    if let Err(why) = made
+        && timer.enabled
+    {
+        eprintln!("[graphicle timing] not recorded: {why}");
+    }
+}
+/// The early stop of a full rebuild whose inputs are the ones the last full
+/// rebuild recorded when it found nothing to change (`watch_gate`): what
+/// that rebuild would do besides leaving graph.json, the report and the
+/// labels as they are, without extracting anything. Every file has the
+/// stats it had then, so the manifest it would stamp is the one on disk;
+/// graph.html is reconciled as the rebuild reconciles it, and the record
+/// stays as it is.
+fn stop_early(
+    out: &Path,
+    unchanged: crate::watch_gate::Unchanged,
+    mut result: RebuildResult,
+    mut timer: PhaseTimer,
+) -> Result<RebuildResult> {
+    reconcile_stored_html(out, &out.join("graph.json"), &mut result.messages);
+    result.success = true;
+    result.nodes = unchanged.nodes;
+    result.edges = unchanged.edges;
+    result
+        .messages
+        .push("No relevant changes; outputs left untouched.".into());
+    timer.mark("no_change");
+    timer.report("rebuild(no-change)");
     Ok(result)
 }
 pub fn check_update(path: &Path, messages: &mut Vec<String>) -> bool {

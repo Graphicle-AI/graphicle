@@ -5,7 +5,7 @@ use crate::{build, detect_ignore::absolute_lexical, extractors::resolution::reso
 use serde_json::{Value, json};
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -123,6 +123,9 @@ pub struct StoredSourcePaths {
     /// Where the scan's Office documents are converted to Markdown, as
     /// `detect` spells it (`extract_normalize::converted_dir`).
     pub converted: PathBuf,
+    /// The file names of the sidecars in `converted` that this run's scan
+    /// lists ([`Self::with_scan`]); `None` when the scan is not known.
+    scanned_sidecars: Option<HashSet<String>>,
     /// Memo of `identity()` results: identities are pure functions of the
     /// stored source string once the roots are fixed, and a rebuild asks for
     /// the same handful of file identities once per node/edge.
@@ -137,6 +140,7 @@ impl StoredSourcePaths {
             existing_source_root: project_root.into(),
             legacy_watch_relative: false,
             converted: crate::extract_normalize::converted_dir(watch_root, None),
+            scanned_sidecars: None,
             identity_cache: RefCell::new(HashMap::new()),
             normalize_cache: RefCell::new(HashMap::new()),
         };
@@ -173,6 +177,22 @@ impl StoredSourcePaths {
                 });
         }
         result
+    }
+    /// The same paths, knowing this run's scan (`code`, the scanned files a
+    /// rebuild extracts): a stored sidecar name then names the sidecar only
+    /// while the scan lists it. The sidecar of a document that is gone stays
+    /// in the converted folder, but it is no file of the project any more,
+    /// and its nodes go as a deleted file's do.
+    pub fn with_scan(mut self, code: &[PathBuf]) -> Self {
+        self.scanned_sidecars = Some(
+            code.iter()
+                .map(|path| absolute_lexical(path))
+                .filter(|path| path.parent() == Some(self.converted.as_path()))
+                .filter_map(|path| Some(path.file_name()?.to_string_lossy().into_owned()))
+                .collect(),
+        );
+        self.identity_cache.borrow_mut().clear();
+        self
     }
     pub fn normalize(&self, source: &str) -> String {
         if let Some(hit) = self.normalize_cache.borrow().get(source) {
@@ -223,10 +243,17 @@ impl StoredSourcePaths {
         };
         // A converted Office document outside the scan root is stored by the
         // file name of its sidecar (`extract_normalize::portable_spelling`):
-        // it names that sidecar, unless the root holds a file of that name.
+        // it names that sidecar, unless the root holds a file of that name or
+        // the scan no longer lists the sidecar (its document is gone).
         if !n.is_empty() && !n.contains('/') && !Path::new(&n).is_absolute() {
             let sidecar = self.converted.join(&n);
-            if sidecar.is_file() && !root.join(&n).exists() {
+            if sidecar.is_file()
+                && !root.join(&n).exists()
+                && self
+                    .scanned_sidecars
+                    .as_ref()
+                    .is_none_or(|names| names.contains(&n))
+            {
                 return self.absolute_identity(&sidecar.to_string_lossy(), root);
             }
         }
@@ -310,6 +337,35 @@ mod tests {
             paths.identity("notes_0a1b2c3d.md"),
             paths.absolute_identity(&sidecar.to_string_lossy(), &project)
         );
+    }
+
+    /// Knowing the scan, a sidecar's file name names the sidecar only while
+    /// the scan lists it: the sidecar of a document that is gone names no
+    /// file, as a deleted file's name does.
+    #[test]
+    fn a_sidecar_the_scan_no_longer_lists_names_no_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let converted = crate::extract_normalize::converted_dir(&root, None);
+        std::fs::create_dir_all(&converted).unwrap();
+        let sidecar = converted.join("notes_0a1b2c3d.md");
+        std::fs::write(&sidecar, "# Notes\n").unwrap();
+        let paths = |code: &[std::path::PathBuf]| {
+            StoredSourcePaths::new(&json!({}), &root.join(".graphicle"), &root, &root)
+                .with_scan(code)
+        };
+        let listed = paths(&[root.join("app.py"), sidecar.clone()]);
+        assert_eq!(
+            listed.identity("notes_0a1b2c3d.md"),
+            listed.absolute_identity(&sidecar.to_string_lossy(), &root)
+        );
+        let gone = paths(&[root.join("app.py")]);
+        let name = root.join("notes_0a1b2c3d.md");
+        assert_eq!(
+            gone.identity("notes_0a1b2c3d.md"),
+            gone.absolute_identity(&name.to_string_lossy(), &root)
+        );
+        assert!(gone.in_watch("notes_0a1b2c3d.md"));
     }
 
     /// A stored source that is a converted sidecar's file name (an Office

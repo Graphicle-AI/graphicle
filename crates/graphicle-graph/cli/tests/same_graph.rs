@@ -8,92 +8,16 @@ use std::{
     process::Command,
 };
 
-/// CRC-32 (IEEE), as a zip entry records it.
-fn crc32(data: &[u8]) -> u32 {
-    let mut crc = !0u32;
-    for byte in data {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            crc = if crc & 1 == 1 {
-                (crc >> 1) ^ 0xedb8_8320
-            } else {
-                crc >> 1
-            };
-        }
-    }
-    !crc
-}
-
-/// A zip archive of `files`, stored without compression.
-fn zip(files: &[(&str, &str)]) -> Vec<u8> {
-    let (mut out, mut central) = (Vec::new(), Vec::new());
-    for (name, text) in files {
-        let (name, data) = (name.as_bytes(), text.as_bytes());
-        let (crc, size, offset) = (crc32(data), data.len() as u32, out.len() as u32);
-        // version 20, no flags, stored, 1980-01-01 00:00
-        let fields = |head: &mut Vec<u8>| {
-            for half in [20u16, 0, 0, 0, 0x21] {
-                head.extend_from_slice(&half.to_le_bytes());
-            }
-            for word in [crc, size, size] {
-                head.extend_from_slice(&word.to_le_bytes());
-            }
-            head.extend_from_slice(&(name.len() as u16).to_le_bytes());
-            head.extend_from_slice(&0u16.to_le_bytes());
-        };
-        out.extend_from_slice(&0x0403_4b50u32.to_le_bytes());
-        fields(&mut out);
-        out.extend_from_slice(name);
-        out.extend_from_slice(data);
-        central.extend_from_slice(&0x0201_4b50u32.to_le_bytes());
-        central.extend_from_slice(&20u16.to_le_bytes());
-        fields(&mut central);
-        // comment length, disk, internal and external attributes, offset
-        central.extend_from_slice(&[0; 10]);
-        central.extend_from_slice(&offset.to_le_bytes());
-        central.extend_from_slice(name);
-    }
-    let (start, length) = (out.len() as u32, central.len() as u32);
-    out.extend_from_slice(&central);
-    out.extend_from_slice(&0x0605_4b50u32.to_le_bytes());
-    out.extend_from_slice(&[0; 4]);
-    for count in [files.len() as u16; 2] {
-        out.extend_from_slice(&count.to_le_bytes());
-    }
-    for word in [length, start] {
-        out.extend_from_slice(&word.to_le_bytes());
-    }
-    out.extend_from_slice(&[0; 2]);
-    out
-}
-
-const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+#[allow(dead_code)]
+mod common;
 
 /// A Word document with two headings that the notes mention code under.
 fn docx() -> Vec<u8> {
-    let paragraph = |style: Option<&str>, text: &str| {
-        let style = style.map_or(String::new(), |s| {
-            format!("<w:pPr><w:pStyle w:val=\"{s}\"/></w:pPr>")
-        });
-        format!("<w:p>{style}<w:r><w:t>{text}</w:t></w:r></w:p>")
-    };
-    let body = [
-        paragraph(Some("Heading1"), "Release notes"),
-        paragraph(None, "The parser now reads every file."),
-        paragraph(Some("Heading2"), "Usage"),
-        paragraph(None, "Call `parse_all()` before `Report.render()`."),
-    ]
-    .concat();
-    let document = format!("<w:document xmlns:w=\"{W}\"><w:body>{body}</w:body></w:document>");
-    let styles = format!(
-        "<w:styles xmlns:w=\"{W}\">\
-         <w:style w:type=\"paragraph\" w:styleId=\"Heading1\"><w:name w:val=\"heading 1\"/></w:style>\
-         <w:style w:type=\"paragraph\" w:styleId=\"Heading2\"><w:name w:val=\"heading 2\"/></w:style>\
-         </w:styles>"
-    );
-    zip(&[
-        ("word/document.xml", &document),
-        ("word/styles.xml", &styles),
+    common::word_document(&[
+        (Some("Heading1"), "Release notes"),
+        (None, "The parser now reads every file."),
+        (Some("Heading2"), "Usage"),
+        (None, "Call `parse_all()` before `Report.render()`."),
     ])
 }
 
@@ -116,6 +40,16 @@ fn write_project(dir: &Path) {
 /// harness's three commands (an extract of the code, a first update, an
 /// update with nothing changed) run with `workers` workers.
 fn outputs(project: &Path, out: &Path, workers: &str) -> Vec<(String, Option<Vec<u8>>)> {
+    outputs_as(project, out.as_os_str(), out, workers)
+}
+
+/// [`outputs`] with `GRAPHICLE_OUT` set to `setting`, which leads to `out`.
+fn outputs_as(
+    project: &Path,
+    setting: &std::ffi::OsStr,
+    out: &Path,
+    workers: &str,
+) -> Vec<(String, Option<Vec<u8>>)> {
     let home = tempfile::tempdir().unwrap();
     let source = project.to_string_lossy().into_owned();
     for args in [
@@ -129,7 +63,7 @@ fn outputs(project: &Path, out: &Path, workers: &str) -> Vec<(String, Option<Vec
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", home.path())
-            .env("GRAPHICLE_OUT", out)
+            .env("GRAPHICLE_OUT", setting)
             .env("GRAPHICLE_MAX_WORKERS", workers)
             .env("RAYON_NUM_THREADS", workers)
             .output()
@@ -188,6 +122,33 @@ fn every_run_writes_the_same_graph() {
                     );
                 }
             }
+        }
+    }
+}
+
+/// A relative output folder that leads outside the project (`../out`) gives
+/// the graph an absolute output folder there gives: the Office document is
+/// named by its sidecar, not by the folder.
+#[test]
+fn a_relative_output_folder_outside_the_project_writes_the_same_graph() {
+    let temp = tempfile::tempdir().unwrap();
+    let base = temp.path().canonicalize().unwrap();
+    let project = base.join("p/project");
+    write_project(&project);
+    let absolute = outputs(&project, &base.join("p/outa"), "2");
+    for (setting, out) in [
+        ("../outd", base.join("p/outd")),
+        ("../../oute/graph", base.join("oute/graph")),
+    ] {
+        let written = outputs_as(&project, std::ffi::OsStr::new(setting), &out, "2");
+        let graph =
+            String::from_utf8_lossy(written[0].1.as_deref().expect("graph.json")).into_owned();
+        assert!(graph.contains("release_notes"), "{setting}");
+        for name in ["outd", "oute"] {
+            assert!(!graph.contains(name), "{name} in the graph of {setting}");
+        }
+        for ((name, a), (_, b)) in absolute.iter().zip(&written) {
+            assert!(a == b, "{name} differs with GRAPHICLE_OUT={setting}");
         }
     }
 }

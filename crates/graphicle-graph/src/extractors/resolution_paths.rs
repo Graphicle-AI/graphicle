@@ -106,26 +106,26 @@ pub fn is_python_package_dir(directory: &Path, suffixes: &[&str]) -> bool {
     let init = |suffix: &str| directory.join(format!("__init__{suffix}"));
     if suffixes.iter().any(|suffix| {
         let path = init(suffix);
-        path.is_file() && suffixes.contains(&effective_suffix(&path).as_str())
+        crate::inputs::is_file(&path) && suffixes.contains(&effective_suffix(&path).as_str())
     }) {
         return true;
     }
     declared_language_suffixes(suffixes)
         .iter()
         .filter(|suffix| !suffixes.contains(&suffix.as_str()))
-        .any(|suffix| init(suffix).is_file())
+        .any(|suffix| crate::inputs::is_file(&init(suffix)))
 }
 /// `_probe_declared_python_module_candidate`: a package initializer or a
 /// module file with a suffix the project declares as Python.
 pub fn probe_declared_python_module_candidate(candidate: &Path) -> Option<PathBuf> {
     for suffix in declared_language_suffixes(&[".py"]) {
         let init = candidate.join(format!("__init__{suffix}"));
-        if init.is_file() {
+        if crate::inputs::is_file(&init) {
             return Some(init);
         }
         if candidate.file_name().is_some() {
             let module = candidate.with_extension(suffix.trim_start_matches('.'));
-            if module.is_file() {
+            if crate::inputs::is_file(&module) {
                 return Some(module);
             }
         }
@@ -141,7 +141,7 @@ pub fn resolve_c_include_path(raw: &str, source: &str) -> io::Result<Option<Path
         parts.pop();
     }
     let candidate = resolve_cached(&PathBuf::from(path_syntax::posix_join(&parts)).join(raw))?;
-    Ok(candidate.is_file().then_some(candidate))
+    Ok(crate::inputs::is_file(&candidate).then_some(candidate))
 }
 
 #[cfg(test)]

@@ -45,6 +45,12 @@ pub fn enabled() -> bool {
 static SPHINX_TXT: LazyLock<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, bool>>> =
     LazyLock::new(Default::default);
 
+/// Forget which folders' `conf.py` declare `.txt` sources: a full rebuild
+/// reads them again (`watch_gate::Snapshot::begin`).
+pub fn forget_sphinx_folders() {
+    SPHINX_TXT.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
 /// A `.txt` file is a reStructuredText page when a Sphinx `conf.py` in one of
 /// its directories declares `.txt` sources (Django's documentation does).
 pub fn is_sphinx_txt(path: &Path) -> bool {
@@ -53,6 +59,7 @@ pub fn is_sphinx_txt(path: &Path) -> bool {
         let Some(d) = dir else { break };
         let mut cache = SPHINX_TXT.lock().unwrap_or_else(|e| e.into_inner());
         let hit = *cache.entry(d.to_path_buf()).or_insert_with(|| {
+            crate::inputs::content(&d.join("conf.py"));
             std::fs::read_to_string(d.join("conf.py")).is_ok_and(|conf| {
                 conf.lines()
                     .any(|l| l.trim_start().starts_with("source_suffix") && l.contains(".txt"))
@@ -154,7 +161,7 @@ fn names_module(dir: &Path, names: &[String]) -> bool {
     let relative = names.join("/");
     dir.ancestors().take(8).any(|d| {
         let path = d.join(&relative);
-        path.is_dir() || path.with_extension("py").is_file()
+        crate::inputs::is_dir(&path) || crate::inputs::is_file(&path.with_extension("py"))
     })
 }
 
@@ -325,7 +332,7 @@ pub fn extract_rst(path: &Path) -> crate::Result<Value> {
         let owner = stack.last().map_or(file_id.clone(), |(_, id)| id.clone());
         if let Some(c) = INCLUDE.captures(text) {
             let target = crate::detect_ignore::absolute_lexical(&dir.join(c[1].trim()));
-            if target.is_file() {
+            if crate::inputs::is_file(&target) {
                 let file = fsutil::path_string(&target);
                 let id = make_id([file.as_str()]);
                 if id != file_id && page.links.insert(id.clone()) {

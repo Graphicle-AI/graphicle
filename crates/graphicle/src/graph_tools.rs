@@ -379,6 +379,13 @@ pub fn resident(db: &Connection, repository: &str, episode: &str) -> Result<Arc<
     Ok(built)
 }
 
+/// The resident graph of `repository`'s current code graph (else its
+/// latest recorded episode, as the graph tools read it), clustered.
+pub fn current(db: &Connection, p: &Principal, repository: &str) -> Result<Arc<Resident>> {
+    let reading = reading(db, p, repository, None)?;
+    resident(db, repository, &reading.episode)
+}
+
 /// The `graph.navigate` operation: run the navigation tool `tool` (one of
 /// [`NAVIGATION`]) on `repository_id`'s episode (`as_of`, else its current
 /// code graph) and return the engine's text with the episode read and the

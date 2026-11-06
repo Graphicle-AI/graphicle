@@ -1380,7 +1380,7 @@ fn scan_root_namespace(root: &Path) -> Option<String> {
     let mut parts = vec![root.file_name()?.to_string_lossy().into_owned()];
     let mut current = root.parent();
     while let Some(parent) = current {
-        if !parent.join("__init__.py").is_file() {
+        if !crate::inputs::is_file(&parent.join("__init__.py")) {
             break;
         }
         parts.push(parent.file_name()?.to_string_lossy().into_owned());
@@ -1466,7 +1466,7 @@ pub fn resolve_python_namespace_dir(
     level: usize,
 ) -> Option<PathBuf> {
     let namespace = |p: PathBuf| {
-        if p.is_dir()
+        if crate::inputs::is_dir(&p)
             && !is_python_package_dir(&p, &[".py"])
             && resolved(&p).starts_with(resolved(root))
         {
@@ -1671,9 +1671,9 @@ pub fn collect_python(
                 if let Some(p) = &package {
                     let sub = p.join(format!("{imported}.py"));
                     let pkg = p.join(&imported).join("__init__.py");
-                    if let Some(sub) = if sub.is_file() {
+                    if let Some(sub) = if crate::inputs::is_file(&sub) {
                         Some(sub)
-                    } else if pkg.is_file() {
+                    } else if crate::inputs::is_file(&pkg) {
                         Some(pkg)
                     } else {
                         probe_declared_python_module_candidate(&p.join(&imported))

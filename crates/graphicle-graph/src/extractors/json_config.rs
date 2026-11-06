@@ -269,7 +269,9 @@ pub fn extract_json(path: &Path) -> Value {
         return json!({"nodes":[],"edges":[],"error":io_compat::read_error(&error,path)});
     }
     if source.len() > JSON_MAX_BYTES {
-        return json!({"nodes":[],"edges":[],"error":"json file too large to index"});
+        return crate::extract::content_failure(
+            json!({"nodes":[],"edges":[],"error":"json file too large to index"}),
+        );
     }
     let mut parser = tree_sitter::Parser::new();
     if let Err(error) = parser.set_language(&tree_sitter_json::LANGUAGE.into()) {

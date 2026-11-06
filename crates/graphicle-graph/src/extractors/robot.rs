@@ -689,6 +689,9 @@ pub fn extract_robot(path: &Path) -> Value {
         Err(e) => {
             let mut r = extract_source(path, "");
             r["error"] = json!(format!("Reading file '{}' failed: {e}", path.display()));
+            if e.kind() == std::io::ErrorKind::InvalidData {
+                r = crate::extract::content_failure(r);
+            }
             r
         }
     }

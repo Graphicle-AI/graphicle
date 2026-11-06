@@ -705,7 +705,7 @@ fn source_rows(
         )?;
         out.insert(name, found.len());
     }
-    let per_repository: [(&'static str, &str, Matches); 12] = [
+    let per_repository: [(&'static str, &str, Matches); 13] = [
         (
             "originals",
             "SELECT rowid,source_id FROM am_original_documents WHERE repository_id=?",
@@ -756,6 +756,11 @@ fn source_rows(
         (
             "doc_link_sources",
             "SELECT rowid,document_id FROM gf_doc_link_sources WHERE repository_id=?",
+            |v, sc| sc.source(v),
+        ),
+        (
+            "doc_link_baselines",
+            "SELECT rowid,document_id FROM gf_doc_mention_baselines WHERE repository_id=?",
             |v, sc| sc.source(v),
         ),
         (
@@ -1290,9 +1295,14 @@ pub fn forget(
         |v| scope.source(v),
     )?;
     let hints = delete_rowids(db, "gf_hints", &hints)?;
-    // The documents' mention links and their inputs.
+    // The documents' mention links, their inputs and their passages'
+    // baselines.
     let mut doc_links = 0;
-    for table in ["gf_doc_links", "gf_doc_link_sources"] {
+    for table in [
+        "gf_doc_links",
+        "gf_doc_link_sources",
+        "gf_doc_mention_baselines",
+    ] {
         let found = select_rowids(
             db,
             &format!("SELECT rowid,document_id FROM {table} WHERE repository_id=?"),

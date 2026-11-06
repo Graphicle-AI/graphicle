@@ -465,14 +465,15 @@ pub(crate) fn merge_csharp_partials_of<P: PerFile>(
     let assembly = |id: &str| {
         if let Some(p) = id_path.get(id) {
             for d in resolved(p).parent().into_iter().flat_map(Path::ancestors) {
-                if projects.contains(d)
-                    || std::fs::read_dir(d).is_ok_and(|items| {
+                if projects.contains(d) || {
+                    crate::inputs::listing(d);
+                    std::fs::read_dir(d).is_ok_and(|items| {
                         items.flatten().any(|e| {
                             [".csproj", ".fsproj", ".vbproj"]
                                 .contains(&crate::extract_languages::suffix(&e.path()).as_str())
                         })
                     })
-                {
+                } {
                     return d.to_string_lossy().into_owned();
                 }
                 if d == stop {

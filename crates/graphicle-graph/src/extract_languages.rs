@@ -628,7 +628,7 @@ pub fn rescued_specifier(
         .map(|p| js::resolve_js_import_path(&p))
         .or_else(|| {
             if raw.starts_with("@/") {
-                js::resolve_js_module_path(raw, Some(parent)).filter(|p| p.is_file())
+                js::resolve_js_module_path(raw, Some(parent)).filter(|p| crate::inputs::is_file(p))
             } else {
                 None
             }
@@ -638,7 +638,7 @@ pub fn rescued_specifier(
         return Some((
             make_id([p.to_string_lossy().as_ref()]),
             p.to_string_lossy().into_owned(),
-            p.is_file().then_some(p),
+            crate::inputs::is_file(&p).then_some(p),
             false,
         ));
     }
@@ -1033,7 +1033,7 @@ fn ejs_include(path: &Path, r: &mut Value, raw: &str, line: usize) {
         .unwrap_or(Path::new("."));
     let resolved = js::resolve_js_import_path(&js::norm(&parent.join(raw)));
     let mut e = json!({"source":make_id([path.to_string_lossy().as_ref()]),"relation":"includes","confidence":"EXTRACTED","source_file":path,"source_location":format!("L{line}")});
-    if resolved.is_file() {
+    if crate::inputs::is_file(&resolved) {
         e["target"] = json!(make_id([resolved.to_string_lossy().as_ref()]));
         e["target_file"] = json!(resolved);
     } else {

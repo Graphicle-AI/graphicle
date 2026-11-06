@@ -32,7 +32,7 @@ pub(crate) fn current_source_corpus() -> Option<SourceCorpus> {
     SOURCE_CORPUS.with(|scope| scope.borrow().clone())
 }
 fn source_file(path: &Path) -> bool {
-    path.is_file()
+    crate::inputs::is_file(path)
         && SOURCE_CORPUS.with(|scope| {
             scope
                 .borrow()
@@ -133,7 +133,7 @@ pub fn resolve_js_import_path(p: &Path) -> PathBuf {
             return q;
         }
     }
-    if p.is_dir() {
+    if crate::inputs::is_dir(&p) {
         for name in JS_INDEX_FILES {
             let q = p.join(name);
             if source_file(&q) && js_family(&q) {
@@ -164,6 +164,7 @@ pub fn strip_jsonc(text: &str) -> String {
         .into_owned()
 }
 pub fn read_json_config(p: &Path) -> Option<Value> {
+    crate::inputs::content(p);
     let raw = fsutil::read_text_lossy(p).ok()?;
     serde_json::from_str::<Value>(&raw)
         .or_else(|_| serde_json::from_str(&strip_jsonc(&raw)))
@@ -191,7 +192,7 @@ pub fn read_tsconfig_aliases(p: &Path, base: &Path, seen: &mut BTreeSet<PathBuf>
         if q.extension().is_none() {
             q.set_extension("json");
         }
-        if q.exists() {
+        if crate::inputs::exists(&q) {
             out.extend(read_tsconfig_aliases(&q, q.parent().unwrap_or(base), seen));
         }
     }
@@ -204,12 +205,12 @@ pub fn read_tsconfig_aliases(p: &Path, base: &Path, seen: &mut BTreeSet<PathBuf>
             continue;
         };
         let mut q = absolute(&base.join(path));
-        if q.is_dir() {
+        if crate::inputs::is_dir(&q) {
             q = q.join("tsconfig.json");
         } else if q.extension().is_none() {
             q.set_extension("json");
         }
-        if q.exists() {
+        if crate::inputs::exists(&q) {
             out.extend(read_tsconfig_aliases(&q, q.parent().unwrap_or(base), seen));
         }
     }
@@ -248,7 +249,7 @@ pub fn find_js_config(start: &Path) -> Option<(PathBuf, PathBuf)> {
     for dir in start.ancestors() {
         for name in ["tsconfig.json", "jsconfig.json"] {
             let p = dir.join(name);
-            if p.exists() {
+            if crate::inputs::exists(&p) {
                 return Some((p, dir.to_path_buf()));
             }
         }
@@ -321,7 +322,7 @@ pub fn resolve_tsconfig_alias(
     let Some((_, captured, wild, targets)) = best else {
         return base
             .map(|b| resolve_js_import_path(&b.join(raw)))
-            .filter(|p| p.is_file());
+            .filter(|p| crate::inputs::is_file(p));
     };
     let mut first = None;
     for target in targets {
@@ -336,7 +337,7 @@ pub fn resolve_tsconfig_alias(
         };
         let p = norm(&p);
         let resolved = resolve_js_import_path(&p);
-        if resolved.is_file() {
+        if crate::inputs::is_file(&resolved) {
             return Some(resolved);
         }
         if first.is_none() {
@@ -350,13 +351,14 @@ pub fn find_workspace_root(start: &Path) -> Option<PathBuf> {
     start
         .ancestors()
         .find(|p| {
-            p.join("pnpm-workspace.yaml").exists()
+            crate::inputs::exists(&p.join("pnpm-workspace.yaml"))
                 || read_json_config(&p.join("package.json"))
                     .is_some_and(|v| v.get("workspaces").is_some())
         })
         .map(Path::to_path_buf)
 }
 pub fn pnpm_workspace_globs(p: &Path) -> Vec<String> {
+    crate::inputs::content(p);
     let mut out = vec![];
     let mut inside = false;
     for raw in fsutil::read_text_lossy(p).unwrap_or_default().lines() {
@@ -382,7 +384,7 @@ pub fn pnpm_workspace_globs(p: &Path) -> Vec<String> {
     out
 }
 pub fn workspace_globs(root: &Path) -> Vec<String> {
-    if root.join("pnpm-workspace.yaml").exists() {
+    if crate::inputs::exists(&root.join("pnpm-workspace.yaml")) {
         return pnpm_workspace_globs(&root.join("pnpm-workspace.yaml"));
     }
     let d = read_json_config(&root.join("package.json")).unwrap_or(Value::Null);
@@ -636,12 +638,17 @@ pub fn find_js_project_anchor(start: &Path) -> PathBuf {
         if home.as_deref() == Some(q) {
             break;
         }
-        if q.join("package.json").is_file() || q.join("pnpm-workspace.yaml").is_file() {
+        if crate::inputs::is_file(&q.join("package.json"))
+            || crate::inputs::is_file(&q.join("pnpm-workspace.yaml"))
+        {
             return q.to_path_buf();
         }
     }
     for q in p.ancestors() {
-        if [".git", ".hg", ".svn"].iter().any(|s| q.join(s).exists()) {
+        if [".git", ".hg", ".svn"]
+            .iter()
+            .any(|s| crate::inputs::exists(&q.join(s)))
+        {
             return q.to_path_buf();
         }
     }
@@ -655,7 +662,7 @@ pub fn load_package_imports(start: &Path) -> Option<(PathBuf, Value)> {
         .or_insert_with(|| {
             for q in p.ancestors() {
                 let manifest = q.join("package.json");
-                if manifest.is_file() {
+                if crate::inputs::is_file(&manifest) {
                     return read_json_config(&manifest).and_then(|d| {
                         d.get("imports")
                             .filter(|v| v.as_object().is_some_and(|o| !o.is_empty()))
@@ -700,7 +707,7 @@ pub fn resolve_package_import(raw: &str, start: &Path) -> Option<PathBuf> {
         target = target.replacen('*', &capture, 1);
     }
     let p = resolve_js_import_path(&dir.join(target));
-    p.is_file().then_some(p)
+    crate::inputs::is_file(&p).then_some(p)
 }
 pub fn resolve_js_module_path(raw: &str, start: Option<&Path>) -> Option<PathBuf> {
     let Some(start) = start else {
@@ -728,7 +735,7 @@ pub fn resolve_js_module_path(raw: &str, start: Option<&Path>) -> Option<PathBuf
         let anchor = find_js_project_anchor(start);
         for p in [anchor.join("src").join(sub), anchor.join(sub)] {
             let p = resolve_js_import_path(&p);
-            if p.is_file() {
+            if crate::inputs::is_file(&p) {
                 return Some(p);
             }
         }
@@ -766,7 +773,7 @@ pub fn resolve_lua_import_target(raw: &str, source: &str) -> String {
             dir.join(&rel).join("init.lua"),
             dir.join(&rel).join("init.luau"),
         ] {
-            if p.is_file() {
+            if crate::inputs::is_file(&p) {
                 return make_id([p.to_string_lossy().as_ref()]);
             }
         }

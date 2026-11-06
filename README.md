@@ -145,6 +145,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 - **One MCP server.** `graphicle mcp` serves the code-graph tools, under Graphify's tool names such as `query_graph`, `get_neighbors` and `shortest_path`, next to the memory tools. With `--pull-requests` it also serves the pull-request tools `list_prs`, `get_pr_impact` and `triage_prs`, which use the GitHub CLI ([MCP](docs/mcp.md)).
 - **Memory tied to your code.** Reviewed memories are tied to the functions they are about: a memory goes stale when that code changes, and edits elsewhere in the file usually leave it current ([the exact rule](crates/graphicle/README.md#memory-anchored-to-code-symbols)). Mentions of code in your docs are linked to the definitions they name (`graphicle call graph.doc_links` lists them).
 - **Reviews of a change.** `graphicle review` reviews what a branch adds with the code around it, the callers, callees and tests of what it changes, and keeps only comments on changed lines whose citations hold. A GitHub Action posts the review on pull requests ([review](docs/review.md)).
+- **A project wiki a model keeps.** `graphicle wiki build` writes one cited article per area of the code and an index, `wiki update` rewrites only what changed, and `wiki check` lists stale doc mentions, stale memories and broken citations, then proposes corrections for your approval; every model call is opt-in and capped ([wiki](docs/wiki.md)).
 - **From the screen to the code.** `graphicle see` lets a model reproduce a bug in a web app with computer use on the Meta Model API, `graphicle pixel` finds the code that draws what it points at, and `graphicle fix` patches it and runs your tests ([see it, find it, fix it, check it](docs/flow.md)).
 - **Across repositories.** Recall can span the repositories of a workspace: `graphicle context --workspace`, or [the workspace MCP endpoint](docs/mcp.md#several-projects-in-one-connection).
 - **Always current.** Before each answer Graphicle syncs the few files you changed; Git hooks sync after each commit, merge and checkout.
@@ -204,6 +205,17 @@ Every figure is labelled, and [docs/benchmarks.md](docs/benchmarks.md) has the f
 </p>
 
 - **Time per question** (0.1.8, the chart above). On kubernetes at `ca8a2a9e4` (a shallow clone, 30,315 files), over the 22 questions of issue #8, the median `graphicle context` call took 1.34 s with 0.1.8 against 2.99 s with 0.1.7 on 16 cores of our Linux server, 1.38 s against 3.89 s on 4 cores, and 1.90 s against 4.55 s on 4 cores with the file cache dropped before each call; 8 lookups took 0.96 s against 2.52 s on 16 cores. Each call was a new process, as the prompt hook runs it. On the same store, both releases gave the same packet for every question, and the peak memory of a call fell from 3.5 GB to 0.6 GB ([method and rounds](docs/benchmarks.md#our-own-run-on-kubernetes-017-and-018)).
+
+### Update with nothing to change (0.1.13)
+
+`graphicle-graph update` stops early when nothing changed since a full update that changed nothing, and keeps the graph as it is ([how it decides](docs/configuration.md)).
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/early-stop-0113-dark.png">
+    <img src="assets/early-stop-0113-light.png" alt="Bar chart of an update with nothing to change, Graphicle 0.1.12's full update against 0.1.13's early stop, on one cloud machine with 8 CPUs and 8 workers; medians of 3 runs for 0.1.12 and 5 for 0.1.13; the outputs were the same. kubernetes v1.37.1: 164.8 s against 15.7 s, 10.5 times less time; react v19.3.0: 22.6 s against 1.02 s, 22.2 times less time; redis 8.10.2: 3.40 s against 0.25 s, 13.7 times less time. 0.1.13 took 10.5 to 22.2 times less time." width="860">
+  </picture>
+</p>
 
 ### Speed and memory of 0.1.11 against Graphify 0.9.100
 
@@ -307,7 +319,7 @@ More answers: [FAQ](docs/faq.md) · [Troubleshooting](docs/troubleshooting.md) �
 
 ## Documentation
 
-[Quick start](docs/quickstart.md) · [Agents](docs/agents.md) · [Muse Code](docs/muse-code.md) · [MCP](docs/mcp.md) · [Packs](docs/pack.md) · [Fix](docs/fix.md) · [Flow](docs/flow.md) · [Review](docs/review.md) · [Install](docs/install.md) · [Configuration](docs/configuration.md) ·
+[Quick start](docs/quickstart.md) · [Agents](docs/agents.md) · [Muse Code](docs/muse-code.md) · [MCP](docs/mcp.md) · [Packs](docs/pack.md) · [Fix](docs/fix.md) · [Flow](docs/flow.md) · [Review](docs/review.md) · [Wiki](docs/wiki.md) · [Install](docs/install.md) · [Configuration](docs/configuration.md) ·
 [Team server](docs/team.md) · [Moving from Graphify](docs/migrate-from-graphify.md) · [Benchmarks](docs/benchmarks.md) · [FAQ](docs/faq.md) · [Changelog](CHANGELOG.md) · [Built at Meta's hackathon](HACKATHON.md)
 
 The code: [`crates/graphicle/`](crates/graphicle/README.md) (the program: command line, app, HTTP and MCP server), [`crates/graphicle-graph/`](crates/graphicle-graph/README.md) (the code-graph engine),

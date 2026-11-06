@@ -67,6 +67,89 @@ snapshots and never wait for it.
 - `bench/store-load/`: a load harness that indexes a large repository into a
   store while 10 to 33 clients read from it over MCP. It records read latency
   and failures, memory, WAL size and fsyncs.
+  
+## 0.1.13 - 2026-11-05
+
+Every crate is at 0.1.13, and `graphicle --version` prints
+`graphicle 0.1.13 (core)`. The Python and TypeScript SDKs are at 0.1.13 too.
+
+### After upgrading
+
+- Run `graphicle sync` once in each project, as after 0.1.12: the saved
+  graph and the query file are keyed to the program's build, so the first
+  sync writes both again.
+- The first `graphicle-graph update` after upgrading is a full one: the
+  extraction cache's schema moved on, and the early stop below needs a
+  record that only a full update writes.
+
+### Faster updates
+
+- `graphicle-graph update` stops early when nothing has changed since a full
+  update that itself changed nothing. That update records, in
+  `.graphicle_build_state.json` in the output folder, the size, modification
+  time and (on Unix) status-change time and inode of every file it scanned,
+  of the configuration files around the project, and of every file the
+  extractors read outside the scan, such as a C header in an ignored folder
+  or a Sphinx `conf.py` above the project. The next `update` scans the
+  project, compares, and if nothing differs prints "No relevant changes" and
+  keeps the graph. Anything it cannot prove the same takes the full update:
+  a file edited while an update runs, a JavaScript workspace above the
+  project, `--precise`, or an extractor that walks the tree without the
+  ignore rules (Pascal and C# project files). See `docs/configuration.md`.
+- Measured on one cloud machine with 8 CPUs and 8 workers, an update with
+  nothing to change took, as the median of 5 runs, 15.7 s on kubernetes
+  v1.37.1, 1.02 s on react v19.3.0 and 0.25 s on redis 8.10.2, against
+  164.8 s, 22.6 s and 3.40 s for 0.1.12's full update (median of 3), with
+  the same outputs.
+- A file whose content always fails to extract (a JSON or YAML file over the
+  size limit, a YAML file the parser refuses, a binary Delphi form) no
+  longer keeps the early stop away; a read error, a timeout or an extractor
+  that stopped still does.
+
+### Project wiki
+
+- `graphicle wiki build` has a model write one article per area of the code,
+  with an index of one-line summaries, in `.graphicle/wiki/written/`. Each
+  paragraph cites files and lines, and a citation must fall on lines the
+  model was shown, or the paragraph is dropped and counted.
+  `graphicle wiki update` rewrites only the articles whose code, docs or
+  reviewed memories changed. Calls are capped by `--max-cost` (1 USD by
+  default) and the profile's caps, logged in `graphicle usage`, and priced
+  first with `--dry-run`. Captured sessions are never sent.
+  `graphicle wiki hook on` adds an optional post-commit update with its own
+  cap. See `docs/wiki.md`.
+- `graphicle wiki check` lists, with no model, doc passages whose named code
+  changed since they were written, stale memories, wiki citations that no
+  longer hold and areas of the code with no doc or article. With a model it
+  proposes corrections: a doc's as a patch file, a memory's in the approval
+  queue. It never edits your files.
+- The wiki was tested against local stand-in models; no live model run is
+  part of this release.
+
+### Fixes
+
+- Doc links flag a passage whose named function changed after the passage
+  was written, in `graph.doc_links` and as a note on recall excerpts.
+- An output folder given by a relative path that leads outside the project
+  (`GRAPHICLE_OUT=../out`) now gives one graph, as an absolute one has since
+  0.1.12.
+- A deleted Office document takes its nodes with it, wherever the output
+  folder is.
+- `extract` after `update` no longer warns that it kept nodes "fail-closed"
+  for a converted Office document the scan lists.
+
+### Docs
+
+- The README's benchmarks gain a chart of an update with nothing to change,
+  0.1.13 against 0.1.12, with the numbers above.
+
+### Packaging
+
+- `server.json` at the repository's root is the MCP Registry entry of
+  0.1.12, the latest listed release (it named 0.1.11).
+- `deny.toml` in graphicle-graph and graphicle-memory ignores
+  RUSTSEC-2026-0441: pin-utils, which the AWS SDK of the bedrock feature
+  brings in, is unmaintained, with no known vulnerability.
 
 ## 0.1.12 - 2026-11-03
 
