@@ -8,8 +8,8 @@
 <ul>
 <li><a href="#Apache-2.0">Apache License 2.0</a> &mdash; 412 crate(s)</li>
 <li><a href="#MIT">MIT License</a> &mdash; 184 crate(s)</li>
-<li><a href="#ISC">ISC License</a> &mdash; 26 crate(s)</li>
 <li><a href="#Unicode-3.0">Unicode License v3</a> &mdash; 24 crate(s)</li>
+<li><a href="#ISC">ISC License</a> &mdash; 21 crate(s)</li>
 <li><a href="#BSD-3-Clause">BSD 3-Clause &quot;New&quot; or &quot;Revised&quot; License</a> &mdash; 13 crate(s)</li>
 <li><a href="#Zlib">zlib License</a> &mdash; 4 crate(s)</li>
 <li><a href="#CC0-1.0">Creative Commons Zero v1.0 Universal</a> &mdash; 2 crate(s)</li>
@@ -11476,38 +11476,6 @@ impl N0 {
 <p>Used by:</p>
 <ul><li><a href="https://github.com/briansmith/ring">ring 0.17.14</a></li>
 </ul>
-<pre>// Copyright 2015-2024 Brian Smith.
-//
-// Permission to use, copy, modify, and/or distribute this software for any
-// purpose with or without fee is hereby granted, provided that the above
-// copyright notice and this permission notice appear in all copies.
-//
-// THE SOFTWARE IS PROVIDED &quot;AS IS&quot; AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
-// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
-// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
-// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
-#[cfg(target_pointer_width &#x3D; &quot;64&quot;)]
-type CompilerWord &#x3D; u64;
-
-#[cfg(target_pointer_width &#x3D; &quot;32&quot;)]
-type CompilerWord &#x3D; u32;
-
-/// A native word that isn&#x27;t secret.
-///
-/// &#x60;LeakyWord&#x60; supports &#x60;as&#x60; conversions to/from native types.
-///
-/// XXX: This isn&#x27;t the native word size on targets where a pointer isn&#x27;t the
-/// same size as a native word. TODO: Fix this.
-pub(crate) type LeakyWord &#x3D; CompilerWord;
-</pre>
-<h3 id="ISC">ISC License</h3>
-<p>Used by:</p>
-<ul><li><a href="https://github.com/briansmith/ring">ring 0.17.14</a></li>
-</ul>
 <pre>// Copyright 2015-2025 Brian Smith.
 //
 // Permission to use, copy, modify, and/or distribute this software for any
@@ -11614,43 +11582,6 @@ impl From&lt;KeyRejected&gt; for Unspecified {
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-#[cfg(target_arch &#x3D; &quot;x86&quot;)]
-pub fn shift_full_blocks&lt;const BLOCK_LEN: usize&gt;(
-    in_out: super::overlapping::Overlapping&lt;&#x27;_, u8&gt;,
-    mut transform: impl FnMut(&amp;[u8; BLOCK_LEN]) -&gt; [u8; BLOCK_LEN],
-) {
-    let (in_out, src) &#x3D; in_out.into_slice_src_mut();
-    let in_out_len &#x3D; in_out[src.clone()].len();
-
-    for i in (0..in_out_len).step_by(BLOCK_LEN) {
-        let block &#x3D; {
-            let input &#x3D;
-                &lt;&amp;[u8; BLOCK_LEN]&gt;::try_from(&amp;in_out[(src.start + i)..][..BLOCK_LEN]).unwrap();
-            transform(input)
-        };
-        let output &#x3D; &lt;&amp;mut [u8; BLOCK_LEN]&gt;::try_from(&amp;mut in_out[i..][..BLOCK_LEN]).unwrap();
-        *output &#x3D; block;
-    }
-}
-</pre>
-<h3 id="ISC">ISC License</h3>
-<p>Used by:</p>
-<ul><li><a href="https://github.com/briansmith/ring">ring 0.17.14</a></li>
-</ul>
-<pre>// Copyright 2018 Brian Smith.
-//
-// Permission to use, copy, modify, and/or distribute this software for any
-// purpose with or without fee is hereby granted, provided that the above
-// copyright notice and this permission notice appear in all copies.
-//
-// THE SOFTWARE IS PROVIDED &quot;AS IS&quot; AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
-// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
-// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
-// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
 //! Serialization and deserialization.
 
 #[doc(hidden)]
@@ -11707,40 +11638,6 @@ mod ffi;
 pub(super) mod fallback;
 mod sha2_32;
 mod sha2_64;
-</pre>
-<h3 id="ISC">ISC License</h3>
-<p>Used by:</p>
-<ul><li><a href="https://github.com/briansmith/ring">ring 0.17.14</a></li>
-</ul>
-<pre>// Copyright 2022 Brian Smith.
-//
-// Permission to use, copy, modify, and/or distribute this software for any
-// purpose with or without fee is hereby granted, provided that the above
-// copyright notice and this permission notice appear in all copies.
-//
-// THE SOFTWARE IS PROVIDED &quot;AS IS&quot; AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
-// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
-// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
-// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
-/// Polyfill for &#x60;Option::unwrap()&#x60; as a const fn; feature &#x60;const_option&#x60;.
-/// https://github.com/rust-lang/rust/issues/67441.
-/// TODO(MSRV): Replace this with &#x60;x.unwrap()&#x60;.
-///
-/// &#x60;T: Copy&#x60; avoids &quot;constant functions cannot evaluate destructors.&quot;
-pub const fn unwrap_const&lt;T&gt;(x: Option&lt;T&gt;) -&gt; T
-where
-    T: Copy,
-{
-    if let Some(x) &#x3D; x {
-        x
-    } else {
-        panic!(&quot;unwrap_const on &#x60;None&#x60;&quot;);
-    }
-}
 </pre>
 <h3 id="ISC">ISC License</h3>
 <p>Used by:</p>
@@ -11814,34 +11711,6 @@ mod bits_tests;
 // OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
 // CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
-//! Utilities to make dealing with slices less tediuous.
-
-/// Replaces the first N elements of &#x60;a&#x60; with the first N elements of &#x60;b&#x60;, where
-/// N is &#x60;core::cmp::min(a.len(), b.len())&#x60;, leaving the rest unchanged.
-pub fn overwrite_at_start&lt;T: Copy&gt;(a: &amp;mut [T], b: &amp;[T]) {
-    a.iter_mut().zip(b).for_each(|(a, b)| {
-        *a &#x3D; *b;
-    });
-}
-</pre>
-<h3 id="ISC">ISC License</h3>
-<p>Used by:</p>
-<ul><li><a href="https://github.com/briansmith/ring">ring 0.17.14</a></li>
-</ul>
-<pre>// Copyright 2024 Brian Smith.
-//
-// Permission to use, copy, modify, and/or distribute this software for any
-// purpose with or without fee is hereby granted, provided that the above
-// copyright notice and this permission notice appear in all copies.
-//
-// THE SOFTWARE IS PROVIDED &quot;AS IS&quot; AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
-// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
-// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
-// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
 pub use self::{
     array::Array,
     base::{IndexError, Overlapping},
@@ -11851,41 +11720,6 @@ pub use self::{
 mod array;
 mod base;
 mod partial_block;
-</pre>
-<h3 id="ISC">ISC License</h3>
-<p>Used by:</p>
-<ul><li><a href="https://github.com/briansmith/ring">ring 0.17.14</a></li>
-</ul>
-<pre>// Copyright 2024 Brian Smith.
-//
-// Permission to use, copy, modify, and/or distribute this software for any
-// purpose with or without fee is hereby granted, provided that the above
-// copyright notice and this permission notice appear in all copies.
-//
-// THE SOFTWARE IS PROVIDED &quot;AS IS&quot; AND THE AUTHOR DISCLAIMS ALL WARRANTIES
-// WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
-// MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
-// SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
-// WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION
-// OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
-// CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-
-use crate::testutil;
-use core::{marker::PhantomData, mem::size_of};
-
-/// A ZST that can be added to any type to make the type &#x60;!Send&#x60;.
-#[derive(Clone, Copy)]
-pub struct NotSend(PhantomData&lt;*mut ()&gt;);
-
-impl NotSend {
-    pub const VALUE: Self &#x3D; Self(PhantomData);
-}
-
-#[allow(deprecated)]
-const _: () &#x3D; testutil::compile_time_assert_clone::&lt;NotSend&gt;();
-#[allow(deprecated)]
-const _: () &#x3D; testutil::compile_time_assert_copy::&lt;NotSend&gt;();
-const _: () &#x3D; assert!(size_of::&lt;NotSend&gt;() &#x3D;&#x3D; 0);
 </pre>
 <h3 id="ISC">ISC License</h3>
 <p>Used by:</p>
