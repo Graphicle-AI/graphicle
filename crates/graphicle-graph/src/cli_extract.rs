@@ -222,6 +222,11 @@ fn context(
             "_java_ret",
             "_ts_fields",
             "_ts_static_fields",
+            "_py_fixture",
+            "_cpp_qualified",
+            "_py_return_type",
+            "_go_fields",
+            "_go_package_path",
         ] {
             if build::truthy(&n[k]) {
                 c[k] = n[k].clone();
@@ -255,8 +260,13 @@ fn context(
     for e in ar(existing.get("links").unwrap_or(&existing["edges"])) {
         // Import edges come too (0.9.91): a TS field inherited from an
         // unchanged file is typed by that file's imports, as in a full build.
-        if !["contains", "method", "inherits", "imports", "imports_from"]
-            .contains(&e["relation"].as_str().unwrap_or(""))
+        // A `references` edge with context `return_type` comes too
+        // (Graphify 0.9.96, #4726): it types a method result for member
+        // calls in re-extracted files.
+        let return_type = e["relation"] == "references" && e["context"] == "return_type";
+        if !(return_type
+            || ["contains", "method", "inherits", "imports", "imports_from"]
+                .contains(&e["relation"].as_str().unwrap_or("")))
             || !build::is_ast_tier(e)
             || !e["source_file"]
                 .as_str()
@@ -267,6 +277,9 @@ fn context(
         let mut c = json!({});
         for k in ["source", "target", "relation", "source_file"] {
             c[k] = e[k].clone();
+        }
+        if return_type {
+            c["context"] = json!("return_type");
         }
         if e["metadata"]["ruby_superclass_ref"].is_string() {
             c["metadata"] = json!({"ruby_superclass_ref":e["metadata"]["ruby_superclass_ref"]});
@@ -1225,5 +1238,42 @@ mod tests {
             assert_eq!(node[key], existing["nodes"][0][key], "{key}");
         }
         assert_eq!(node["metadata"], json!({"python_opaque_bases": ["Base"]}));
+    }
+    /// Graphify 0.9.96 (#4726), 0.9.99, 0.9.101 and 0.9.102: the Python
+    /// return-type, Go field, C++ qualified-owner and Go package-path markers
+    /// survive, and a `references` edge with context `return_type` comes
+    /// along with its context while other `references` edges stay out.
+    #[test]
+    fn resolution_context_keeps_the_0_9_102_markers_and_return_types() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = json!({"nodes": [
+            {"id": "m_f", "label": "f()", "source_file": "m.py", "file_type": "code",
+             "type": "function", "source_location": "L1", "_origin": "ast",
+             "_py_return_type": "Widget", "_py_fixture": "function",
+             "_go_fields": {"db": "DB"}, "_cpp_qualified": "ns::Widget::f",
+             "_go_package_path": "example.com/m"},
+            {"id": "m_widget", "label": "Widget", "source_file": "m.py", "file_type": "code",
+             "type": "class", "source_location": "L5", "_origin": "ast"},
+        ], "links": [
+            {"source": "m_f", "target": "m_widget", "relation": "references",
+             "context": "return_type", "source_file": "m.py", "_origin": "ast"},
+            {"source": "m_f", "target": "m_widget", "relation": "references",
+             "context": "parameter_type", "source_file": "m.py", "_origin": "ast"},
+        ]});
+        let files = json!({"code": ["m.py"]});
+        let (nodes, edges) = super::context(&existing, root.path(), &files, &[]);
+        let node = nodes.iter().find(|n| n["id"] == "m_f").unwrap();
+        for key in [
+            "_py_return_type",
+            "_py_fixture",
+            "_go_fields",
+            "_cpp_qualified",
+            "_go_package_path",
+        ] {
+            assert_eq!(node[key], existing["nodes"][0][key], "{key}");
+        }
+        assert_eq!(edges.len(), 1, "{edges:?}");
+        assert_eq!(edges[0]["relation"], "references");
+        assert_eq!(edges[0]["context"], "return_type");
     }
 }

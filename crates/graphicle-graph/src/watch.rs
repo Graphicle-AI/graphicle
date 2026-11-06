@@ -2220,6 +2220,11 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 "_java_ret",
                 "_ts_fields",
                 "_ts_static_fields",
+                "_py_fixture",
+                "_cpp_qualified",
+                "_py_return_type",
+                "_go_fields",
+                "_go_package_path",
             ] {
                 if build::truthy(&n[k]) {
                     c[k] = n[k].clone();
@@ -2258,8 +2263,14 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         ) {
             // Import edges come too (0.9.91): a TS field inherited from an
             // unchanged file is typed by that file's imports, as in a full build.
-            if !["contains", "method", "inherits", "imports", "imports_from"]
-                .contains(&text(e, "relation").as_str())
+            // A `references` edge with context `return_type` comes too
+            // (Graphify 0.9.96, #4726): it types a method result for member
+            // calls in re-extracted files.
+            let return_type =
+                text(e, "relation") == "references" && text(e, "context") == "return_type";
+            if !(return_type
+                || ["contains", "method", "inherits", "imports", "imports_from"]
+                    .contains(&text(e, "relation").as_str()))
                 || !build::is_ast_tier(e)
                 || !live.contains(&sp.absolute_identity(&text(e, "source_file"), &project_root))
             {
@@ -2268,6 +2279,9 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             let mut c = json!({});
             for k in ["source", "target", "relation", "source_file"] {
                 c[k] = e[k].clone();
+            }
+            if return_type {
+                c["context"] = json!("return_type");
             }
             if e["metadata"]["ruby_superclass_ref"].is_string() {
                 c["metadata"] = json!({"ruby_superclass_ref":e["metadata"]["ruby_superclass_ref"]});

@@ -126,6 +126,11 @@ fn context_where(g: &Graph, keep: impl Fn(&str) -> bool) -> (Vec<Value>, Vec<Val
             "_java_ret",
             "_ts_fields",
             "_ts_static_fields",
+            "_py_fixture",
+            "_cpp_qualified",
+            "_py_return_type",
+            "_go_fields",
+            "_go_package_path",
         ] {
             if build::truthy(attr(g, i, k)) {
                 c[k] = attr(g, i, k).clone();
@@ -161,15 +166,25 @@ fn context_where(g: &Graph, keep: impl Fn(&str) -> bool) -> (Vec<Value>, Vec<Val
         let relation = e.attributes.get("relation").and_then(Value::as_str);
         // Import edges come too (0.9.91): a TS field inherited from an
         // unchanged file is typed by that file's imports, as in a full build.
-        if !relation.is_some_and(|r| {
-            ["contains", "method", "inherits", "imports", "imports_from"].contains(&r)
-        }) || !ast_tier(&e.attributes)
+        // A `references` edge with context `return_type` comes too
+        // (Graphify 0.9.96, #4726): it types a method result for member
+        // calls in re-extracted files.
+        let return_type = relation == Some("references")
+            && e.attributes.get("context").and_then(Value::as_str) == Some("return_type");
+        if !(return_type
+            || relation.is_some_and(|r| {
+                ["contains", "method", "inherits", "imports", "imports_from"].contains(&r)
+            }))
+            || !ast_tier(&e.attributes)
             || !live(e.attributes.get("source_file").unwrap_or(&Value::Null))
         {
             continue;
         }
         let mut c = json!({"source": g.nodes[u].id, "target": g.nodes[v].id, "relation": relation,
             "source_file": e.attributes.get("source_file").cloned().unwrap_or(Value::Null)});
+        if return_type {
+            c["context"] = json!("return_type");
+        }
         if let Some(m) = e.attributes.get("metadata").and_then(Value::as_object)
             && let Some(sup) = m.get("ruby_superclass_ref").filter(|v| v.is_string())
         {
