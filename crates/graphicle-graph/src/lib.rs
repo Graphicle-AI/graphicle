@@ -64,6 +64,7 @@ pub mod extractors;
 pub mod file_slice;
 mod fsutil;
 pub mod global_graph;
+pub mod go_dispatch;
 pub mod google_workspace;
 /// Long-tail grammars loaded from shared-library packs in slim builds.
 pub mod grammar_packs;

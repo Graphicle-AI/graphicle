@@ -22,6 +22,9 @@ pub(crate) struct Engine<'a, 't> {
     pub path: String,
     pub stem: String,
     pub file: String,
+    /// Unique declaration ids of the file, the file id reserved (Graphify
+    /// 0.9.98, #4854).
+    pub decl: crate::ids::DeclIdRegistry,
     pub nodes: Vec<Value>,
     pub edges: Vec<Value>,
     pub raw: Vec<Value>,
@@ -50,6 +53,15 @@ pub(crate) struct Engine<'a, 't> {
     pub csharp_member_groups: BTreeMap<String, BTreeSet<String>>,
     pub labels: Table,
     pub labels_ci: Table,
+    /// C++: per function, the in-scope byte ranges of its named locals and
+    /// parameters (Graphify 0.9.101).
+    pub cpp_local_bindings: BTreeMap<String, BTreeMap<String, Vec<(usize, usize)>>>,
+    /// C++: the literal qualified identity of each class and out-of-line
+    /// definition, `""` when two disagree (Graphify 0.9.101).
+    pub cpp_qualified: BTreeMap<String, String>,
+    /// Python: the labels of the file's non-method definitions; a bare `f()`
+    /// in a method body never names a method (Graphify 0.9.101).
+    pub python_free_labels: Table,
     pub seen_calls: BTreeSet<(String, String)>,
     pub seen_indirect: BTreeSet<(String, String)>,
     pub external: BTreeSet<String>,
@@ -75,6 +87,10 @@ pub(crate) struct Engine<'a, 't> {
     pub local_bases: BTreeMap<String, Vec<String>>,
     /// Receiver-shadow guard for plain external module calls (Python only).
     pub python_shadow: Option<super::engine_scope::PythonReceiverShadow>,
+    /// Python: module-level `name = Ctor(...)` instances and their checkers
+    /// (Graphify 0.9.102).
+    pub python_module_instances:
+        BTreeMap<String, (String, super::engine_scope::PythonReceiverShadow)>,
     /// JS/TS: names the module exports (#3778), computed on first use;
     /// upstream rescans the program for every `Obj.m = fn` assignment.
     pub js_exported: Option<BTreeSet<String>>,
@@ -108,6 +124,9 @@ pub(crate) struct Engine<'a, 't> {
     /// per class, `self.X -> class` (0.9.80).
     pub python_var_types: BTreeMap<String, PythonBindings>,
     pub python_attr_types: BTreeMap<String, PythonBindings>,
+    /// Python: per function, locals bound to a member-call result, by that
+    /// call's byte span (Graphify 0.9.96).
+    pub python_factory_bindings: BTreeMap<String, PythonFactories>,
     /// C#: plain method id -> `(signature, id, metadata)` of the overloads of
     /// one name on one type, in declaration order (0.9.95, #4584).
     pub csharp_overloads: BTreeMap<String, Vec<(String, String, Value)>>,
@@ -274,7 +293,27 @@ impl<'a, 't> Engine<'a, 't> {
         }
         self.edges.push(e);
     }
+    /// `decl_registry.resolve`: the unique id of a declaration that would use
+    /// `nid` (Graphify 0.9.98, #4854).
+    pub fn decl_id(&mut self, nid: &str, name: &str, kind: &str) -> String {
+        let seen = &self.seen;
+        self.decl.resolve(nid, name, kind, |id| seen.contains(id))
+    }
+    /// One identity per id; two that disagree make it unknown (Graphify
+    /// 0.9.101).
+    pub fn note_cpp_qualified(&mut self, id: &str, qualified: String) {
+        let kept = match self.cpp_qualified.get(id) {
+            Some(previous) if *previous != qualified => String::new(),
+            _ => qualified,
+        };
+        self.cpp_qualified.insert(id.to_string(), kept);
+    }
     pub fn ensure(&mut self, name: &str, origin: bool) -> String {
+        // A name the file declares once binds that declaration (Graphify
+        // 0.9.98, #4854).
+        if let Some(declared) = self.decl.lookup(name) {
+            return declared;
+        }
         let mut local = make_id([self.stem.as_str(), self.namespace.join(".").as_str(), name]);
         if self.is("c_sharp") {
             local = python_underscore_salted_nid(&local, name, &self.csharp_type_groups);
@@ -282,7 +321,8 @@ impl<'a, 't> Engine<'a, 't> {
             // A salted module-level class (0.9.92, #2810).
             local = python_underscore_salted_nid(&local, name, &self.underscore);
         }
-        if self.seen.contains(&local) {
+        // Never the file's own id for a reference (#4854).
+        if self.seen.contains(&local) && local != self.file {
             return local;
         }
         let id = make_id([name]);
@@ -626,6 +666,15 @@ impl<'a, 't> Engine<'a, 't> {
         {
             id = self.js_member_nid(class, n, &sanitized);
         }
+        if parent.is_none() {
+            // A top-level function whose id is the file's (Graphify 0.9.98,
+            // #4854).
+            id = self.decl_id(&id, &sanitized, "fn");
+        }
+        if self.is("cpp") && name.contains("::") {
+            let qualified = cpp_qualified_name(n, &name, self.source);
+            self.note_cpp_qualified(&id, qualified);
+        }
         let mut meta = Value::Null;
         if let Some((_, _, overload_meta)) = &overload {
             meta = overload_meta.clone();
@@ -816,17 +865,17 @@ impl<'a, 't> Engine<'a, 't> {
                         js_local_bound_names(target, self.source)
                     };
                     self.locals.insert(id.clone(), locals);
-                    if self.is("python") {
-                        self.parents.insert(id.clone(), parent.into());
-                        self.lexical
-                            .entry(parent.into())
-                            .or_default()
-                            .insert(name.clone(), id.clone());
-                        self.lexical
-                            .entry(id.clone())
-                            .or_default()
-                            .insert(name, id.clone());
-                    }
+                    // The nesting, so a call binds the nearest `inner` in
+                    // scope (#3405); JS/TS too since Graphify 0.9.97.
+                    self.parents.insert(id.clone(), parent.into());
+                    self.lexical
+                        .entry(parent.into())
+                        .or_default()
+                        .insert(name.clone(), id.clone());
+                    self.lexical
+                        .entry(id.clone())
+                        .or_default()
+                        .insert(name, id.clone());
                     if let Some(b) = find_body(target, self.config) {
                         self.bodies.push((id.clone(), b));
                         self.nested(b, &id);
@@ -871,6 +920,45 @@ pub fn decorator_name(n: Node<'_>, s: &[u8]) -> Option<String> {
         _ => None,
     }
 }
+/// `_ts_decorator_name` (Graphify 0.9.96, #4711): the symbol a TS
+/// decorator applies, which is the outermost call's name. `@(Link().toMany())`
+/// is a call chain the grammar cannot parse in decorator position: `Link().`
+/// lands in an ERROR and `toMany()` beside it, so the applied decorator is
+/// the last named call inside the parentheses.
+pub fn ts_decorator_name(n: Node<'_>, s: &[u8]) -> Option<String> {
+    ts_decorator_target(named(n).into_iter().next()?, s)
+}
+fn ts_decorator_target(expr: Node<'_>, s: &[u8]) -> Option<String> {
+    let property = |n: Node<'_>| n.child_by_field_name("property").map(|p| read_text(p, s));
+    match expr.kind_name() {
+        "parenthesized_expression" => {
+            let inner = named(expr);
+            if let Some(call) = inner
+                .iter()
+                .rev()
+                .find(|c| c.kind_name() == "call_expression")
+            {
+                return ts_decorator_target(*call, s);
+            }
+            // A recovered non-call (`@(A, B)`) names no decorator.
+            if inner.iter().any(|c| c.kind_name() == "ERROR") {
+                return None;
+            }
+            ts_decorator_target(*inner.first()?, s)
+        }
+        "call_expression" => {
+            let function = expr.child_by_field_name("function")?;
+            match function.kind_name() {
+                "member_expression" => property(function),
+                "identifier" => Some(read_text(function, s)),
+                _ => None,
+            }
+        }
+        "member_expression" => property(expr),
+        "identifier" => Some(read_text(expr, s)),
+        _ => None,
+    }
+}
 pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8]>) -> Value {
     let loaded;
     let from_file = source.is_none();
@@ -905,6 +993,7 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         path: path_str,
         stem: stem.clone(),
         file: file.clone(),
+        decl: crate::ids::DeclIdRegistry::new([file.as_str()]),
         nodes: vec![],
         edges: vec![],
         raw: vec![],
@@ -932,6 +1021,9 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         csharp_member_groups: BTreeMap::new(),
         labels: Table::new(),
         labels_ci: Table::new(),
+        cpp_local_bindings: BTreeMap::new(),
+        cpp_qualified: BTreeMap::new(),
+        python_free_labels: Table::new(),
         seen_calls: BTreeSet::new(),
         seen_indirect: BTreeSet::new(),
         external: BTreeSet::new(),
@@ -953,6 +1045,7 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         methods_by_owner: BTreeMap::new(),
         local_bases: BTreeMap::new(),
         python_shadow: None,
+        python_module_instances: BTreeMap::new(),
         js_exported: None,
         field_order: vec![],
         stem_id,
@@ -966,6 +1059,7 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         lexical_bases: BTreeMap::new(),
         python_var_types: BTreeMap::new(),
         python_attr_types: BTreeMap::new(),
+        python_factory_bindings: BTreeMap::new(),
         csharp_overloads: BTreeMap::new(),
         python_fixture_params: BTreeMap::new(),
         js_factory_scope: Table::new(),

@@ -76,6 +76,127 @@ pub fn normalize_id(value: &str) -> String {
     out
 }
 
+/// `decl_salt` (Graphify 0.9.98, #4854): the stable 12-hex digest appended
+/// when a declaration id collides.
+pub fn decl_salt(name: &str) -> String {
+    use sha1::{Digest, Sha1};
+    format!("{:x}", Sha1::digest(name.as_bytes()))[..12].to_string()
+}
+
+/// `DeclIdRegistry` (Graphify 0.9.98, #4854): unique ids for the
+/// declarations of one file. File ids are the path stem and symbol ids stem
+/// plus name, so `class Js` in `a.js` and the file both normalize to `a_js`:
+/// the file id is reserved, and a declaration whose id is taken by the file
+/// or by another declaration's salted id gets [`decl_salt`] appended (then a
+/// counter until free). Ownership is keyed by the id the declaration would
+/// have used, so the same declaration re-resolves to its id, and a plain
+/// duplicate of a real declaration's id reuses it.
+#[derive(Debug, Default)]
+pub struct DeclIdRegistry {
+    assigned: std::collections::HashMap<(String, String), String>,
+    owners: std::collections::HashMap<String, (String, String)>,
+    by_name: std::collections::HashMap<(String, String), std::collections::BTreeSet<String>>,
+    salted: std::collections::HashSet<String>,
+    /// The name each id was first claimed by (Graphify 0.9.100, #4904).
+    spelled: std::collections::HashMap<String, String>,
+}
+
+impl DeclIdRegistry {
+    pub fn new<'a>(reserved: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut registry = Self::default();
+        for id in reserved {
+            registry
+                .owners
+                .insert(id.to_string(), ("file".into(), id.to_string()));
+        }
+        registry
+    }
+    /// The id of the declaration `name` of `kind` that would use `nid`;
+    /// `taken` says whether an id is already a node of the file.
+    pub fn resolve(
+        &mut self,
+        nid: &str,
+        name: &str,
+        kind: &str,
+        taken: impl Fn(&str) -> bool,
+    ) -> String {
+        let key = (kind.to_string(), nid.to_string());
+        let owner = self.owners.get(nid).cloned();
+        if owner.as_ref() == Some(&key) {
+            return self.assigned[&key].clone();
+        }
+        if owner.is_none() && !taken(nid) {
+            self.owners.insert(nid.to_string(), key.clone());
+            self.assigned.insert(key, nid.to_string());
+            self.spelled.insert(nid.to_string(), name.to_string());
+            self.by_name
+                .entry((kind.to_string(), normalize_id(name)))
+                .or_default()
+                .insert(nid.to_string());
+            return nid.to_string();
+        }
+        if let Some(assigned) = self.assigned.get(&key) {
+            return assigned.clone();
+        }
+        // An id a real declaration already uses is a duplicate reference to
+        // it (a prototype owner, a re-declared name). Only a salted id, whose
+        // owner took the spelling from this declaration, forces a counter. A
+        // different kind is a duplicate only when spelled the same (TS `class
+        // Foo` + `namespace Foo`); `class Foo` + `function foo` are two
+        // (Graphify 0.9.100, #4904).
+        if taken(nid)
+            && owner.as_ref().is_some_and(|(k, _)| {
+                k != "file"
+                    && (k == kind || self.spelled.get(nid).map(String::as_str) == Some(name))
+            })
+            && !self.salted.contains(nid)
+        {
+            return nid.to_string();
+        }
+        let base = make_id([nid, decl_salt(name).as_str()]);
+        let mut candidate = base.clone();
+        let mut counter = 2;
+        while taken(&candidate) || self.owners.contains_key(&candidate) {
+            candidate = make_id([base.as_str(), counter.to_string().as_str()]);
+            counter += 1;
+        }
+        self.owners.insert(candidate.clone(), key.clone());
+        self.assigned.insert(key, candidate.clone());
+        self.salted.insert(candidate.clone());
+        self.spelled.insert(candidate.clone(), name.to_string());
+        self.by_name
+            .entry((kind.to_string(), normalize_id(name)))
+            .or_default()
+            .insert(candidate.clone());
+        candidate
+    }
+    /// The one declaration of the file spelled `name`, by kind in the order
+    /// type, fn, var, ns, alias; `None` when the first kind with any has
+    /// several.
+    pub fn lookup(&self, name: &str) -> Option<String> {
+        let norm = normalize_id(name);
+        // A declaration spelled exactly like the reference wins over one that
+        // only normalizes alike, whatever its kind (Graphify 0.9.101).
+        let exact = ["type", "fn", "var", "ns", "alias"]
+            .iter()
+            .filter_map(|kind| self.by_name.get(&(kind.to_string(), norm.clone())))
+            .flatten()
+            .filter(|id| self.spelled.get(*id).map(String::as_str) == Some(name))
+            .collect::<std::collections::BTreeSet<_>>();
+        if exact.len() == 1 {
+            return exact.into_iter().next().cloned();
+        }
+        for kind in ["type", "fn", "var", "ns", "alias"] {
+            if let Some(ids) = self.by_name.get(&(kind.to_string(), norm.clone()))
+                && !ids.is_empty()
+            {
+                return (ids.len() == 1).then(|| ids.iter().next().unwrap().clone());
+            }
+        }
+        None
+    }
+}
+
 pub fn make_id<I, S>(parts: I) -> String
 where
     I: IntoIterator<Item = S>,

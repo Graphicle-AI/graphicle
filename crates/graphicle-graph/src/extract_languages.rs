@@ -357,6 +357,140 @@ pub fn js_rationale(path: &Path, r: &mut Value) {
         }
     }
 }
+static TS_TYPED_TAG: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(r"(?-u)([A-Za-z_$][A-Za-z0-9_$]*)(<\s*\{[^{}]*\}\s*\[\s*\]\s*>)")
+        .unwrap()
+});
+static TS_QUALIFIED_IMPORT_TYPE: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(
+        r#"(?-u)\bimport\s*\(\s*['"][^'"\r\n]+['"]\s*\)\s*\.([A-Za-z_$][A-Za-z0-9_$]*)"#,
+    )
+    .unwrap()
+});
+fn ts_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+/// Whether `source[at..]` is ASCII whitespace then `next`.
+fn followed_by(source: &[u8], at: usize, next: u8) -> bool {
+    source[at..]
+        .iter()
+        .find(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+        .is_some_and(|b| *b == next)
+}
+/// `_TS_QUALIFIED_IMPORT_TYPE_RE` matches: `(start, name start)` of each
+/// `import("m").Name` followed by `<`.
+fn ts_qualified_import_types(source: &[u8]) -> Vec<(usize, usize)> {
+    TS_QUALIFIED_IMPORT_TYPE
+        .captures_iter(source)
+        .filter_map(|c| {
+            let (whole, name) = (c.get(0)?, c.get(1)?);
+            followed_by(source, name.end(), b'<').then_some((whole.start(), name.start()))
+        })
+        .collect()
+}
+/// `_normalize_ts_tag_and_import_annotations` (Graphify 0.9.102): a typed
+/// tagged template with an object-array type (`` tag<{a: T}[]>`...` ``) and an
+/// import-qualified generic annotation (`import("m").Name<T>`) are valid
+/// TypeScript the grammar can lose later declarations over. Only confirmed
+/// type syntax is blanked, in place, so lines and byte offsets stay.
+pub fn normalize_ts_tag_and_import_annotations(source: &[u8], tsx: bool) -> Option<Vec<u8>> {
+    let tags = TS_TYPED_TAG
+        .captures_iter(source)
+        .filter_map(|c| {
+            let (tag, types) = (c.get(1)?, c.get(2)?);
+            (tag.start() == 0 || !ts_ident_byte(source[tag.start() - 1]))
+                .then_some(())
+                .filter(|_| followed_by(source, types.end(), b'`'))
+                .map(|_| (tag.start(), types.start(), types.end()))
+        })
+        .collect::<Vec<_>>();
+    let imports = ts_qualified_import_types(source);
+    if tags.is_empty() && imports.is_empty() {
+        return None;
+    }
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(
+            &if tsx {
+                tree_sitter_typescript::LANGUAGE_TSX
+            } else {
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT
+            }
+            .into(),
+        )
+        .ok()?;
+    let original = parser.parse(source, None)?;
+    let root = original.root_node();
+    if !root.has_error() {
+        return None;
+    }
+    // A missing token at the template's backtick tells the grammar failure
+    // from a correctly parsed expression.
+    let missing = walk(root)
+        .into_iter()
+        .filter(|n| n.is_missing())
+        .map(|n| n.start_byte())
+        .collect::<Vec<_>>();
+    let code = |at: usize| {
+        root.descendant_for_byte_range(at, at + 1)
+            .is_none_or(is_code)
+    };
+    // (start, end, anchor, is a tag)
+    let mut candidates = vec![];
+    for (tag, start, end) in tags {
+        if let Some(backtick) = source[end..]
+            .iter()
+            .position(|b| *b == b'`')
+            .map(|i| end + i)
+            && missing.iter().any(|&pos| end <= pos && pos <= backtick)
+            && code(tag)
+        {
+            candidates.push((start, end, tag, true));
+        }
+    }
+    for (start, name) in imports {
+        if code(start) {
+            candidates.push((start, name, name, false));
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut masked = source.to_vec();
+    for &(start, end, _, _) in &candidates {
+        for b in &mut masked[start..end] {
+            if !matches!(*b, b'\r' | b'\n') {
+                *b = b' ';
+            }
+        }
+    }
+    let recovered = parser.parse(&masked, None)?;
+    let mut result = source.to_vec();
+    let mut accepted = false;
+    for (start, end, anchor, tag) in candidates {
+        let mut node = recovered
+            .root_node()
+            .descendant_for_byte_range(anchor, anchor + 1);
+        while let Some(n) = node {
+            if !tag && n.kind() == "type_annotation" {
+                result[start..end].copy_from_slice(&masked[start..end]);
+                accepted = true;
+                break;
+            }
+            if tag && n.kind() == "call_expression" {
+                if n.child_by_field_name("arguments")
+                    .is_some_and(|a| a.kind() == "template_string")
+                {
+                    result[start..end].copy_from_slice(&masked[start..end]);
+                    accepted = true;
+                }
+                break;
+            }
+            node = n.parent();
+        }
+    }
+    accepted.then_some(result)
+}
 fn is_code(mut n: Node<'_>) -> bool {
     let mut substitution = false;
     loop {
@@ -673,10 +807,28 @@ fn rescued_import(path: &Path, r: &mut Value, raw: &str, relation: &str) {
     }
     arr(r, "edges").push(e);
 }
-pub fn rescue_dynamic(path: &Path, r: &mut Value) {
+pub fn rescue_dynamic(path: &Path, r: &mut Value, type_only_imports: &BTreeSet<usize>) {
     let Ok(src) = read_source_text(path, false) else {
         return;
     };
+    // The byte offsets in the read text (CRLF translated) of the `import`
+    // types the TS repair blanked: not executable imports (Graphify 0.9.102).
+    let mut type_only = BTreeSet::new();
+    if !type_only_imports.is_empty()
+        && let Ok(raw) = read_source_bytes(path, false)
+    {
+        let (mut cursor, mut position) = (0, 0);
+        for &offset in type_only_imports {
+            if offset < cursor || raw.get(offset..offset + 6) != Some(b"import".as_slice()) {
+                continue;
+            }
+            let segment = &raw[cursor..offset];
+            let crlf = segment.windows(2).filter(|w| *w == b"\r\n").count();
+            position += segment.len() - crlf;
+            type_only.insert(position);
+            cursor = offset;
+        }
+    }
     static RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"\bimport\s*\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)"#)
             .unwrap()
@@ -698,6 +850,9 @@ pub fn rescue_dynamic(path: &Path, r: &mut Value) {
     let mut seen = BTreeSet::new();
     for cap in re.captures_iter(&src) {
         let start = cap.get(0).unwrap().start();
+        if type_only.contains(&start) {
+            continue;
+        }
         if src[src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0)..start].contains("//") {
             continue;
         }
@@ -1261,6 +1416,8 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
     let mut lang = language.as_str();
     // The text an SFC/template wrapper read for its own regex passes.
     let mut text = None;
+    // Byte offsets of `import("m")` types the TS repair blanked (0.9.102).
+    let mut type_only_imports: BTreeSet<usize> = BTreeSet::new();
     let read_error =
         |e: std::io::Error| json!({"nodes":[],"edges":[],"error":io_compat::read_error(&e, path)});
     if language == "JS" {
@@ -1276,6 +1433,20 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
             && let Ok(s) = read_source_bytes(path, true)
         {
             source = normalize_ts(&s, lang == "TSX");
+            // Typed tagged templates and import-qualified annotations
+            // (Graphify 0.9.102); a blanked `import("m")` type is no
+            // executable import for the dynamic-import rescue.
+            let working = source.as_deref().unwrap_or(&s);
+            if let Some(normalized) =
+                normalize_ts_tag_and_import_annotations(working, lang == "TSX")
+            {
+                type_only_imports = ts_qualified_import_types(working)
+                    .into_iter()
+                    .map(|(start, _)| start)
+                    .filter(|&start| normalized.get(start..start + 6) != Some(b"import".as_slice()))
+                    .collect();
+                source = Some(normalized);
+            }
         }
     } else if language == "CPP" {
         if let Ok(s) = read_source_bytes(path, true) {
@@ -1366,7 +1537,7 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
         }
         "JS" if r.get("error").is_none() => {
             js_rationale(path, &mut r);
-            rescue_dynamic(path, &mut r);
+            rescue_dynamic(path, &mut r, &type_only_imports);
         }
         "CPP" => cpp_string_tests(path, &mut r),
         "GROOVY"

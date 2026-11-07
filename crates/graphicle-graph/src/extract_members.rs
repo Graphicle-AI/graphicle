@@ -16,6 +16,7 @@ use crate::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde_json::{Value, json};
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
@@ -767,6 +768,37 @@ fn typed_member_edges<'p, P: PerFile, E: Rec>(
             if direct.is_none() {
                 continue;
             }
+        } else if lang == "cpp" && upper(receiver) {
+            // `Foo::bar()` names a type, but a capitalized receiver is often a
+            // variable (the parameter `T`, the field `Inner`): without one
+            // type of that name, the file's table types it (Graphify
+            // 0.9.101, #3215).
+            let found = defs
+                .get(&key(receiver, lang))
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if let [one] = found {
+                direct = Some(*one);
+            } else {
+                let typed = table_type(file, receiver);
+                if typed.is_empty() {
+                    if found.is_empty() {
+                        parked.push((
+                            caller.to_string(),
+                            callee.to_string(),
+                            receiver.to_string(),
+                            raw,
+                        ));
+                    }
+                    continue;
+                }
+                let Some([one]) = defs.get(&key(&typed, lang)).map(Vec::as_slice) else {
+                    continue;
+                };
+                direct = Some(*one);
+                exact = false;
+                ty = typed;
+            }
         } else if upper(receiver) {
             ty = receiver.into();
         } else {
@@ -907,6 +939,154 @@ fn typed_member_edges<'p, P: PerFile, E: Rec>(
         }
     }
     Some((added, parked))
+}
+/// `_attach_cpp_out_of_line_methods` (Graphify 0.9.101): a qualified C++
+/// definition (`void Foo::bar() {}`) gets a `method` edge from the class it
+/// names only when exactly one class of that literal identity, declaring
+/// `bar` and contained by a file the definition's file is or includes, owns
+/// it. A bare call in such a definition to a member of a candidate owner is
+/// kept out of the global bare-name pass (a `this` member call).
+pub fn cpp_out_of_line_methods<P: PerFile>(
+    per: &mut [P],
+    nodes: &[Value],
+    edges: &mut Vec<Value>,
+    context_nodes: &[Value],
+    context_edges: &[Value],
+) {
+    const SUFFIXES: [&str; 8] = [".cpp", ".cc", ".cxx", ".h", ".hpp", ".hh", ".hxx", ".cu"];
+    let qualified_definition = |n: &Value| {
+        let label = s(n, "label");
+        label.ends_with("()")
+            && label.contains("::")
+            && SUFFIXES.contains(
+                &crate::path_syntax::suffix(s(n, "source_file"))
+                    .to_lowercase()
+                    .as_str(),
+            )
+            && s(n, "_cpp_qualified").contains("::")
+    };
+    if !nodes.iter().any(qualified_definition) {
+        return;
+    }
+    let mut by_id: FxHashMap<&str, &Value> = FxHashMap::default();
+    for n in context_nodes.iter().chain(nodes) {
+        by_id.insert(s(n, "id"), n);
+    }
+    let mut file_ids: FxHashMap<&str, &str> = FxHashMap::default();
+    for n in context_nodes.iter().chain(nodes) {
+        let sf = s(n, "source_file");
+        if !sf.is_empty()
+            && by_id.get(s(n, "id")).is_some_and(|m| std::ptr::eq(*m, n))
+            && s(n, "label")
+                == Path::new(sf)
+                    .file_name()
+                    .map_or("", |f| f.to_str().unwrap_or(""))
+        {
+            file_ids.insert(sf, s(n, "id"));
+        }
+    }
+    let mut imports: FxHashMap<&str, FxHashSet<&str>> = FxHashMap::default();
+    let mut class_files: FxHashMap<&str, &str> = FxHashMap::default();
+    let mut members: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    let mut owner_order: Vec<&str> = vec![];
+    let mut owned: FxHashSet<&str> = FxHashSet::default();
+    let all_edges = edges.iter().chain(context_edges).collect::<Vec<_>>();
+    for e in &all_edges {
+        let (source, target) = (s(e, "source"), s(e, "target"));
+        if source.is_empty() || target.is_empty() {
+            continue;
+        }
+        match s(e, "relation") {
+            "imports" => {
+                imports.entry(source).or_default().insert(target);
+            }
+            "contains"
+                if by_id
+                    .get(target)
+                    .is_some_and(|n| truthy(&n["_callable_class"])) =>
+            {
+                class_files.insert(target, source);
+            }
+            "method" | "defines" => {
+                let label = by_id.get(target).map_or("", |n| s(n, "label"));
+                if label.len() >= 3 && label.starts_with('.') && label.ends_with("()") {
+                    if !members.contains_key(source) {
+                        owner_order.push(source);
+                    }
+                    members
+                        .entry(source)
+                        .or_default()
+                        .insert(label[1..label.len() - 2].to_string());
+                    owned.insert(target);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut by_name: FxHashMap<&str, Vec<&str>> = FxHashMap::default();
+    for owner in &owner_order {
+        let identity = by_id.get(owner).map_or("", |n| s(n, "_cpp_qualified"));
+        if !identity.is_empty() {
+            by_name.entry(identity).or_default().push(owner);
+        }
+    }
+    let mut visible_members: FxHashMap<String, BTreeSet<String>> = FxHashMap::default();
+    let mut added = vec![];
+    for n in nodes {
+        if owned.contains(s(n, "id")) || !qualified_definition(n) {
+            continue;
+        }
+        let Some((scope, method)) = s(n, "_cpp_qualified").rsplit_once("::") else {
+            continue;
+        };
+        let sf = s(n, "source_file");
+        let Some(&own_file) = file_ids.get(sf) else {
+            continue;
+        };
+        let visible = |file: &str| {
+            file == own_file || imports.get(own_file).is_some_and(|i| i.contains(file))
+        };
+        let candidates = by_name
+            .get(scope)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|owner| {
+                members[owner].contains(method)
+                    && class_files.get(owner).is_some_and(|f| visible(f))
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            continue;
+        }
+        visible_members.insert(
+            s(n, "id").to_string(),
+            candidates
+                .iter()
+                .flat_map(|c| members[c].iter().cloned())
+                .collect(),
+        );
+        if let [owner] = candidates.as_slice() {
+            added.push(json!({"source":owner,"target":s(n, "id"),"relation":"method","confidence":"EXTRACTED","source_file":sf,"source_location":n.get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0}));
+        }
+    }
+    drop(all_edges);
+    edges.extend(added);
+    if visible_members.is_empty() {
+        return;
+    }
+    for r in per.iter_mut() {
+        for call in r.raw_calls_mut().into_iter().flatten() {
+            let caller = rs(call, "caller_nid");
+            let visible = visible_members
+                .get(caller)
+                .is_some_and(|m| m.contains(rs(call, "callee")));
+            if rs(call, "lang") == "cpp" && !truthy(at(call, "is_member_call")) && visible {
+                call.rec_set("is_member_call", Value::Bool(true));
+                call.rec_set("receiver", json!("this"));
+            }
+        }
+    }
 }
 /// `_resolve_csharp_member_calls` (#1609, #1620): a member call bound to its
 /// receiver's declared type with the namespace/using/alias scoping of the C#
@@ -1830,6 +2010,19 @@ pub fn elixir_qualified_calls<P: PerFile, E: Rec>(per: &[P], nodes: &[Value], ed
     drop((modules, labels));
     append(edges, added);
 }
+/// `_is_python_file` of `_resolve_python_member_calls` (Graphify 0.9.96):
+/// the effective suffix (a `.graphiclerc` remap honoured) is `.py`/`.pyi`,
+/// or one no other extractor owns. An extensionless file, an unknown suffix
+/// or a record that names no file passes, as before the gate.
+fn is_python_file(source_file: &str) -> bool {
+    let suffix = crate::rcfile::effective_suffix(source_file);
+    let lower = suffix.to_lowercase();
+    if lower == ".py" || lower == ".pyi" {
+        return true;
+    }
+    let dispatch = &crate::extract_merge::CONSTANTS["_DISPATCH"];
+    dispatch.get(&suffix).is_none() && dispatch.get(&lower).is_none()
+}
 /// Python's `_key()` of the member resolvers.
 fn pkey(label: &str) -> String {
     label_key(label, true)
@@ -1927,7 +2120,9 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
 ) -> Vec<Value> {
     let mut keys = PyKeys::default();
     let mut classes: BTreeMap<Rc<str>, BTreeSet<&'a str>> = BTreeMap::new();
-    let mut methods: BTreeMap<(&'a str, Rc<str>), &'a str> = BTreeMap::new();
+    // Every method under its folded key: `run` and `_run` of one class share
+    // it (Graphify 0.9.96).
+    let mut methods: BTreeMap<(&'a str, Rc<str>), Vec<&'a str>> = BTreeMap::new();
     // A method hangs off its class (`method` edge): the last edge wins.
     let mut method_class: FxHashMap<&'a str, &'a str> = FxHashMap::default();
     let mut children: BTreeMap<&'a str, BTreeMap<Rc<str>, Vec<&'a str>>> = BTreeMap::new();
@@ -1944,14 +2139,22 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
                 if !src.is_empty() && !tgt.is_empty() {
                     method_class.insert(tgt, src);
                 }
-                if let Some(n) = by_id.get(src) {
+                // Only Python classes are candidates: a Swift `Inner` must not
+                // trip the single-definition guard for a Python `Inner`.
+                if let Some(n) = by_id
+                    .get(src)
+                    .filter(|n| is_python_file(s(n, "source_file")))
+                {
                     classes
                         .entry(keys.key(s(n, "label")))
                         .or_default()
                         .insert(src);
                 }
                 if let Some(n) = by_id.get(tgt) {
-                    methods.insert((src, keys.key(s(n, "label"))), tgt);
+                    let slot = methods.entry((src, keys.key(s(n, "label")))).or_default();
+                    if !slot.contains(&tgt) {
+                        slot.push(tgt);
+                    }
                 }
             }
             "contains" => {
@@ -2013,10 +2216,26 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
                 .push(target);
         }
     }
-    // The class owning the method `callee` (by `_key()`), if any.
+    // The method `callee` of `class` (by `_key()`), if any. The key folds
+    // case and drops `_`, so `run()` and `_run()` of one class share it;
+    // among several, the one named exactly `callee` is the target, and none
+    // or two of them is no edge (Graphify 0.9.96, as #4577's module arm).
     let method_of = |class: &'a str, callee: &str| -> Option<&'a str> {
         let key = keys.find(callee)?;
-        methods.get(&(class, key)).copied()
+        let hits = methods.get(&(class, key))?;
+        if hits.len() == 1 {
+            return Some(hits[0]);
+        }
+        let mut exact = hits.iter().copied().filter(|m| {
+            by_id.get(m).is_some_and(|n| {
+                let label = s(n, "label").trim().trim_start_matches('.');
+                label.strip_suffix("()").unwrap_or(label) == callee
+            })
+        });
+        match (exact.next(), exact.next()) {
+            (Some(one), None) => Some(one),
+            _ => None,
+        }
     };
     // Climb `contains` / `method` parents to the top, which is the file: a
     // nested function's `contains` parent is its enclosing function (#4227).
@@ -2166,17 +2385,65 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
         (here.len() == 1).then(|| here[0])
     };
     let mut seen: Seen<&'a str> = pairs(edges, false);
+    // Only an edge saying the caller reaches the target pre-empts a
+    // dispatch-table value; an `imports` edge to it does not (Graphify
+    // 0.9.99, #1566).
+    let mut call_like: FxHashSet<(&'a str, &'a str)> = edges
+        .iter()
+        .filter(|e| matches!(rs(*e, "relation"), "calls" | "indirect_call"))
+        .map(|e| (rs(e, "source"), rs(e, "target")))
+        .collect();
     let mut added = vec![];
+    // The targets each exact Python call site resolved to, recorded before
+    // the pair dedupe, for the factory receivers (Graphify 0.9.96).
+    let resolved_sites: RefCell<FxHashMap<(&'a str, CallSite), BTreeSet<&'a str>>> =
+        RefCell::default();
     // `_emit_call`: an attribute read only runs a property getter, and only
     // the one it spells (`_key()` folds `_items` into `items`), as a
     // `references` edge; INFERRED for the typed-receiver arms.
     let mut emit_call =
-        |raw: &'a P::R, target: Option<&'a str>, inferred: bool, added: &mut Vec<Value>| {
+        |raw: &'a P::R, target: Option<&'a str>, inferred_call: bool, added: &mut Vec<Value>| {
             let caller = rs(raw, "caller_nid");
             let Some(target) = target.filter(|t| !t.is_empty() && *t != caller) else {
                 return;
             };
-            if seen.contains(caller, target) {
+            // Python callers bind Python definitions only; stubs and
+            // external modules carry no file (Graphify 0.9.96).
+            let target_file = by_id.get(target).map_or("", |n| s(n, "source_file"));
+            if !target_file.is_empty() && !is_python_file(target_file) {
+                return;
+            }
+            if raw.rec_get("indirect").is_some_and(truthy) {
+                // `module.func` in a dispatch table is referenced, not invoked:
+                // an INFERRED `indirect_call`, only to a real callable, never a
+                // class used as a value (Graphify 0.9.99, #1566, #2137).
+                let node = by_id.get(target).copied().unwrap_or(&Value::Null);
+                if call_like.contains(&(caller, target))
+                    || !node.get("_callable").is_some_and(truthy)
+                    || node.get("_callable_class").is_some_and(truthy)
+                {
+                    return;
+                }
+                call_like.insert((caller, target));
+                seen.insert(caller, target);
+                let context = rs(raw, "context");
+                let context = if context.is_empty() {
+                    "collection"
+                } else {
+                    context
+                };
+                let location = raw.rec_get("source_location").cloned();
+                added.push(json!({
+                    "source": caller,
+                    "target": target,
+                    "relation": "indirect_call",
+                    "context": context,
+                    "confidence": "INFERRED",
+                    "confidence_score": 0.85,
+                    "source_file": rs(raw, "source_file"),
+                    "source_location": location.unwrap_or(Value::Null),
+                    "weight": 1.0,
+                }));
                 return;
             }
             let attr_read = raw.rec_get("_python_attr_read").is_some_and(truthy);
@@ -2187,24 +2454,48 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
                 if !node.get("_py_property").is_some_and(truthy) || label != rs(raw, "callee") {
                     return;
                 }
+            } else if let Some(site) = call_site(raw.rec_get("_python_call_site")) {
+                // The precise producer, before the pair dedupe: a same-line
+                // argument call never stands in for the assigned factory.
+                resolved_sites
+                    .borrow_mut()
+                    .entry((caller, site))
+                    .or_default()
+                    .insert(target);
+            }
+            if seen.contains(caller, target) {
+                return;
             }
             seen.insert(caller, target);
+            if !attr_read {
+                call_like.insert((caller, target));
+            }
             added.push(json!({
                 "source": caller,
                 "target": target,
                 "relation": if attr_read { "references" } else { "calls" },
                 "context": if attr_read { "property_read" } else { "call" },
-                "confidence": if inferred { "INFERRED" } else { "EXTRACTED" },
-                "confidence_score": if inferred { 0.85 } else { 1.0 },
+                "confidence": if inferred_call { "INFERRED" } else { "EXTRACTED" },
+                "confidence_score": if inferred_call { 0.85 } else { 1.0 },
                 "source_file": rs(raw, "source_file"),
                 "source_location": raw.rec_get("source_location").cloned().unwrap_or(Value::Null),
                 "weight": 1.0,
             }));
         };
-    for raw in raw_calls_of(per) {
+    let mut factory_receivers = vec![];
+    // Dispatch-table values go last, so a direct call to the same target
+    // claims the pair as `calls` (Graphify 0.9.99); each half keeps its order.
+    let is_indirect = |raw: &&'a P::R| raw.rec_get("indirect").is_some_and(truthy);
+    let ordered = raw_calls_of(per)
+        .filter(|r| !is_indirect(r))
+        .chain(raw_calls_of(per).filter(is_indirect));
+    for raw in ordered {
         // The receiver is bound by an ambiguous absolute import (#3729).
         if raw.rec_get("_ambiguous_python_import").is_some_and(truthy)
             || raw.rec_get("is_member_call") != Some(&Value::Bool(true))
+            // Python callers only; other languages bind their member calls
+            // in their own passes (Graphify 0.9.96).
+            || !is_python_file(rs(raw, "source_file"))
         {
             continue;
         }
@@ -2213,7 +2504,15 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             rs(raw, "callee"),
             rs(raw, "caller_nid"),
         );
-        if matches!(receiver, "self" | "cls" | "super")
+        // A dispatch-table `module.func` takes the module arm only.
+        let indirect = raw.rec_get("indirect").is_some_and(truthy);
+        if indirect
+            && (receiver.is_empty() || callee.is_empty() || caller.is_empty() || upper(receiver))
+        {
+            continue;
+        }
+        if !indirect
+            && matches!(receiver, "self" | "cls" | "super")
             && !callee.is_empty()
             && !caller.is_empty()
             && !raw.rec_get("_python_super_args").is_some_and(truthy)
@@ -2224,7 +2523,7 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             continue;
         }
         let attr_type = rs(raw, "_python_self_attr_type");
-        if !attr_type.is_empty() && !callee.is_empty() && !caller.is_empty() {
+        if !attr_type.is_empty() && !callee.is_empty() && !caller.is_empty() && !indirect {
             // `self.X.m()` with X bound to one class (#2860): a unique class
             // the caller's own file defines or imports, owning `m`.
             let class = classes
@@ -2242,6 +2541,10 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             continue;
         }
         if receiver.is_empty() || callee.is_empty() || caller.is_empty() {
+            continue;
+        }
+        if raw.rec_get("_python_receiver_factory").is_some() {
+            factory_receivers.push(raw);
             continue;
         }
         // An external module has no parsed member definition: the extractor's
@@ -2288,18 +2591,32 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             continue;
         }
         let receiver_type = rs(raw, "receiver_type");
-        if !receiver_type.is_empty() && !upper(receiver) {
+        // A module-level instance (`client = Client()`) may be capitalized and
+        // binds only a class spelled exactly so (Graphify 0.9.102).
+        let module_instance = raw.rec_get("_python_module_instance").is_some_and(truthy);
+        if !receiver_type.is_empty() && (!upper(receiver) || module_instance) {
             // A local or parameter typed by an annotation or a constructor
             // binding (#4198), behind the origin gate (#2553): the only class
             // of that name, defined in the caller's file, imported by name,
             // or inside a module the file imports. A typed local is never an
             // imported module, so the module arm is skipped.
-            if let Some(class) = classes
+            let typed = classes
                 .get(pkey(receiver_type).as_str())
-                .filter(|c| c.len() == 1)
+                .map(|c| {
+                    c.iter()
+                        .copied()
+                        .filter(|id| {
+                            !module_instance
+                                || by_id
+                                    .get(id)
+                                    .is_some_and(|n| s(n, "label") == receiver_type)
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            if let [class] = typed[..]
                 && let Some(caller_file) = file_node(caller)
             {
-                let class = *class.iter().next().unwrap();
                 let imported = imports.get(caller_file);
                 let class_file = file_node(class);
                 if class_file == Some(caller_file)
@@ -2321,7 +2638,12 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
             // The caller's file through its enclosing scopes: `mod.func()`
             // from a method or a nested function reads its file's imports
             // too (0.9.91, #2447).
-            let Some(file) = file_node(caller) else {
+            // A module-level dispatch table: the caller is the file.
+            let file = file_node(caller).or_else(|| {
+                (indirect && imports.contains_key(caller) && !files.contains_key(caller))
+                    .then_some(caller)
+            });
+            let Some(file) = file else {
                 continue;
             };
             let rkey = pkey(receiver);
@@ -2373,7 +2695,233 @@ fn python_member_edges<'a, P: PerFile, E: Rec>(
         };
         emit_call(raw, target, false, &mut added);
     }
+    // A local bound to a uniquely resolved method call takes that method's
+    // scalar return annotation (Graphify 0.9.96): the method carries
+    // `_py_return_type` (the AST named one class) and its `return_type`
+    // references name exactly one Python class. Union, container and unknown
+    // returns name no single class; rebinding was rejected by the extractor.
+    let mut return_classes: FxHashMap<&'a str, BTreeSet<&'a str>> = FxHashMap::default();
+    for e in edges {
+        if rs(e, "relation") == "references"
+            && rs(e, "context") == "return_type"
+            && by_id
+                .get(rs(e, "source"))
+                .is_some_and(|n| n.get("_py_return_type").is_some_and(truthy))
+        {
+            return_classes
+                .entry(rs(e, "source"))
+                .or_default()
+                .insert(rs(e, "target"));
+        }
+    }
+    let class_ids = classes
+        .values()
+        .flatten()
+        .copied()
+        .collect::<FxHashSet<_>>();
+    let factory_targets = {
+        let sites = resolved_sites.borrow();
+        factory_receivers
+            .into_iter()
+            .filter_map(|raw| {
+                let site = call_site(raw.rec_get("_python_receiver_factory"))?;
+                let producers = sites.get(&(rs(raw, "caller_nid"), site))?;
+                let [producer] = producers.iter().collect::<Vec<_>>()[..] else {
+                    return None;
+                };
+                let classes = return_classes.get(producer)?;
+                let [&class] = classes.iter().collect::<Vec<_>>()[..] else {
+                    return None;
+                };
+                class_ids
+                    .contains(class)
+                    .then(|| (raw, method_of(class, rs(raw, "callee"))))
+            })
+            .collect::<Vec<_>>()
+    };
+    for (raw, target) in factory_targets {
+        emit_call(raw, target, true, &mut added);
+    }
     added
+}
+/// The `[start, end]` byte span of a Python call (`_python_call_site`,
+/// `_python_receiver_factory`, Graphify 0.9.96).
+type CallSite = (u64, u64);
+fn call_site(value: Option<&Value>) -> Option<CallSite> {
+    match value?.as_array()?.as_slice() {
+        [start, end] => Some((start.as_u64()?, end.as_u64()?)),
+        _ => None,
+    }
+}
+/// `_resolve_jvm_references` (Graphify 0.9.100, #4874): Java and Kotlin share
+/// one package and type namespace. Index the sourced type nodes of both by
+/// fully qualified name, and repoint an `imports`, `inherits`, `extends`,
+/// `implements` or `references` edge of a JVM file when its written FQN (or
+/// its simple name through the file's imports or package) names exactly one.
+/// A bare import with no target node keeps its file-level edge and gains the
+/// class edge. Runs before the Kotlin import pass and call evidence.
+pub fn jvm_references<P: PerFile>(
+    per: &[P],
+    paths: &[std::path::PathBuf],
+    nodes: &[Value],
+    edges: &mut Vec<Value>,
+) {
+    static PACKAGE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?m)^\s*package\s+([\w.]+)\s*;").unwrap());
+    static IMPORT: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"(?m)^\s*import\s+(?:static\s+)?([\w.]+)\s*;").unwrap()
+    });
+    fn set(imports: &mut Vec<(String, String)>, simple: &str, fqn: &str) {
+        match imports.iter_mut().find(|(s, _)| s == simple) {
+            Some(entry) => entry.1 = fqn.to_string(),
+            None => imports.push((simple.to_string(), fqn.to_string())),
+        }
+    }
+    let mut packages: FxHashMap<String, String> = FxHashMap::default();
+    let mut imports: FxHashMap<String, Vec<(String, String)>> = FxHashMap::default();
+    let mut kotlin_files: FxHashSet<String> = FxHashSet::default();
+    for (path, r) in paths.iter().zip(per) {
+        let suffix = crate::rcfile::effective_suffix(path).to_lowercase();
+        let kotlin = suffix == ".kt" || suffix == ".kts";
+        if !kotlin && suffix != ".java" {
+            continue;
+        }
+        let source_file = r
+            .nodes()
+            .into_iter()
+            .flatten()
+            .map(|n| rs(n, "source_file"))
+            .find(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| path.to_string_lossy().into_owned());
+        let mut file_imports = vec![];
+        let package = if kotlin {
+            kotlin_files.insert(source_file.clone());
+            r.key("kotlin_package")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string()
+        } else {
+            let text = crate::extractors::base::read_source_text(path, false).unwrap_or_default();
+            for m in IMPORT.captures_iter(&text) {
+                let body = m[1].trim();
+                if body.ends_with(".*") || !body.contains('.') {
+                    continue;
+                }
+                let simple = body.rsplit('.').next().unwrap_or("");
+                if simple.chars().next().is_some_and(char::is_uppercase) {
+                    set(&mut file_imports, simple, body);
+                }
+            }
+            PACKAGE
+                .captures(&text)
+                .map(|m| m[1].to_string())
+                .unwrap_or_default()
+        };
+        packages.insert(source_file.clone(), package);
+        imports.insert(source_file, file_imports);
+    }
+    if packages.is_empty() {
+        return;
+    }
+    // A Kotlin file's imports are its `imports` edges with a written FQN.
+    for e in edges.iter() {
+        let sf = s(e, "source_file");
+        if s(e, "relation") != "imports" || !kotlin_files.contains(sf) {
+            continue;
+        }
+        let fqn = s(&e["metadata"], "target_fqn");
+        if !fqn.is_empty()
+            && let Some(file_imports) = imports.get_mut(sf)
+        {
+            set(file_imports, fqn.rsplit('.').next().unwrap_or(""), fqn);
+        }
+    }
+    let mut by_fqn: FxHashMap<String, Vec<&str>> = FxHashMap::default();
+    for n in nodes {
+        let Some(package) = packages.get(s(n, "source_file")) else {
+            continue;
+        };
+        let label = s(n, "label").trim();
+        if label.is_empty() || !crate::extractors::resolution::is_type_like_definition(n) {
+            continue;
+        }
+        let fqn = if package.is_empty() {
+            label.to_string()
+        } else {
+            format!("{package}.{label}")
+        };
+        by_fqn.entry(fqn).or_default().push(s(n, "id"));
+    }
+    if by_fqn.is_empty() {
+        return;
+    }
+    let by_id = nodes
+        .iter()
+        .filter(|n| !s(n, "id").is_empty())
+        .map(|n| (s(n, "id"), n))
+        .collect::<FxHashMap<_, _>>();
+    let mut added = vec![];
+    for e in edges.iter_mut() {
+        if !matches!(
+            s(e, "relation"),
+            "imports" | "inherits" | "extends" | "implements" | "references"
+        ) {
+            continue;
+        }
+        let sf = s(e, "source_file").to_string();
+        if !matches!(
+            crate::rcfile::effective_suffix(&sf).to_lowercase().as_str(),
+            ".java" | ".kt" | ".kts"
+        ) {
+            continue;
+        }
+        let target = s(e, "target").to_string();
+        if target.is_empty() {
+            continue;
+        }
+        let target_node = by_id.get(target.as_str()).copied();
+        let mut fqn = s(&e["metadata"], "target_fqn").to_string();
+        if fqn.is_empty() {
+            let label = target_node.map_or("", |n| s(n, "label"));
+            let sourced = target_node.is_some_and(|n| truthy(&n["source_file"]));
+            let file_imports = imports.get(&sf).map(Vec::as_slice).unwrap_or_default();
+            let mut simple = String::new();
+            if target_node.is_some() && !sourced && label.contains('.') {
+                fqn = label.to_string();
+            } else if !label.is_empty() && !sourced {
+                simple = label.to_string();
+            } else if let Some((name, _)) = file_imports
+                .iter()
+                .find(|(name, _)| crate::ids::make_id([name.as_str()]) == target)
+            {
+                simple = name.clone();
+            }
+            if fqn.is_empty() && !simple.is_empty() {
+                fqn = match file_imports.iter().find(|(name, _)| *name == simple) {
+                    Some((_, written)) => written.clone(),
+                    None => match packages.get(&sf).filter(|p| !p.is_empty()) {
+                        Some(package) => format!("{package}.{simple}"),
+                        None => simple,
+                    },
+                };
+            }
+        }
+        let Some([candidate]) = by_fqn.get(&fqn).map(Vec::as_slice) else {
+            continue;
+        };
+        if *candidate == target {
+            continue;
+        }
+        if s(e, "relation") == "imports" && target_node.is_none() {
+            let mut resolved = e.clone();
+            resolved["target"] = json!(candidate);
+            added.push(resolved);
+        } else {
+            e["target"] = json!(candidate);
+        }
+    }
+    edges.extend(added);
 }
 pub fn kotlin_imports<P: PerFile>(per: &[P], edges: &mut [Value]) {
     let mut symbols: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
@@ -2569,11 +3117,9 @@ pub fn kotlin_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
     let mut types: Index = BTreeMap::new();
     let mut methods: Index = BTreeMap::new();
     for n in nodes_ro {
-        if n["_callable_class"] == true
-            && [".kt", ".kts"]
-                .iter()
-                .any(|su| s(n, "source_file").ends_with(su))
-        {
+        // Any JVM class: a Kotlin call binds a Java method too (Graphify
+        // 0.9.100, #4874).
+        if n["_callable_class"] == true && family(s(n, "source_file")) == Some("jvm") {
             types
                 .entry(s(n, "label").into())
                 .or_default()
@@ -2615,7 +3161,9 @@ pub fn kotlin_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
             continue;
         };
         let wanted = format!(".{}", rs(raw, "callee"));
-        let cs = methods
+        // Overloads share one node and the type holds one `method` edge per
+        // declaration: distinct ids count (Graphify 0.9.102, #4935).
+        let mut cs = methods
             .get(&ts[0])
             .into_iter()
             .flatten()
@@ -2625,6 +3173,8 @@ pub fn kotlin_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
                     .is_some_and(|n| s(n, "label").trim_matches(['(', ')']) == wanted)
             })
             .collect::<Vec<_>>();
+        let mut distinct = FxHashSet::default();
+        cs.retain(|id| distinct.insert(*id));
         if cs.len() == 1 {
             emit(&mut added, &mut seen, raw, cs[0], "calls", true);
         }
@@ -2651,22 +3201,55 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
     if raw.is_empty() {
         return;
     }
-    let mut tables: FxHashMap<&str, &serde_json::Map<String, Value>> = FxHashMap::default();
+    // Package-level variables and imports per file: a local binding carries
+    // its own type, and only an unbound name falls back to a package
+    // variable (Graphify 0.9.102, #4962, #3368).
+    let mut package_vars: FxHashMap<&str, &serde_json::Map<String, Value>> = FxHashMap::default();
+    let mut file_imports: FxHashMap<&str, &Value> = FxHashMap::default();
     for r in per {
         let entry = r.at("go_type_table");
         let path = s(entry, "path");
-        if let Some(table) = entry["table"].as_object()
-            && !path.is_empty()
+        if path.is_empty() {
+            continue;
+        }
+        if let Some(vars) = entry["package_vars"].as_object() {
+            package_vars.insert(path, vars);
+        }
+        file_imports.insert(path, r.at("go_imports"));
+    }
+    // The import paths a type node is declared at (Graphify 0.9.102, #3368).
+    let mut package_paths: FxHashMap<String, BTreeSet<String>> = FxHashMap::default();
+    for n in nodes.iter() {
+        if truthy(&n["_callable_class"])
+            && family(s(n, "source_file")) == Some("go")
+            && !s(n, "_go_package_path").is_empty()
         {
-            tables.insert(path, table);
+            package_paths
+                .entry(s(n, "id").to_string())
+                .or_default()
+                .insert(s(n, "_go_package_path").to_string());
         }
     }
     let mut defs: FxHashMap<String, Vec<String>> = FxHashMap::default();
     let mut methods: FxHashMap<(String, String), Vec<String>> = FxHashMap::default();
+    // A struct's fields by struct id, from the file node that declares it
+    // (Graphify 0.9.99, #3368); an id two files declare has no one answer.
+    let mut fields_by_type: FxHashMap<String, Vec<serde_json::Map<String, Value>>> =
+        FxHashMap::default();
     {
         let mut by_id: FxHashMap<&str, &Value> = FxHashMap::default();
         for n in nodes.iter() {
             by_id.insert(s(n, "id"), n);
+            if let Some(go_fields) = n["_go_fields"].as_object() {
+                for (id, fields) in go_fields {
+                    if let Some(fields) = fields.as_object() {
+                        fields_by_type
+                            .entry(id.clone())
+                            .or_default()
+                            .push(fields.clone());
+                    }
+                }
+            }
             // Only Go declarations: a same-named class of another language
             // must neither answer a Go receiver nor hide that nothing here
             // declares it.
@@ -2688,17 +3271,31 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
     let mut parked = Vec::new();
     let mut seen = pairs(&edges[..], false);
     let mut added = vec![];
+    // One edge survives per pair: direct calls before method values
+    // (Graphify 0.9.102).
+    let mut raw = raw;
+    raw.sort_by_key(|rc| truthy(at(*rc, "indirect")));
     for rc in raw {
         let (receiver, callee, caller) = (
             rs(rc, "member_receiver"),
             rs(rc, "callee"),
             rs(rc, "caller_nid"),
         );
-        // The method's own receiver and the function's scope come first:
-        // two types in one file may both name their receiver `s`.
+        // The scoped `receiver_type` covers the method's receiver, parameters
+        // and locals; a field receiver is typed from its owning struct.
         let mut ty = rs(rc, "receiver_type");
-        if ty.is_empty() {
-            ty = tables
+        let mut from_sibling = false;
+        let owner = rs(rc, "field_owner");
+        if !owner.is_empty() {
+            ty = "";
+            if let Some([def]) = defs.get(&java_key(owner)).map(Vec::as_slice)
+                && let Some([declared]) = fields_by_type.get(def).map(Vec::as_slice)
+            {
+                ty = declared.get(receiver).and_then(Value::as_str).unwrap_or("");
+                from_sibling = true;
+            }
+        } else if ty.is_empty() && !truthy(at(rc, "receiver_bound")) {
+            ty = package_vars
                 .get(rs(rc, "source_file"))
                 .and_then(|t| t.get(receiver))
                 .and_then(Value::as_str)
@@ -2707,8 +3304,50 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
         if ty.is_empty() || is_language_builtin(ty) {
             continue;
         }
-        let Some(found) = defs.get(&java_key(ty)).filter(|d| !d.is_empty()) else {
-            parked.push((caller.to_string(), callee.to_string(), ty.to_string(), rc));
+        // `pkg.T` binds only to the `T` declared at the path the file imports
+        // `pkg` from; no match is stdlib or outside the corpus, never parked
+        // (Graphify 0.9.102, #3368). A sibling's field carries the path.
+        let qualified: Option<Vec<String>> = ty.contains('.').then(|| {
+            let (import_path, bare) = if from_sibling {
+                let (path, bare) = ty.rsplit_once('.').unwrap_or(("", ty));
+                (Some(path.to_string()), bare)
+            } else {
+                let (alias, bare) = ty.split_once('.').unwrap_or((ty, ""));
+                let path = file_imports
+                    .get(rs(rc, "source_file"))
+                    .and_then(|i| i.get(alias))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                (path, bare)
+            };
+            defs.get(&java_key(bare))
+                .into_iter()
+                .flatten()
+                .filter(|id| {
+                    import_path.as_ref().is_some_and(|p| {
+                        package_paths
+                            .get(id.as_str())
+                            .is_some_and(|paths| paths.contains(p))
+                    })
+                })
+                .cloned()
+                .collect()
+        });
+        if qualified.as_ref().is_some_and(Vec::is_empty) {
+            continue;
+        }
+        // A method value (`routing.Wrap(s.Handle)`) hands the method over to
+        // be called later: an `indirect_call`, never parked, since `f(x.y)`
+        // may as well pass a field (Graphify 0.9.99, #1566).
+        let indirect = truthy(at(rc, "indirect"));
+        let found = match &qualified {
+            Some(found) => Some(found),
+            None => defs.get(&java_key(ty)).filter(|d| !d.is_empty()),
+        };
+        let Some(found) = found else {
+            if !indirect {
+                parked.push((caller.to_string(), callee.to_string(), ty.to_string(), rc));
+            }
             continue;
         };
         if found.len() != 1 {
@@ -2718,7 +3357,17 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
             continue;
         };
         if targets.len() == 1 {
-            emit(&mut added, &mut seen, rc, &targets[0], "calls", false);
+            let before = added.len();
+            let relation = if indirect { "indirect_call" } else { "calls" };
+            emit(&mut added, &mut seen, rc, &targets[0], relation, false);
+            if indirect && added.len() > before {
+                let context = rs(rc, "context");
+                added[before]["context"] = json!(if context.is_empty() {
+                    "argument"
+                } else {
+                    context
+                });
+            }
         }
     }
     drop(seen);

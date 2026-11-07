@@ -9,8 +9,12 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
 
-static OBJECT: LazyLock<Regex> =
-    LazyLock::new(|| compile(r"^\s*[oO][bB][jJ][eE][cC][tT]\s+\w+\s*:\s*(\w+)"));
+// `inherited` and `inline` component blocks too (Graphify 0.9.98).
+static OBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    compile(
+        r"^\s*(?:[oO][bB][jJ][eE][cC][tT]|[iI][nN][hH][eE][rR][iI][tT][eE][dD]|[iI][nN][lL][iI][nN][eE])\s+\w+\s*:\s*(\w+)",
+    )
+});
 static EVENT: LazyLock<Regex> = LazyLock::new(|| compile(r"^\s*[oO][nN]\w+\s*=\s*(\w+)"));
 static END: LazyLock<Regex> = LazyLock::new(|| compile(r"^\s*[eE][nN][dD]\s*$"));
 

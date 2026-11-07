@@ -34,8 +34,14 @@ struct Extractor<'tree, 'source> {
     edges: Vec<Value>,
     seen: HashSet<String>,
     bodies: Vec<(String, Node<'tree>)>,
+    /// Unique declaration ids, the file id reserved (Graphify 0.9.98, #4854).
+    decl: crate::ids::DeclIdRegistry,
 }
 impl<'tree> Extractor<'tree, '_> {
+    fn decl_id(&mut self, nid: &str, name: &str, kind: &str) -> String {
+        let seen = &self.seen;
+        self.decl.resolve(nid, name, kind, |id| seen.contains(id))
+    }
     fn node(&mut self, id: &str, label: &str, line: usize) {
         if self.seen.insert(id.into()) {
             self.nodes.push(json!({"id":id,"label":label,"file_type":"code","source_file":self.path,"source_location":format!("L{line}")}));
@@ -257,6 +263,7 @@ impl<'tree> Extractor<'tree, '_> {
             if let Some(name) = children(node).find(|n| n.kind() == "identifier") {
                 let name = read_text(name, self.source);
                 let id = make_id([self.stem.as_str(), name.as_str()]);
+                let id = self.decl_id(&id, &name, "ns");
                 self.node(&id, &name, line);
                 self.edge(&self.file.clone(), &id, "defines", line, None);
                 for child in children(node) {
@@ -274,6 +281,7 @@ impl<'tree> Extractor<'tree, '_> {
                 return;
             };
             let id = make_id([self.stem.as_str(), name.as_str()]);
+            let id = self.decl_id(&id, &name, "type");
             self.node(&id, &name, line);
             self.edge(scope, &id, "defines", line, None);
             if let Some(parent) = super_name.filter(|s| !s.is_empty()) {
@@ -314,6 +322,7 @@ impl<'tree> Extractor<'tree, '_> {
                     self.function_name(signature).filter(|(s, _)| !s.is_empty())
             {
                 let id = make_id([self.stem.as_str(), name.as_str()]);
+                let id = self.decl_id(&id, &name, "fn");
                 self.node(&id, &format!("{label}()"), line);
                 self.edge(scope, &id, "defines", line, None);
                 self.bodies.push((id, node));
@@ -369,6 +378,7 @@ impl<'tree> Extractor<'tree, '_> {
                 if let Some(type_node) = arguments.first().and_then(|n| ident(*n)) {
                     let name = read_text(type_node, self.source);
                     let id = make_id([self.stem.as_str(), name.as_str()]);
+                    let id = self.decl_id(&id, &name, "type");
                     self.node(&id, &name, line);
                     self.edge(scope, &id, "defines", line, None);
                     for member in arguments.iter().skip(1).filter_map(|n| ident(*n)) {
@@ -392,6 +402,7 @@ impl<'tree> Extractor<'tree, '_> {
         if node.kind() == "assignment" {
             if let Some((name, label)) = self.def_name(unwrap_call(node.child(0))) {
                 let id = make_id([self.stem.as_str(), name.as_str()]);
+                let id = self.decl_id(&id, &name, "fn");
                 self.node(&id, &format!("{label}()"), line);
                 self.edge(scope, &id, "defines", line, None);
                 if node.child_count() >= 3 {
@@ -459,6 +470,7 @@ pub fn extract_julia(path: &Path) -> Value {
         edges: vec![],
         seen: HashSet::new(),
         bodies: vec![],
+        decl: crate::ids::DeclIdRegistry::new([file.as_str()]),
     };
     ex.node(&file, name, 1);
     ex.walk(tree.root_node(), &file);

@@ -599,37 +599,37 @@ pub fn note_written_graph(path: &Path) {
 fn no_controls(text: &str) -> impl Iterator<Item = char> + '_ {
     text.chars().filter(|c| *c > '\x1f' && *c != '\x7f')
 }
-/// `_SECRET_SHAPE_RE` (Graphify 0.9.93, #4566): credential shapes redacted from
-/// free text copied into labels: PEM private-key headers, vendor-prefixed
-/// tokens, JWTs, `Bearer` tokens and `user:pass@` URL credentials. Shape-based
-/// only, so risk reduction rather than a guarantee. Python's `\b` is spelled
-/// with its own word class (`regex_compat::word_class`), next to an ASCII
-/// literal; `\s` is Python's whitespace (`fsutil::PY_WHITESPACE`).
-///
-/// Graphify 0.9.97: the token boundaries are alphanumeric-only lookarounds,
-/// so a token glued to an identifier by `_` (`token_ghp_...`) still matches;
-/// Slack `xoxe-`/`xoxo-` tokens count; an `sk-` key needs a digit (so
-/// `sk-learn-compatible-...` prose is left alone); a JWT payload may be
-/// short; URL userinfo runs to the last `@` before the host, with an empty
-/// user allowed. The private-key block is [`PRIVATE_KEY_BLOCK`].
+/// `_SECRET_SHAPE_RE` (Graphify 0.9.93, #4566; 0.9.97): credential shapes
+/// redacted from free text copied into labels: vendor-prefixed tokens, JWTs,
+/// `Bearer` tokens and URL userinfo. The PEM private-key block is
+/// [`PRIVATE_KEY_BLOCK`]. Shape-based only, so risk reduction rather than a
+/// guarantee. Boundaries are alphanumeric-only lookarounds rather than `\b`,
+/// so a token glued to an identifier by `_` still matches (0.9.97); Slack
+/// `xoxe-`/`xoxo-` tokens count; the `\b` of `Bearer` is spelled with
+/// Python's word class (`regex_compat::word_class`); `\s` is Python's
+/// whitespace (`fsutil::PY_WHITESPACE`).
 static SECRET_SHAPE: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
     let w = crate::regex_compat::word_class();
     let space = crate::fsutil::PY_WHITESPACE
         .trim_start_matches('[')
         .trim_end_matches(']');
-    let an = "[A-Za-z0-9]";
+    let alnum = "[A-Za-z0-9]";
     let pattern = [
-        format!("(?<!{an})(?:AKIA|ASIA)[0-9A-Z]{{16}}(?!{an})"),
-        format!("(?<!{an})gh[pousr]_[A-Za-z0-9]{{36,}}"),
-        format!("(?<!{an})github_pat_[A-Za-z0-9_]{{22,}}"),
-        format!("(?<!{an})xox[abeoprs]-[A-Za-z0-9-]{{10,}}"),
-        format!("(?<!{an})[sr]k_(?:live|test)_[A-Za-z0-9]{{10,}}"),
-        format!("(?<!{an})sk-(?:ant-|proj-)?(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{{20,}}"),
-        format!("(?<!{an})AIza[0-9A-Za-z_-]{{35}}"),
-        format!("(?<!{an})eyJ[A-Za-z0-9_-]{{10,}}\\.[A-Za-z0-9_-]{{2,}}\\.[A-Za-z0-9_-]{{10,}}"),
+        format!("(?<!{alnum})(?:AKIA|ASIA)[0-9A-Z]{{16}}(?!{alnum})"),
+        format!("(?<!{alnum})gh[pousr]_[A-Za-z0-9]{{36,}}"),
+        format!("(?<!{alnum})github_pat_[A-Za-z0-9_]{{22,}}"),
+        format!("(?<!{alnum})xox[abeoprs]-[A-Za-z0-9-]{{10,}}"),
+        format!("(?<!{alnum})[sr]k_(?:live|test)_[A-Za-z0-9]{{10,}}"),
+        // A digit is required, so hyphenated prose (`sk-learn-...`) stays.
+        format!("(?<!{alnum})sk-(?:ant-|proj-)?(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{{20,}}"),
+        format!("(?<!{alnum})AIza[0-9A-Za-z_-]{{35}}"),
+        // The payload segment may be tiny (`e30` is `{}`).
+        format!("(?<!{alnum})eyJ[A-Za-z0-9_-]{{10,}}\\.[A-Za-z0-9_-]{{2,}}\\.[A-Za-z0-9_-]{{10,}}"),
         // `(?<=\bBearer )`: the seven characters before are `Bearer ` and the
         // one before those is no word character.
         format!("(?<=Bearer )(?<!{w}.{{7}})[A-Za-z0-9._~+/=-]{{16,}}"),
+        // Userinfo up to the last `@` before the host: the user may be empty
+        // (`redis://:pw@host`) and the password may hold `@` or `/`.
         format!("(?<=://)[^{space}/@]*:[^{space}?#]*(?=@[^{space}@/?#]+)"),
     ]
     .join("|");
@@ -637,8 +637,9 @@ static SECRET_SHAPE: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
 });
 /// A PEM private-key block from its header through the END line, or to the
 /// end of the text when the block is cut off: the base64 body is the secret,
-/// not the header (Graphify 0.9.97). It spans lines, so it is replaced over
-/// the whole text before the line-by-line pass.
+/// not the header (Graphify 0.9.97). Upstream's single pattern holds it as an
+/// alternative; here it spans lines, so it is cut out before the
+/// line-by-line pass.
 static PRIVATE_KEY_BLOCK: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(
         r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|.*)",
@@ -663,7 +664,21 @@ pub fn redact_secrets(text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
-    let text = PRIVATE_KEY_BLOCK.replace_all(text, regex::NoExpand(REDACTED_MARKER));
+    // A PEM private-key block spans lines: each is cut out first, and the
+    // text around it is searched line by line (Graphify 0.9.97), so the
+    // marker itself is never searched again.
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for block in PRIVATE_KEY_BLOCK.find_iter(text) {
+        out.push_str(&redact_lines(&text[last..block.start()]));
+        out.push_str(REDACTED_MARKER);
+        last = block.end();
+    }
+    out.push_str(&redact_lines(&text[last..]));
+    out
+}
+/// [`redact_secrets`] without the PEM blocks, one line at a time.
+fn redact_lines(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
         let (body, newline) = match line.strip_suffix('\n') {

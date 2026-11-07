@@ -132,11 +132,21 @@ pub fn scope_id(directory: &str) -> String {
 pub fn prepare_terraform(result: &mut Value, path: &Path, root: &Path) -> Result<()> {
     let directory = fsutil::resolve_missing(path.parent().unwrap_or(Path::new(".")))
         .map_err(crate::Error::from)?;
+    // The scope the ids were minted under, recorded by the extractor, so a
+    // cached result keeps its ids after the project moves; consumed even
+    // outside the root (Graphify 0.9.100, #4858).
+    let recorded = result
+        .as_object_mut()
+        .and_then(|r| r.shift_remove("_terraform_scope"));
     let Ok(relative) = directory.strip_prefix(root) else {
         return Ok(());
     };
     let relative = fsutil::path_string(relative);
-    let old = scope_id(&fsutil::path_string(&directory));
+    let old = recorded
+        .as_ref()
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| scope_id(&fsutil::path_string(&directory)));
     let new = scope_id(&relative);
     let prefix = format!("{old}_");
     if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut) {
@@ -333,6 +343,33 @@ impl Extractor<'_> {
         (typ, labels)
     }
     fn ref_address(&self, expr: Node<'_>) -> Option<String> {
+        let (head, attrs) = self.head_and_attrs(expr);
+        if head.is_empty()
+            || matches!(
+                head.as_str(),
+                "count" | "each" | "self" | "path" | "terraform"
+            )
+        {
+            return None;
+        }
+        if head == "data" {
+            return (attrs.len() >= 2).then(|| format!("data.{}.{}", attrs[0], attrs[1]));
+        }
+        attrs.first().map(|a| format!("{head}.{a}"))
+    }
+    /// `_provider_ref_address` (Graphify 0.9.97): `provider = aws.west` names
+    /// a provider block by type and alias.
+    fn provider_ref_address(&self, expr: Node<'_>) -> Option<String> {
+        let (head, attrs) = self.head_and_attrs(expr);
+        if head.is_empty() {
+            return None;
+        }
+        Some(match attrs.first() {
+            Some(alias) => format!("provider.{head}.{alias}"),
+            None => format!("provider.{head}"),
+        })
+    }
+    fn head_and_attrs(&self, expr: Node<'_>) -> (String, Vec<String>) {
         let head = read_text(expr, self.source);
         let mut attrs = Vec::new();
         if let Some(parent) = expr.parent() {
@@ -352,38 +389,57 @@ impl Extractor<'_> {
                 }
             }
         }
-        if head.is_empty()
-            || matches!(
-                head.as_str(),
-                "count" | "each" | "self" | "path" | "terraform"
-            )
-        {
-            return None;
-        }
-        if head == "data" {
-            return (attrs.len() >= 2).then(|| format!("data.{}.{}", attrs[0], attrs[1]));
-        }
-        attrs.first().map(|a| format!("{head}.{a}"))
+        (head, attrs)
     }
-    fn collect_refs(&mut self, node: Node<'_>, owner: &str, relation: &str) {
-        let relation = if node.kind() == "attribute"
-            && node
-                .child_by_field_name("key")
-                .or_else(|| node.child(0))
-                .is_some_and(|n| read_text(n, self.source) == "depends_on")
+    /// `_collect_refs`: inside a `provider = ...` attribute a reference names
+    /// a provider block (Graphify 0.9.97).
+    fn collect_refs(&mut self, node: Node<'_>, owner: &str, relation: &str, in_provider: bool) {
+        let mut relation = relation;
+        let mut provider = in_provider;
+        if node.kind() == "attribute"
+            && let Some(key) = node.child_by_field_name("key").or_else(|| node.child(0))
         {
-            "depends_on"
-        } else {
-            relation
-        };
-        if node.kind() == "variable_expr"
-            && let Some(address) = self.ref_address(node)
-        {
-            self.edge(owner, &address, relation, node.start_position().row + 1);
+            let key = read_text(key, self.source);
+            if key == "depends_on" {
+                relation = "depends_on";
+            }
+            provider = key == "provider";
+        }
+        if node.kind() == "variable_expr" {
+            let address = if provider {
+                self.provider_ref_address(node)
+            } else {
+                self.ref_address(node)
+            };
+            if let Some(address) = address {
+                self.edge(owner, &address, relation, node.start_position().row + 1);
+            }
         }
         for child in named(node) {
-            self.collect_refs(child, owner, relation);
+            self.collect_refs(child, owner, relation, provider);
         }
+    }
+    /// The `alias` of a provider block, when it is a non-empty string.
+    fn provider_alias(&self, body: Option<Node<'_>>) -> Result<Option<String>> {
+        let Some(body) = body else {
+            return Ok(None);
+        };
+        for attr in children(body).filter(|n| n.kind() == "attribute") {
+            if attr
+                .child(0)
+                .is_none_or(|k| read_text(k, self.source) != "alias")
+            {
+                continue;
+            }
+            let Some(value) = named(attr).last() else {
+                continue;
+            };
+            return Ok(match self.parse_value(value, 0)? {
+                Value::String(alias) if !alias.is_empty() => Some(alias),
+                _ => None,
+            });
+        }
+        Ok(None)
     }
     fn parse_value(&self, mut node: Node<'_>, depth: usize) -> Result<Value> {
         if depth > 5 {
@@ -511,13 +567,22 @@ impl Extractor<'_> {
                 Some("module") if !labels.is_empty() => format!("module.{}", labels[0]),
                 Some("variable") if !labels.is_empty() => format!("var.{}", labels[0]),
                 Some("output") if !labels.is_empty() => format!("output.{}", labels[0]),
-                Some("provider") if !labels.is_empty() => format!("provider.{}", labels[0]),
+                // An aliased provider block configures a second provider of
+                // that type: the alias is part of its address (Graphify 0.9.97).
+                Some("provider") if !labels.is_empty() => match self.provider_alias(body)? {
+                    Some(alias) => format!("provider.{}.{alias}", labels[0]),
+                    None => format!("provider.{}", labels[0]),
+                },
                 Some("locals") if body.is_some() => {
                     for attr in children(body.unwrap()).filter(|n| n.kind() == "attribute") {
                         if let Some(key) = attr.child(0) {
                             let address = format!("local.{}", read_text(key, self.source));
                             let id = self.node(&address, attr.start_position().row + 1);
-                            self.collect_refs(attr, &id, "references");
+                            // The value only: a local named `provider` or
+                            // `depends_on` is no such attribute (0.9.97).
+                            if let Some(value) = named(attr).last() {
+                                self.collect_refs(value, &id, "references", false);
+                            }
                         }
                     }
                     continue;
@@ -574,7 +639,7 @@ impl Extractor<'_> {
                 if !attrs.is_empty() {
                     self.nodes[self.by_id[&owner]]["attributes"] = Value::Object(attrs);
                 }
-                self.collect_refs(body, &owner, "references");
+                self.collect_refs(body, &owner, "references", false);
             }
         }
         Ok(())
@@ -611,7 +676,7 @@ pub fn extract_terraform(path: &Path) -> Result<Value> {
         seen_edges: HashSet::new(),
     };
     extractor.extract(tree.root_node(), path_syntax::suffix(name) == ".tf")?;
-    Ok(json!({"nodes":extractor.nodes,"edges":extractor.edges}))
+    Ok(json!({"nodes":extractor.nodes,"edges":extractor.edges,"_terraform_scope":extractor.scope}))
 }
 
 pub fn dispatch(request: &Value) -> Result<Value> {

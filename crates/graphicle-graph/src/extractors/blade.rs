@@ -11,7 +11,10 @@ use std::sync::LazyLock;
 static EXTENDS: LazyLock<Regex> = LazyLock::new(|| compile(r#"@extends\(['"]([^'"]+)['"]"#));
 static INCLUDE: LazyLock<Regex> = LazyLock::new(|| compile(r#"@include\(['"]([^'"]+)['"]"#));
 static LIVEWIRE: LazyLock<Regex> = LazyLock::new(|| compile(r"<livewire:([\w.\-]+)"));
-static CLICK: LazyLock<Regex> = LazyLock::new(|| compile(r#"wire:click=["']([^"']+)["']"#));
+// An optional Livewire modifier (`wire:click.prevent=`), Graphify 0.9.97.
+static CLICK: LazyLock<Regex> =
+    LazyLock::new(|| compile(r#"wire:click(?:\.\w+)*=["']([^"']+)["']"#));
+static METHOD_NAME: LazyLock<Regex> = LazyLock::new(|| compile(r"^[A-Za-z_]\w*"));
 
 pub fn extract_blade(path: &Path) -> Value {
     let str_path = fsutil::path_string(path);
@@ -35,7 +38,20 @@ pub fn extract_blade(path: &Path) -> Value {
         (&*CLICK, "binds_method"),
     ] {
         for captures in pattern.captures_iter(&src) {
-            let label = &captures[1];
+            let mut label = &captures[1];
+            if relation == "binds_method" {
+                // The bare method name: a call's arguments are not part of it,
+                // and a magic action (`$set`, `$toggle`) is Livewire's own, so
+                // it binds nothing (Graphify 0.9.97).
+                let raw = label.trim();
+                if raw.starts_with('$') {
+                    continue;
+                }
+                let Some(name) = METHOD_NAME.find(raw) else {
+                    continue;
+                };
+                label = name.as_str();
+            }
             let target = if matches!(relation, "extends" | "includes") {
                 label.replace('.', "/")
             } else {

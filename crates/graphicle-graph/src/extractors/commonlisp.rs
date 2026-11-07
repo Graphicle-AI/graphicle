@@ -161,6 +161,9 @@ struct Extractor<'tree, 'source> {
     package: Option<String>,
     labels: HashMap<String, String>,
     pairs: HashSet<(String, String)>,
+    /// Every name a `defclass` of this file defines, wherever it sits
+    /// (Graphify 0.9.98).
+    local_classes: HashSet<String>,
 }
 impl<'tree> Extractor<'tree, '_> {
     fn node(&mut self, id: &str, label: &str, line: usize, typ: &str) {
@@ -180,7 +183,9 @@ impl<'tree> Extractor<'tree, '_> {
     }
     fn class_ref(&mut self, name: &str) -> String {
         let local = cl_id([self.stem.as_str(), name]);
-        if self.seen.contains(&local) {
+        // A class this file defines further down is local too (Graphify
+        // 0.9.98): forms are walked in file order.
+        if self.seen.contains(&local) || self.local_classes.contains(name) {
             local
         } else {
             self.import_stub(name)
@@ -268,7 +273,11 @@ impl<'tree> Extractor<'tree, '_> {
             let text = text.trim_matches('"');
             if !text.is_empty() {
                 let id = cl_id([owner, "rationale"]);
-                let label: String = text.chars().take(120).collect();
+                // Redacted before the cut (Graphify 0.9.97).
+                let label: String = crate::security::redact_secrets(text)
+                    .chars()
+                    .take(120)
+                    .collect();
                 let line = doc.start_position().row + 1;
                 self.node(&id, &label, line, "rationale");
                 self.edge(&id, owner, "rationale_for", line);
@@ -457,6 +466,35 @@ impl<'tree> Extractor<'tree, '_> {
         }
         true
     }
+    /// `_prescan_class_names`: every `defclass` name, found by the recursion
+    /// rule of [`Self::walk_forms`] (stop at a recognized top-level form,
+    /// descend into anything else) and the name rule of [`Self::defclass`].
+    fn prescan_class_names(&self, parent: Node<'_>) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for top in children(parent) {
+            if top.kind() == "list_lit" {
+                let first = self.first_sym(top).unwrap_or_default();
+                let lower = first.to_lowercase();
+                if lower == "defclass" {
+                    if let Some(name) = children(top).filter(|n| n.kind() == "sym_lit").nth(1) {
+                        names.insert(read_text(name, self.source));
+                    }
+                } else if first.is_empty()
+                    || (!["defpackage", "in-package", "require", "ql:quickload"]
+                        .contains(&lower.as_str())
+                        && !DATA.contains(&lower.as_str())
+                        && !MACROS.contains(&lower.as_str())
+                        && (NOT_DEFINERS.contains(&lower.as_str())
+                            || !(lower.starts_with("def") || lower.starts_with("define-"))))
+                {
+                    names.extend(self.prescan_class_names(top));
+                }
+            } else if top.kind() == "include_reader_macro" {
+                names.extend(self.prescan_class_names(top));
+            }
+        }
+        names
+    }
     fn walk_forms(&mut self, parent: Node<'tree>) {
         for node in children(parent) {
             if node.kind() == "list_lit" {
@@ -524,9 +562,11 @@ pub fn extract_commonlisp(path: &Path) -> Value {
         package: None,
         labels: HashMap::new(),
         pairs: HashSet::new(),
+        local_classes: HashSet::new(),
     };
     let parts = path_syntax::posix_parts(&path_text);
     ex.node(&id, path_syntax::posix_name(&parts), 1, "code");
+    ex.local_classes = ex.prescan_class_names(tree.root_node());
     ex.walk_forms(tree.root_node());
     for node in &ex.nodes {
         let label = node["label"]

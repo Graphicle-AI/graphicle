@@ -17,6 +17,15 @@ pub fn load_toml(path: &Path) -> Result<toml::Value> {
         .map_err(crate::Error::from)
 }
 
+/// `package_name` (Graphify 0.9.96, #4699): a `Cargo.toml`'s `[package]
+/// name` as Rust spells it in a path (`-` -> `_`). `None` when the manifest
+/// has no package name or cannot be read or parsed: no name is no crate.
+pub fn package_name(manifest: &Path) -> Option<String> {
+    let data = load_toml(manifest).ok()?;
+    let name = data.get("package")?.get("name")?.as_str()?;
+    (!name.is_empty()).then(|| name.replace('-', "_"))
+}
+
 pub fn member_manifest_paths(root: &Path, data: &toml::Value) -> Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     if data.get("package").is_some_and(toml::Value::is_table) {

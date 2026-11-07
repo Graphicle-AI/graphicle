@@ -206,12 +206,26 @@ impl Extractor<'_> {
         for member in named(body) {
             let kind = member.kind();
             if kind == "using_directive" {
-                let alias = named(member)
+                // `using Lib for T;` names the library as a child; `using {f1,
+                // f2} for T;` wraps each function in a `using_alias` (Graphify
+                // 0.9.98): every one is used.
+                let is_alias = |c: &Node<'_>| {
+                    matches!(c.kind(), "type_alias" | "identifier" | "user_defined_type")
+                };
+                let mut aliases = named(member)
                     .into_iter()
-                    .find(|c| matches!(c.kind(), "type_alias" | "identifier" | "user_defined_type"))
-                    .map(|c| self.text(c))
-                    .unwrap_or_default();
-                if !alias.is_empty() {
+                    .filter(is_alias)
+                    .collect::<Vec<_>>();
+                for child in named(member) {
+                    if child.kind() == "using_alias" {
+                        aliases.extend(named(child).into_iter().filter(is_alias));
+                    }
+                }
+                for alias in aliases {
+                    let alias = self.text(alias);
+                    if alias.is_empty() {
+                        continue;
+                    }
                     let name = alias.rsplit('.').next().unwrap_or("").to_string();
                     let stub = self.type_stub(&name, member);
                     let context = format!("solidity_type:{name}");
@@ -794,7 +808,11 @@ pub fn extract_solidity(path: &Path) -> Value {
         if relative.is_empty() || relative.starts_with("http:") || relative.starts_with("https:") {
             continue;
         }
-        let target = fsutil::path_string(&path.parent().unwrap_or(Path::new("")).join(&relative));
+        // `../utils/Errors.sol` names the real file, not `proxy/../utils/...`
+        // (Graphify 0.9.102).
+        let target = crate::paths::normpath(&fsutil::path_string(
+            &path.parent().unwrap_or(Path::new("")).join(&relative),
+        ));
         x.add_edge(
             &file_id,
             &make_id([target.as_str()]),

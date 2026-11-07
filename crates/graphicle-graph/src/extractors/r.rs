@@ -197,7 +197,9 @@ impl<'t> Extractor<'t, '_> {
                 .child_by_field_name("name")
                 .map(|n| self.text(n))
                 .unwrap_or_default();
-            if key == "inherit"
+            // setClass and setRefClass spell the superclass `contains`
+            // (Graphify 0.9.100).
+            if matches!(key.as_str(), "inherit" | "contains")
                 && let Some(value) = value
             {
                 let written = self.string_or_identifier(Some(value));

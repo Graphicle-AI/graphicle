@@ -289,6 +289,106 @@ pub fn resolve_python_import_guided_calls_with(
     }
     resolved
 }
+/// `_rust_crate_root` (Graphify 0.9.101): the crate a Rust file belongs to,
+/// the nearest directory holding a `Cargo.toml`, else the directory above the
+/// nearest `src`; `None` for a flat layout.
+fn rust_crate_root(source_file: &str) -> Option<String> {
+    let path = Path::new(source_file);
+    for parent in path.ancestors().skip(1) {
+        if crate::inputs::is_file(&parent.join("Cargo.toml")) {
+            return Some(parent.to_string_lossy().into_owned());
+        }
+    }
+    let parts = path.components().collect::<Vec<_>>();
+    let dirs = &parts[..parts.len().saturating_sub(1)];
+    let src = dirs.iter().rposition(|c| c.as_os_str() == "src")?;
+    Some(
+        parts[..src]
+            .iter()
+            .collect::<PathBuf>()
+            .to_string_lossy()
+            .into_owned(),
+    )
+}
+/// `rust_scoped_call_survivors` (Graphify 0.9.101): the candidates a Rust
+/// `module::function()` qualifier verifies, right to left against each
+/// candidate's file path: the last segment is the defining module
+/// (`<seg>.rs` or `<seg>/mod.rs`), each other segment the next parent
+/// directory, stopping at `crate`/`super`/`self`. Only Rust free functions
+/// of the caller's crate qualify; a bare `crate`/`super`/`self` or an
+/// UpperCamelCase segment (a type) verifies none.
+pub fn rust_scoped_call_survivors(
+    qualifier: &str,
+    candidates: &[String],
+    source_of: &dyn Fn(&str) -> String,
+    caller_file: &str,
+    label_of: Option<&dyn Fn(&str) -> String>,
+) -> Vec<String> {
+    let segments = qualifier
+        .split("::")
+        .map(|s| s.split('<').next().unwrap_or("").trim())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    let Some(&last) = segments.last() else {
+        return vec![];
+    };
+    if matches!(last, "crate" | "super" | "self")
+        || last.chars().next().is_some_and(char::is_uppercase)
+    {
+        return vec![];
+    }
+    let mut roots: std::collections::HashMap<String, Option<String>> = Default::default();
+    let mut root_of = |file: &str| {
+        roots
+            .entry(file.to_string())
+            .or_insert_with(|| rust_crate_root(file))
+            .clone()
+    };
+    let caller_crate = (!caller_file.is_empty())
+        .then(|| root_of(caller_file))
+        .flatten();
+    let mut survivors = vec![];
+    for candidate in candidates {
+        let file = source_of(candidate);
+        if !file.ends_with(".rs") {
+            continue;
+        }
+        if label_of.is_some_and(|label| label(candidate).starts_with('.')) {
+            continue;
+        }
+        if !caller_file.is_empty() && root_of(&file) != caller_crate {
+            continue;
+        }
+        let path = Path::new(&file);
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let parent = path.parent().unwrap_or(Path::new(""));
+        let mut cursor = if stem == last {
+            parent
+        } else if stem == "mod" && parent.file_name().is_some_and(|n| n == last) {
+            parent.parent().unwrap_or(Path::new(""))
+        } else {
+            continue;
+        };
+        let mut matched = true;
+        for &segment in segments[..segments.len() - 1].iter().rev() {
+            if matches!(segment, "crate" | "super" | "self") {
+                break;
+            }
+            if cursor.file_name().is_none_or(|n| n != segment) {
+                matched = false;
+                break;
+            }
+            cursor = cursor.parent().unwrap_or(Path::new(""));
+        }
+        if matched {
+            survivors.push(candidate.clone());
+        }
+    }
+    survivors
+}
 pub fn resolve_cross_file_raw_calls(
     per_file: &[Value],
     nodes: &[Value],
@@ -301,11 +401,52 @@ pub fn resolve_cross_file_raw_calls(
         .filter(|n| truthy(&n["id"]))
         .map(|n| (text(n, "id"), json!(text(n, "source_file"))))
         .collect();
+    let labels_by_id: std::collections::HashMap<String, String> = nodes
+        .iter()
+        .filter(|n| truthy(&n["id"]))
+        .map(|n| (text(n, "id"), text(n, "label")))
+        .collect();
     let mut resolved = Vec::new();
     for call in iter_raw_calls(per_file) {
         let callee = text(call, "callee");
         let callee = strip(&callee);
         if callee.is_empty() || truthy(&call["is_member_call"]) {
+            continue;
+        }
+        if truthy(&call["is_scoped_call"]) {
+            // A Rust `module::function()` binds only through its verified
+            // qualifier, never the bare name (Graphify 0.9.101, #908).
+            let qualifier = text(call, "scope_qualifier");
+            let qualifier = qualifier.trim();
+            let source_of = |id: &str| {
+                files
+                    .get(id)
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let label_of = |id: &str| labels_by_id.get(id).cloned().unwrap_or_default();
+            let survivors = rust_scoped_call_survivors(
+                qualifier,
+                labels
+                    .get(&callee.to_lowercase())
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                &source_of,
+                &text(call, "source_file"),
+                Some(&label_of),
+            );
+            let [target] = survivors.as_slice() else {
+                continue;
+            };
+            let caller = text(call, "caller_nid");
+            if caller.is_empty()
+                || caller == *target
+                || !known.insert((caller.clone(), target.clone(), "calls".into()))
+            {
+                continue;
+            }
+            resolved.push(json!({"source":caller,"target":target,"relation":"calls","context":"call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":get(call,"source_file",json!("")),"source_location":call["source_location"],"weight":1.0,"metadata":crate::security::sanitize_metadata(Some(&json!({"resolver":"rust_scoped_module_call","scope_qualifier":qualifier})))}));
             continue;
         }
         let Some(candidates) = labels.get(&callee.to_lowercase()) else {

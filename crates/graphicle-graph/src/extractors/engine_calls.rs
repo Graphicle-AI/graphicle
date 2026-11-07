@@ -66,6 +66,29 @@ fn python_values(n: Node<'_>) -> Vec<Node<'_>> {
             .collect()
     }
 }
+/// `_python_dispatch_value_attrs` (Graphify 0.9.99, #1566): the
+/// `module.func` values of a dict/list/set/tuple literal, at the value
+/// positions of [`python_values`]; only a bare-name receiver qualifies.
+fn python_value_attrs(n: Node<'_>) -> Vec<Node<'_>> {
+    let values: Vec<Node<'_>> = if n.kind_name() == "dictionary" {
+        children(n)
+            .into_iter()
+            .filter(|c| c.kind_name() == "pair")
+            .filter_map(|p| p.child_by_field_name("value"))
+            .collect()
+    } else {
+        children(n)
+    };
+    values
+        .into_iter()
+        .filter(|v| v.kind_name() == "attribute")
+        .filter(|v| {
+            v.child_by_field_name("object")
+                .is_some_and(|o| o.kind_name() == "identifier")
+                && v.child_by_field_name("attribute").is_some()
+        })
+        .collect()
+}
 fn ref_values(n: Option<Node<'_>>) -> Vec<Node<'_>> {
     match n {
         Some(n) if n.kind_name() == "identifier" => vec![n],
@@ -223,7 +246,7 @@ impl<'a, 't> Engine<'a, 't> {
     /// Python member-call stamps for the corpus resolvers: `self.X.m()`'s
     /// class (0.9.80, #2860), a typed receiver (#4198) and
     /// `super(Cls, obj).m()`, whose MRO starts after `Cls` (0.9.81).
-    fn python_member_stamps(&self, n: Node<'t>, caller: &str, call: &Call, raw: &mut Value) {
+    fn python_member_stamps(&mut self, n: Node<'t>, caller: &str, call: &Call, raw: &mut Value) {
         let object = n
             .child_by_field_name("function")
             .and_then(|f| f.child_by_field_name("object"));
@@ -243,6 +266,14 @@ impl<'a, 't> Engine<'a, 't> {
                 .and_then(|table| table.get(receiver))
             {
                 raw["receiver_type"] = json!(class);
+            } else if let Some(site) = self
+                .python_factory_bindings
+                .get(caller)
+                .and_then(|table| table.get(receiver))
+            {
+                // A member-call result: the resolver types it from the
+                // producer's return annotation (Graphify 0.9.96).
+                raw["_python_receiver_factory"] = json!(site);
             } else if self
                 .python_fixture_params
                 .get(caller)
@@ -251,6 +282,12 @@ impl<'a, 't> Engine<'a, 't> {
                 // A fixture parameter: typed by the resolver from the fixture
                 // pytest would pick for it (0.9.92, #4332).
                 raw["_python_fixture_param"] = json!(true);
+            } else if let Some((class, shadow)) = self.python_module_instances.get_mut(receiver)
+                && !shadow.is_shadowed(n, receiver, self.source)
+            {
+                // A module-level instance of a proved class (Graphify 0.9.102).
+                raw["receiver_type"] = json!(class);
+                raw["_python_module_instance"] = json!(true);
             }
         }
         if call.receiver.as_deref() == Some("super")
@@ -851,7 +888,21 @@ impl<'a, 't> Engine<'a, 't> {
         c
     }
     fn indirect_name(&mut self, name: &str, n: Node<'t>, caller: &str, context: &str) {
-        let target = self.labels.get(name).cloned();
+        // JS/TS: a nested function in scope wins over the file-wide map
+        // (Graphify 0.9.97).
+        let mut target = None;
+        if self.js() {
+            let mut scope = Some(caller.to_string());
+            let mut seen = BTreeSet::new();
+            while let Some(s) = scope.filter(|s| !s.is_empty() && seen.insert(s.clone())) {
+                if let Some(id) = self.lexical.get(&s).and_then(|m| m.get(name)) {
+                    target = Some(id.clone());
+                    break;
+                }
+                scope = self.parents.get(&s).cloned();
+            }
+        }
+        let target = target.or_else(|| self.labels.get(name).cloned());
         let external = target.as_ref().is_none_or(|id| {
             !self.callable.contains(id)
                 && !self
@@ -883,6 +934,38 @@ impl<'a, 't> Engine<'a, 't> {
         let e = self.edges.last_mut().unwrap();
         e["confidence"] = json!("INFERRED");
         e["confidence_score"] = json!(0.85);
+    }
+    /// `_emit_indirect_member_ref` (Graphify 0.9.99, #1566): `module.func` in
+    /// a dispatch table goes to the Python member resolver as an `indirect`
+    /// member raw call; a receiver bound as a local (or `self`/`cls`) names a
+    /// value, not a module.
+    fn indirect_member(
+        &mut self,
+        attr: Node<'t>,
+        caller: &str,
+        locals: &BTreeSet<String>,
+        context: &str,
+    ) {
+        let (Some(object), Some(attribute)) = (
+            attr.child_by_field_name("object"),
+            attr.child_by_field_name("attribute"),
+        ) else {
+            return;
+        };
+        let receiver = self.text(object);
+        if locals.contains(&receiver) || receiver == "self" || receiver == "cls" {
+            return;
+        }
+        self.raw.push(json!({
+            "caller_nid": caller,
+            "callee": self.text(attribute),
+            "is_member_call": true,
+            "receiver": receiver,
+            "indirect": true,
+            "context": context,
+            "source_file": self.path,
+            "source_location": format!("L{}", attr.start_position().row + 1),
+        }));
     }
     fn indirect(
         &mut self,
@@ -1033,6 +1116,24 @@ impl<'a, 't> Engine<'a, 't> {
                 }
             }
             let mut call = call;
+            // C++: a call of a local or parameter in scope is a callable value,
+            // never a corpus function (Graphify 0.9.101).
+            if self.is("cpp")
+                && n.child_by_field_name("function")
+                    .is_some_and(|f| f.kind_name() == "identifier")
+                && let Some(name) = call.name.as_deref()
+                && self
+                    .cpp_local_bindings
+                    .get(caller)
+                    .and_then(|b| b.get(name))
+                    .is_some_and(|ranges| {
+                        ranges
+                            .iter()
+                            .any(|&(start, end)| start <= n.start_byte() && n.start_byte() < end)
+                    })
+            {
+                call.name = None;
+            }
             // Lua: `self:other()` in a method body calls a sibling on the same
             // table; only the literal `self` receiver is rewritten (#3991).
             let mut lua_self_qualified = false;
@@ -1081,6 +1182,15 @@ impl<'a, 't> Engine<'a, 't> {
                         // the bare-name map would bind the caller's own
                         // same-named method (0.9.90).
                         || (self.is("c_sharp") && call.member)
+                        // C++ `x.m()` names a method of x's type: a receiver the
+                        // type table types defers to the member resolver
+                        // instead of the file's same-named method (0.9.101).
+                        || (self.is("cpp")
+                            && call.member
+                            && !call.scoped
+                            && call.receiver.as_deref().is_some_and(|r| {
+                                r != "this" && self.type_table.contains_key(r)
+                            }))
                         || (call.member
                             && receiver.is_some_and(|r| {
                                 upper(r) || call.this_field || self.is("c_sharp")
@@ -1110,7 +1220,7 @@ impl<'a, 't> Engine<'a, 't> {
                             && !js_factory_sibling);
                     let mut target = None;
                     if !defer {
-                        if self.is("python") && !call.member {
+                        if (self.is("python") || self.js()) && !call.member {
                             let mut scope = Some(caller.to_string());
                             let mut seen = BTreeSet::new();
                             while let Some(s) = scope {
@@ -1136,9 +1246,19 @@ impl<'a, 't> Engine<'a, 't> {
                                 None
                             }
                         });
-                        if self.is("python") && !call.member {
+                        if (self.is("python") || self.js()) && !call.member {
                             if target.is_none() {
                                 target = self.labels.get(name).cloned();
+                            }
+                            // A class-body call may name the class's own
+                            // method; a method body's bare call may not
+                            // (Graphify 0.9.101).
+                            if self.is("python")
+                                && let Some(owner) =
+                                    target.as_ref().and_then(|t| self.method_owner.get(t))
+                                && owner != caller
+                            {
+                                target = self.python_free_labels.get(name).cloned();
                             }
                         } else if self_receiver.is_none() && self.lexical_language() && !call.member
                         {
@@ -1243,6 +1363,11 @@ impl<'a, 't> Engine<'a, 't> {
                         }
                         if python && call.member {
                             self.python_member_stamps(n, caller, &call, &mut raw);
+                        }
+                        if python {
+                            // The exact call, so the resolver links a factory
+                            // receiver to its own producer (Graphify 0.9.96).
+                            raw["_python_call_site"] = json!([n.start_byte(), n.end_byte()]);
                         }
                         // The stub may stand in for a definition in another
                         // file; extract() binds it only with evidence (#3888).
@@ -1409,6 +1534,11 @@ impl<'a, 't> Engine<'a, 't> {
         for v in vals {
             self.indirect(Some(v), caller, &locals, "collection");
         }
+        if python && ["dictionary", "list", "set", "tuple"].contains(&kind) {
+            for attr in python_value_attrs(n) {
+                self.indirect_member(attr, caller, &locals, "collection");
+            }
+        }
         if python {
             let (v, ctx) = if kind == "assignment" {
                 (n.child_by_field_name("right"), "assignment")
@@ -1546,6 +1676,11 @@ impl<'a, 't> Engine<'a, 't> {
         for v in vals {
             self.indirect(Some(v), caller, locals, "collection");
         }
+        if self.is("python") && ["dictionary", "list", "set", "tuple"].contains(&n.kind_name()) {
+            for attr in python_value_attrs(n) {
+                self.indirect_member(attr, caller, locals, "collection");
+            }
+        }
         if self.is("python") {
             if n.kind_name() == "assignment" {
                 for v in ref_values(n.child_by_field_name("right")) {
@@ -1578,6 +1713,15 @@ impl<'a, 't> Engine<'a, 't> {
             .filter(|e| e["relation"] == "case_of")
             .filter_map(|e| e["target"].as_str().map(str::to_string))
             .collect();
+        let method_targets: BTreeSet<String> = if self.is("python") {
+            self.edges
+                .iter()
+                .filter(|e| e["relation"] == "method")
+                .filter_map(|e| e["target"].as_str().map(str::to_string))
+                .collect()
+        } else {
+            BTreeSet::new()
+        };
         for n in &self.nodes {
             if n["type"] == "namespace" {
                 continue;
@@ -1604,10 +1748,18 @@ impl<'a, 't> Engine<'a, 't> {
                     self.lua_self_table.insert(id.clone(), table.to_string());
                 }
             }
-            if self.parents.contains_key(&id) {
+            if self.parents.contains_key(&id) && self.js() {
+                // A JS/TS nested function is visible only inside its parent,
+                // where the scoped lookup finds it: a same-named call
+                // elsewhere never binds to it (Graphify 0.9.97).
+                continue;
+            } else if self.parents.contains_key(&id) {
                 self.labels.entry(label.clone()).or_insert(id.clone());
                 self.labels_ci.entry(label.to_lowercase()).or_insert(id);
             } else {
+                if self.is("python") && !method_targets.contains(id.as_str()) {
+                    self.python_free_labels.insert(label.clone(), id.clone());
+                }
                 self.labels.insert(label.clone(), id.clone());
                 self.labels_ci.insert(label.to_lowercase(), id);
             }
@@ -1693,14 +1845,23 @@ impl<'a, 't> Engine<'a, 't> {
             }
         }
         if self.is("python") {
-            // `self.X` per class from the bindings in its methods (#2860);
-            // conflicting or untypable bindings poison the field.
+            // Typed parameters and locals per function (#4198), and locals
+            // bound to a member-call result (Graphify 0.9.96); then `self.X`
+            // per class from the bindings in its methods (#2860), where an
+            // unchanged typed local carries its class. Conflicting or
+            // untypable bindings poison the field.
             for (caller, body) in &self.bodies {
+                let (bindings, factories) = python_local_class_bindings(*body, self.source);
+                self.python_var_types.insert(caller.clone(), bindings);
+                self.python_factory_bindings
+                    .insert(caller.clone(), factories);
                 let Some(owner) = self.method_owner.get(caller) else {
                     continue;
                 };
                 let fields = self.python_attr_types.entry(owner.clone()).or_default();
-                for (attr, class) in python_self_attr_bindings(*body, self.source) {
+                for (attr, class) in
+                    python_self_attr_bindings(*body, self.source, self.python_var_types.get(caller))
+                {
                     let kept = match fields.get(&attr) {
                         Some(previous) if *previous != class => None,
                         _ => class,
@@ -1708,19 +1869,28 @@ impl<'a, 't> Engine<'a, 't> {
                     fields.insert(attr, kept);
                 }
             }
-            // Typed parameters and locals per function (#4198); `@property`
-            // readers are marked for the attribute-read pass (#4337).
+            // `@property` readers are marked for the attribute-read pass
+            // (#4337), and a scalar class return annotation for the factory
+            // receivers (Graphify 0.9.96).
             let mut properties = BTreeSet::new();
+            let mut return_types: BTreeMap<String, String> = BTreeMap::new();
             // pytest fixtures (0.9.92, #4332): what each fixture returns, and
             // the parameters of tests and fixtures pytest fills, in test
             // modules and `conftest.py` only.
             let test_module = python_is_test_module(&self.path);
             let mut fixtures: BTreeMap<String, String> = BTreeMap::new();
+            let mut fixture_params: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
             for (caller, body) in &self.bodies {
-                let bindings = python_local_class_bindings(*body, self.source);
+                let empty = PythonBindings::new();
+                let bindings = self.python_var_types.get(caller).unwrap_or(&empty);
                 let func = body
                     .parent()
                     .filter(|f| f.kind_name() == "function_definition");
+                if let Some(class) = func.and_then(|f| {
+                    python_class_ref(f.child_by_field_name("return_type"), self.source)
+                }) {
+                    return_types.insert(caller.clone(), class);
+                }
                 if func.is_some_and(|f| python_is_property(f, self.source)) {
                     properties.insert(caller.clone());
                 }
@@ -1729,7 +1899,7 @@ impl<'a, 't> Engine<'a, 't> {
                     if fixture {
                         fixtures.insert(
                             caller.clone(),
-                            python_fixture_type(func, self.source, &bindings),
+                            python_fixture_type(func, self.source, bindings),
                         );
                     }
                     if fixture
@@ -1737,13 +1907,16 @@ impl<'a, 't> Engine<'a, 't> {
                             .child_by_field_name("name")
                             .is_some_and(|n| self.text(n).starts_with("test"))
                     {
-                        self.python_fixture_params
+                        fixture_params
                             .insert(caller.clone(), python_untouched_params(func, self.source));
                     }
                 }
-                self.python_var_types.insert(caller.clone(), bindings);
             }
+            self.python_fixture_params.extend(fixture_params);
             for n in &mut self.nodes {
+                if let Some(class) = n["id"].as_str().and_then(|id| return_types.get(id)) {
+                    n["_py_return_type"] = json!(class);
+                }
                 if n["id"].as_str().is_some_and(|id| properties.contains(id)) {
                     n["_py_property"] = json!(true);
                 }
@@ -1799,10 +1972,34 @@ impl<'a, 't> Engine<'a, 't> {
             }
             receiver_tables.insert(*body, table);
         }
-        for (_, body) in &self.bodies {
-            if self.is("cpp") {
-                cpp_local_var_types(*body, self.source, &mut self.type_table);
+        if self.is("cpp") {
+            // Each function's table (a local shadows a parameter there), then
+            // the class fields; a name typed differently in two places is
+            // ambiguous and dropped (Graphify 0.9.101, #3215).
+            let mut conflicting = BTreeSet::new();
+            let mut fold = |table: BTreeMap<String, String>, type_table: &mut Table| {
+                for (var, ty) in table {
+                    if ty.is_empty() || type_table.entry(var.clone()).or_insert(ty.clone()) != &ty {
+                        conflicting.insert(var);
+                    }
+                }
+            };
+            for (caller, body) in &self.bodies {
+                let mut table = BTreeMap::new();
+                cpp_local_var_types(*body, self.source, &mut table);
+                cpp_parameter_types(*body, self.source, &mut table);
+                fold(table, &mut self.type_table);
+                self.cpp_local_bindings
+                    .insert(caller.clone(), cpp_local_binding_ranges(*body, self.source));
             }
+            let mut fields = BTreeMap::new();
+            cpp_field_types(root, self.source, &mut fields);
+            fold(fields, &mut self.type_table);
+            for var in conflicting {
+                self.type_table.remove(&var);
+            }
+        }
+        for (_, body) in &self.bodies {
             if self.is("swift") {
                 swift_local_var_types(
                     *body,
@@ -1817,6 +2014,7 @@ impl<'a, 't> Engine<'a, 't> {
                 root,
                 self.source,
             ));
+            self.python_module_instances = python_module_instance_types(root, self.source);
         }
         for (caller, body) in self.bodies.clone() {
             let mut table = receiver_tables.remove(&body.id()).unwrap_or_default();
@@ -1914,6 +2112,10 @@ impl<'a, 't> Engine<'a, 't> {
         }
         for n in &mut self.nodes {
             let id = n["id"].as_str().unwrap_or("");
+            if let Some(qualified) = self.cpp_qualified.get(id) {
+                n["_cpp_qualified"] = json!(qualified);
+            }
+            let id = n["id"].as_str().unwrap_or("");
             if self.callable.contains(id) {
                 let class = self.classes.contains(id);
                 n["_callable"] = json!(true);
@@ -1950,12 +2152,23 @@ impl<'a, 't> Engine<'a, 't> {
                 first_error = child;
             }
             let mut stack = vec![root];
-            let mut multiline = false;
+            // The first ERROR spanning lines: the region the warning gate
+            // selects on, not an earlier fully recovered one (Graphify
+            // 0.9.96, #4711).
+            let mut lossy: Option<Node<'_>> = None;
             while let Some(n) = stack.pop() {
-                multiline |= n.is_error() && n.end_position().row > n.start_position().row;
+                if n.is_error()
+                    && n.end_position().row > n.start_position().row
+                    && lossy.is_none_or(|b| n.start_byte() < b.start_byte())
+                {
+                    lossy = Some(n);
+                }
                 stack.extend(children(n).into_iter().rev());
             }
-            out["parse_errors"] = json!({"first_error_line":first_error.start_position().row + 1,"multiline_error":multiline});
+            out["parse_errors"] = json!({"first_error_line":first_error.start_position().row + 1,"multiline_error":lossy.is_some()});
+            if let Some(lossy) = lossy {
+                out["parse_errors"]["lossy_error_line"] = json!(lossy.start_position().row + 1);
+            }
         }
         if self.is("kotlin")
             && let Some(p) = children(root)

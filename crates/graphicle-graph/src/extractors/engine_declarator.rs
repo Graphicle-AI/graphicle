@@ -5,7 +5,8 @@
 use super::base::read_text;
 use tree_sitter::Node;
 pub fn cpp_declarator_name(node: Node<'_>, source: &[u8]) -> Option<String> {
-    if node.kind() == "identifier" {
+    // A class field's declarator too (Graphify 0.9.101, #3215).
+    if matches!(node.kind(), "identifier" | "field_identifier") {
         return Some(read_text(node, source));
     }
     if matches!(
@@ -18,7 +19,10 @@ pub fn cpp_declarator_name(node: Node<'_>, source: &[u8]) -> Option<String> {
                 .find(|n| {
                     matches!(
                         n.kind(),
-                        "identifier" | "pointer_declarator" | "reference_declarator"
+                        "identifier"
+                            | "field_identifier"
+                            | "pointer_declarator"
+                            | "reference_declarator"
                     )
                 })
         });

@@ -15,6 +15,55 @@ use super::{
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use tree_sitter::Node;
+/// `_scala_extension_receiver_name` (Graphify 0.9.100, #2044): the type an
+/// `extension_definition` extends, from the single parameter of its first
+/// non-`using` clause; a generic or qualified receiver binds its type name,
+/// and one typed by a type parameter in scope extends every type (`None`).
+fn scala_extension_receiver_name(node: Node<'_>, source: &[u8]) -> Option<String> {
+    let clause = children(node).into_iter().find(|c| {
+        c.kind_name() == "parameters" && !children(*c).iter().any(|cc| cc.kind_name() == "using")
+    })?;
+    let param = children(clause)
+        .into_iter()
+        .find(|c| c.kind_name() == "parameter")?;
+    let mut ty = children(param).into_iter().find(|c| {
+        matches!(
+            c.kind_name(),
+            "type_identifier" | "generic_type" | "stable_type_identifier"
+        )
+    });
+    if let Some(generic) = ty.filter(|t| t.kind_name() == "generic_type") {
+        ty = children(generic)
+            .into_iter()
+            .find(|c| matches!(c.kind_name(), "type_identifier" | "stable_type_identifier"));
+    }
+    if let Some(stable) = ty.filter(|t| t.kind_name() == "stable_type_identifier") {
+        ty = children(stable)
+            .into_iter()
+            .rev()
+            .find(|c| c.kind_name() == "type_identifier");
+    }
+    let name = super::base::read_text(ty?, source).trim().to_string();
+    (!name.is_empty() && !scala_type_parameters_in_scope(node, source).contains(&name))
+        .then_some(name)
+}
+/// Whether [`Engine::js_closures`] would find a closure in `value`, with no
+/// side effect: a declaration id is only claimed for a value that has one.
+fn js_has_closures(value: Node<'_>) -> bool {
+    let mut inner = Some(value);
+    while let Some(n) =
+        inner.filter(|n| matches!(n.kind_name(), "as_expression" | "satisfies_expression"))
+    {
+        inner = named(n).into_iter().next();
+    }
+    inner
+        .filter(|n| matches!(n.kind_name(), "call_expression" | "new_expression"))
+        .is_some_and(|n| {
+            let mut closures = vec![];
+            js_topmost_closures(n, &mut closures);
+            !closures.is_empty()
+        })
+}
 impl<'a, 't> Engine<'a, 't> {
     pub(crate) fn js_members(&mut self, body: Node<'t>, owner: &str, this_method: bool) {
         let mut objects = BTreeMap::new();
@@ -182,7 +231,8 @@ impl<'a, 't> Engine<'a, 't> {
             {
                 if set("_JS_FUNCTION_VALUE_TYPES").contains(v.kind_name()) {
                     if kind == "exports" {
-                        let id = make_id([stem.as_str(), name.as_str()]);
+                        let id =
+                            self.decl_id(&make_id([stem.as_str(), name.as_str()]), &name, "fn");
                         self.js_callable(
                             &id,
                             CallableInfo {
@@ -197,7 +247,11 @@ impl<'a, 't> Engine<'a, 't> {
                         return true;
                     }
                     if kind == "prototype" {
-                        let owner = make_id([stem.as_str(), owner.as_deref().unwrap_or("")]);
+                        let owner_name = owner.as_deref().unwrap_or("");
+                        let owner = self
+                            .decl
+                            .lookup(owner_name)
+                            .unwrap_or_else(|| make_id([stem.as_str(), owner_name]));
                         let id = make_id([owner.as_str(), name.as_str()]);
                         self.js_callable(
                             &id,
@@ -222,7 +276,10 @@ impl<'a, 't> Engine<'a, 't> {
                             .get_or_insert_with(|| js_find_exported_objects(program, self.source))
                             .contains(owner)
                     {
-                        let owner_id = make_id([stem.as_str(), owner]);
+                        let owner_id = self
+                            .decl
+                            .lookup(owner)
+                            .unwrap_or_else(|| make_id([stem.as_str(), owner]));
                         let id = make_id([owner_id.as_str(), name.as_str()]);
                         if !self.seen.contains(&owner_id) {
                             self.add_node(&owner_id, owner, line, None, Value::Null);
@@ -241,14 +298,14 @@ impl<'a, 't> Engine<'a, 't> {
                         );
                         return true;
                     }
-                } else if kind == "exports" {
-                    let id = make_id([stem.as_str(), name.as_str()]);
-                    if self.js_closures(v, &id) {
-                        self.add_node(&id, &format!("{name}()"), line, None, Value::Null);
-                        self.edge(&file, &id, "contains", line, None, Value::Null);
-                        self.callable.insert(id);
-                        return true;
-                    }
+                } else if kind == "exports" && js_has_closures(v) {
+                    // Graphify 0.9.98, #4854.
+                    let id = self.decl_id(&make_id([stem.as_str(), name.as_str()]), &name, "fn");
+                    self.js_closures(v, &id);
+                    self.add_node(&id, &format!("{name}()"), line, None, Value::Null);
+                    self.edge(&file, &id, "contains", line, None, Value::Null);
+                    self.callable.insert(id);
+                    return true;
                 }
             }
         }
@@ -306,7 +363,11 @@ impl<'a, 't> Engine<'a, 't> {
                         if crate::ids::normalize_id(&name_text).is_empty() {
                             continue;
                         }
-                        let id = make_id([stem.as_str(), name_text.as_str()]);
+                        let id = self.decl_id(
+                            &make_id([stem.as_str(), name_text.as_str()]),
+                            &name_text,
+                            "fn",
+                        );
                         self.js_callable(
                             &id,
                             CallableInfo {
@@ -319,7 +380,11 @@ impl<'a, 't> Engine<'a, 't> {
                             value,
                         );
                         found = true;
-                    } else if !js_value_is_require(value, self.source)
+                    } else if !(js_value_is_require(value, self.source)
+                        // Only a require that resolves to a corpus file: an
+                        // external package keeps its binding node (Graphify
+                        // 0.9.96, #4688).
+                        && js_require_resolves_locally(value, self.source, &self.path))
                         && ((exported
                             && name.kind_name() == "identifier"
                             && !crate::ids::normalize_id(&name_text).is_empty())
@@ -347,13 +412,21 @@ impl<'a, 't> Engine<'a, 't> {
                                 if let Some(name) =
                                     name.filter(|s| !crate::ids::normalize_id(s).is_empty())
                                 {
-                                    let id = make_id([stem.as_str(), name.as_str()]);
+                                    let id = self.decl_id(
+                                        &make_id([stem.as_str(), name.as_str()]),
+                                        &name,
+                                        "var",
+                                    );
                                     self.add_node(&id, &name, line, None, Value::Null);
                                     self.edge(&file, &id, "contains", line, None, Value::Null);
                                 }
                             }
                         } else {
-                            let id = make_id([stem.as_str(), name_text.as_str()]);
+                            let id = self.decl_id(
+                                &make_id([stem.as_str(), name_text.as_str()]),
+                                &name_text,
+                                "var",
+                            );
                             self.add_node(&id, &name_text, line, None, Value::Null);
                             self.edge(&file, &id, "contains", line, None, Value::Null);
                             self.js_closures(value, &id);
@@ -380,6 +453,7 @@ impl<'a, 't> Engine<'a, 't> {
                 let name = self.text(name).trim_matches(['\'', '"', '`']).to_string();
                 if !name.is_empty() {
                     let id = make_id([self.stem.as_str(), name.as_str()]);
+                    let id = self.decl_id(&id, &name, "ns");
                     self.add_node(&id, &name, line, None, Value::Null);
                     let file = self.file.clone();
                     self.edge(&file, &id, "contains", line, None, Value::Null);
@@ -448,8 +522,12 @@ impl<'a, 't> Engine<'a, 't> {
             let line = n.start_position().row + 1;
             for alias in cpp_alias_names(n, self.source) {
                 let id = make_id([self.stem.as_str(), alias.as_str()]);
-                if !self.seen.contains(&id) {
-                    self.add_node(&id, &alias, line, None, Value::Null);
+                // The registry may salt the id (Graphify 0.9.98, #4854): a
+                // node was minted when the seen set grew (0.9.101).
+                let known = self.seen.len();
+                let id = self.decl_id(&id, &alias, "alias");
+                self.add_node(&id, &alias, line, None, Value::Null);
+                if self.seen.len() > known {
                     let file = self.file.clone();
                     self.edge(&file, &id, "contains", line, None, Value::Null);
                 }
@@ -489,6 +567,23 @@ impl<'a, 't> Engine<'a, 't> {
                     self.add_node(&id, &name, line, None, Value::Null);
                     self.edge(parent, &id, "case_of", line, None, Value::Null);
                 }
+            }
+            return true;
+        }
+        // `extension (p: Point) def flip` adds `flip` to `Point`: its methods
+        // are walked under the receiver type, resolved like a type reference
+        // (Graphify 0.9.100, #2044).
+        if self.is("scala") && t == "extension_definition" {
+            let Some(receiver) = scala_extension_receiver_name(n, self.source) else {
+                return false;
+            };
+            let receiver = self.ensure(&receiver, true);
+            let mut cursor = n.walk();
+            let members = n
+                .children_by_field_name("body", &mut cursor)
+                .collect::<Vec<_>>();
+            for member in members {
+                self.walk(member, Some(&receiver));
             }
             return true;
         }
