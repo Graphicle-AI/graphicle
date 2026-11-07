@@ -2647,6 +2647,17 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
                 }
             }
         };
+        // A bare Python name resolves through the caller module's own
+        // bindings: a builtin-named callee is a project symbol only when the
+        // caller's file imports that exact symbol. Module-import evidence does
+        // not count; without a direct import the name is the builtin, so no
+        // edge (Graphify 0.9.103, #4989).
+        if effective_suffix(sf) == ".py"
+            && extractors::base::is_python_builtin_name(callee)
+            && !has_symbol(&target)
+        {
+            continue;
+        }
         if id_source
             .get(target.as_str())
             .is_none_or(|sf| sf.is_empty())
