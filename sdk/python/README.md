@@ -27,6 +27,12 @@ packet = project.context("Where is authentication checked?", max_tokens=3000)
 print(packet["evidence"])
 ~~~
 
+`Client.from_session(url)` reads `local-session.json` from `GRAPHICLE_DATA_DIR` when set. Otherwise it
+matches the native program's default: `%LOCALAPPDATA%\Graphicle` on Windows (falling back to
+`AppData\Local\Graphicle` under the home folder), `~/Library/Application Support/Graphicle` on
+macOS, and `$XDG_DATA_HOME/graphicle` or `~/.local/share/graphicle` elsewhere. Pass `data_dir` to
+read a session from another location.
+
 `client.project(key, name)` explicitly registers or reuses a project;
 `find_project(key)` only discovers an existing one. The TypeScript SDK's
 `project(id)` takes an existing repository ID instead.
