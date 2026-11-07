@@ -1030,6 +1030,288 @@ fn csharp_string_opener(source: &[u8], i: usize) -> (usize, usize, bool, bool) {
     let run = source[j..].iter().take_while(|&&b| b == b'"').count();
     (j, run, interpolated, verbatim)
 }
+/// A byte blanked: every byte but CR and LF becomes a space, so lines and
+/// columns stay (Graphify 0.9.103).
+fn csharp_blank_byte(b: u8) -> u8 {
+    if matches!(b, b'\n' | b'\r') { b } else { b' ' }
+}
+/// `_csharp_token_end` (Graphify 0.9.103): the end (exclusive) of the
+/// comment, char or string literal opening at `i`, or `i` when none does. A
+/// line-bounded token (a `//` comment, a char literal, a regular string)
+/// stops before its newline. The holes of an interpolated string are walked
+/// as code, so a quote inside `{...}` does not end the string.
+fn csharp_token_end(source: &[u8], i: usize) -> usize {
+    let n = source.len();
+    let at = |j: usize| source.get(j).copied();
+    if source[i..].starts_with(b"//") {
+        return find_bytes(source, b"\n", i).unwrap_or(n);
+    }
+    if source[i..].starts_with(b"/*") {
+        return find_bytes(source, b"*/", i + 2).map_or(n, |end| end + 2);
+    }
+    if at(i) == Some(b'\'') {
+        let mut j = i + 1;
+        while j < n && !matches!(source[j], b'\'' | b'\n') {
+            j += if source[j] == b'\\' { 2 } else { 1 };
+        }
+        return if at(j) == Some(b'\'') { j + 1 } else { j.min(n) };
+    }
+    let (quote, run, interpolated, verbatim) = csharp_string_opener(source, i);
+    if run == 0 {
+        return i;
+    }
+    if run >= 3 {
+        let quotes = vec![b'"'; run];
+        return find_bytes(source, &quotes, quote + run).map_or(n, |end| end + run);
+    }
+    if run == 2 {
+        return quote + 2;
+    }
+    let mut j = quote + 1;
+    while j < n {
+        let ch = source[j];
+        if verbatim && source[j..].starts_with(b"\"\"") {
+            j += 2;
+        } else if ch == b'\\' && !verbatim {
+            j += 2;
+        } else if ch == b'"' {
+            return j + 1;
+        } else if ch == b'\n' && !verbatim {
+            return j;
+        } else if interpolated && source[j..].starts_with(b"{{") {
+            j += 2;
+        } else if interpolated && ch == b'{' {
+            let mut depth = 1i64;
+            j += 1;
+            while j < n && depth != 0 {
+                let end = csharp_token_end(source, j);
+                if end > j {
+                    j = end;
+                    continue;
+                }
+                match source[j] {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+        } else {
+            j += 1;
+        }
+    }
+    n
+}
+/// `_csharp_branch_balanced`: `{}` and `()` of `src` each net to zero,
+/// comments and literals skipped.
+fn csharp_branch_balanced(src: &[u8]) -> bool {
+    let (mut brace, mut paren) = (0i64, 0i64);
+    let mut j = 0;
+    while j < src.len() {
+        let tok = csharp_token_end(src, j);
+        if tok > j {
+            j = tok;
+            continue;
+        }
+        match src[j] {
+            b'{' => brace += 1,
+            b'}' => brace -= 1,
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            _ => {}
+        }
+        j += 1;
+    }
+    brace == 0 && paren == 0
+}
+/// `_CSHARP_NOT_A_TYPE`: statement words that precede a name without
+/// declaring it.
+const CSHARP_NOT_A_TYPE: &[&[u8]] = &[
+    b"return", b"new", b"await", b"throw", b"if", b"while", b"for", b"foreach", b"switch",
+    b"case", b"using", b"lock", b"catch", b"when", b"is", b"as", b"in", b"out", b"ref",
+    b"else", b"yield", b"nameof", b"typeof", b"sizeof", b"default", b"var", b"goto", b"fixed",
+    b"checked", b"unchecked", b"and", b"or", b"not",
+];
+static CSHARP_MEMBER_DECL: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(
+        r"(?-u)([A-Za-z_][A-Za-z0-9_]*|[>\]?*])\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^<>(){};]*>)?\s*(\(|\{|=>)",
+    )
+    .unwrap()
+});
+/// `_csharp_branch_member_sigs`: `(name, arity)` of the members a branch
+/// declares at its own brace depth. A heuristic, not a parse: a name after a
+/// type-like token and before `(` (arity = top-level commas + 1, 0 for `()`)
+/// or `{`/`=>` (a property or type, arity -1). Both branches of a group sit
+/// at one place in the file, so a shared signature is one member declared
+/// twice.
+fn csharp_branch_member_sigs(src: &[u8]) -> BTreeSet<(Vec<u8>, i64)> {
+    // Comments and literals are masked so they never look like code.
+    let mut code = src.to_vec();
+    let mut j = 0;
+    while j < src.len() {
+        let tok = csharp_token_end(src, j);
+        if tok > j {
+            for b in &mut code[j..tok] {
+                *b = csharp_blank_byte(*b);
+            }
+            j = tok;
+        } else {
+            j += 1;
+        }
+    }
+    let mut depth_at = Vec::with_capacity(code.len());
+    let mut d = 0i64;
+    for &ch in &code {
+        depth_at.push(d);
+        match ch {
+            b'{' => d += 1,
+            b'}' => d -= 1,
+            _ => {}
+        }
+    }
+    let mut sigs = BTreeSet::new();
+    for m in CSHARP_MEMBER_DECL.captures_iter(&code) {
+        let (kind, name, open) = (m.get(1).unwrap(), m.get(2).unwrap(), m.get(3).unwrap());
+        if depth_at[name.start()] != 0 || CSHARP_NOT_A_TYPE.contains(&kind.as_bytes()) {
+            continue;
+        }
+        let name = name.as_bytes().to_vec();
+        if open.as_bytes() != b"(" {
+            sigs.insert((name, -1));
+            continue;
+        }
+        let mut k = open.end();
+        let (mut level, mut angle, mut commas, mut empty) = (1i64, 0i64, 0i64, true);
+        while k < code.len() && level != 0 {
+            let c = code[k];
+            match c {
+                b'(' | b'[' | b'{' => level += 1,
+                b')' | b']' | b'}' => level -= 1,
+                b'<' => angle += 1,
+                b'>' => angle = (angle - 1).max(0),
+                b',' if level == 1 && angle == 0 => commas += 1,
+                _ => {}
+            }
+            if level != 0 && !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
+                empty = false;
+            }
+            k += 1;
+        }
+        sigs.insert((name, if empty { 0 } else { commas + 1 }));
+    }
+    sigs
+}
+/// `_blank_csharp_preprocessor` (Graphify 0.9.103): C# preprocessor
+/// directives and the `#if` branches that derail the parse, blanked, or
+/// `None` when the file has no directive. tree-sitter-c-sharp parses every
+/// branch in place, and its recovery around a directive can close the
+/// enclosing class early, so later members lose their type owner, their
+/// field typing and their calls.
+///
+/// Every directive line (`#if`, `#elif`, `#else`, `#endif`, and `#region`,
+/// `#pragma`, `#nullable`, `#define`, ...) is blanked. The first branch of
+/// each `#if` group is kept; a later `#elif`/`#else` branch is kept too
+/// (#2631) unless its `{}` or `()` do not net to zero on their own, or it
+/// declares a member (name and arity) a kept branch of the group declares.
+/// Nested groups are decided first. Length preserving: removed bytes become
+/// spaces and CR/LF stay, so every byte keeps its line and column. A `#` line
+/// inside a comment or a multi-line string is no directive.
+pub fn blank_csharp_preprocessor(source: &[u8]) -> Option<Vec<u8>> {
+    let n = source.len();
+    // (line start, line end, keyword) of every directive line.
+    let mut directives: Vec<(usize, usize, &[u8])> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let mut p = i;
+        while p < n && matches!(source[p], b' ' | b'\t' | 0x0b | 0x0c) {
+            p += 1;
+        }
+        if source.get(p) == Some(&b'#') {
+            let end = find_bytes(source, b"\n", p).unwrap_or(n);
+            let mut k = p + 1;
+            while k < end && matches!(source[k], b' ' | b'\t') {
+                k += 1;
+            }
+            let mut w = k;
+            while w < end && source[w].is_ascii_alphabetic() {
+                w += 1;
+            }
+            directives.push((i, end, &source[k..w]));
+            i = end + 1;
+            continue;
+        }
+        // The line walked as code; a comment or string may run past its end.
+        let mut j = p;
+        while j < n {
+            let ch = source[j];
+            if ch == b'\n' {
+                break;
+            }
+            let end = csharp_token_end(source, j);
+            if end > j {
+                j = end;
+            } else if matches!(ch, b'$' | b'@') {
+                j = (j + 1).max(csharp_string_opener(source, j).0);
+            } else {
+                j += 1;
+            }
+        }
+        i = j + 1;
+    }
+    if directives.is_empty() {
+        return None;
+    }
+    let mut out = source.to_vec();
+    let blank = |out: &mut Vec<u8>, start: usize, end: usize| {
+        for (o, &b) in out[start..end].iter_mut().zip(&source[start..end]) {
+            *o = csharp_blank_byte(b);
+        }
+    };
+    // Decides the branches of one closed group: `heads` are the (start, end)
+    // of its `#if` and each `#elif`/`#else`.
+    let close = |out: &mut Vec<u8>, heads: &[(usize, usize)], endif_start: usize| {
+        let bodies: Vec<(usize, usize)> = (0..heads.len())
+            .map(|k| (heads[k].1, heads.get(k + 1).map_or(endif_start, |h| h.0)))
+            .collect();
+        let mut kept: Vec<usize> = Vec::new();
+        for (k, &(start, end)) in bodies.iter().enumerate() {
+            let keep = k == 0 || {
+                let body = &out[start..end];
+                csharp_branch_balanced(body) && {
+                    let sigs = csharp_branch_member_sigs(body);
+                    !kept.iter().any(|&o| {
+                        let (s, e) = bodies[o];
+                        !sigs.is_disjoint(&csharp_branch_member_sigs(&out[s..e]))
+                    })
+                }
+            };
+            if keep {
+                kept.push(k);
+            } else {
+                blank(out, start, end);
+            }
+        }
+    };
+    let mut stack: Vec<Vec<(usize, usize)>> = Vec::new();
+    for &(start, end, word) in &directives {
+        blank(&mut out, start, end);
+        match word {
+            b"if" => stack.push(vec![(start, end)]),
+            b"elif" | b"else" if !stack.is_empty() => stack.last_mut().unwrap().push((start, end)),
+            b"endif" => {
+                if let Some(heads) = stack.pop() {
+                    close(&mut out, &heads, start);
+                }
+            }
+            _ => {}
+        }
+    }
+    // An unterminated `#if` runs to the end of the file.
+    while let Some(heads) = stack.pop() {
+        close(&mut out, &heads, n);
+    }
+    Some(out)
+}
 fn find_bytes(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     haystack
         .get(from..)?
@@ -1525,9 +1807,12 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
             source = php_blank_unparsed_casts(&s);
         }
     } else if language == "CSHARP" {
-        // Upstream hands the raw bytes to the verbatim-string repair (#3376).
+        // Upstream hands the raw bytes to the preprocessor blanking
+        // (Graphify 0.9.103) and then to the verbatim-string repair (#3376).
         if let Ok(s) = crate::extractors::parse_cache::read(path) {
-            source = normalize_csharp_verbatim_interpolation(&s);
+            let blanked = blank_csharp_preprocessor(&s[..]);
+            source = normalize_csharp_verbatim_interpolation(blanked.as_deref().unwrap_or(&s[..]))
+                .or(blanked);
         }
     } else if language == "VUE" {
         let Ok(src) = read_source_text(path, true) else {

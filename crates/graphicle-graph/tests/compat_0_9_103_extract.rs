@@ -416,3 +416,142 @@ fn class_field_reference_stays_on_the_class_not_a_method() {
     assert!(refs.contains(&("Foo".into(), "Baz".into())), "{refs:?}");
     assert!(!refs.iter().any(|(s, t)| s.ends_with("render()") && t == "Baz"), "{refs:?}");
 }
+
+// --- C# preprocessor directives no longer derail the parse ------------------
+
+fn cs_calls(files: &[(&str, &str)]) -> (Fixture, Value, std::collections::BTreeSet<(String, String)>) {
+    let f = Fixture::new();
+    let r = f.extract_files(files);
+    let calls = edges(&r)
+        .iter()
+        .filter(|e| e["relation"] == "calls")
+        .map(|e| {
+            (
+                e["source"].as_str().unwrap_or("").to_owned(),
+                e["target"].as_str().unwrap_or("").to_owned(),
+            )
+        })
+        .collect();
+    (f, r, calls)
+}
+
+/// The one method node `name` declared inside class `owner`.
+fn member(r: &Value, owner: &str, name: &str) -> Value {
+    let suffix = format!("_{owner}_{name}").to_lowercase();
+    let found: Vec<&Value> = nodes(r)
+        .iter()
+        .filter(|n| {
+            n["label"] == format!(".{name}()").as_str()
+                && n["id"].as_str().unwrap_or("").ends_with(&suffix)
+        })
+        .collect();
+    assert_eq!(found.len(), 1, "{owner}.{name}: {:?}", nodes(r));
+    found[0].clone()
+}
+
+fn pair(a: &Value, b: &Value) -> (String, String) {
+    (a["id"].as_str().unwrap().to_owned(), b["id"].as_str().unwrap().to_owned())
+}
+
+const PP_BUFFER: &str = "namespace Repro3;\n\npublic class Buffer\n{\n    public void Append(char c) { }\n}\n";
+const PP_WRITER: &str = "namespace Repro3\n{\n    public class Writer\n    {\n        private readonly Buffer _buffer = new Buffer();\n        private int _state;\n\n        public int State\n        {\n            get\n            {\n                {\n                    return _state;\n                }\n            }\n        }\n\n        public string Path\n        {\n            get\n            {\n                {\n                    return \"\";\n                }\n            }\n        }\n\n        public void WriteValue(int typeCode)\n        {\n            {\n                switch (typeCode)\n                {\n#if HAVE_DB_NULL\n                    case 1:\n                        break;\n#endif\n                }\n            }\n        }\n\n        public void Flush()\n        {\n            Prepare();\n            _buffer.Append('x');\n        }\n\n        private void Prepare() { }\n    }\n}\n";
+
+#[test]
+fn preprocessor_if_does_not_orphan_later_members() {
+    // test_csharp_member_calls.py (Graphify 0.9.103, 52a7acb6)
+    let (_f, r, calls) = cs_calls(&[("Writer.cs", PP_WRITER), ("Buffer.cs", PP_BUFFER)]);
+    let flush = member(&r, "Writer", "Flush");
+    assert!(calls.contains(&pair(&flush, &member(&r, "Writer", "Prepare"))));
+    assert!(
+        calls.contains(&pair(&flush, &member(&r, "Buffer", "Append"))),
+        "_buffer.Append() resolves through the field type"
+    );
+}
+
+#[test]
+fn preprocessor_blanking_keeps_member_line_numbers() {
+    let (_f, r, _) = cs_calls(&[("Writer.cs", PP_WRITER), ("Buffer.cs", PP_BUFFER)]);
+    for (name, decl) in [
+        ("WriteValue", "public void WriteValue("),
+        ("Flush", "public void Flush()"),
+        ("Prepare", "private void Prepare()"),
+    ] {
+        let want = PP_WRITER.lines().position(|l| l.contains(decl)).unwrap() + 1;
+        assert_eq!(member(&r, "Writer", name)["source_location"], format!("L{want}"), "{name}");
+    }
+}
+
+#[test]
+fn preprocessor_nested_split_signature_keeps_one_header() {
+    let (_f, r, calls) = cs_calls(&[
+        (
+            "Sink.cs",
+            "public class Fast { public void Run() {} }\npublic class Slow { public void Run() {} }\npublic class Old { public void Run() {} }\n",
+        ),
+        (
+            "Host.cs",
+            "public class Host\n{\n    private Fast _fast = new Fast();\n    private Slow _slow = new Slow();\n    private Old _old = new Old();\n#if NET\n  #if NET8_0_OR_GREATER\n    public void Write(System.ReadOnlySpan<char> s)\n  #else\n    public void Write(char[] s)\n  #endif\n#else\n    public void Write(string s)\n#endif\n    {\n#if NET\n        _fast.Run();\n  #if DEBUG\n        _slow.Run();\n  #else\n        _old.Run();\n  #endif\n#else\n        _old.Run();\n#endif\n    }\n\n    public void Flush() { _fast.Run(); }\n}\n",
+        ),
+    ]);
+    let write = member(&r, "Host", "Write");
+    let flush = member(&r, "Host", "Flush");
+    assert_eq!(write["source_location"], "L8");
+    assert_eq!(flush["source_location"], "L28");
+    assert!(calls.contains(&pair(&write, &member(&r, "Fast", "Run"))));
+    assert!(calls.contains(&pair(&write, &member(&r, "Slow", "Run"))), "nested first branch kept");
+    assert!(calls.contains(&pair(&write, &member(&r, "Old", "Run"))), "balanced #else kept");
+    assert!(calls.contains(&pair(&flush, &member(&r, "Fast", "Run"))));
+}
+
+#[test]
+fn preprocessor_elif_else_redeclaring_a_member_are_blanked() {
+    let (_f, r, calls) = cs_calls(&[
+        (
+            "Sink.cs",
+            "public class A { public void Go() {} }\npublic class B { public void Go() {} }\npublic class C { public void Go() {} }\n",
+        ),
+        (
+            "Host.cs",
+            "public class Host\n{\n    private A _a = new A();\n    private B _b = new B();\n    private C _c = new C();\n#if HAVE_A\n    public void Run() { _a.Go(); }\n#elif HAVE_B\n    public void Run() { _b.Go(); }\n#else\n    public void Run() { _c.Go(); }\n#endif\n#region tail\n    public void Tail() { Run(); }\n#endregion\n}\n",
+        ),
+    ]);
+    let run = member(&r, "Host", "Run");
+    let tail = member(&r, "Host", "Tail");
+    assert_eq!(run["source_location"], "L7");
+    assert_eq!(tail["source_location"], "L14");
+    assert!(calls.contains(&pair(&run, &member(&r, "A", "Go"))));
+    for other in ["B", "C"] {
+        assert!(!calls.contains(&pair(&run, &member(&r, other, "Go"))), "{other}");
+    }
+    assert!(calls.contains(&pair(&tail, &run)));
+}
+
+#[test]
+fn preprocessor_unbalanced_else_type_header_is_blanked() {
+    let (_f, r, calls) = cs_calls(&[
+        ("Base.cs", "public class Base { public void Ping() {} }\n"),
+        (
+            "Host.cs",
+            "public class Sink { public void Go() {} }\n#if NET\npublic class Host : Base\n{\n#else\npublic class Host\n{\n    public void OldOnly() { }\n#endif\n    private Sink _sink = new Sink();\n    public void Run() { _sink.Go(); Ping(); }\n}\n",
+        ),
+    ]);
+    let run = member(&r, "Host", "Run");
+    assert_eq!(run["source_location"], "L11");
+    assert!(calls.contains(&pair(&run, &member(&r, "Sink", "Go"))));
+    assert!(calls.contains(&pair(&run, &member(&r, "Base", "Ping"))));
+    assert!(!nodes(&r).iter().any(|n| n["label"] == ".OldOnly()"));
+}
+
+#[test]
+fn preprocessor_blanking_is_length_preserving() {
+    use graphicle::extract_languages::blank_csharp_preprocessor;
+    let src = b"class A {\r\n#if X\r\n  void F() {}\r\n#else\r\n  void G() {}\r\n#endif\r\n  // #if not a directive\r\n  string s = @\"\n#if inside a string\n\";\r\n}\r\n";
+    let out = blank_csharp_preprocessor(src).unwrap();
+    assert_eq!(out.len(), src.len());
+    let text = String::from_utf8(out).unwrap();
+    assert_eq!(text.matches('\n').count(), src.iter().filter(|b| **b == b'\n').count());
+    assert!(text.contains("void F()") && text.contains("void G()"), "{text}");
+    assert!(!text.contains("#endif") && !text.contains("#else"), "{text}");
+    assert!(text.contains("#if inside a string") && text.contains("// #if not a directive"));
+    assert_eq!(blank_csharp_preprocessor(b"class A {}\n"), None);
+}
