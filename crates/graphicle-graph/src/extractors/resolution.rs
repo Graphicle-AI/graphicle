@@ -290,6 +290,72 @@ impl<'n> Nodes<'n> {
         self.base.iter().chain(self.added)
     }
 }
+/// Graphify 0.9.103 (#4994): `make_id` strips the underscore edges of each
+/// part, so `_main` and `main` mint one plain id. The engine salts the pair
+/// apart (#3302) and leaves the plain id on the unique public spelling, while
+/// a top-level `def` collected by name here carries only the plain id: every
+/// call inside `_main` was credited to `main`. The declarations sharing the
+/// plain id sit on distinct lines, so the one whose line encloses the call is
+/// the caller. Only an underscore-collision salt (`_` and six lowercase hex
+/// digits) is a sibling spelling; a member id (`classid_methodname`) is not.
+struct SaltSiblings<'n> {
+    /// Plain id -> the node with that id and its salted siblings, in node order.
+    by_plain: FxHashMap<&'n str, Vec<&'n Value>>,
+}
+impl<'n> SaltSiblings<'n> {
+    fn new(all: Nodes<'n>) -> Self {
+        let salted_base = |id: &'n str| {
+            let (base, salt) = id.rsplit_once('_')?;
+            (salt.len() == 6 && salt.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+                .then_some(base)
+        };
+        let bases: FxHashSet<&str> = all.iter().filter_map(|n| salted_base(s(n, "id"))).collect();
+        let mut by_plain: FxHashMap<&str, Vec<&Value>> = FxHashMap::default();
+        if !bases.is_empty() {
+            for n in all.iter() {
+                let id = s(n, "id");
+                if bases.contains(id) {
+                    by_plain.entry(id).or_default().push(n);
+                } else if let Some(base) = salted_base(id) {
+                    by_plain.entry(base).or_default().push(n);
+                }
+            }
+        }
+        Self { by_plain }
+    }
+    /// The declaration a call at `line` of `file` made by `source` belongs
+    /// to, when `source` has salted siblings and the line settles it.
+    fn caller(&self, source: &str, file: &Path, line: i64, root: &Path) -> Option<&'n str> {
+        let nodes = self.by_plain.get(source)?;
+        let file = resolved(file);
+        let start = |n: &Value| -> i64 {
+            s(n, "source_location")
+                .strip_prefix('L')
+                .unwrap_or(s(n, "source_location"))
+                .parse()
+                .unwrap_or(0)
+        };
+        let candidates: Vec<&Value> = nodes
+            .iter()
+            .copied()
+            .filter(|n| {
+                s(n, "id") == source
+                    || js_source_path(s(n, "source_file"), root).as_deref() == Some(file.as_path())
+            })
+            .collect();
+        if candidates.len() < 2 {
+            return None;
+        }
+        // The first of the latest declarations at or before the line.
+        let mut best: Option<&Value> = None;
+        for n in candidates.into_iter().filter(|n| start(n) <= line) {
+            if best.is_none_or(|b| start(n) > start(b)) {
+                best = Some(n);
+            }
+        }
+        best.map(|n| s(n, "id"))
+    }
+}
 fn sym_id<'v>(sym: Sym, nodes: Nodes<'v>, context: &'v [Value]) -> &'v str {
     match sym {
         Sym::Node(i) => nodes.id(i),
@@ -1026,6 +1092,7 @@ fn apply_pass_facts(
         added: &added_nodes,
     };
     let owned = all.iter().map(|n| s(n, "id")).collect::<FxHashSet<_>>();
+    let salt_siblings = SaltSiblings::new(all);
     drop(span);
     let span = crate::profile::span("assemble.symbol_resolution.retarget");
     let mut retargeted = false;
@@ -1257,7 +1324,9 @@ fn apply_pass_facts(
             });
         let Some(target) = target else { return };
         let target = sym_id(*target, all, context_nodes);
-        let mut source = u.source_id;
+        let mut source = salt_siblings
+            .caller(u.source_id, u.file_path, u.line, root)
+            .unwrap_or(u.source_id);
         if matches!(u.relation, "inherits" | "implements" | "references") && !owned.contains(source)
         {
             return;

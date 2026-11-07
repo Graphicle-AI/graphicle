@@ -327,3 +327,92 @@ fn runtime_comparison_import_is_not_a_type_import() {
         assert!(!runtime_edges(&r).is_empty(), "{suffix}: {r}");
     }
 }
+
+// --- A call inside `_main` belongs to `_main`, not `main` (#4994) ------------
+
+const TARGETS: &str = "def alpha():\n    return 1\n\ndef beta():\n    return 2\n";
+const CLI: &str =
+    "from targets import alpha, beta\n\ndef _main():\n    return beta()\n\ndef main():\n    return alpha()\n";
+
+/// `(source label, target label, line)` of every calls edge.
+fn labelled_calls(r: &Value) -> std::collections::BTreeSet<(String, String, String)> {
+    let label = |id: &Value| {
+        nodes(r)
+            .iter()
+            .find(|n| n["id"] == *id)
+            .and_then(|n| n["label"].as_str())
+            .map(str::to_owned)
+    };
+    edges(r)
+        .iter()
+        .filter(|e| e["relation"] == "calls")
+        .filter_map(|e| {
+            Some((
+                label(&e["source"])?,
+                label(&e["target"])?,
+                e["source_location"].as_str().unwrap_or("").to_owned(),
+            ))
+        })
+        .collect()
+}
+
+fn triple(a: &str, b: &str, c: &str) -> (String, String, String) {
+    (a.to_owned(), b.to_owned(), c.to_owned())
+}
+
+#[test]
+fn private_main_call_not_attributed_to_public_main() {
+    // test_python_imported_call_caller_collision.py
+    let f = Fixture::new();
+    let r = f.extract_files(&[("targets.py", TARGETS), ("cli.py", CLI)]);
+    let calls = labelled_calls(&r);
+    assert!(calls.contains(&triple("_main()", "beta()", "L4")), "{calls:?}");
+    assert!(calls.contains(&triple("main()", "alpha()", "L7")), "{calls:?}");
+    assert!(!calls.contains(&triple("main()", "beta()", "L4")), "{calls:?}");
+    let id = |label: &str| {
+        nodes(&r)
+            .iter()
+            .find(|n| n["label"] == label && n["source_file"].is_string())
+            .map(|n| n["id"].clone())
+    };
+    assert_ne!(id("_main()"), id("main()"));
+}
+
+#[test]
+fn underscore_sibling_without_collision_is_unchanged() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        ("targets.py", TARGETS),
+        ("cli.py", "from targets import beta\n\ndef _helper():\n    return beta()\n"),
+    ]);
+    let calls = labelled_calls(&r);
+    assert!(calls.contains(&triple("_helper()", "beta()", "L4")), "{calls:?}");
+    assert!(!calls.iter().any(|(s, _, _)| s == "main()"));
+}
+
+#[test]
+fn class_field_reference_stays_on_the_class_not_a_method() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        ("widget.ts", "export class Baz {}\n"),
+        (
+            "foo.ts",
+            "import { Baz } from './widget';\nexport class Foo {\n  render(): number { return 1; }\n  item: Baz = new Baz();\n}\n",
+        ),
+    ]);
+    let label = |id: &Value| {
+        nodes(&r)
+            .iter()
+            .find(|n| n["id"] == *id)
+            .and_then(|n| n["label"].as_str())
+            .unwrap_or("")
+            .to_owned()
+    };
+    let refs: Vec<(String, String)> = edges(&r)
+        .iter()
+        .filter(|e| e["relation"] == "references")
+        .map(|e| (label(&e["source"]), label(&e["target"])))
+        .collect();
+    assert!(refs.contains(&("Foo".into(), "Baz".into())), "{refs:?}");
+    assert!(!refs.iter().any(|(s, t)| s.ends_with("render()") && t == "Baz"), "{refs:?}");
+}
