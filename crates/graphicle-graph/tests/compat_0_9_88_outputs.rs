@@ -1074,10 +1074,12 @@ fn hook_uninstall_removes_only_the_engines_entries() {
         settings_hook(platform, &o, false);
         settings_hook(platform, &o, false);
         let text = fs::read_to_string(&path).unwrap();
-        let expected = if platform == "claude" || platform == "codebuddy" {
-            2
-        } else {
-            1
+        // Claude Code also gets the SessionStart "compact" hook (Graphify
+        // 0.9.103).
+        let expected = match platform {
+            "claude" => 3,
+            "codebuddy" => 2,
+            _ => 1,
         };
         assert_eq!(
             text.matches("hook-guard").count() + text.matches("hook-check").count(),

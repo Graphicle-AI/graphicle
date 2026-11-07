@@ -433,6 +433,38 @@ fn gc_hook_session_markers(dir: &Path) {
         }
     }
 }
+/// `_reset_hook_session` (Graphify 0.9.103): a compacted Claude Code session
+/// gets its hook budget back. Compaction keeps the session id while the model
+/// loses the nudges it was given, and [`nudge_allowed`] has spent the cap. The
+/// session's nudge counter, the counter of each of its subagents
+/// (`<key>-<16 hex>`, the per-agent key of [`nudge_allowed`]) and its
+/// strict-mode deny marker are deleted; other sessions' markers stay.
+pub fn reset_hook_session(session: &str) -> std::io::Result<()> {
+    let key = session_key(session);
+    if key.is_empty() {
+        return Ok(());
+    }
+    let dir = out().join("cache/hook_sessions");
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let own = regex::Regex::new(&format!(
+        r"^(?:{key}(?:-[0-9a-f]{{16}})?\.nudges|{key}\.denied)$",
+        key = regex::escape(&key)
+    ))
+    .unwrap();
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        if own.is_match(&entry.file_name().to_string_lossy()) {
+            if let Err(e) = fs::remove_file(entry.path())
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
 pub fn mark_denied(session: &str) -> bool {
     let sid = session_key(session);
     if sid.is_empty() {
@@ -1002,6 +1034,22 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     let Some(d) = data.as_object() else {
         return String::new();
     };
+    // Claude Code SessionStart with matcher "compact": reset this session's
+    // nudge budget and restate the graph (Graphify 0.9.103). Other sources
+    // (startup, resume, clear, fork) keep their counters; any error prints
+    // nothing.
+    if kind == "compact" {
+        if d.get("hook_event_name")
+            .is_some_and(|v| v != "SessionStart")
+            || d.get("source").and_then(Value::as_str) != Some("compact")
+        {
+            return String::new();
+        }
+        if reset_hook_session(&payload_text(d, "session_id")).is_err() || !graph.is_file() {
+            return String::new();
+        }
+        return nudge_for_out(crate::cli::program_text(DATA["_COMPACT_CONTEXT"].as_str().unwrap_or("")).into_owned());
+    }
     let input = d.get("tool_input").unwrap_or(data);
     let Some(t) = input.as_object() else {
         return String::new();

@@ -75,23 +75,34 @@ fn hook_file(name: &str, o: &Options, path: &Path, remove: bool) -> Result<()> {
     } else {
         "PreToolUse"
     };
+    // Claude Code also gets the SessionStart "compact" hook that resets the
+    // nudge budget after a compaction (Graphify 0.9.103).
+    let claude = ["claude", "windows"].contains(&name);
+    let events: Vec<&str> = if claude {
+        vec![event, "SessionStart"]
+    } else {
+        vec![event]
+    };
     let obj = cfg.as_object_mut().unwrap();
     if remove {
         // A missing or non-list section leaves the file as it is; a changed
         // one is written through the rolling backup (#4359).
-        let Some(groups) = obj
-            .get_mut("hooks")
-            .and_then(Value::as_object_mut)
-            .and_then(|hooks| hooks.get_mut(event))
-            .and_then(Value::as_array_mut)
-        else {
+        let Some(hooks) = obj.get_mut("hooks").and_then(Value::as_object_mut) else {
             return Ok(());
         };
-        let Some(kept) = strip_engine_hooks(groups) else {
-            return Ok(());
-        };
-        *groups = kept;
-        f::write_settings(path, &cfg, true)?;
+        let mut changed = false;
+        for event in &events {
+            let Some(groups) = hooks.get_mut(*event).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            if let Some(kept) = strip_engine_hooks(groups) {
+                *groups = kept;
+                changed = true;
+            }
+        }
+        if changed {
+            f::write_settings(path, &cfg, true)?;
+        }
         return Ok(());
     }
     let hooks = obj
@@ -99,21 +110,29 @@ fn hook_file(name: &str, o: &Options, path: &Path, remove: bool) -> Result<()> {
         .or_insert(json!({}))
         .as_object_mut()
         .ok_or_else(|| f::refuse(path))?;
-    let groups = hooks
-        .entry(event)
-        .or_insert(json!([]))
-        .as_array_mut()
-        .ok_or_else(|| f::refuse(path))?;
-    if let Some(kept) = strip_engine_hooks(groups) {
-        *groups = kept;
+    // Every section is checked before any is changed.
+    for event in &events {
+        if !hooks.entry(*event).or_insert(json!([])).is_array() {
+            return Err(f::refuse(path).into());
+        }
     }
-    groups.extend(match name {
-        "gemini" => vec![gemini_hook(o)],
-        "codex" => vec![
-            json!({"matcher":"Bash","hooks":[{"type":"command","command":format!("{} hook-check",command_executable(o))}]}),
-        ],
-        _ => claude_hooks(o).as_array().unwrap().clone(),
-    });
+    for event in &events {
+        let groups = hooks
+            .get_mut(*event)
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        if let Some(kept) = strip_engine_hooks(groups) {
+            *groups = kept;
+        }
+        groups.extend(match (name, *event) {
+            (_, "SessionStart") => claude_sessionstart_hooks(o).as_array().unwrap().clone(),
+            ("gemini", _) => vec![gemini_hook(o)],
+            ("codex", _) => vec![
+                json!({"matcher":"Bash","hooks":[{"type":"command","command":format!("{} hook-check",command_executable(o))}]}),
+            ],
+            _ => claude_hooks(o).as_array().unwrap().clone(),
+        });
+    }
     f::write_settings(path, &cfg, true)?;
     Ok(())
 }

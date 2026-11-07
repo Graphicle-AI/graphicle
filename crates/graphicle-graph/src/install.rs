@@ -223,6 +223,15 @@ pub fn claude_hooks(o: &Options) -> Value {
     let strict = if o.strict { " --strict" } else { "" };
     json!([{"matcher":"Bash|Grep","hooks":[{"type":"command","command":format!("{exe} hook-guard search{strict}"),"timeout":10}]},{"matcher":"Read|Glob","hooks":[{"type":"command","command":format!("{exe} hook-guard read{}",if o.strict{" --strict"}else{""}),"timeout":10}]}])
 }
+/// `_claude_sessionstart_hooks` (Graphify 0.9.103): the Claude Code
+/// SessionStart hook, matcher "compact" only. Claude Code fires SessionStart
+/// with source "compact" after a compaction and keeps the session id; the
+/// model has lost the earlier nudges by then while their budget is spent, so
+/// `hook-guard compact` resets it and restates the graph in one line.
+pub fn claude_sessionstart_hooks(o: &Options) -> Value {
+    let exe = command_executable(o);
+    json!([{"matcher":"compact","hooks":[{"type":"command","command":format!("{exe} hook-guard compact"),"timeout":10}]}])
+}
 pub fn gemini_hook(o: &Options) -> Value {
     json!({"matcher":"read_file|list_directory","hooks":[{"type":"command","command":format!("{} hook-guard gemini",command_executable(o))}]})
 }
@@ -897,6 +906,7 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             Value::Null
         }
         "claude_hooks" => claude_hooks(&o),
+        "claude_sessionstart_hooks" => claude_sessionstart_hooks(&o),
         "gemini_hook" => gemini_hook(&o),
         "skill_registration" => json!(skill_registration(
             r["path"]
