@@ -525,12 +525,56 @@ pub fn normalize_ts_export_type_star(source: &[u8]) -> Option<Vec<u8>> {
     }
     masked
 }
+/// `_TS_IMPORT_CALL_RE`: `import("m")` with a literal specifier.
+static TS_IMPORT_CALL: LazyLock<Option<regex::bytes::Regex>> = LazyLock::new(|| {
+    regex::bytes::Regex::new(r#"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"#).ok()
+});
+/// Start offsets of the `import("m")` calls in `source` that `normalized` (an
+/// in-place repair of it) blanked: import types, not executable imports
+/// (Graphify 0.9.103, #4992).
+fn blanked_import_calls(source: &[u8], normalized: &[u8]) -> Vec<usize> {
+    let Some(re) = TS_IMPORT_CALL.as_ref() else {
+        return vec![];
+    };
+    re.find_iter(source)
+        .map(|m| m.start())
+        .filter(|&start| normalized.get(start..start + 6) != Some(b"import".as_slice()))
+        .collect()
+}
+/// Start offsets of the `import("m")` calls of a TypeScript file that sit
+/// in a type context of its parse (`js_import_is_type_only`, Graphify
+/// 0.9.103, #4992).
+fn ts_type_only_import_calls(source: &[u8], tsx: bool) -> Vec<usize> {
+    let Some(re) = TS_IMPORT_CALL.as_ref() else {
+        return vec![];
+    };
+    let starts: Vec<usize> = re.find_iter(source).map(|m| m.start()).collect();
+    if starts.is_empty() {
+        return starts;
+    }
+    let mut parser = tree_sitter::Parser::new();
+    let language = if tsx {
+        tree_sitter_typescript::LANGUAGE_TSX
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT
+    };
+    if parser.set_language(&language.into()).is_err() {
+        return vec![];
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return vec![];
+    };
+    let root = tree.root_node();
+    starts
+        .into_iter()
+        .filter(|&start| {
+            root.descendant_for_byte_range(start, start + 1)
+                .is_some_and(crate::extractors::engine_scope::js_import_is_type_only)
+        })
+        .collect()
+}
 pub fn normalize_ts_import_types(source: &[u8], tsx: bool) -> Option<Vec<u8>> {
-    // Compiled once per process rather than per file.
-    static RE: LazyLock<Option<regex::bytes::Regex>> = LazyLock::new(|| {
-        regex::bytes::Regex::new(r#"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"#).ok()
-    });
-    let re = RE.as_ref()?;
+    let re = TS_IMPORT_CALL.as_ref()?;
     let matches = re.find_iter(source).collect::<Vec<_>>();
     if matches.is_empty() {
         return None;
@@ -814,11 +858,24 @@ pub fn rescue_dynamic(path: &Path, r: &mut Value, type_only_imports: &BTreeSet<u
     // The byte offsets in the read text (CRLF translated) of the `import`
     // types the TS repair blanked: not executable imports (Graphify 0.9.102).
     let mut type_only = BTreeSet::new();
+    // An `import(...)` in a TypeScript type context of the original parse is
+    // an import type too (Graphify 0.9.103, #4992).
+    let mut type_only_imports = std::borrow::Cow::Borrowed(type_only_imports);
+    let ext = effective_suffix(path).to_lowercase();
+    if [".ts", ".tsx", ".mts", ".cts"].contains(&ext.as_str())
+        && src.contains("import")
+        && let Ok(raw) = read_source_bytes(path, false)
+    {
+        let found = ts_type_only_import_calls(&raw, ext == ".tsx");
+        if !found.is_empty() {
+            type_only_imports.to_mut().extend(found);
+        }
+    }
     if !type_only_imports.is_empty()
         && let Ok(raw) = read_source_bytes(path, false)
     {
         let (mut cursor, mut position) = (0, 0);
-        for &offset in type_only_imports {
+        for &offset in type_only_imports.iter() {
             if offset < cursor || raw.get(offset..offset + 6) != Some(b"import".as_slice()) {
                 continue;
             }
@@ -1433,6 +1490,12 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
             && let Ok(s) = read_source_bytes(path, true)
         {
             source = normalize_ts(&s, lang == "TSX");
+            // An `import("m")` the import-type repair blanked is an import
+            // type, no executable import (Graphify 0.9.103, #4992). The
+            // repairs blank in place, so offsets match the original.
+            if let Some(normalized) = &source {
+                type_only_imports.extend(blanked_import_calls(&s, normalized));
+            }
             // Typed tagged templates and import-qualified annotations
             // (Graphify 0.9.102); a blanked `import("m")` type is no
             // executable import for the dynamic-import rescue.
@@ -1440,11 +1503,14 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
             if let Some(normalized) =
                 normalize_ts_tag_and_import_annotations(working, lang == "TSX")
             {
-                type_only_imports = ts_qualified_import_types(working)
-                    .into_iter()
-                    .map(|(start, _)| start)
-                    .filter(|&start| normalized.get(start..start + 6) != Some(b"import".as_slice()))
-                    .collect();
+                type_only_imports.extend(
+                    ts_qualified_import_types(working)
+                        .into_iter()
+                        .map(|(start, _)| start)
+                        .filter(|&start| {
+                            normalized.get(start..start + 6) != Some(b"import".as_slice())
+                        }),
+                );
                 source = Some(normalized);
             }
         }

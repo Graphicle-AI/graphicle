@@ -857,6 +857,23 @@ fn js_scope_bindings(scope: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     }
     bound
 }
+/// `_js_import_is_type_only` (Graphify 0.9.103, #4992): an `import(...)`
+/// call inside an unambiguous TypeScript type context (an annotation, a type
+/// alias, `typeof`, an interface, a constraint or a type default) is an
+/// import type, not a runtime dependency. The search stops at a statement
+/// block or the program.
+pub fn js_import_is_type_only(node: Node<'_>) -> bool {
+    let mut node = Some(node);
+    while let Some(n) = node {
+        match n.kind() {
+            "type_annotation" | "type_alias_declaration" | "type_query"
+            | "interface_declaration" | "constraint" | "default_type" => return true,
+            "statement_block" | "program" => break,
+            _ => node = n.parent(),
+        }
+    }
+    false
+}
 pub fn js_module_bound_names(root: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     js_bind_walk(root, source, &mut out, true);

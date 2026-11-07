@@ -249,3 +249,81 @@ fn non_builtin_unimported_name_keeps_existing_inferred_edge() {
     assert_eq!(found.len(), 1, "{found:?}");
     assert_eq!(found[0]["confidence"], "INFERRED");
 }
+
+// --- TypeScript import types are no runtime dependencies (#4992) ------------
+
+fn extract_js_text(suffix: &str, bytes: &[u8]) -> (tempfile::TempDir, Value) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join(format!("example{suffix}"));
+    std::fs::write(&path, bytes).unwrap();
+    let r = graphicle::extract_languages::extract_language(&path, "js");
+    (dir, r)
+}
+
+fn runtime_edges(r: &Value) -> Vec<&Value> {
+    edges(r)
+        .iter()
+        .filter(|e| e["relation"] == "dynamic_import" || e["deferred"] == true)
+        .collect()
+}
+
+#[test]
+fn type_import_does_not_emit_runtime_edge_or_package_path() {
+    // test_4992_ts_import_types.py
+    for suffix in [".ts", ".tsx", ".mts", ".cts"] {
+        for source in [
+            "export function accept(page: import('@playwright/test').Page): void {}",
+            "function f(): import('@playwright/test').Page { throw 1; }",
+            "type Page = import('@playwright/test').Page;",
+            "type Module = typeof import('@playwright/test');",
+            "interface Options { page: import('@playwright/test').Page }",
+            "function f<T extends import('@playwright/test').Page>() {}",
+            "function f<T = import('@playwright/test').Page>() {}",
+            "function f() { const page: import('@playwright/test').Page = undefined; }",
+            "f<import('@playwright/test').Page>();\nfunction after() {}",
+            "f<typeof import('@playwright/test')>();\nfunction after() {}",
+        ] {
+            let (_dir, r) = extract_js_text(suffix, source.as_bytes());
+            assert!(r.get("error").is_none(), "{suffix} {source}: {r}");
+            assert!(runtime_edges(&r).is_empty(), "{suffix} {source}: {:?}", runtime_edges(&r));
+            assert!(
+                !nodes(&r).iter().any(|n| n["source_file"] == "@playwright/test"),
+                "{suffix} {source}"
+            );
+            if source.contains("function after") {
+                assert!(nodes(&r).iter().any(|n| n["label"] == "after()"), "{suffix} {source}");
+            }
+        }
+    }
+}
+
+#[test]
+fn runtime_import_survives_type_import_of_same_package() {
+    for suffix in [".ts", ".tsx", ".mts", ".cts"] {
+        for prefix in ["", "// caf\u{e9}\r\n", "\u{feff}// caf\u{e9}\r\n"] {
+            let source = format!(
+                "{prefix}export function load(page: import('@playwright/test').Page) {{\r\n  return import('@playwright/test');\r\n}}\r\n"
+            );
+            let (_dir, r) = extract_js_text(suffix, source.as_bytes());
+            assert!(r.get("error").is_none(), "{suffix} {prefix:?}: {r}");
+            let found = runtime_edges(&r);
+            assert!(!found.is_empty(), "{suffix} {prefix:?}");
+            let line = if prefix.is_empty() { "L2" } else { "L3" };
+            assert!(
+                found
+                    .iter()
+                    .any(|e| e["deferred"] == true && e["source_location"] == line),
+                "{suffix} {prefix:?}: {found:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn runtime_comparison_import_is_not_a_type_import() {
+    for suffix in [".js", ".ts", ".tsx"] {
+        let (_dir, r) = extract_js_text(suffix, b"const x = a < b, import(\"runtime\") > (d);\n");
+        assert!(r.get("error").is_none(), "{suffix}: {r}");
+        assert!(!runtime_edges(&r).is_empty(), "{suffix}: {r}");
+    }
+}

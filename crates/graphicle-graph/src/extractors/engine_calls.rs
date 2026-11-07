@@ -457,6 +457,11 @@ impl<'a, 't> Engine<'a, 't> {
         if function.is_none_or(|f| self.text(f) != "import") {
             return false;
         }
+        // A TypeScript import type is no runtime dependency (Graphify
+        // 0.9.103, #4992).
+        if super::engine_scope::js_import_is_type_only(n) {
+            return true;
+        }
         if let Some(args) = n.child_by_field_name("arguments") {
             for a in children(args) {
                 let raw = match a.kind_name() {
