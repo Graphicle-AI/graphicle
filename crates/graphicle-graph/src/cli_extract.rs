@@ -416,6 +416,10 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         (detection, stored)
     });
     let detection = detection?;
+    // Most of the corpus has no extractor (Graphify 0.9.103, #2942).
+    if let Some(warning) = detection["unclassified_warning"].as_str() {
+        out.line(format!("[graphicle extract] warning: {warning}"));
+    }
     let total_files = detection["total_files"].as_i64().unwrap_or(0);
     // Paths the ignore rules skipped, a pruned folder once (Graphify
     // 0.9.102), so missing source can be traced to a rule.

@@ -475,8 +475,9 @@ impl Detector {
         unclassified.sort();
         walk.ignored.sort();
         walk.noise.sort();
+        let unclassified_warning = unclassified_warning(unclassified.len(), total_files);
         Ok(
-            json!({"files":files,"total_files":total_files,"total_words":total_words,"needs_graph":needs_graph,"warning":warning,"skipped_sensitive":walk.sensitive,"unclassified":unclassified,"walk_errors":walk.walk_errors,"ignored":walk.ignored,"pruned_noise_dirs":walk.noise,"ignore_patterns":rules.patterns.len(),"scan_root":fsutil::path_string(&root)}),
+            json!({"files":files,"total_files":total_files,"total_words":total_words,"needs_graph":needs_graph,"warning":warning,"unclassified_warning":unclassified_warning,"skipped_sensitive":walk.sensitive,"unclassified":unclassified,"walk_errors":walk.walk_errors,"ignored":walk.ignored,"pruned_noise_dirs":walk.noise,"ignore_patterns":rules.patterns.len(),"scan_root":fsutil::path_string(&root)}),
         )
     }
     pub fn detect_incremental(
@@ -733,6 +734,25 @@ pub fn dispatch(r: &Value) -> Result<Value> {
     result.map(|value| json!({"value":value,"warnings":warnings}))
 }
 
+/// Graphify 0.9.103 (#2942): a few unclassified files (lockfiles, binaries,
+/// stray config) are routine and reported by count; a large share of the
+/// files seen having no extractor means the graph may look complete while
+/// missing much of the codebase. Both an absolute floor
+/// (`UNCLASSIFIED_WARN_MIN_FILES`) and a fraction
+/// (`UNCLASSIFIED_WARN_FRACTION`) must be crossed.
+pub fn unclassified_warning(unclassified: usize, total_files: usize) -> Option<String> {
+    const MIN_FILES: usize = 20;
+    const FRACTION: f64 = 0.2;
+    let seen = total_files + unclassified;
+    if unclassified < MIN_FILES || seen == 0 || (unclassified as f64) / (seen as f64) < FRACTION {
+        return None;
+    }
+    // Python's round(): ties to even.
+    let percent = (unclassified as f64 / seen as f64 * 100.0).round_ties_even() as i64;
+    Some(format!(
+        "{unclassified} of {seen} files seen ({percent}%) have no supported extractor and are missing from this graph entirely. It may look complete while representing only part of the codebase."
+    ))
+}
 #[cfg(test)]
 mod tests {
     use super::*;

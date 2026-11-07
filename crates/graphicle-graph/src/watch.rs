@@ -1943,6 +1943,12 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         (detected, existing, join(ignoring))
     });
     let detected = detected?;
+    // Most of the corpus has no extractor (Graphify 0.9.103, #2942).
+    if let Some(warning) = detected["unclassified_warning"].as_str() {
+        result
+            .messages
+            .push(format!("[graphicle watch] warning: {warning}"));
+    }
     // `update` (Graphify 0.9.102, #4740): the manifest records the content
     // hash of every file the last rebuild extracted, so the change set is
     // read off it instead of re-extracting the whole corpus; files that left
@@ -2626,7 +2632,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     let (gods, surprises, questions) = (gods?, surprises?, questions?);
     let report = crate::report::generate(
         &graph,
-        &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([]))},"token_cost":{"input":0,"output":0},"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
+        &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([])),"unclassified_warning":detected.get("unclassified_warning").cloned().unwrap_or(Value::Null)},"token_cost":{"input":0,"output":0},"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
     )?;
     timer.mark("report");
     // A randomly named file in the output folder, created exclusively, then

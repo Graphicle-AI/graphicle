@@ -181,3 +181,43 @@ fn pi_destinations() {
         home.join(".pi/agent/skills/graphicle/SKILL.md")
     );
 }
+
+fn detect_dir(dir: &Path) -> Value {
+    let mut detector = graphicle::detect::Detector::default();
+    detector
+        .detect(dir, &graphicle::detect::DetectOptions::default())
+        .unwrap()
+}
+
+#[test]
+fn unclassified_warning_fires_when_most_of_the_corpus_has_no_extractor() {
+    // test_detect.py (Graphify 0.9.103, #2942)
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..30 {
+        fs::write(dir.path().join(format!("doc{i}.xml")), "<root/>\n").unwrap();
+    }
+    for i in 0..10 {
+        fs::write(dir.path().join(format!("code{i}.py")), "x = 1\n").unwrap();
+    }
+    let res = detect_dir(dir.path());
+    assert_eq!(res["unclassified"].as_array().unwrap().len(), 30);
+    let warning = res["unclassified_warning"].as_str().unwrap();
+    assert!(warning.contains("30 of 40") && warning.contains("75%"), "{warning}");
+}
+
+#[test]
+fn unclassified_warning_silent_under_the_floor_and_the_fraction() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("odd1.xml"), "<root/>\n").unwrap();
+    fs::write(dir.path().join("odd2.xml"), "<root/>\n").unwrap();
+    for i in 0..20 {
+        fs::write(dir.path().join(format!("code{i}.py")), "x = 1\n").unwrap();
+    }
+    let res = detect_dir(dir.path());
+    assert_eq!(res["unclassified"].as_array().unwrap().len(), 2);
+    assert!(res["unclassified_warning"].is_null());
+    // Past the floor but a small share of a large corpus: still silent.
+    assert_eq!(graphicle::detect::unclassified_warning(25, 400), None);
+    assert!(graphicle::detect::unclassified_warning(20, 80).is_some());
+    assert_eq!(graphicle::detect::unclassified_warning(19, 0), None);
+}
