@@ -50,9 +50,16 @@ A SQLite store runs in WAL mode. While writes go on, its write-ahead log
 (`reviews.sqlite3-wal`) is checkpointed and cut back once it passes 64
 MiB, waiting at most 2 seconds for readers to move to the latest
 snapshot. Before 0.1.14 the log could grow without bound while readers
-were always in flight (one service grew it to 8.3 GB). A checkpoint
-holds the write lock while it waits, so a process runs one at a time
-and, after one that found readers still on an older snapshot, waits 8
+were always in flight (one service grew it to 8.3 GB). The bound holds
+while reads are short, well under the 2 seconds a checkpoint waits: a
+checkpoint also waits for the reads that start during its wait, so reads
+that each take close to 2 seconds can keep it from finishing. A long
+read, such as a backup or a long request, keeps every checkpoint from
+cutting the log back while it runs, and the log grows by what is written
+meanwhile. A
+checkpoint holds the write lock while it waits, so a process runs one
+of a store at a time (however many times it opened the store) and,
+after one that found readers still on an older snapshot, waits 8
 seconds before the next: other writers, such as an indexing job, wait
 at most those 2 seconds for it. The checkpoint runs between write
 transactions: one large write, such as storing the
@@ -114,7 +121,10 @@ which Graphicle reads as libpq does when the address has no password.
 Other libpq environment variables (`PGHOST`, `PGPASSWORD`) are not read.
 Graphicle never writes the address or a password to a file, a log, an
 error or `doctor` output; an error that would carry the password has it
-replaced by `***`.
+replaced by `***`. The programs Graphicle starts that are not Graphicle
+(Git, the graph engine, document helpers, the browser opener) get
+neither `GRAPHICLE_DATABASE_URL` nor `PGPASSFILE`, and the test commands
+`fix` runs do not get the address.
 
 **The role.** Graphicle needs a role that may log in and create schemas
 in its database, and nothing more: not a superuser, and no `CREATEDB` or
@@ -140,26 +150,52 @@ row, so requests are not held up behind a long write such as indexing. A
 writer that waits more than 10 seconds for the lock fails with "database
 is locked". A project's status (`graphicle status --json`, the
 `repository_status` tool) reports the answering process's use of the
-lock under `write_lock`: holds and waits of 2 seconds or more, with the
-code location (`GRAPHICLE_PHASE_TIMINGS=1` also logs each one). Each
+lock under `write_lock`: holds and waits of 2 seconds or more in the
+store's write transactions, with the code location (migrations, request
+counts, metering, offboarding and backup loads take the lock on their
+own and are not counted) (`GRAPHICLE_PHASE_TIMINGS=1` also logs each one). Each
 connection's `application_name` is the command that opened it
 (`graphicle serve`, `graphicle sync`), so `pg_stat_activity` shows which
 process holds the lock.
 
 **Moving a SQLite store.** With `GRAPHICLE_DATABASE_URL` set, a data
-folder that has only `reviews.sqlite3` is refused until it is copied in:
+folder that has only `reviews.sqlite3` is refused by every command until
+it is copied in:
 `graphicle --data-dir FOLDER import-sqlite` copies the folder's
 `reviews.sqlite3` (or `import-sqlite PATH`, another file) into a new
 store for the folder, from one snapshot of the file and in one
-transaction, and leaves the SQLite file as it is. Without the setting,
-Graphicle keeps using the SQLite file and `import-sqlite` refuses to
-run.
+transaction, and leaves the SQLite file as it is. It refuses a SQLite
+store that has a table or column this version does not know, or that
+needs a newer Graphicle: import it with the version that wrote it.
+Until the copy has committed, `postgres.json` marks the new store
+unfinished (`"incomplete": "import"`) and every command refuses it, so
+an import that fails or is stopped never leaves a store that opens
+empty; run `graphicle --data-dir FOLDER import-sqlite` again and it
+replaces the unfinished store (the SQLite file is untouched). While an
+import is still copying, a second one on the folder is refused instead
+of replacing its store. An empty `postgres.json`, left by a process
+stopped while creating it, is refused too: remove only that file; the
+SQLite store and the backups are untouched. Without
+the setting, Graphicle keeps using the SQLite file and `import-sqlite`
+refuses to run.
 
 **Backups.** A PostgreSQL store's backup is one file
 (`graphicle-<time>.backup`): every table of one snapshot of the store,
 in PostgreSQL's COPY text format, with a SHA-256 of the whole file at
 its end; `restore` checks the whole file before it changes anything, and
-loads only into the new data folder's own schema. A backup is made in a
+loads only into the new data folder's own schema. A table that the
+backup has and this version does not create is created with plain
+column types only (`bigint`, `integer`, `smallint`, `double precision`,
+`real`, `numeric`, `boolean`, `text`, `varchar`, `bytea`, `json`,
+`jsonb`, `uuid`, `date`, `timestamp` with or without time zone, their
+short names such as `int8` or `timestamptz`, or an array of one of
+them); a backup that gives any other type, or a clause
+such as `CHECK` or `DEFAULT`, is refused before the data folder is
+made. Until the load has committed, the new store is marked unfinished
+as an import is (`"incomplete": "restore"`): a restore that is stopped
+leaves a folder that every command refuses; run the same `restore`
+again, with the same backup, and it replaces the unfinished store
+(never one whose restore is still running). A backup is made in a
 scratch schema of the same database, which is dropped when it is done.
 
 **Deletion.** A SQLite store overwrites deleted rows (`secure_delete`)

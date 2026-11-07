@@ -3,54 +3,183 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## Unreleased
+## 0.1.14 - 2026-11-08
 
-### PostgreSQL as an optional store
+Every crate is at 0.1.14, and `graphicle --version` prints
+`graphicle 0.1.14 (core)`. The Python and TypeScript SDKs are at 0.1.14 too.
 
-The store is still one SQLite file, `reviews.sqlite3`, by default;
-nothing changes unless you set `GRAPHICLE_DATABASE_URL`. With it set,
-Graphicle keeps new stores in PostgreSQL 16 or newer, one schema per
-data folder, named in the folder's `postgres.json`. Andrei Merlescu
-wrote the PostgreSQL store, its connection layer, `import-sqlite`, the
-backup archive and the load harness (#19). See
-[docs/configuration.md](docs/configuration.md#the-store).
+### After upgrading
+
+- Nothing to do if you do not set `GRAPHICLE_DATABASE_URL`: the store
+  stays one SQLite file, `reviews.sqlite3`, with the same tables as
+  0.1.13, and no database server is needed.
+- To move a data folder to PostgreSQL, set `GRAPHICLE_DATABASE_URL` and
+  run `graphicle --data-dir FOLDER import-sqlite` once. See
+  [docs/configuration.md](docs/configuration.md#the-store).
+
+### Storage: PostgreSQL as an optional store
+
+With `GRAPHICLE_DATABASE_URL` set, Graphicle keeps new stores in
+PostgreSQL 16 or newer, one schema per data folder, named in the
+folder's `postgres.json`. Andrei Merlescu wrote the PostgreSQL store,
+its connection layer, `import-sqlite`, the backup archive and the load
+harness (#19).
 
 - A server on another machine is reached only over TLS, with its
   certificate and host name checked; `sslmode=disable` to such a server
   is refused unless `GRAPHICLE_DATABASE_ALLOW_PLAINTEXT=1` is set. A
   Unix socket or localhost needs no TLS.
 - The address and password never appear in errors, logs or files
-  Graphicle writes, and test commands that `fix` runs do not inherit the
-  address. Graphicle reads a password file (`~/.pgpass` or `PGPASSFILE`)
+  Graphicle writes. Test commands that `fix` runs do not inherit the
+  address, and the other programs Graphicle starts (Git, the graph
+  engine, the document worker and helpers, the browser opener) inherit
+  neither it nor `PGPASSFILE`. Graphicle reads a password file (`~/.pgpass` or `PGPASSFILE`)
   as libpq does, so the password can stay out of the address.
 - Graphicle needs a role that may create schemas in its database and
   nothing more: no superuser. Every connection's `search_path` names
-  only the data folder's schema, and restore loads only into it.
+  only the data folder's schema, and restore loads only into it. A table
+  that a backup has and this version does not create is created with
+  plain column types only (such as `bigint`, `text`, `double precision`,
+  `bytea`, `boolean`, `jsonb`, or arrays of them); a backup that gives
+  anything else, such as a `CHECK` or `DEFAULT` clause, is refused
+  before the data folder is made, so a backup file cannot run database
+  functions while it loads.
 - Sessions get a statement timeout (600 seconds by default,
   `GRAPHICLE_DATABASE_STATEMENT_TIMEOUT`) and are ended when idle in a
   transaction for 10 minutes.
 - `graphicle import-sqlite` copies a data folder's SQLite store into
   PostgreSQL once, from one snapshot of the file; the SQLite file is
-  left as it is. It runs only with `GRAPHICLE_DATABASE_URL` set.
-- A PostgreSQL store's deletion receipts say `secure_delete: false`:
-  deleted bytes can stay in free space, the server's write-ahead log and
-  its archives until they are reused. SQLite stores still overwrite
-  them.
+  left as it is. It runs only with `GRAPHICLE_DATABASE_URL` set. It
+  refuses a SQLite store that has a table or column this version does
+  not know, or that needs a newer Graphicle. Until the copy has
+  committed, the folder's `postgres.json` marks the new store
+  unfinished and every command refuses it, so a copy that fails or is
+  stopped (Ctrl-C, a kill, a reboot) never leaves a store that opens
+  empty. The refusal says which command left it and how to replace
+  it: `import-sqlite` again for an import (the SQLite file is
+  untouched), the same `restore` again for a restore. `restore` loads
+  into a store marked the same way. A second import or restore on the
+  folder is refused while the first is still copying.
+- With `GRAPHICLE_DATABASE_URL` set, a data folder that has only
+  `reviews.sqlite3` is refused by every command, read-only ones too,
+  until it is imported.
+- Deletion receipts say `storage.secure_delete: true` on SQLite, which
+  overwrites deleted rows and then truncates its write-ahead log, and
+  `false` on PostgreSQL, which cannot: a deleted row's bytes stay in the
+  table's free space until reused, in the server's write-ahead log until
+  it recycles the segment, and in any WAL archive or base backup.
+  Graphicle vacuums the store's tables after a deletion; keep the
+  database on an encrypted volume and expire archives if deleted data
+  must not be recoverable.
 
-### SQLite stores under constant reads
+### Storage: SQLite under constant reads
 
 - The write-ahead log no longer grows without bound while readers are
-  always in flight. SQLite's own checkpoint could copy pages back but
+  always in flight, as long as reads are short, well under the 2
+  seconds a checkpoint waits.
+  SQLite's own checkpoint could copy pages back but
   never restart the log, so it grew by everything written (8.3 GB on one
   service). The store now checkpoints and truncates the log once it
-  passes 64 MiB, waiting at most 2 seconds for readers.
+  passes 64 MiB, waiting at most 2 seconds for readers; a process runs
+  one such checkpoint of a store at a time, however many times it opened
+  the store, and pauses 8 seconds after one that found readers, so
+  other writers wait at most 2 seconds for it. A checkpoint also waits
+  for reads that start during its wait, so reads that each take close
+  to 2 seconds can keep it from finishing, and a long read, such as a
+  backup or a long request, keeps every checkpoint from cutting the log
+  back while it runs; the log then grows by what is written meanwhile. This bounds the log between write
+  transactions, not within one: a single large write, such as storing
+  the code graph of a large project, still grows the log by what it
+  writes until it commits.
+- A request no longer waits for the write lock to be counted against
+  its workspace's request budget. When the lock is not free within 50
+  milliseconds, the server checks the budget with a read, serves the
+  request and holds the count in memory until its next write. A budget
+  is never exceeded by the requests one server process admits; two
+  processes serving one data folder at once can exceed it by the counts
+  the other holds. A killed process loses its held counts. The usage
+  report lists unwritten counts as `unrecorded_requests`.
 - An MCP message no longer takes the write lock to check that its
   project exists, and neither do the `graph_as_of`, episode and
-  cross-project edge tools: they read a snapshot. Before, every MCP
-  message on a project connection queued for the lock behind indexing,
-  and some failed with "database is locked" after 10 s.
-- `write_lock` in a project's status also counts waits for the lock of 2
-  s or more (`slow_waits`, `longest_wait_seconds`, `longest_wait_at`).
+  cross-project edge tools: they read a snapshot.
+- `write_lock` in a project's status also counts waits of 2 s or more
+  for the lock in the store's write transactions (`slow_waits`,
+  `longest_wait_seconds`, `longest_wait_at`). Migrations, request
+  counts, metering, offboarding and backup loads take the lock on their
+  own, and their waits are not counted.
+- Measured with `bench/store-load` on one Databricks serverless machine
+  (AMD EPYC 9V84), Graphicle under `taskset` on 6 CPUs while a second
+  process indexed 25,543 files, one run per case. With no readers,
+  indexing finished and the code graph was ready in 134.2 seconds
+  before the SQLite changes above and in 136.3 seconds with them. With
+  33 MCP clients each reading as fast as it could, the server answered
+  25.4 reads a second and 9 of 30,099 reads failed, none of them
+  "database is locked"; before the changes, the indexer itself failed
+  with "database is locked" after 297 seconds. The graph is built by
+  one thread that shares the 6 CPUs with the threads serving reads, so
+  the graph build alone took 573 seconds under that load, against 108
+  seconds with no readers and 199 seconds with reads held to 15 a
+  second. That last case was run with a load harness option that is
+  not shipped in `bench/store-load`: a rate cap added for this
+  measurement. Graphicle has no setting that limits reads; if the graph
+  must be ready sooner while clients read, have fewer clients reading at
+  once or give the server more CPUs.
+
+### Fixes
+
+- Reads during indexing on SQLite no longer fail with "database is
+  locked" because their request count waited for the write lock (see
+  above).
+- A code graph build that runs while the store is busy keeps its job.
+  Its lease renewal waited at most a second for the write lock and was
+  skipped otherwise, so under constant reads the 240 second lease could
+  run out and a second process built the same graph again from the
+  start. A renewal now waits up to 5 seconds and retries 5 seconds
+  later.
+- `restore` of a PostgreSQL backup no longer creates a table with the
+  column types the file gives whatever they are: a type that carried a
+  `CHECK`, `DEFAULT` or `GENERATED` clause ran functions of the file's
+  choosing in the database as the rows loaded. Only plain type names
+  are accepted, checked before the data folder is made.
+- An `import-sqlite` or `restore` that was stopped during its copy no
+  longer leaves a data folder whose PostgreSQL store opens empty beside
+  the SQLite file, and the same command can be run again to replace the
+  unfinished store, never one whose copy is still running (see above).
+  An empty `postgres.json`, left by a process stopped while creating it,
+  is refused instead of being filled by whichever process opens it
+  next; the refusal says to remove only that file.
+- `import-sqlite` no longer drops, without a word, the data of a column
+  that this version does not know, and no longer copies a store that
+  needs a newer Graphicle.
+- A PostgreSQL store whose creation failed part way, for example in a
+  migration, no longer leaves its schema behind in the database.
+- Git, the graph engine, document helpers and the other programs
+  Graphicle starts no longer inherit `GRAPHICLE_DATABASE_URL`, which may
+  hold the database password, or `PGPASSFILE`.
+- Read-only commands, such as `graphicle graph`, no longer use a data
+  folder's SQLite store when `GRAPHICLE_DATABASE_URL` is set; they
+  refuse it until it is imported, as the other commands do.
+- Two stores of one SQLite data folder opened in one process share one
+  write-ahead log checkpoint and its pause, instead of each running its
+  own.
+- The Python SDK's `Client.from_session()` finds the session on Windows,
+  in `%LOCALAPPDATA%\Graphicle` as the program keeps it, instead of
+  looking under `~/.local/share` (Wu Shuwen, #20).
+
+### Docs
+
+- docs/configuration.md describes the store choice, the PostgreSQL role,
+  connections, credentials, locks, backups and deletion, and the bound
+  on request budgets on SQLite.
+
+### Packaging
+
+- `server.json` at the repository's root is the MCP Registry entry of
+  0.1.13, the latest listed release (it named 0.1.12).
+- New direct dependencies of the program, for the PostgreSQL store:
+  `postgres` 0.19, `r2d2` 0.8, `bytes` 1, and for its TLS `rustls` 0.23
+  (ring), `rustls-native-certs` 0.8 and `tokio-rustls` 0.26. The licence
+  pages list them.
 
 ### Added
 
