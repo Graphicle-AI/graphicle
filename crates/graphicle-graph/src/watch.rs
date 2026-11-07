@@ -2441,6 +2441,9 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         let mut nodes = build::dedupe_nodes(items_ref(&extraction, "nodes"))?;
         build::disambiguate_file_labels_in_nodes(&mut nodes);
         let links = build::dedupe_edges(items_ref(&extraction, "edges"))?;
+        // C# methods display with their owning type, as in the build
+        // (Graphify 0.9.98, #4883).
+        build::qualify_csharp_method_labels_in_nodes(&mut nodes, &links);
         let mut candidate = serde_json::Map::new();
         for (k, v) in extraction.as_object().into_iter().flatten() {
             if !matches!(k.as_str(), "edges" | "nodes")

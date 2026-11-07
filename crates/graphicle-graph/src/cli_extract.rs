@@ -895,6 +895,14 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
             merged["nodes"] = json!(build::dedupe_nodes(ar(&merged["nodes"]))?);
             merged["edges"] = json!(build::dedupe_edges(ar(&merged["edges"]))?);
             build::disambiguate_file_labels_in_nodes(merged["nodes"].as_array_mut().unwrap());
+            // C# methods display with their owning type, as in the build
+            // (Graphify 0.9.98, #4883).
+            let edges = std::mem::take(&mut merged["edges"]);
+            build::qualify_csharp_method_labels_in_nodes(
+                merged["nodes"].as_array_mut().unwrap(),
+                ar(&edges),
+            );
+            merged["edges"] = edges;
             // The endpoint rules of the clustered build (#2873): an import of an
             // external module gets a typed stub node, and any other edge
             // without two declared endpoints is dropped instead of shipping a

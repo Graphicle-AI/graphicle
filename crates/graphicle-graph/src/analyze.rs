@@ -205,9 +205,12 @@ pub fn is_file_node(graph: &Graph, node: usize) -> Result<bool> {
     if truthy(&source) && build_labels::is_file_node_label(&label, &source) {
         return Ok(true);
     }
-    let label = as_text(&label)?;
-    Ok((label.starts_with('.') && label.ends_with("()"))
-        || (label.ends_with("()") && degree(graph, node) <= 1))
+    let text = as_text(&label)?;
+    // Method stub: `.name()`; a C# method carries its owner for display
+    // (`Owner.name()`, Graphify 0.9.98, #4883).
+    Ok((text.starts_with('.') && text.ends_with("()"))
+        || crate::extractors::csharp::bare_csharp_method_label(&label, &source).is_some()
+        || (text.ends_with("()") && degree(graph, node) <= 1))
 }
 pub fn is_concept_node(graph: &Graph, node: usize) -> Result<bool> {
     let source = source(graph, node);

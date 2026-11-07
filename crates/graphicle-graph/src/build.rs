@@ -424,6 +424,13 @@ fn alias_index<'a, P: Properties + 'a>(
         }
         if attributes.get("_origin").is_some_and(|v| v == "ast") {
             let label = value_string(attributes, "label");
+            // A persisted C# method label carries its owner (Graphify 0.9.98,
+            // #4883): the alias is made from the bare `.Name()` form.
+            let label = crate::extractors::csharp::bare_csharp_method_label(
+                &json!(label.trim_matches(dedup_strings::whitespace)),
+                attributes.get("source_file").unwrap_or(&Value::Null),
+            )
+            .unwrap_or(label);
             if label.starts_with('.') {
                 // #3705: `<file_stem>_<method>` alias for AST `.name()` nodes.
                 let m_alias = format!(
@@ -512,6 +519,57 @@ pub fn disambiguate_file_node_labels(graph: &mut Graph) {
         .collect();
     for (id, label) in file_label_reassignments(&items) {
         if let Some(i) = graph.node_index(&id) {
+            graph.nodes[i]
+                .attributes
+                .insert("label".into(), json!(label));
+        }
+    }
+}
+/// `_qualify_csharp_method_labels` (Graphify 0.9.98, #4883): each C# method
+/// node gets an `Owner.Name()` display label from the source of its `method`
+/// edge. Ids and edges are never changed; an undirected graph's owner side
+/// is the edge's recorded `_src`/`_tgt`; a method with zero or several owners
+/// keeps its bare label. Idempotent.
+pub fn qualify_csharp_method_labels(graph: &mut Graph) {
+    use crate::extractors::csharp::{csharp_method_label_reassignments, is_cs_file};
+    let id_of = |i: usize| graph.nodes[i].id.as_str().map(str::to_owned);
+    let method_edges: Vec<(String, String)> = graph
+        .iter_edges()
+        .filter(|(_, _, e)| e.attributes.get_str("relation") == Some("method"))
+        .filter_map(|(s, t, e)| {
+            let end = |key: &str, i: usize| {
+                e.attributes
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| id_of(i))
+            };
+            Some((end("_src", s)?, end("_tgt", t)?))
+        })
+        .collect();
+    if method_edges.is_empty() {
+        return;
+    }
+    // Only C# nodes can be an owner or a method (`is_cs_file`).
+    let cs_nodes: Vec<(String, Value)> = graph
+        .nodes
+        .iter()
+        .filter_map(|n| {
+            let source_file = n.attributes.get("source_file")?;
+            if !is_cs_file(source_file) {
+                return None;
+            }
+            let id = n.id.as_str()?.to_owned();
+            let label = n.attributes.get("label").cloned().unwrap_or(Value::Null);
+            Some((id, json!({"label": label, "source_file": source_file})))
+        })
+        .collect();
+    let reassigned = csharp_method_label_reassignments(
+        cs_nodes.iter().map(|(id, attrs)| (id.as_str(), attrs)),
+        method_edges.iter().map(|(s, t)| (s.as_str(), t.as_str())),
+    );
+    for (id, label) in reassigned {
+        if let Some(i) = graph.node_index(&json!(id)) {
             graph.nodes[i]
                 .attributes
                 .insert("label".into(), json!(label));
@@ -1102,6 +1160,9 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
     }
     let profiled = crate::profile::span("build.core.file_labels");
     disambiguate_file_node_labels(&mut graph);
+    // Also last, after the method-ghost passes: C# methods display with
+    // their owning type (Graphify 0.9.98, #4883).
+    qualify_csharp_method_labels(&mut graph);
     drop(profiled);
     Ok(graph)
 }
@@ -1162,9 +1223,16 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<EndpointMaps> {
                     collisions.insert(key.clone());
                 }
                 located.insert(key, nid.clone());
-                if label.starts_with('.') && label.ends_with("()") {
+                // A persisted C# method label carries its owner (Graphify
+                // 0.9.98, #4883): the index keys on the bare `.Name()` form.
+                let m_label = crate::extractors::csharp::bare_csharp_method_label(
+                    &json!(label),
+                    &json!(sf),
+                )
+                .unwrap_or_else(|| label.clone());
+                if m_label.starts_with('.') && m_label.ends_with("()") {
                     ast_methods
-                        .entry((sf.clone(), method_name(&label)))
+                        .entry((sf.clone(), method_name(&m_label)))
                         .or_default()
                         .push(nid.clone());
                 }

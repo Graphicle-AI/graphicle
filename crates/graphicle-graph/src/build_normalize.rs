@@ -646,6 +646,35 @@ pub fn disambiguate_file_labels_in_nodes(nodes: &mut [Value]) {
         nodes[i.as_u64().unwrap() as usize]["label"] = json!(label);
     }
 }
+/// `qualify_csharp_method_labels_in_nodes` (Graphify 0.9.98, #4883): the raw
+/// node/edge-list form of `build::qualify_csharp_method_labels`, in place,
+/// for the --no-cluster writers that bypass the graph build.
+pub fn qualify_csharp_method_labels_in_nodes(nodes: &mut [Value], edges: &[Value]) {
+    use crate::extractors::csharp::csharp_method_label_reassignments;
+    let method_edges: Vec<(&str, &str)> = edges
+        .iter()
+        .filter(|e| e["relation"].as_str() == Some("method"))
+        .filter_map(|e| Some((e["source"].as_str()?, e["target"].as_str()?)))
+        .collect();
+    if method_edges.is_empty() {
+        return;
+    }
+    let reassigned = csharp_method_label_reassignments(
+        nodes
+            .iter()
+            .filter(|n| n.is_object())
+            .filter_map(|n| Some((n["id"].as_str()?, n))),
+        method_edges,
+    );
+    if reassigned.is_empty() {
+        return;
+    }
+    for n in nodes.iter_mut().filter(|n| n.is_object()) {
+        if let Some(label) = n["id"].as_str().and_then(|id| reassigned.get(id)) {
+            n["label"] = json!(label);
+        }
+    }
+}
 pub fn infer_merge_root(path: &Path, output_name: &str) -> Option<PathBuf> {
     let parent = path.parent().unwrap_or(Path::new("."));
     let marker = parent.join(".graphicle_root");
