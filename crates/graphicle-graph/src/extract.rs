@@ -114,6 +114,13 @@ fn null_as_empty<'de, D: serde::Deserializer<'de>>(
     Ok(Option::<Vec<Value>>::deserialize(deserializer)?.unwrap_or_default())
 }
 pub fn get_extractor(path: &Path) -> Option<String> {
+    get_extractor_with(path, true)
+}
+/// [`get_extractor`]; with `sniff_headers` false it answers only "does an
+/// extractor own this file" without reading a `.h` (Graphify 0.9.103, #4978):
+/// every `.h` dialect has one. Not for picking a grammar: a C++ header asked
+/// this way gets the C extractor.
+pub fn get_extractor_with(path: &Path, sniff_headers: bool) -> Option<String> {
     let name = path
         .file_name()
         .unwrap_or_default()
@@ -144,6 +151,11 @@ pub fn get_extractor(path: &Path) -> Option<String> {
             .map(str::to_string);
     }
     let ext = languages::suffix(path);
+    if ext == ".h" && !sniff_headers {
+        return merge::CONSTANTS["_DISPATCH"][".h"]
+            .as_str()
+            .map(str::to_string);
+    }
     if ext == ".h" {
         if header_kind(path, true) {
             return Some("objc".into());

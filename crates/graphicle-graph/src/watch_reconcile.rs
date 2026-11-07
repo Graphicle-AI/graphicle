@@ -489,6 +489,11 @@ pub fn plan(
             })
             .contains(identity)
     };
+    // Whether a source is AST-owned is a per-file question, answered once per
+    // file without sniffing headers, keyed by identity: one file can be both
+    // `big.h` and an absolute path in one graph, and a relative path read from
+    // outside the project would fail the sniff (Graphify 0.9.103, #4978).
+    let mut ast_owned: HashMap<String, bool> = HashMap::new();
     let existing_nodes: &[Value] = existing["nodes"].as_array().map_or(&[], Vec::as_slice);
     for n in existing_nodes {
         let sf = text(n, "source_file");
@@ -505,7 +510,11 @@ pub fn plan(
                 (alive, is_ignored)
             }
         };
-        if extract::get_extractor(Path::new(&sf)).is_none() {
+        let owned = *ast_owned.entry(id.clone()).or_insert_with(|| {
+            let key = if id.is_empty() { &sf } else { &id };
+            extract::get_extractor_with(Path::new(key), false).is_some()
+        });
+        if !owned {
             if !alive && referenced_unscanned(&id) {
                 continue; // never scanned: a referrer's placeholder, not a deletion
             }
