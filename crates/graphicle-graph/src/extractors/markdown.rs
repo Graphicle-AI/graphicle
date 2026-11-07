@@ -72,6 +72,16 @@ static PATH_MENTION: LazyLock<Regex> = LazyLock::new(|| {
 });
 static BARE_MENTION: LazyLock<Regex> =
     LazyLock::new(|| regex_compat::compile(r"^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$"));
+/// `_MD_NS_MENTION_RE` (Graphify 0.9.103, #4610): the namespace and member
+/// chains other languages' docs write, `App\Services\Mailer` (PHP) and
+/// `Mailer::send()` (PHP, Rust, C++): plain identifiers joined by `\` or `::`.
+static NS_MENTION: LazyLock<Regex> = LazyLock::new(|| {
+    regex_compat::compile(r"^[A-Za-z_]\w*(?:(?:::|\\)[A-Za-z_]\w*)+(?:\(\))?$")
+});
+/// `_MD_NS_NON_SYMBOL_RE`: `Foo::CONST` names a constant and `Foo::class` a
+/// keyword; neither has a node to land on.
+static NS_NON_SYMBOL: LazyLock<Regex> =
+    LazyLock::new(|| regex_compat::compile(r"^(?:class|[A-Z][A-Z0-9_]*)$"));
 static FLAT: LazyLock<Regex> =
     LazyLock::new(|| regex_compat::compile(r"^([A-Za-z0-9_][A-Za-z0-9_\-. ]*):\s*(.*)$"));
 
@@ -412,23 +422,39 @@ pub fn code_span_mention(span: &str) -> Option<(Option<String>, Vec<String>)> {
             c[2].split("::").map(str::to_owned).collect(),
         ));
     }
-    let c = BARE_MENTION.captures(text)?;
-    if text.contains('.') {
-        let ext = format!(".{}", &c[1]);
-        if markdown_data::CODE_EXTENSIONS.contains(&ext.as_str())
-            || markdown_data::DOC_EXTENSIONS.contains(&ext.as_str())
-        {
+    if let Some(c) = BARE_MENTION.captures(text) {
+        if text.contains('.') {
+            let ext = format!(".{}", &c[1]);
+            if markdown_data::CODE_EXTENSIONS.contains(&ext.as_str())
+                || markdown_data::DOC_EXTENSIONS.contains(&ext.as_str())
+            {
+                return None;
+            }
+            return Some((
+                None,
+                text.trim_end_matches(['(', ')'])
+                    .split('.')
+                    .map(str::to_owned)
+                    .collect(),
+            ));
+        }
+        return Some((None, vec![c[1].into()]));
+    }
+    // `App\Services\Mailer` and `Mailer::send()`: split on `\` and `::` the
+    // way the dotted form splits on `.` (Graphify 0.9.103, #4610).
+    if NS_MENTION.is_match(text) {
+        let body = text.strip_suffix("()").unwrap_or(text);
+        let parts: Vec<String> = body
+            .split("::")
+            .flat_map(|part| part.split('\\'))
+            .map(str::to_owned)
+            .collect();
+        if parts.last().is_some_and(|last| NS_NON_SYMBOL.is_match(last)) {
             return None;
         }
-        return Some((
-            None,
-            text.trim_end_matches(['(', ')'])
-                .split('.')
-                .map(str::to_owned)
-                .collect(),
-        ));
+        return Some((None, parts));
     }
-    Some((None, vec![c[1].into()]))
+    None
 }
 
 struct Extraction {
@@ -511,6 +537,13 @@ impl Extraction {
                 }
                 if names.len() > 1 {
                     call["qualifiers"] = json!(&names[..names.len() - 1]);
+                }
+                // A `\`/`::` chain's namespace root may map to the scan
+                // directory (PSR-4 `App\`) with no path segment: the resolver
+                // may drop leading qualifiers no candidate accounts for
+                // (Graphify 0.9.103, #4610).
+                if call.get("path").is_none() && NS_MENTION.is_match(strip(span)) {
+                    call["ns_qualified"] = json!(true);
                 }
                 self.calls.push(call);
             }

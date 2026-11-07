@@ -769,3 +769,57 @@ fn solidity_library_call_fails_closed_when_ambiguous_or_not_a_type() {
     ]);
     assert_eq!(sol_calls_to(&r, "function"), set3(&[("ok()", "h()", "A.sol")]));
 }
+
+#[test]
+fn namespace_and_member_code_span_mentions() {
+    // test_markdown_code_spans.py (Graphify 0.9.103, #4610)
+    use graphicle::extractors::markdown::code_span_mention;
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    assert_eq!(
+        code_span_mention("App\\Services\\Mailer"),
+        Some((None, names(&["App", "Services", "Mailer"])))
+    );
+    assert_eq!(code_span_mention("Mailer::send"), Some((None, names(&["Mailer", "send"]))));
+    assert_eq!(code_span_mention("Mailer::send()"), Some((None, names(&["Mailer", "send"]))));
+    for span in ["Foo::CONST", "Foo::class", "App\\", "C:\\Users\\me"] {
+        assert_eq!(code_span_mention(span), None, "{span}");
+    }
+}
+
+#[test]
+fn namespace_and_member_chains_resolve() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        ("mailer.py", "class Mailer:\n    def send(self):\n        return 1\n"),
+        ("gadget.py", "class Gadget:\n    def send(self):\n        return 2\n"),
+        (
+            "README.md",
+            "# Mail\n\nSee `App\\Services\\Mailer` and `Mailer::send()`.\n\n## Constants\n\n`Foo::CONST` and `Foo::class` land on nothing.\n",
+        ),
+    ]);
+    let id = |label: &str, file: Option<&str>| {
+        nodes(&r)
+            .iter()
+            .find(|n| {
+                n["label"] == label
+                    && file.is_none_or(|f| n["source_file"].as_str().is_some_and(|s| s.ends_with(f)))
+            })
+            .unwrap_or_else(|| panic!("{label}"))["id"]
+            .clone()
+    };
+    let refs: Vec<(Value, Value)> = edges(&r)
+        .iter()
+        .filter(|e| e["relation"] == "references")
+        .map(|e| (e["source"].clone(), e["target"].clone()))
+        .collect();
+    let mail = id("Mail", None);
+    let send = nodes(&r)
+        .iter()
+        .find(|n| n["label"] == ".send()" && n["id"].as_str().unwrap().contains("mailer"))
+        .unwrap()["id"]
+        .clone();
+    assert!(refs.contains(&(mail.clone(), id("Mailer", Some("mailer.py")))), "{refs:?}");
+    assert!(refs.contains(&(mail, send)), "{refs:?}");
+    let constants = id("Constants", None);
+    assert!(!refs.iter().any(|(s, _)| *s == constants), "{refs:?}");
+}
