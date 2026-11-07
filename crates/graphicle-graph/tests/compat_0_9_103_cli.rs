@@ -221,3 +221,29 @@ fn unclassified_warning_silent_under_the_floor_and_the_fraction() {
     assert!(graphicle::detect::unclassified_warning(20, 80).is_some());
     assert_eq!(graphicle::detect::unclassified_warning(19, 0), None);
 }
+
+#[test]
+fn reflect_is_stale_tracks_the_source_content() {
+    // test_reflect.py (Graphify 0.9.103, 892c452d): the overlay entry's
+    // staleness compares a recomputed content hash with the stored one; a
+    // changed or vanished source is stale.
+    use graphicle::reflect::{code_fingerprint, is_stale};
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join(".graphicle");
+    fs::create_dir_all(&out).unwrap();
+    let graph = out.join("graph.json");
+    fs::write(&graph, r#"{"nodes": [], "links": []}"#).unwrap();
+    let src = dir.path().join("auth.py");
+    fs::write(&src, "def login(): pass\n").unwrap();
+    let node = json!({"source_file": src.to_string_lossy()});
+    let entry = json!({"source_file": src.to_string_lossy(),
+                       "code_fingerprint": code_fingerprint(Some(&node), &graph).unwrap()});
+    let entry = entry.as_object().unwrap();
+    assert!(!is_stale(entry, &graph).unwrap());
+    fs::write(&src, "def login(): return 1  # changed\n").unwrap();
+    assert!(is_stale(entry, &graph).unwrap());
+    fs::write(&src, "def login(): pass\n").unwrap();
+    assert!(!is_stale(entry, &graph).unwrap());
+    fs::remove_file(&src).unwrap();
+    assert!(is_stale(entry, &graph).unwrap());
+}
