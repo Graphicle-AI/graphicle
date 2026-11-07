@@ -51,6 +51,24 @@ struct Extractor<'s> {
     raw_calls: Vec<Value>,
     seen: HashSet<String>,
     seen_edges: HashSet<(String, String, String)>,
+    /// `import {A as B} from "./A.sol";`: `B` -> `A`, so `B.f()` calls `A.f`
+    /// (Graphify 0.9.103).
+    import_aliases: HashMap<String, String>,
+}
+/// `_IDENTIFIER`: a Solidity identifier, whole.
+fn is_identifier(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_' || c == '$')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+}
+/// `split_qualified` (Graphify 0.9.103): `("Lib", "f")` for `Lib.f`; `None`
+/// for `a.b.f`, `x[i].f`, `f().g`, `super.f` or `this.f`.
+fn split_qualified(written: &str) -> Option<(&str, &str)> {
+    let (qualifier, member) = written.split_once('.')?;
+    (!matches!(qualifier, "super" | "this") && is_identifier(qualifier) && is_identifier(member))
+        .then_some((qualifier, member))
 }
 impl Extractor<'_> {
     fn text(&self, node: Node<'_>) -> String {
@@ -122,7 +140,9 @@ impl Extractor<'_> {
     }
     /// `_inherited_call`: a call or modifier the contract itself does not
     /// declare, for [`resolve_solidity_inherited_calls`]. `kind` is `inherited`
-    /// (bare `f()` / `this.f()`), `super` (`super.f()`) or `modifier`.
+    /// (bare `f()` / `this.f()`, `emit E()`, `revert Err()`), `super`
+    /// (`super.f()`), `modifier` or `qualified` (`Lib.f()`, `revert
+    /// Errors.Err()`, with a `qualifier`; Graphify 0.9.103).
     fn inherited_call(
         &mut self,
         caller: &str,
@@ -132,6 +152,84 @@ impl Extractor<'_> {
         node: Node<'_>,
     ) {
         self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"arity":arity,"solidity_call":kind,"language":"solidity","source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
+    }
+    /// Parks `Qualifier.member(..)` for [`resolve_solidity_inherited_calls`],
+    /// which binds it through a type the file declares or imports (Graphify
+    /// 0.9.103).
+    fn qualified_call(
+        &mut self,
+        caller: &str,
+        qualifier: &str,
+        member: &str,
+        arity: usize,
+        node: Node<'_>,
+    ) {
+        self.inherited_call(caller, member, Some(arity), "qualified", node);
+        let qualifier = self
+            .import_aliases
+            .get(qualifier)
+            .map_or(qualifier, String::as_str)
+            .to_owned();
+        if let Some(call) = self.raw_calls.last_mut() {
+            call["qualifier"] = json!(qualifier);
+        }
+    }
+    /// `emit E(..)` / `revert Err(..)` (Graphify 0.9.103): statements, not
+    /// call expressions, that call the event or error they name; `revert()` and
+    /// `revert("msg")` name none. Bound by (name, arity) in the contract,
+    /// through its bases, or as `Lib.Err` through a declared or imported type.
+    fn emitted_call(
+        &mut self,
+        node: Node<'_>,
+        caller: &str,
+        functions: &HashMap<(String, usize), Vec<String>>,
+    ) {
+        let emit = node.kind() == "emit_statement";
+        let mut emitted = node.child_by_field_name(if emit { "name" } else { "error" });
+        if let Some(e) = emitted
+            && e.kind() == "expression"
+            && let Some(first) = named(e).into_iter().next()
+        {
+            emitted = Some(first);
+        }
+        let args = if emit {
+            Some(node)
+        } else {
+            named(node).into_iter().find(|c| c.kind() == "revert_arguments")
+        };
+        let arity = args.map_or(0, |a| {
+            named(a)
+                .into_iter()
+                .filter(|c| c.kind() == "call_argument")
+                .count()
+        });
+        let Some(emitted) = emitted else {
+            return;
+        };
+        if emitted.kind() == "identifier" {
+            let callee = self.text(emitted);
+            match functions.get(&(callee.clone(), arity)).map(Vec::as_slice) {
+                Some([target]) => {
+                    let target = target.clone();
+                    self.add_edge(caller, &target, "calls", node, None, None);
+                }
+                None | Some([]) => {
+                    // Declared in a base (an interface's event, a base's
+                    // error): bound through the linearization.
+                    self.inherited_call(caller, &callee, Some(arity), "inherited", node);
+                }
+                _ => {}
+            }
+        } else if emitted.kind() == "member_expression"
+            && let (Some(qualifier), Some(property)) = (
+                emitted.child_by_field_name("object"),
+                emitted.child_by_field_name("property"),
+            )
+            && qualifier.kind() == "identifier"
+        {
+            let (qualifier, property) = (self.text(qualifier), self.text(property));
+            self.qualified_call(caller, &qualifier, &property, arity, node);
+        }
     }
     fn type_stub(&mut self, name: &str, node: Node<'_>) -> String {
         let name = name.rsplit('.').next().unwrap_or("").to_string();
@@ -288,14 +386,32 @@ impl Extractor<'_> {
                     continue;
                 };
                 let name = self.text(name_node);
-                let id = self.add_member(
-                    &type_id, member, &name, &name, simple, "contains", "", false, None,
-                );
                 let arity = named(member)
                     .into_iter()
-                    .filter(|c| matches!(c.kind(), "event_parameter" | "parameter"))
+                    .filter(|c| matches!(c.kind(), "event_parameter" | "error_parameter" | "parameter"))
                     .count();
-                references.insert((name, arity), id);
+                if simple == "state_variable" {
+                    let id = self.add_member(
+                        &type_id, member, &name, &name, simple, "contains", "", false, None,
+                    );
+                    references.insert((name, arity), id);
+                } else {
+                    // `emit E(..)`, `revert Err(..)` and `require(c, Err(..))`
+                    // call the event or error, like Python's `raise Err()`: a
+                    // call target by (name, arity) (Graphify 0.9.103).
+                    let id = self.add_member(
+                        &type_id,
+                        member,
+                        &name,
+                        &name,
+                        simple,
+                        "contains",
+                        "",
+                        false,
+                        Some(arity),
+                    );
+                    functions.entry((name, arity)).or_default().push(id);
+                }
                 continue;
             }
             if !matches!(
@@ -427,9 +543,18 @@ impl Extractor<'_> {
                         self.inherited_call(&caller, &callee, Some(arity), "inherited", node);
                     } else if written.starts_with("super.") && written.matches('.').count() == 1 {
                         self.inherited_call(&caller, &callee, Some(arity), "super", node);
+                    } else if let Some((qualifier, member)) =
+                        split_qualified(&written).filter(|_| !callee.is_empty())
+                    {
+                        // `Lib.f(..)` / `Base.f(..)` / `Errors.Err(..)`; a value
+                        // receiver (`token.transfer()`) names no type, so the
+                        // resolver binds nothing for it (Graphify 0.9.103).
+                        self.qualified_call(&caller, qualifier, member, arity, node);
                     } else if !callee.is_empty() && dotted {
                         self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":true,"language":"solidity","source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
                     }
+                } else if matches!(node.kind(), "emit_statement" | "revert_statement") {
+                    self.emitted_call(node, &caller, &functions);
                 }
                 let mut kids = named(node);
                 kids.reverse();
@@ -439,7 +564,8 @@ impl Extractor<'_> {
     }
     /// File-level (free) functions, legal since Solidity 0.7, and the calls
     /// they make. Only an unambiguous same-file free function is linked
-    /// directly; member calls (`Lib.f()`) are left for cross-file resolution.
+    /// directly; a qualified call (`Lib.f()`) is left for
+    /// [`resolve_solidity_inherited_calls`] (Graphify 0.9.103).
     fn free_functions(&mut self, root: Node<'_>, stem: &str, file_id: &str) {
         let mut functions: HashMap<(String, usize), Vec<String>> = HashMap::new();
         let mut bodies = vec![];
@@ -499,6 +625,10 @@ impl Extractor<'_> {
                             let target = target.clone();
                             self.add_edge(&caller, &target, "calls", node, None, None);
                         }
+                    } else if let Some((qualifier, member)) =
+                        split_qualified(&written).filter(|_| !callee.is_empty())
+                    {
+                        self.qualified_call(&caller, qualifier, member, arity, node);
                     } else if !callee.is_empty() {
                         self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":true,"language":"solidity","source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
                     }
@@ -513,6 +643,8 @@ impl Extractor<'_> {
 /// `_callee_text`: the callee as written (`super.supportsInterface`,
 /// `_check`). The grammar parses `a || super.f(x)` as a call of the member
 /// `(a || super).f`; the right-most operand is read as the receiver instead.
+/// A prefix operator is swallowed the same way: `!Lib.f(x)` parses as
+/// `(!Lib).f` (Graphify 0.9.103).
 fn callee_text(callee: Node<'_>, source: &[u8]) -> String {
     fn unwrap<'t>(node: Node<'t>) -> Node<'t> {
         if node.kind() == "expression" {
@@ -531,10 +663,10 @@ fn callee_text(callee: Node<'_>, source: &[u8]) -> String {
         let mut base = object;
         loop {
             let unwrapped = unwrap(base);
-            let right = if unwrapped.kind() == "binary_expression" {
-                unwrapped.child_by_field_name("right")
-            } else {
-                None
+            let right = match unwrapped.kind() {
+                "binary_expression" => unwrapped.child_by_field_name("right"),
+                "unary_expression" => unwrapped.child_by_field_name("argument"),
+                _ => None,
             };
             let Some(right) = right else { break };
             base = right;
@@ -625,6 +757,12 @@ fn c3_linearization(type_id: &str, bases: &HashMap<String, Vec<String>>) -> Vec<
 /// that declares a matching member wins (`super.f()` starts after the caller's
 /// own contract, as the plain lookup does once the extractor found nothing
 /// there); several same-arity overloads in that contract are ambiguous.
+///
+/// An event or error is a call target too (`emit E()`, `revert Err()`), and
+/// a qualified call (`Lib.f()`, `Base.f()`, `revert Errors.Err()`) binds to
+/// the member of the one library, contract or interface of that name the
+/// caller's file declares or imports directly; no edge when the name or the
+/// (name, arity) is ambiguous (Graphify 0.9.103).
 pub fn resolve_solidity_inherited_calls(per: &[Value], nodes: &[Value], edges: &mut Vec<Value>) {
     resolve_solidity_inherited_calls_any(per, nodes, edges);
 }
@@ -703,6 +841,20 @@ pub fn resolve_solidity_inherited_calls_any<P: PerFile, E: Rec>(
                     .or_default()
                     .push(target_id.to_owned());
             }
+        } else if relation == "contains"
+            && matches!(meta(target)["kind"].as_str(), Some("event" | "error"))
+        {
+            let label = node_by_id
+                .get(&target.to_string())
+                .and_then(|n| n.get("label"))
+                .map(python_compat::string)
+                .unwrap_or_default();
+            functions
+                .entry(source_id.to_owned())
+                .or_default()
+                .entry(label)
+                .or_default()
+                .push((target_id.to_owned(), meta(target)["arity"].clone()));
         } else if relation == "inherits" && is_type(meta(target)) {
             bases
                 .entry(source_id.to_owned())
@@ -736,23 +888,98 @@ pub fn resolve_solidity_inherited_calls_any<P: PerFile, E: Rec>(
         }
         None
     };
+    // `Errors.Err` names a type the caller's file declares or imports
+    // directly, the scope the type pass binds base names in.
+    let mut types_by_file: HashMap<(String, String), Vec<String>> = HashMap::new();
+    let mut imported: HashMap<String, BTreeSet<String>> = HashMap::new();
+    if calls
+        .iter()
+        .any(|rc| at(*rc, "solidity_call") == "qualified")
+    {
+        let mut file_by_id: HashMap<String, String> = HashMap::new();
+        for node in nodes {
+            let Some(node_file) = node.get("source_file").filter(|v| crate::build::truthy(v)) else {
+                continue;
+            };
+            let node_file = python_compat::string(node_file);
+            let label = node.get("label").map(python_compat::string).unwrap_or_default();
+            let base_name = Path::new(&node_file)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            if label == base_name {
+                file_by_id.insert(node["id"].to_string(), node_file);
+            } else if is_type(meta(&node["id"])) {
+                types_by_file
+                    .entry((node_file, label))
+                    .or_default()
+                    .push(python_compat::string(&node["id"]));
+            }
+        }
+        for edge in edges.iter() {
+            if at(edge, "relation") == "imports_from"
+                && let (Some(importer), Some(imported_file)) = (
+                    file_by_id.get(&at(edge, "source").to_string()),
+                    file_by_id.get(&at(edge, "target").to_string()),
+                )
+            {
+                imported
+                    .entry(importer.clone())
+                    .or_default()
+                    .insert(imported_file.clone());
+            }
+        }
+    }
     let mut linear_cache: HashMap<String, Vec<String>> = HashMap::new();
     let mut added: Vec<E> = vec![];
     for rc in calls {
         let caller = at(rc, "caller_nid");
-        let Some(contract) = caller.as_str().and_then(|c| owner.get(c)).cloned() else {
-            continue;
-        };
         let name = at(rc, "callee");
-        if !crate::build::truthy(name) {
+        if !crate::build::truthy(caller) || !crate::build::truthy(name) {
             continue;
         }
         let name = python_compat::string(name);
-        let linear = linear_cache
-            .entry(contract.clone())
-            .or_insert_with(|| c3_linearization(&contract, &bases));
         let kind = python_compat::string(at(rc, "solidity_call"));
-        let Some(target) = find(&linear[1..], &name, at(rc, "arity"), &kind) else {
+        let contract = caller.as_str().and_then(|c| owner.get(c)).cloned();
+        let target = if kind == "qualified" {
+            // `Lib.f()` names its type, so it needs no owning contract (a
+            // free function calls libraries too).
+            let caller_file = node_by_id
+                .get(&caller.to_string())
+                .and_then(|n| n.get("source_file"))
+                .map(python_compat::string)
+                .unwrap_or_default();
+            let qualifier = python_compat::string(at(rc, "qualifier"));
+            let mut scope = types_by_file
+                .get(&(caller_file.clone(), qualifier.clone()))
+                .cloned()
+                .unwrap_or_default();
+            for imported_file in imported.get(&caller_file).into_iter().flatten() {
+                scope.extend(
+                    types_by_file
+                        .get(&(imported_file.clone(), qualifier.clone()))
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+            }
+            // Fail closed when the name is not visible or is ambiguous.
+            if scope.len() == 1 {
+                find(&scope, &name, at(rc, "arity"), &kind)
+            } else {
+                None
+            }
+        } else {
+            let Some(contract) = contract else {
+                continue;
+            };
+            let linear = linear_cache
+                .entry(contract.clone())
+                .or_insert_with(|| c3_linearization(&contract, &bases));
+            // The extractor already looked in the caller's own contract.
+            find(&linear[1..], &name, at(rc, "arity"), &kind)
+        };
+        let Some(target) = target.filter(|t| caller.as_str() != Some(t.as_str())) else {
             continue;
         };
         let relation = if kind == "modifier" { "uses" } else { "calls" };
@@ -795,11 +1022,30 @@ pub fn extract_solidity(path: &Path) -> Value {
         raw_calls: vec![],
         seen: HashSet::new(),
         seen_edges: HashSet::new(),
+        import_aliases: HashMap::new(),
     };
     x.add_node(&file_id, &file_name, root, "file", true, false, None);
     for declaration in named(root) {
         if declaration.kind() != "import_directive" {
             continue;
+        }
+        // `import {A as B} from "./A.sol";` makes `B.f()` call `A.f`; a
+        // namespace alias (`import "./x.sol" as X;`) has no import_name
+        // before it and is not a type (Graphify 0.9.103).
+        let mut imported_name: Option<String> = None;
+        let mut cursor = declaration.walk();
+        for (index, child) in declaration.children(&mut cursor).enumerate() {
+            match declaration.field_name_for_child(index as u32) {
+                Some("import_name") => imported_name = Some(x.text(child)),
+                Some("alias") => {
+                    if let Some(name) = imported_name.take() {
+                        let alias = x.text(child);
+                        x.import_aliases.insert(alias, name);
+                    }
+                }
+                _ if child.kind() == "," => imported_name = None,
+                _ => {}
+            }
         }
         let Some(source_node) = declaration.child_by_field_name("source") else {
             continue;

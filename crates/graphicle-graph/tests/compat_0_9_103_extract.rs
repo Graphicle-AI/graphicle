@@ -572,3 +572,200 @@ fn merge_key_sequence_earlier_map_wins() {
     let node = nodes(&r).iter().find(|n| n["id"] == id.as_str()).unwrap_or_else(|| panic!("{r:#}"));
     assert_eq!(node["source_location"], "L2");
 }
+
+// --- Solidity: emit, revert, require and Lib.f() calls -----------------------
+
+/// `(caller label, target label, target file name)` of the calls edges into
+/// a node of metadata kind `kind`.
+fn sol_calls_to(r: &Value, kind: &str) -> std::collections::BTreeSet<(String, String, String)> {
+    let node = |id: &Value| nodes(r).iter().find(|n| n["id"] == *id);
+    edges(r)
+        .iter()
+        .filter(|e| e["relation"] == "calls")
+        .filter_map(|e| {
+            let (source, target) = (node(&e["source"])?, node(&e["target"])?);
+            (target["metadata"]["kind"] == kind).then(|| {
+                (
+                    source["label"].as_str().unwrap_or("").to_owned(),
+                    target["label"].as_str().unwrap_or("").to_owned(),
+                    std::path::Path::new(target["source_file"].as_str().unwrap_or(""))
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                )
+            })
+        })
+        .collect()
+}
+
+fn set3(items: &[(&str, &str, &str)]) -> std::collections::BTreeSet<(String, String, String)> {
+    items.iter().map(|(a, b, c)| triple(a, b, c)).collect()
+}
+
+#[test]
+fn solidity_emit_revert_and_require_call_events_and_errors_of_the_same_contract() {
+    // test_solidity_extractor.py (Graphify 0.9.103, 20616998)
+    let f = Fixture::new();
+    let r = f.extract_files(&[(
+        "Vault.sol",
+        "pragma solidity ^0.8.20;\ncontract Vault {\n    event Withdrawn(address who, uint256 amount);\n    error NotOwner(address caller);\n    error Paused();\n    address owner;\n    function withdraw(uint256 amount) external {\n        if (msg.sender != owner) revert NotOwner(msg.sender);\n        emit Withdrawn(msg.sender, amount);\n    }\n    function check(bool on) external view {\n        require(!on, Paused());\n        revert();\n        revert(\"plain\");\n    }\n}\n",
+    )]);
+    assert_eq!(
+        sol_calls_to(&r, "error"),
+        set3(&[("withdraw()", "NotOwner", "Vault.sol"), ("check()", "Paused", "Vault.sol")])
+    );
+    assert_eq!(sol_calls_to(&r, "event"), set3(&[("withdraw()", "Withdrawn", "Vault.sol")]));
+}
+
+#[test]
+fn solidity_emit_and_revert_bind_events_and_errors_of_a_base_contract() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        (
+            "Base.sol",
+            "pragma solidity ^0.8.20;\ninterface IVault { event Deposited(address who, uint256 amount); }\ncontract Base is IVault { error ZeroAmount(); error TooLarge(uint256 max); }\n",
+        ),
+        (
+            "Vault.sol",
+            "pragma solidity ^0.8.20;\nimport {Base} from \"./Base.sol\";\ncontract Vault is Base {\n    function deposit() external payable {\n        if (msg.value == 0) revert ZeroAmount();\n        require(msg.value < 10, TooLarge(10));\n        emit Deposited(msg.sender, msg.value);\n        revert ZeroAmount(1);\n    }\n}\n",
+        ),
+    ]);
+    assert_eq!(
+        sol_calls_to(&r, "error"),
+        set3(&[("deposit()", "ZeroAmount", "Base.sol"), ("deposit()", "TooLarge", "Base.sol")])
+    );
+    assert_eq!(sol_calls_to(&r, "event"), set3(&[("deposit()", "Deposited", "Base.sol")]));
+}
+
+#[test]
+fn solidity_qualified_revert_and_emit_bind_through_the_imported_type() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        (
+            "Ambiguous.sol",
+            "pragma solidity ^0.8.20;\nimport \"./Errors.sol\";\nimport \"./Dup.sol\";\ncontract Ambiguous {\n    function f() external { revert Errors.InsufficientBalance(1, 2); }\n}\n",
+        ),
+        (
+            "Dup.sol",
+            "pragma solidity ^0.8.20;\nlibrary Errors { error InsufficientBalance(uint256 have, uint256 want); }\n",
+        ),
+        (
+            "Errors.sol",
+            "pragma solidity ^0.8.20;\nlibrary Errors { error InsufficientBalance(uint256 have, uint256 want); }\ninterface Events { event Moved(uint256 amount); }\n",
+        ),
+        (
+            "Other.sol",
+            "pragma solidity ^0.8.20;\nlibrary Errors { error InsufficientBalance(uint256 have, uint256 want); }\n",
+        ),
+        (
+            "Vault.sol",
+            "pragma solidity ^0.8.20;\nimport {Errors, Events} from \"./Errors.sol\";\ncontract Vault {\n    function withdraw(uint256 have, uint256 amount) external {\n        if (have < amount) revert Errors.InsufficientBalance(have, amount);\n        emit Events.Moved(amount);\n        revert Missing.InsufficientBalance(have, amount);\n    }\n}\n",
+        ),
+    ]);
+    assert_eq!(
+        sol_calls_to(&r, "error"),
+        set3(&[("withdraw()", "InsufficientBalance", "Errors.sol")])
+    );
+    assert_eq!(sol_calls_to(&r, "event"), set3(&[("withdraw()", "Moved", "Errors.sol")]));
+}
+
+const MATH_LIB: &str = "pragma solidity ^0.8.20;\nlibrary MathLib {\n    function max(uint256 a, uint256 b) internal pure returns (uint256) { return a > b ? a : b; }\n    function clamp(uint256 x, uint256 hi) internal pure returns (uint256) {\n        return MathLib.max(x, hi) == x ? hi : x;\n    }\n}\n";
+
+#[test]
+fn solidity_library_calls_bind_through_imports() {
+    // test_solidity_extractor.py (Graphify 0.9.103, b3d96751)
+    for (vault, caller) in [
+        (
+            "pragma solidity ^0.8.20;\nimport {MathLib} from \"./MathLib.sol\";\ncontract Vault {\n    uint256 public cap;\n    function setCap(uint256 newCap) external { cap = MathLib.max(newCap, 1); }\n}\n",
+            "setCap()",
+        ),
+        (
+            "pragma solidity ^0.8.20;\nimport {MathLib as M} from \"./MathLib.sol\";\ncontract Vault {\n    function top(uint256 a) external pure returns (uint256) { return M.max(a, 1); }\n}\n",
+            "top()",
+        ),
+    ] {
+        let f = Fixture::new();
+        let r = f.extract_files(&[("MathLib.sol", MATH_LIB), ("Vault.sol", vault)]);
+        let calls = sol_calls_to(&r, "function");
+        assert!(calls.contains(&triple(caller, "max()", "MathLib.sol")), "{caller}: {calls:?}");
+    }
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        (
+            "TimeLib.sol",
+            "pragma solidity ^0.8.20;\nlibrary TimeLib { function now48() internal view returns (uint48) { return uint48(block.timestamp); } }\n",
+        ),
+        (
+            "Vault.sol",
+            "pragma solidity ^0.8.20;\nimport \"./TimeLib.sol\";\ncontract Vault {\n    uint48 public updatedAt;\n    function touch() external { updatedAt = TimeLib.now48(); }\n}\n",
+        ),
+    ]);
+    assert_eq!(sol_calls_to(&r, "function"), set3(&[("touch()", "now48()", "TimeLib.sol")]));
+}
+
+#[test]
+fn solidity_qualified_call_inside_the_library_itself() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[("MathLib.sol", MATH_LIB)]);
+    assert_eq!(sol_calls_to(&r, "function"), set3(&[("clamp()", "max()", "MathLib.sol")]));
+}
+
+#[test]
+fn solidity_negated_library_call_binds() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        (
+            "MathLib.sol",
+            "pragma solidity ^0.8.20;\nlibrary MathLib { function isZero(uint256 a) internal pure returns (bool) { return a == 0; } }\n",
+        ),
+        (
+            "Vault.sol",
+            "pragma solidity ^0.8.20;\nimport {MathLib} from \"./MathLib.sol\";\ncontract Vault {\n    function check(uint256 a) external pure { if (!MathLib.isZero(a)) revert(); }\n}\n",
+        ),
+    ]);
+    assert_eq!(sol_calls_to(&r, "function"), set3(&[("check()", "isZero()", "MathLib.sol")]));
+}
+
+#[test]
+fn solidity_library_call_from_a_free_function() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        ("MathLib.sol", MATH_LIB),
+        (
+            "Utils.sol",
+            "pragma solidity ^0.8.20;\nimport {MathLib} from \"./MathLib.sol\";\nfunction atLeastOne(uint256 a) pure returns (uint256) { return MathLib.max(a, 1); }\n",
+        ),
+    ]);
+    assert!(sol_calls_to(&r, "function").contains(&triple("atLeastOne()", "max()", "MathLib.sol")));
+}
+
+#[test]
+fn solidity_require_with_a_qualified_error_binds_the_library_error() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        ("Errors.sol", "pragma solidity ^0.8.20;\nlibrary Errors { error TooSmall(uint256 got); }\n"),
+        (
+            "Vault.sol",
+            "pragma solidity ^0.8.20;\nimport {Errors} from \"./Errors.sol\";\ncontract Vault {\n    function deposit(uint256 v) external pure { require(v > 1, Errors.TooSmall(v)); }\n}\n",
+        ),
+    ]);
+    assert_eq!(sol_calls_to(&r, "error"), set3(&[("deposit()", "TooSmall", "Errors.sol")]));
+}
+
+#[test]
+fn solidity_library_call_fails_closed_when_ambiguous_or_not_a_type() {
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        (
+            "A.sol",
+            "pragma solidity ^0.8.20;\nlibrary Dup { function f() internal pure {} }\nlibrary Over {\n    function g(uint256 a) internal pure {}\n    function g(int256 a) internal pure {}\n    function h(uint256 a) internal pure {}\n}\n",
+        ),
+        ("B.sol", "pragma solidity ^0.8.20;\nlibrary Dup { function f() internal pure {} }\n"),
+        ("C.sol", "pragma solidity ^0.8.20;\nlibrary Hidden { function k() internal pure {} }\n"),
+        (
+            "Caller.sol",
+            "pragma solidity ^0.8.20;\nimport \"./A.sol\";\nimport \"./B.sol\";\ncontract Caller {\n    function run(uint256 x) external {\n        Dup.f();\n        Over.g(x);\n        Over.h(x, x);\n        Hidden.k();\n        x.h(x);\n    }\n    function ok(uint256 x) external { Over.h(x); }\n}\n",
+        ),
+    ]);
+    assert_eq!(sol_calls_to(&r, "function"), set3(&[("ok()", "h()", "A.sol")]));
+}
