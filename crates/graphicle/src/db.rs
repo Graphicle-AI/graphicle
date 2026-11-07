@@ -1187,6 +1187,31 @@ fn from_lite(value: rusqlite::types::ValueRef<'_>) -> Value {
 
 /// How long a SQLite write-ahead-log checkpoint waits for readers.
 pub const CHECKPOINT_WAIT: Duration = Duration::from_secs(2);
+/// After a checkpoint that found readers still on an older snapshot, how
+/// long this process leaves the log alone. A checkpoint that cuts the log
+/// back holds the write lock while it waits for readers, so with readers
+/// always in flight back to back attempts after every commit kept the lock
+/// almost all the time and starved other writers (an indexing job failed
+/// with "database is locked"). With this pause a process holds the lock
+/// for checkpoints at most [`CHECKPOINT_WAIT`] in every
+/// `CHECKPOINT_WAIT + CHECKPOINT_PAUSE`.
+pub const CHECKPOINT_PAUSE: Duration = Duration::from_secs(8);
+
+/// One checkpoint at a time per store in this process, and a pause after
+/// one that found readers ([`CHECKPOINT_PAUSE`]).
+#[derive(Default)]
+struct CheckpointGate {
+    running: std::sync::atomic::AtomicBool,
+    /// Milliseconds since the Unix epoch before which no checkpoint starts.
+    not_before_ms: std::sync::atomic::AtomicU64,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 static WAL_CHECKPOINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static WAL_CHECKPOINTS_BUSY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -1559,6 +1584,9 @@ pub struct Database {
     generation: Arc<std::sync::atomic::AtomicU64>,
     /// A SQLite store's write-ahead log limit in bytes (0: none).
     wal_limit: std::sync::atomic::AtomicU64,
+    /// Whether this process is checkpointing the log, and until when a
+    /// checkpoint that found readers keeps others away ([`Connection::bound_wal`]).
+    checkpoint: CheckpointGate,
     backend: Backend,
 }
 
@@ -1602,6 +1630,7 @@ impl Database {
             lock_key: 0,
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             wal_limit: std::sync::atomic::AtomicU64::new(DEFAULT_WAL_LIMIT),
+            checkpoint: CheckpointGate::default(),
             backend: Backend::Sqlite {
                 path: path.to_path_buf(),
                 store,
@@ -1759,6 +1788,7 @@ impl Database {
                 lock_key: database.lock_key,
                 generation: database.generation.clone(),
                 wal_limit: std::sync::atomic::AtomicU64::new(0),
+                checkpoint: CheckpointGate::default(),
                 backend: Backend::Postgres(pool.clone()),
             });
             all.insert((settings.url.clone(), schema), replaced.clone());
@@ -1788,6 +1818,7 @@ impl Database {
             lock_key: lock_key(schema),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             wal_limit: std::sync::atomic::AtomicU64::new(0),
+            checkpoint: CheckpointGate::default(),
             backend: Backend::Postgres(pool),
         });
         all.insert(key, database.clone());
@@ -2242,6 +2273,7 @@ impl Connection {
             lock_key: lock_key(&schema),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             wal_limit: std::sync::atomic::AtomicU64::new(0),
+            checkpoint: CheckpointGate::default(),
             schema,
             file: None,
             temporary: true,
@@ -2332,7 +2364,9 @@ impl Connection {
     /// Run after a write transaction commits. With readers always in
     /// flight, SQLite's own automatic checkpoint (PASSIVE) can copy pages
     /// back but never reset the log, which then grows by everything
-    /// written. Returns whether a checkpoint ran and finished.
+    /// written. One checkpoint runs at a time per store in this process,
+    /// and none for [`CHECKPOINT_PAUSE`] after one that found readers.
+    /// Returns whether a checkpoint ran and finished.
     pub fn bound_wal(&self) -> Result<Option<bool>> {
         let Some(lite) = &self.lite else {
             return Ok(None);
@@ -2353,11 +2387,31 @@ impl Connection {
         if size <= limit {
             return Ok(None);
         }
-        lite.busy_timeout(CHECKPOINT_WAIT)?;
-        let outcome = lite.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
-            r.get::<_, i64>(0)
+        let gate = &self.database.checkpoint;
+        if now_ms()
+            < gate
+                .not_before_ms
+                .load(std::sync::atomic::Ordering::Relaxed)
+            || gate.running.swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            return Ok(None);
+        }
+        let outcome = lite.busy_timeout(CHECKPOINT_WAIT).and_then(|()| {
+            lite.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+                r.get::<_, i64>(0)
+            })
         });
-        lite.busy_timeout(self.busy.get())?;
+        let restored = lite.busy_timeout(self.busy.get());
+        let found_readers = !matches!(outcome, Ok(0));
+        if found_readers {
+            gate.not_before_ms.store(
+                now_ms() + CHECKPOINT_PAUSE.as_millis() as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
+        gate.running
+            .store(false, std::sync::atomic::Ordering::Release);
+        restored?;
         let busy = outcome?;
         WAL_CHECKPOINTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if busy != 0 {

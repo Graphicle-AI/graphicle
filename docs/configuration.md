@@ -50,8 +50,12 @@ A SQLite store runs in WAL mode. While writes go on, its write-ahead log
 (`reviews.sqlite3-wal`) is checkpointed and cut back once it passes 64
 MiB, waiting at most 2 seconds for readers to move to the latest
 snapshot. Before 0.1.14 the log could grow without bound while readers
-were always in flight (one service grew it to 8.3 GB). The checkpoint
-runs between write transactions: one large write, such as storing the
+were always in flight (one service grew it to 8.3 GB). A checkpoint
+holds the write lock while it waits, so a process runs one at a time
+and, after one that found readers still on an older snapshot, waits 8
+seconds before the next: other writers, such as an indexing job, wait
+at most those 2 seconds for it. The checkpoint runs between write
+transactions: one large write, such as storing the
 code graph of a large project, still grows the log by what it writes
 until it commits.
 
