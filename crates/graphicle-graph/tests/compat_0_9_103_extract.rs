@@ -555,3 +555,20 @@ fn preprocessor_blanking_is_length_preserving() {
     assert!(text.contains("#if inside a string") && text.contains("// #if not a directive"));
     assert_eq!(blank_csharp_preprocessor(b"class A {}\n"), None);
 }
+
+#[test]
+fn merge_key_sequence_earlier_map_wins() {
+    // test_yaml_extraction.py (Graphify 0.9.103, 83172127): in a
+    // `<<: [*a, *b]` merge the earlier map wins, as yaml.safe_load does, so
+    // services.web.common is *a's key at L2, not *b's at L5.
+    let f = Fixture::new();
+    let path = f.write(
+        "docker-compose.yml",
+        "x-a: &a\n  common:\n    from_a: 1\nx-b: &b\n  common:\n    from_b: 2\nservices:\n  web:\n    <<: [*a, *b]\n",
+    );
+    let r = graphicle::extractors::yaml_config::extract_yaml(&path);
+    let stem = graphicle::extractors::base::file_stem(&path);
+    let id = graphicle::extractors::base::make_id([stem.as_str(), "web", "common"]);
+    let node = nodes(&r).iter().find(|n| n["id"] == id.as_str()).unwrap_or_else(|| panic!("{r:#}"));
+    assert_eq!(node["source_location"], "L2");
+}

@@ -734,7 +734,10 @@ impl Tree {
                         Node::Sequence(items, _) => items.clone(),
                         _ => vec![value],
                     };
-                    for source in sources {
+                    // An earlier map of a `<<: [*a, *b]` sequence wins, as
+                    // PyYAML's flatten_mapping (Graphify 0.9.103): with the
+                    // last write winning below, the sources go last to first.
+                    for source in sources.into_iter().rev() {
                         if self.kind(source) == TreeKind::Map {
                             merged.extend(self.pairs_at(source, depth + 1));
                         }
