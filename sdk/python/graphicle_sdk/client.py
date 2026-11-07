@@ -11,8 +11,9 @@ Connecting::
 
     client = Client("http://127.0.0.1:8854", workspace="<workspace id>", capability="<secret>")
     # Or read the owner session that `graphicle init` saved in a local data directory
-    # (default: GRAPHICLE_DATA_DIR, else ~/Library/Application Support/Graphicle on macOS,
-    # else $XDG_DATA_HOME/graphicle or ~/.local/share/graphicle):
+    # (default: GRAPHICLE_DATA_DIR, else %LOCALAPPDATA%/Graphicle on Windows,
+    # ~/Library/Application Support/Graphicle on macOS, or $XDG_DATA_HOME/graphicle
+    # or ~/.local/share/graphicle elsewhere):
     client = Client.from_session("http://127.0.0.1:8854")
 
 Projects, sources and retrieval (no model call)::
@@ -192,6 +193,17 @@ def default_data_dir() -> Path:
     configured = os.environ.get("GRAPHICLE_DATA_DIR")
     if configured:
         return Path(configured)
+    if sys.platform == "win32":
+        local_app_data = Path(os.environ.get("LOCALAPPDATA") or "")
+        if local_app_data.is_absolute():
+            return local_app_data / "Graphicle"
+        try:
+            home = Path.home()
+        except RuntimeError:
+            home = Path(".")
+        if not home.is_absolute():
+            home = Path(".")
+        return home / "AppData" / "Local" / "Graphicle"
     home = Path(os.environ.get("HOME") or ".")
     if sys.platform == "darwin":
         return home / "Library/Application Support/Graphicle"
