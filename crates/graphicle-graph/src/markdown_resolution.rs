@@ -308,7 +308,9 @@ pub fn resolve_markdown_mentions_any<P: PerFile, E: Rec>(
             );
         }
         let callee = &names[names.len() - 1];
-        if LANGUAGE_BUILTIN_GLOBALS.contains(&callee.as_str()) {
+        // Only a bare builtin-named mention is skipped: a dotted one such as
+        // `Repository.open` carries qualifier evidence (Graphify 0.9.103).
+        if names.len() == 1 && LANGUAGE_BUILTIN_GLOBALS.contains(&callee.as_str()) {
             return (None, "INFERRED", 0.95);
         }
         let candidates: Vec<&String> = by_label

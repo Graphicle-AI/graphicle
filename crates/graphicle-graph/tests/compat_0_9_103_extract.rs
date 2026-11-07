@@ -99,3 +99,38 @@ fn ownership_without_header_sniff_reads_no_header() {
     assert_eq!(get_extractor(&objc).as_deref(), Some("objc"));
     assert!(get_extractor_with(&f.root.join("notes.txt"), false).is_none());
 }
+
+#[test]
+fn dotted_mention_resolves_when_method_name_is_a_builtin() {
+    // test_markdown_code_spans.py (Graphify 0.9.103, 13e05097): only a bare
+    // builtin-named mention is skipped; `Repository.open` resolves through
+    // its qualifier like `Repository.connect`.
+    let f = Fixture::new();
+    let r = f.extract_files(&[
+        (
+            "src/repo.py",
+            "class Repository:\n    def open(self):\n        return 1\n    def connect(self):\n        return 2\n",
+        ),
+        (
+            "docs/notes.md",
+            "# Notes\n\nSee `Repository.open` and `Repository.connect`.\n",
+        ),
+    ]);
+    let notes = nodes(&r)
+        .iter()
+        .find(|n| n["label"] == "Notes")
+        .unwrap()["id"]
+        .clone();
+    let cited: Vec<&Value> = edges(&r)
+        .iter()
+        .filter(|e| e["relation"] == "references" && e["source"] == notes)
+        .map(|e| &e["target"])
+        .collect();
+    for label in [".open()", ".connect()"] {
+        let id = &nodes(&r)
+            .iter()
+            .find(|n| n["label"] == label && n["id"].as_str().unwrap().contains("repo"))
+            .unwrap()["id"];
+        assert!(cited.contains(&id), "{label}: {cited:?}");
+    }
+}
