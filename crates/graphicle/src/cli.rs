@@ -965,6 +965,9 @@ pub fn main_with(extensions: Extensions) -> i32 {
             // at most a second for the store: a capture hook must not hold
             // up its client.
             crate::metering::flush_all(std::time::Duration::from_secs(1));
+            // Request counts a server held while its SQLite store was busy
+            // (`crate::request_tally`); only a server holds any.
+            crate::request_tally::flush_all(std::time::Duration::from_secs(5));
             crate::local_inference::exit_if_loaded(code);
             if code != 0 {
                 std::process::exit(code);

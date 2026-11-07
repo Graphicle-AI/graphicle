@@ -77,6 +77,7 @@ pub mod query;
 pub mod query_file;
 pub mod query_graph;
 pub mod releases;
+pub mod request_tally;
 pub mod retention;
 pub mod review;
 pub mod search;

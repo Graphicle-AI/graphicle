@@ -1,9 +1,10 @@
 //! Browser workspace, versioned HTTP entry points, and an atomic ingress budget.
 //! Model-call budgets remain the responsibility of the workflow engine.
-use crate::db::params;
+use crate::db::{Engine, params};
 use crate::{
     Error, Result,
     api::{self, App},
+    request_tally,
     store::{Store, one, repo, rows, s},
 };
 use axum::{
@@ -342,12 +343,18 @@ impl Store {
         // reported as `unrecorded_tokens` (`metering::flush_briefly`).
         self.authorized_read(workspace, cap, "admin", |_, _| Ok(()))?;
         crate::metering::flush_briefly(self).ok();
+        // SQLite: this process's held request counts, briefly; what a busy
+        // store leaves is added below as `unrecorded_requests`.
+        if self.engine() == Engine::Sqlite {
+            let _ = request_tally::write(self, REPORT_WAIT, |_| Ok(((), None)));
+        }
         self.authorized_read(workspace, cap, "admin", |db, p| {
             let period = month();
             let start = format!("{period}-01");
             let daily = rows(db, "SELECT day,requests,errors,elapsed_ms FROM am_usage WHERE workspace_id=? AND day>=? ORDER BY day",
                 params![p.workspace,start])?;
-            let requests:u64 = daily.iter().filter_map(|d| d["requests"].as_u64()).sum();
+            let held = request_tally::requests_since(self, &p.workspace, &start);
+            let requests:u64 = daily.iter().filter_map(|d| d["requests"].as_u64()).sum::<u64>().saturating_add(held);
             let errors:u64 = daily.iter().filter_map(|d| d["errors"].as_u64()).sum();
             let (budget, allowance, effective) = limits(db, &p.workspace)?;
             let models = one(db,
@@ -359,7 +366,7 @@ impl Store {
                  JOIN repo_projects r ON r.id=j.repository_id WHERE r.workspace_id=?
                  AND c.usage_reported=0 AND c.state!='released' AND c.created_at>=?", params![p.workspace,start])?;
             let mut usage = json!({
-                "period":period,"timezone":"UTC","requests":requests,"http_errors":errors,"daily":daily,
+                "period":period,"timezone":"UTC","requests":requests,"unrecorded_requests":held,"http_errors":errors,"daily":daily,
                 "budget":budget,"plan_allowance":allowance,"effective_limit":effective,
                 "remaining":effective.map(|n| n.saturating_sub(requests)),
                 "model_usage":models,"unreported_reservations":unknown.map(|r|r["count"].clone()),
@@ -381,37 +388,73 @@ impl Store {
     }
 
     /// Count one request against the workspace's monthly budget, or refuse
-    /// it when the budget is used up. A counter transaction
-    /// ([`Store::counter`]): every HTTP request comes here, and it must not
-    /// queue behind the store's write lock while a project is indexed.
+    /// it when the budget is used up. Every HTTP request comes here, and it
+    /// must not queue behind the store's write lock while a project is
+    /// indexed: on PostgreSQL it is a counter transaction
+    /// ([`Store::counter`], a row lock); on SQLite a counter write that waits
+    /// at most [`request_tally::COUNTER_WAIT`] for the write lock, else a
+    /// check with a read and a count this process holds
+    /// ([`crate::request_tally`]).
     pub fn reserve_request(&self, workspace: &str, cap: &str) -> Result<(String, Option<u64>)> {
         if cap.len() > 512 {
             return Err(Error::denied());
         }
         let hash = graphicle_memory::text::sha256(cap.as_bytes());
-        self.counter(|db| {
-            let p = crate::store::authorize_hash(db, workspace, &hash, "read")?;
-            let date = day();
-            let start = format!("{}-01", &date[..7]);
-            // Today's row is counted first: its row lock orders the
-            // workspace's concurrent requests, so each one's sum includes
-            // every request before it. A refused request rolls back.
-            db.execute("INSERT INTO am_usage(workspace_id,day,requests) VALUES(?,?,1)
-                ON CONFLICT(workspace_id,day) DO UPDATE SET requests=am_usage.requests+1",params![p.workspace,date])?;
-            let counted:i64 = db.query_row("SELECT coalesce(sum(requests),0) FROM am_usage WHERE workspace_id=? AND day>=?",
-                params![p.workspace,start], |r| r.get(0))?;
-            let used = counted.saturating_sub(1).max(0) as u64;
+        if self.engine() == Engine::Postgres {
+            return self
+                .counter(|db| count_request(db, workspace, &hash))
+                .map(|(reserved, _)| reserved);
+        }
+        let written = request_tally::write(self, request_tally::COUNTER_WAIT, |db| {
+            count_request(db, workspace, &hash).map(|(reserved, owner)| (reserved, Some(owner)))
+        })?;
+        match written {
+            Some(reserved) => Ok(reserved),
+            None => self.hold_request(workspace, &hash),
+        }
+    }
+    /// SQLite, while the store is busy: check the budget with a read (the
+    /// stored count, plus this process's held counts and the requests it
+    /// wrote since the read began) and hold this request's count. A budget
+    /// is never exceeded within one process.
+    fn hold_request(&self, workspace: &str, hash: &str) -> Result<(String, Option<u64>)> {
+        let held = request_tally::held(self);
+        let before = request_tally::lock(&held).written(workspace);
+        let date = day();
+        let start = format!("{}-01", &date[..7]);
+        let (owner, stored, limit) = self.read(|db| {
+            let p = crate::store::authorize_hash(db, workspace, hash, "read")?;
+            let stored: i64 = db.query_row(
+                "SELECT coalesce(sum(requests),0) FROM am_usage WHERE workspace_id=? AND day>=?",
+                params![p.workspace, start],
+                |r| r.get(0),
+            )?;
             let limit = limits(db, &p.workspace)?.2;
-            if limit.is_some_and(|n| used >= n) {
-                return Err(Error { status:StatusCode::TOO_MANY_REQUESTS,
-                    message:"Workspace request budget reached. The owner can review Usage; export, deletion and cancellation remain available.".into(),
-                    provider_failure:None });
-            }
-            // Daily counters retain 25 months; they never grow with individual requests.
-            let cutoff = (Utc::now() - chrono::Duration::days(760)).format("%Y-%m-%d").to_string();
-            db.execute("DELETE FROM am_usage WHERE workspace_id=? AND day<?", params![p.workspace,cutoff])?;
-            Ok((date,limit.map(|n| n.saturating_sub(used + 1))))
-        })
+            Ok((p.workspace, stored.max(0) as u64, limit))
+        })?;
+        let mut held = request_tally::lock(&held);
+        // Requests this process wrote since the read began (counted
+        // twice when the read saw them: that only refuses early).
+        let since = if owner == workspace {
+            held.written(&owner).saturating_sub(before)
+        } else {
+            held.written(&owner)
+        };
+        let used = stored
+            .saturating_add(since)
+            .saturating_add(held.requests_since(&owner, &start));
+        if limit.is_some_and(|n| used >= n) {
+            return Err(budget_reached());
+        }
+        held.add(
+            &owner,
+            &date,
+            request_tally::Tally {
+                requests: 1,
+                ..Default::default()
+            },
+        );
+        Ok((date, limit.map(|n| n.saturating_sub(used + 1))))
     }
     fn finish_request(
         &self,
@@ -420,12 +463,85 @@ impl Store {
         failed: bool,
         elapsed: u64,
     ) -> Result<()> {
-        self.counter(|db| {
+        let update = |db: &crate::db::Connection| -> Result<()> {
             db.execute("UPDATE am_usage SET errors=errors+?,elapsed_ms=elapsed_ms+? WHERE workspace_id=? AND day=?",
                 params![i64::from(failed),elapsed.min(i64::MAX as u64),workspace,date])?;
             Ok(())
-        })
+        };
+        if self.engine() == Engine::Postgres {
+            return self.counter(|db| update(db));
+        }
+        let written = request_tally::write(self, request_tally::COUNTER_WAIT, |db| {
+            update(db).map(|()| ((), None))
+        })?;
+        if written.is_none() {
+            let held = request_tally::held(self);
+            request_tally::lock(&held).add(
+                workspace,
+                date,
+                request_tally::Tally {
+                    requests: 0,
+                    errors: u64::from(failed),
+                    elapsed_ms: elapsed,
+                },
+            );
+        }
+        Ok(())
     }
+}
+
+/// How long a usage report waits to write this process's held request counts.
+const REPORT_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+fn budget_reached() -> Error {
+    Error {
+        status: StatusCode::TOO_MANY_REQUESTS,
+        message: "Workspace request budget reached. The owner can review Usage; export, deletion and cancellation remain available.".into(),
+        provider_failure: None,
+    }
+}
+
+/// Count one request in the store, inside a counter write: today's row
+/// first, then the month's sum; a refused request rolls back.
+/// Also returns the workspace the request was counted in.
+fn count_request(
+    db: &crate::db::Connection,
+    workspace: &str,
+    hash: &str,
+) -> Result<((String, Option<u64>), String)> {
+    let p = crate::store::authorize_hash(db, workspace, hash, "read")?;
+    let date = day();
+    let start = format!("{}-01", &date[..7]);
+    // Today's row is counted first: its row lock orders the
+    // workspace's concurrent requests, so each one's sum includes
+    // every request before it. A refused request rolls back.
+    db.execute(
+        "INSERT INTO am_usage(workspace_id,day,requests) VALUES(?,?,1)
+        ON CONFLICT(workspace_id,day) DO UPDATE SET requests=am_usage.requests+1",
+        params![p.workspace, date],
+    )?;
+    let counted: i64 = db.query_row(
+        "SELECT coalesce(sum(requests),0) FROM am_usage WHERE workspace_id=? AND day>=?",
+        params![p.workspace, start],
+        |r| r.get(0),
+    )?;
+    let used = counted.saturating_sub(1).max(0) as u64;
+    let limit = limits(db, &p.workspace)?.2;
+    if limit.is_some_and(|n| used >= n) {
+        return Err(budget_reached());
+    }
+    // Daily counters retain 25 months; they never grow with individual requests.
+    let cutoff = (Utc::now() - chrono::Duration::days(760))
+        .format("%Y-%m-%d")
+        .to_string();
+    db.execute(
+        "DELETE FROM am_usage WHERE workspace_id=? AND day<?",
+        params![p.workspace, cutoff],
+    )?;
+    Ok((
+        (date, limit.map(|n| n.saturating_sub(used + 1))),
+        p.workspace,
+    ))
 }
 
 /// Commands that stay available when the request budget is used up: sign-in

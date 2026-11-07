@@ -43,14 +43,37 @@ out provider secrets and the vault key, so reconnect providers after a restore.
 
 By default the store is one SQLite file, `reviews.sqlite3` in the data
 folder: no database server, nothing to set up. Unless you set
-`GRAPHICLE_DATABASE_URL`, nothing on this page past this paragraph
-applies to you.
+`GRAPHICLE_DATABASE_URL`, nothing under
+[PostgreSQL](#postgresql-optional) applies to you.
 
 A SQLite store runs in WAL mode. While writes go on, its write-ahead log
 (`reviews.sqlite3-wal`) is checkpointed and cut back once it passes 64
 MiB, waiting at most 2 seconds for readers to move to the latest
-snapshot. Before 0.1.15 the log could grow without bound while readers
-were always in flight (one service grew it to 8.3 GB).
+snapshot. Before 0.1.14 the log could grow without bound while readers
+were always in flight (one service grew it to 8.3 GB). The checkpoint
+runs between write transactions: one large write, such as storing the
+code graph of a large project, still grows the log by what it writes
+until it commits.
+
+**Request counts on SQLite.** `graphicle serve` counts every
+authenticated HTTP and MCP request against its workspace's monthly
+request budget. On SQLite that count is a write, and the store has one
+write lock, which a long writer such as an indexing job can hold for
+seconds. When the lock is not free within 50 milliseconds, the server
+checks the budget with a read (the stored count plus the counts it
+holds), serves the request and holds its count in memory; the next
+count it writes, the owner's usage report and a clean shutdown write
+the held counts. Before 0.1.14 such a request waited 10 seconds for the
+lock and then failed with "database is locked".
+
+The bound: a budget is never exceeded by the requests one server
+process admits. Processes serving one data folder at the same time do
+not see each other's held counts, so a budget can then be exceeded by
+at most the requests the other processes hold, or are counting, at that
+moment. A process that is killed loses its held counts, and those
+requests go uncounted. The usage report includes the answering
+process's held counts and lists them as `unrecorded_requests`. A
+PostgreSQL store counts with a row lock and holds nothing.
 
 ### PostgreSQL (optional)
 

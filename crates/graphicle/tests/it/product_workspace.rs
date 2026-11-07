@@ -649,6 +649,132 @@ fn concurrent_requests_cannot_overspend_a_budget() {
     );
 }
 
+/// SQLite: whether this test runs (a PostgreSQL run counts with row locks).
+fn sqlite_store() -> bool {
+    if graphicle_runtime::db::postgres_configured() {
+        eprintln!("skipped: SQLite request counting; GRAPHICLE_DATABASE_URL is set");
+        return false;
+    }
+    true
+}
+
+/// The write lock of `store`, held until the returned transaction drops, as
+/// an indexing job in another process holds it.
+fn hold_write_lock(
+    db: &mut graphicle_runtime::db::Connection,
+) -> graphicle_runtime::db::Transaction<'_> {
+    db.transaction_with_behavior(graphicle_runtime::db::TransactionBehavior::Immediate)
+        .unwrap()
+}
+
+/// The month's requests stored for `workspace`, and those this process holds.
+fn stored_and_held(f: &Fixture) -> (i64, u64) {
+    let start = format!(
+        "{}-01",
+        &chrono::Utc::now().format("%Y-%m-%d").to_string()[..7]
+    );
+    let stored = f
+        .store
+        .read(|db| {
+            Ok(db.query_row(
+                "SELECT coalesce(sum(requests),0) FROM am_usage WHERE workspace_id=? AND day>=?",
+                graphicle_runtime::params![f.workspace, start],
+                |r| r.get::<_, i64>(0),
+            )?)
+        })
+        .unwrap();
+    let held = graphicle_runtime::request_tally::requests_since(&f.store, &f.workspace, &start);
+    (stored, held)
+}
+
+/// SQLite: a request is served while another connection holds the store's
+/// write lock (an indexing job), instead of waiting the busy timeout and
+/// failing with "database is locked"; its count is held in the process and
+/// written by the next counter write that gets the lock.
+#[tokio::test]
+async fn a_read_is_served_while_the_sqlite_write_lock_is_held() {
+    if !sqlite_store() {
+        return;
+    }
+    let f = Fixture::new();
+    let app = f.app();
+    let mut db = f.store.connect().unwrap();
+    let lock = hold_write_lock(&mut db);
+    let started = std::time::Instant::now();
+    let path = format!("{}/repos/{}/overview", f.base(), f.repo);
+    let (status, body, _) = call(&app, &path, &f.owner, None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "waited {:?}",
+        started.elapsed()
+    );
+    assert_eq!(stored_and_held(&f), (0, 1), "the count is held");
+    drop(lock);
+    drop(db);
+    // The pending tally is flushed by the next counter write.
+    f.store.reserve_request(&f.workspace, &f.owner).unwrap();
+    assert_eq!(stored_and_held(&f), (2, 0), "held count written");
+    let usage = f.store.product_usage(&f.workspace, &f.owner).unwrap();
+    assert_eq!(usage["requests"], 2, "{usage}");
+    assert_eq!(usage["unrecorded_requests"], 0, "{usage}");
+    assert_eq!(usage["http_errors"], 0, "{usage}");
+}
+
+/// SQLite: a budget at its limit still refuses while the write lock is
+/// held: the check adds this process's held counts to the stored ones, and
+/// concurrent requests never overspend it.
+#[test]
+fn a_budget_at_its_limit_refuses_while_the_sqlite_write_lock_is_held() {
+    if !sqlite_store() {
+        return;
+    }
+    let f = Fixture::new();
+    f.store
+        .product_budget(&f.workspace, &f.owner, &json!({"monthly_requests":6}))
+        .unwrap();
+    // One counted while the store is free.
+    assert_eq!(
+        f.store.reserve_request(&f.workspace, &f.owner).unwrap().1,
+        Some(5)
+    );
+    let mut db = f.store.connect().unwrap();
+    let lock = hold_write_lock(&mut db);
+    let threads: Vec<_> = (0..12)
+        .map(|_| {
+            let store = f.store.clone();
+            let w = f.workspace.clone();
+            let c = f.owner.clone();
+            std::thread::spawn(move || store.reserve_request(&w, &c))
+        })
+        .collect();
+    let outcomes: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
+    let admitted = outcomes.iter().filter(|o| o.is_ok()).count();
+    assert_eq!(admitted, 5, "five left in the budget");
+    for refused in outcomes.iter().filter_map(|o| o.as_ref().err()) {
+        assert_eq!(
+            refused.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "{}",
+            refused.message
+        );
+    }
+    assert_eq!(stored_and_held(&f), (1, 5));
+    let at_limit = f.store.reserve_request(&f.workspace, &f.owner).unwrap_err();
+    assert_eq!(at_limit.status, StatusCode::TOO_MANY_REQUESTS);
+    drop(lock);
+    drop(db);
+    // With the lock free the refusal stands, and the held counts are not
+    // lost with the refused request's rolled back write.
+    let at_limit = f.store.reserve_request(&f.workspace, &f.owner).unwrap_err();
+    assert_eq!(at_limit.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(stored_and_held(&f), (1, 5));
+    let usage = f.store.product_usage(&f.workspace, &f.owner).unwrap();
+    assert_eq!(usage["requests"], 6, "{usage}");
+    assert_eq!(usage["remaining"], 0, "{usage}");
+    assert_eq!(stored_and_held(&f), (6, 0), "the report wrote them");
+}
+
 #[test]
 fn graph_citation_opens_the_original_even_after_source_changes() {
     let f = Fixture::new();
