@@ -171,6 +171,10 @@ pub fn destination(name: &str, o: &Options) -> Result<PathBuf> {
             }
         }
         "agents" => ".agents/skills/graphicle/SKILL.md",
+        // Pi reads project skills from ./.pi/skills; ~/.pi/agent/skills is
+        // the user-scope path only, and that shape inside a project left the
+        // skill where Pi never looks (Graphify 0.9.103, #5011).
+        "pi" if o.project => ".pi/skills/graphicle/SKILL.md",
         "antigravity" | "antigravity-windows" => {
             if o.project {
                 ".agents/skills/graphicle/SKILL.md"

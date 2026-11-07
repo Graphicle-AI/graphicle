@@ -162,3 +162,22 @@ fn uninstall_cleans_session_start_from_settings_local() {
     settings_hook(&o, true);
     assert_eq!(settings(dir.path(), "settings.local.json")["hooks"]["SessionStart"], json!([]));
 }
+
+#[test]
+fn pi_destinations() {
+    // test_pi_install.py (Graphify 0.9.103, #5011): Pi reads project skills
+    // from .pi/skills; the user scope keeps ~/.pi/agent/skills.
+    let dir = tempfile::tempdir().unwrap();
+    let (home, project) = (dir.path().join("home"), dir.path().join("project"));
+    let mut o = options(&home, &project);
+    o.project = true;
+    assert_eq!(
+        graphicle::install::destination("pi", &o).unwrap(),
+        project.join(".pi/skills/graphicle/SKILL.md")
+    );
+    o.project = false;
+    assert_eq!(
+        graphicle::install::destination("pi", &o).unwrap(),
+        home.join(".pi/agent/skills/graphicle/SKILL.md")
+    );
+}
