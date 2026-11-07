@@ -247,3 +247,127 @@ fn reflect_is_stale_tracks_the_source_content() {
     fs::remove_file(&src).unwrap();
     assert!(is_stale(entry, &graph).unwrap());
 }
+
+// --- The tree view caps directory children (Graphify 0.9.103, #4766) --------
+
+fn tree_graph(files: &[(&str, &str)]) -> Value {
+    let mut files = files.to_vec();
+    files.sort();
+    json!({"directed": false, "links": [], "nodes": files
+        .iter()
+        .enumerate()
+        .map(|(i, (src, label))| json!({"id": format!("n{i}"), "label": label, "source_file": src}))
+        .collect::<Vec<_>>()})
+}
+
+fn names(node: &Value) -> Vec<String> {
+    node["children"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+#[test]
+fn build_tree_caps_directories_with_full_hidden_totals() {
+    // test_tree_html.py (17cf5366)
+    use graphicle::tree_html::build_tree;
+    let mut graph = tree_graph(&[
+        ("pkg/Adir/a.py", "A"),
+        ("pkg/Adir/b.py", "B"),
+        ("pkg/Adir/c.py", "C"),
+        ("pkg/b.py", "B0"),
+        ("pkg/Zdir/a.py", "Z1"),
+        ("pkg/Zdir/b.py", "Z2"),
+    ]);
+    graph["nodes"].as_array_mut().unwrap().push(
+        json!({"id": "file", "label": "leaf.py", "source_file": "pkg/leaf.py", "file_type": "code"}),
+    );
+    let tree = build_tree(&graph, Some("pkg"), 2, None).unwrap();
+    assert_eq!(names(&tree), ["Adir", "b.py", "(+2 more)"]);
+    assert_eq!(tree["total_count"], 7);
+    assert_eq!(
+        tree["children"][2],
+        json!({"name": "(+2 more)", "total_count": 3, "children": []})
+    );
+    let nested = &tree["children"][0];
+    assert_eq!(names(nested), ["a.py", "b.py", "(+1 more)"]);
+    assert_eq!(nested["total_count"], 3);
+}
+
+#[test]
+fn build_tree_directory_cap_preserves_file_symbol_behavior() {
+    use graphicle::tree_html::build_tree;
+    let graph = json!({"nodes": ["gamma", "Beta", "_private", "Alpha"]
+        .iter()
+        .map(|n| json!({"id": n, "label": n, "source_file": "pkg/a.py"}))
+        .collect::<Vec<_>>()});
+    let tree = build_tree(&graph, Some("pkg"), 2, None).unwrap();
+    let file = &tree["children"][0];
+    assert_eq!(names(file), ["(+2 more)", "Alpha", "Beta"]);
+    assert_eq!(file["children"][0]["total_count"], 2);
+    assert_eq!(file["total_count"], 4);
+    assert_eq!(tree["total_count"], 4);
+}
+
+#[test]
+fn build_tree_caps_the_synthetic_merged_root() {
+    use graphicle::tree_html::build_tree;
+    let node = |repo: &str, src: &str, label: &str| {
+        json!({"id": format!("{repo}::{label}"), "label": label, "source_file": src, "repo": repo})
+    };
+    let graph = json!({"nodes": [
+        node("Alpha", "a.py", "A"), node("Beta", "b.py", "B"),
+        node("Zulu", "x.py", "X"), node("Zulu", "y.py", "Y"), node("Zulu", "z.py", "Z")
+    ]});
+    let tree = build_tree(&graph, None, 2, None).unwrap();
+    assert_eq!(names(&tree), ["Alpha", "Beta", "(+1 more)"]);
+    assert_eq!(
+        tree["children"][2],
+        json!({"name": "(+1 more)", "total_count": 3, "children": []})
+    );
+    assert_eq!(tree["total_count"], 5);
+}
+
+#[test]
+fn build_tree_directory_cap_boundaries_and_negative() {
+    use graphicle::tree_html::build_tree;
+    for (cap, expected) in [(0, vec!["(+2 more)"]), (2, vec!["a.py", "b.py"])] {
+        let tree = build_tree(
+            &tree_graph(&[("pkg/a.py", "A"), ("pkg/b.py", "B")]),
+            Some("pkg"),
+            cap,
+            None,
+        )
+        .unwrap();
+        assert_eq!(names(&tree), expected);
+        assert_eq!(tree["total_count"], 2);
+        let sum: i64 = tree["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["total_count"].as_i64().unwrap())
+            .sum();
+        assert_eq!(sum, 2);
+        assert!(build_tree(&json!({"nodes": []}), None, cap, None).unwrap()["children"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    let wide: Vec<(String, String)> = (0..201)
+        .map(|i| (format!("pkg/f{i:03}.py"), i.to_string()))
+        .collect();
+    let wide: Vec<(&str, &str)> = wide.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let tree = build_tree(&tree_graph(&wide), Some("pkg"), 200, None).unwrap();
+    assert_eq!(tree["children"].as_array().unwrap().len(), 201);
+    assert_eq!(tree["children"][199]["name"], "f199.py");
+    assert_eq!(
+        tree["children"][200],
+        json!({"name": "(+1 more)", "total_count": 1, "children": []})
+    );
+    for graph in [json!({"nodes": []}), tree_graph(&[("pkg/a.py", "A")])] {
+        let error = build_tree(&graph, None, -1, None).unwrap_err().to_string();
+        assert!(error.contains("--max-children must be nonnegative"), "{error}");
+    }
+}

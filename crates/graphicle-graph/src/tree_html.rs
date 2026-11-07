@@ -35,6 +35,9 @@ struct TreeNode {
     name: String,
     total: i64,
     children: Vec<usize>,
+    /// A directory (or a root): its children are capped at `max_children`
+    /// once the totals are known (Graphify 0.9.103).
+    directory: bool,
 }
 fn push(nodes: &mut Vec<TreeNode>, name: String, total: i64, children: Vec<usize>) -> usize {
     let i = nodes.len();
@@ -42,6 +45,7 @@ fn push(nodes: &mut Vec<TreeNode>, name: String, total: i64, children: Vec<usize
         name,
         total,
         children,
+        directory: false,
     });
     i
 }
@@ -68,11 +72,16 @@ fn ensure_dir(
     }
     let parent = ensure_dir(&up, index, nodes, top);
     let i = push(nodes, path_syntax::posix_name(parts).into(), 0, vec![]);
+    nodes[i].directory = true;
     index.insert(key, i);
     nodes[parent].children.push(i);
     i
 }
-fn finish(i: usize, nodes: &mut [TreeNode]) -> i64 {
+/// Every node's full descendant leaf count, including what a cap hides; a
+/// directory with more than `max_children` entries keeps the first ones and
+/// a `(+N more)` leaf whose total counts every leaf behind the hidden
+/// entries (Graphify 0.9.103, #4766).
+fn finish(i: usize, nodes: &mut Vec<TreeNode>, max_children: usize) -> i64 {
     let mut kids = std::mem::take(&mut nodes[i].children);
     kids.sort_by(|a, b| {
         nodes[*a]
@@ -93,8 +102,18 @@ fn finish(i: usize, nodes: &mut [TreeNode]) -> i64 {
             nodes[i].total
         };
     }
-    let n = kids.iter().map(|c| finish(*c, nodes)).sum::<i64>();
+    let totals = kids
+        .iter()
+        .map(|c| finish(*c, nodes, max_children))
+        .collect::<Vec<_>>();
+    let n = totals.iter().sum::<i64>();
     nodes[i].total = if n == 0 { 1 } else { n };
+    if nodes[i].directory && kids.len() > max_children {
+        let hidden = totals[max_children..].iter().sum::<i64>();
+        let extra = kids.len() - max_children;
+        kids.truncate(max_children);
+        kids.push(push(nodes, format!("(+{extra} more)"), hidden, vec![]));
+    }
     nodes[i].children = kids;
     nodes[i].total
 }
@@ -125,6 +144,7 @@ fn attach_files(
             "/"
         });
     let top = push(arena, label.into(), 0, vec![]);
+    arena[top].directory = true;
     let mut index = HashMap::from([(path_syntax::posix_join(&root_parts), top)]);
     let mut matched = 0;
     for (src, syms) in files {
@@ -192,6 +212,9 @@ pub fn build_tree(
     max_children: i64,
     project_label: Option<&str>,
 ) -> Result<Value> {
+    if max_children < 0 {
+        return Err("--max-children must be nonnegative".into());
+    }
     let empty = vec![];
     let nodes = graph
         .get("nodes")
@@ -250,6 +273,7 @@ pub fn build_tree(
             .filter(|s| !s.is_empty())
             .unwrap_or("(merged graph)");
         push(&mut arena, label.into(), 0, vec![]);
+        arena[0].directory = true;
         let mut ordered = groups
             .iter()
             .map(|(tag, group)| (tag.as_str(), group))
@@ -288,7 +312,7 @@ pub fn build_tree(
             python_compat::repr(&json!(sample))
         ).into());
     }
-    finish(0, &mut arena);
+    finish(0, &mut arena, max_children as usize);
     Ok(value(0, &arena))
 }
 fn escape(s: &str) -> String {
