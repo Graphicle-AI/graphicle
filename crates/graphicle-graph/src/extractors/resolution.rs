@@ -629,7 +629,7 @@ pub fn apply_symbol_resolution_facts(
     context_nodes: &[Value],
 ) {
     let facts = PassFacts::new(Vec::new(), facts.clone());
-    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes);
+    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes, &[]);
 }
 /// Graphify 0.9.98 (#4854): a reference to an imported name can be minted
 /// before the imported declaration is known, as a sourceless stub. In a
@@ -721,10 +721,17 @@ fn apply_pass_facts(
     root: &Path,
     mut facts: PassFacts,
     context_nodes: &[Value],
+    js_member_calls: &[JsMemberCall],
 ) {
     if facts.imports().next().is_some() {
         bind_imported_references(nodes, edges, root, &facts);
     }
+    // Read before the passes below consume the facts (Graphify 0.9.102, #4963).
+    let default_imports = if js_member_calls.is_empty() {
+        FxHashMap::default()
+    } else {
+        js_default_imports(&facts)
+    };
     let span = crate::profile::span("assemble.symbol_resolution.index");
     let mut rs = Resolver::default();
     let mut new = NewEdges::default();
@@ -1283,6 +1290,33 @@ fn apply_pass_facts(
     for u in facts.take_rest_uses() {
         apply_use(UseRef::from(&u));
     }
+    if !default_imports.is_empty() {
+        for (caller, target, line, path, target_file) in js_default_object_member_calls(
+            paths,
+            nodes,
+            root,
+            context_nodes,
+            js_member_calls,
+            &default_imports,
+        ) {
+            new.add(
+                edges,
+                &mut rs,
+                root,
+                &caller,
+                &target,
+                "calls",
+                ImportEvidence {
+                    context: "call",
+                    line,
+                    path: &path,
+                    target_file: Some(&target_file),
+                    alias: None,
+                    type_only: false,
+                },
+            );
+        }
+    }
     drop(facts);
     drop(owned);
     drop(span);
@@ -1341,6 +1375,7 @@ pub fn augment_symbol_resolution_edges(
     root: &Path,
     ambiguous: &super::resolution_facts::AmbiguousModules,
     context_nodes: &[Value],
+    js_member_calls: &[JsMemberCall],
 ) {
     // The JS/TS facts stay in the compact per-file form the files' passes
     // derived them in; only Python's are collected whole.
@@ -1352,7 +1387,141 @@ pub fn augment_symbol_resolution_edges(
     super::resolution_facts::collect_python(paths, root, &mut python, ambiguous);
     drop(span);
     let facts = PassFacts::new(js, python);
-    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes);
+    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes, js_member_calls);
+}
+/// A JS/TS member call the extractor left unresolved, as the pass through a
+/// default-exported object reads it (Graphify 0.9.102, #4963).
+pub struct JsMemberCall {
+    pub caller: String,
+    pub receiver: String,
+    pub callee: String,
+    pub source_file: String,
+    pub line: i64,
+}
+impl JsMemberCall {
+    /// The raw calls that pass may bind: member calls in a JS/TS file whose
+    /// receiver no lexical scope rebinds, that construct nothing and are no
+    /// `this.field` call.
+    pub fn collect<'a, R: crate::resolver_registry::Rec>(
+        raw: impl IntoIterator<Item = &'a R>,
+    ) -> Vec<Self> {
+        let flag = |c: &R, key: &str| c.rec_get(key).is_some_and(crate::build::truthy);
+        raw.into_iter()
+            .filter(|c| {
+                flag(c, "is_member_call")
+                    && !flag(c, "_js_receiver_shadowed")
+                    && !flag(c, "_js_construct")
+                    && !flag(c, "ts_this_field")
+            })
+            .filter_map(|c| {
+                let text = move |key: &str| c.rec_get(key).and_then(Value::as_str).unwrap_or("");
+                let source_file = text("source_file");
+                if !JS_CACHE_BYPASS_SUFFIXES
+                    .contains(&crate::rcfile::effective_suffix(source_file).as_str())
+                    || text("receiver").is_empty()
+                {
+                    return None;
+                }
+                let location = text("source_location");
+                let line = location.strip_prefix('L').unwrap_or(location).parse().ok()?;
+                Some(Self {
+                    caller: text("caller_nid").to_owned(),
+                    receiver: text("receiver").to_owned(),
+                    callee: text("callee").to_owned(),
+                    source_file: source_file.to_owned(),
+                    line,
+                })
+            })
+            .collect()
+    }
+}
+/// `(importing file, local name)` -> imported file of every JS/TS default
+/// import (Graphify 0.9.102, #4963).
+fn js_default_imports(facts: &PassFacts) -> FxHashMap<(PathBuf, String), PathBuf> {
+    facts
+        .imports()
+        .filter(|i| {
+            i.imported_name == "default"
+                && JS_CACHE_BYPASS_SUFFIXES
+                    .contains(&crate::rcfile::effective_suffix(i.file_path).as_str())
+        })
+        .map(|i| {
+            (
+                (resolved(i.file_path), i.local_name.to_string()),
+                resolved(i.target_path),
+            )
+        })
+        .collect()
+}
+/// Graphify 0.9.102 (#4963): a member call through a default import
+/// (`import api from './api'; api.load()`) binds to the method of the object
+/// literal the imported file default-exports, when exactly one callable node
+/// of that file has the method's label and line. Unchanged files of an
+/// incremental rebuild are found among the context nodes. Returns
+/// `(caller, target, line, source file, target file)` per edge.
+fn js_default_object_member_calls(
+    paths: &[PathBuf],
+    nodes: &[Value],
+    root: &Path,
+    context_nodes: &[Value],
+    calls: &[JsMemberCall],
+    default_imports: &FxHashMap<(PathBuf, String), PathBuf>,
+) -> Vec<(String, String, i64, PathBuf, PathBuf)> {
+    let fresh: FxHashSet<PathBuf> = paths.iter().map(|p| resolved(p)).collect();
+    let mut member_nodes: FxHashMap<(PathBuf, String, String), BTreeSet<String>> =
+        FxHashMap::default();
+    let context = context_nodes.iter().filter(|n| {
+        js_source_path(s(n, "source_file"), root).is_none_or(|p| !fresh.contains(&p))
+    });
+    for node in nodes.iter().chain(context) {
+        if !node.get("_callable").is_some_and(crate::build::truthy) {
+            continue;
+        }
+        let Some(source) = js_source_path(s(node, "source_file"), root) else {
+            continue;
+        };
+        let key = (
+            source,
+            crate::python_compat::string(node.get("label").unwrap_or(&json!(""))),
+            crate::python_compat::string(node.get("source_location").unwrap_or(&json!(""))),
+        );
+        member_nodes
+            .entry(key)
+            .or_default()
+            .insert(crate::python_compat::string(&node["id"]));
+    }
+    let mut members_of: FxHashMap<PathBuf, FxHashMap<String, (String, String)>> =
+        FxHashMap::default();
+    let mut out = Vec::new();
+    for call in calls {
+        let Some(source) = js_source_path(&call.source_file, root) else {
+            continue;
+        };
+        let Some(target) = default_imports.get(&(source, call.receiver.clone())) else {
+            continue;
+        };
+        let members = members_of
+            .entry(target.clone())
+            .or_insert_with(|| super::resolution_facts::js_default_object_members(target));
+        let Some((label, location)) = members.get(&call.callee) else {
+            continue;
+        };
+        let Some(targets) = member_nodes.get(&(target.clone(), label.clone(), location.clone()))
+        else {
+            continue;
+        };
+        if targets.len() != 1 {
+            continue;
+        }
+        out.push((
+            call.caller.clone(),
+            targets.iter().next().unwrap().clone(),
+            call.line,
+            PathBuf::from(&call.source_file),
+            target.clone(),
+        ));
+    }
+    out
 }
 fn ambiguous_modules(r: &Value) -> super::resolution_facts::AmbiguousModules {
     r["ambiguous_python_modules"]
@@ -1486,6 +1655,7 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             json!(facts)
         }
         "augment" => {
+            let raw_calls = r["raw_calls"].as_array().map(Vec::as_slice).unwrap_or_default();
             augment_symbol_resolution_edges(
                 &paths,
                 &mut nodes,
@@ -1493,6 +1663,7 @@ pub fn dispatch(r: &Value) -> Result<Value> {
                 root,
                 &ambiguous,
                 context_nodes,
+                &JsMemberCall::collect(raw_calls),
             );
             json!({"nodes":nodes,"edges":edges})
         }

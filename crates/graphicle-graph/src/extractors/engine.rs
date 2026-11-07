@@ -94,6 +94,9 @@ pub(crate) struct Engine<'a, 't> {
     /// JS/TS: names the module exports (#3778), computed on first use;
     /// upstream rescans the program for every `Obj.m = fn` assignment.
     pub js_exported: Option<BTreeSet<String>>,
+    /// JS/TS: the names each lexical scope binds, asked again by every
+    /// member call inside it (`_js_receiver_shadowed`, Graphify 0.9.102).
+    pub js_receiver_bindings: super::engine_scope::JsReceiverBindings,
     /// Classes in the order their member field table was first opened, the
     /// order `member_field_tables` lists them (upstream dict order).
     pub field_order: Vec<String>,
@@ -1047,6 +1050,7 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         python_shadow: None,
         python_module_instances: BTreeMap::new(),
         js_exported: None,
+        js_receiver_bindings: Default::default(),
         field_order: vec![],
         stem_id,
         stem_forward_refs: Table::new(),

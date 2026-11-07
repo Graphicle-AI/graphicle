@@ -1810,6 +1810,10 @@ fn assemble_records(
     phase("python_modules", t);
     let t = std::time::Instant::now();
     let profiled = crate::profile::span("assemble.symbol_resolution");
+    // The unresolved JS/TS member calls, for calls through a default-exported
+    // object (Graphify 0.9.102, #4963).
+    let js_member_calls =
+        per_dispatch!(&per, p => resolution::JsMemberCall::collect(raw_calls_of(&p[..])));
     resolution::augment_symbol_resolution_edges(
         paths,
         &mut nodes,
@@ -1817,7 +1821,9 @@ fn assemble_records(
         root,
         &ambiguous,
         &options.resolution_context_nodes,
+        &js_member_calls,
     );
+    drop(js_member_calls);
     drop(profiled);
     phase("symbol_resolution", t);
     let profiled = crate::profile::span("assemble.merge_decl_def");

@@ -102,6 +102,69 @@ pub fn js_parse_tag(path: &Path) -> Option<&'static str> {
         _ => "javascript",
     })
 }
+/// `_js_default_object_members` (Graphify 0.9.102, #4963): the static methods
+/// of the object literal a file default-exports directly, by name: the label
+/// their node carries (`name()` as written) and its `L<line>`. A spread or a
+/// computed key could override any method, so the file then gives none; a
+/// name given twice is dropped; getters and setters are no methods.
+pub fn js_default_object_members(path: &Path) -> FxHashMap<String, (String, String)> {
+    let Some(parsed) = parse_js_tree(path) else {
+        return FxHashMap::default();
+    };
+    let source = &parsed.source;
+    for node in named(parsed.tree.root_node()) {
+        if node.kind_name() != "export_statement"
+            || !children(node).iter().any(|c| c.kind_name() == "default")
+        {
+            continue;
+        }
+        let Some(value) = node
+            .child_by_field_name("value")
+            .filter(|v| v.kind_name() == "object")
+        else {
+            continue;
+        };
+        let mut members = FxHashMap::default();
+        let mut seen = FxHashSet::default();
+        for prop in named(value) {
+            if prop.kind_name() == "comment" {
+                continue;
+            }
+            let Some(key) = prop
+                .child_by_field_name("name")
+                .or_else(|| prop.child_by_field_name("key"))
+                .filter(|k| matches!(k.kind_name(), "property_identifier" | "string"))
+            else {
+                return FxHashMap::default();
+            };
+            let raw = read_text(key, source);
+            if raw.contains('\\') {
+                return FxHashMap::default();
+            }
+            let name = if key.kind_name() == "string" {
+                raw.get(1..raw.len().saturating_sub(1)).unwrap_or("").to_owned()
+            } else {
+                raw.clone()
+            };
+            if !seen.insert(name.clone()) {
+                members.remove(&name);
+                continue;
+            }
+            if prop.kind_name() == "method_definition"
+                && !children(prop)
+                    .iter()
+                    .any(|c| matches!(c.kind_name(), "get" | "set"))
+            {
+                members.insert(
+                    name,
+                    (format!("{raw}()"), format!("L{}", prop.start_position().row + 1)),
+                );
+            }
+        }
+        return members;
+    }
+    FxHashMap::default()
+}
 /// `_parse_js_tree`: the grammar follows the file's effective suffix (a
 /// project-declared language, #2961).
 pub fn parse_js_tree(path: &Path) -> Option<parse_cache::Tree> {

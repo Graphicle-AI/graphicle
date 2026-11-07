@@ -1387,6 +1387,17 @@ impl<'a, 't> Engine<'a, 't> {
                                 raw["ts_static_this"] = json!(true);
                             }
                         }
+                        // JS/TS (Graphify 0.9.102, #4963): whether a lexical
+                        // ancestor rebinds the receiver, and whether this is a
+                        // `new`, for the default-exported object pass.
+                        if self.js() && call.member {
+                            raw["_js_receiver_shadowed"] = json!(self.js_receiver_bindings.shadowed(
+                                n,
+                                call.receiver.as_deref(),
+                                self.source,
+                            ));
+                            raw["_js_construct"] = json!(n.kind_name() == "new_expression");
+                        }
                         if self.is("cpp") {
                             raw["lang"] = json!("cpp");
                         }

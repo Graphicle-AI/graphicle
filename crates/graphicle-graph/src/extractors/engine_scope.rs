@@ -795,6 +795,68 @@ pub fn js_direct_lexical_names(n: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     }
     out
 }
+/// `_js_receiver_shadowed` (Graphify 0.9.102, #4963): a member call's
+/// receiver is looked up through every lexical ancestor of the call, so an
+/// inner function traced on its own still sees an outer rebinding. The
+/// names each scope binds are kept by node, as upstream's
+/// `bindings_by_scope`.
+#[derive(Default)]
+pub struct JsReceiverBindings(BTreeMap<usize, BTreeSet<String>>);
+
+impl JsReceiverBindings {
+    pub fn shadowed(&mut self, n: Node<'_>, name: Option<&str>, source: &[u8]) -> bool {
+        let Some(name) = name.filter(|name| !name.is_empty()) else {
+            return false;
+        };
+        let mut scope = n.parent();
+        while let Some(s) = scope {
+            let bound = self
+                .0
+                .entry(s.id())
+                .or_insert_with(|| js_scope_bindings(s, source));
+            if bound.contains(name) {
+                return true;
+            }
+            scope = s.parent();
+        }
+        false
+    }
+}
+
+fn js_scope_bindings(scope: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    let kind = scope.kind_name();
+    let mut bound = BTreeSet::new();
+    if set("_JS_SCOPE_BOUNDARY").contains(kind) {
+        bound.extend(js_local_bound_names(scope, source));
+        if !matches!(kind, "method_definition" | "arrow_function")
+            && let Some(own) = scope.child_by_field_name("name")
+        {
+            bound.insert(read_text(own, source));
+        }
+    }
+    if matches!(kind, "program" | "statement_block" | "for_statement") {
+        bound.extend(js_direct_lexical_names(scope, source));
+        for child in named(scope) {
+            if matches!(
+                child.kind_name(),
+                "function_declaration"
+                    | "generator_function_declaration"
+                    | "class_declaration"
+                    | "abstract_class_declaration"
+            ) && let Some(declared) = child.child_by_field_name("name")
+            {
+                bound.insert(read_text(declared, source));
+            }
+        }
+    }
+    if matches!(kind, "catch_clause" | "for_in_statement") {
+        let field = if kind == "catch_clause" { "parameter" } else { "left" };
+        if let Some(pattern) = scope.child_by_field_name(field) {
+            js_collect_pattern_idents(pattern, source, &mut bound);
+        }
+    }
+    bound
+}
 pub fn js_module_bound_names(root: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     js_bind_walk(root, source, &mut out, true);
