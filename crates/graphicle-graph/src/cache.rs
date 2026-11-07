@@ -15,8 +15,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 /// Bump when AST cache-key semantics change independently of the package
-/// version; 11 carries the extraction changes of Graphify 0.9.96-0.9.102
-/// (upstream schemas 26-37: Zig and Dart records, Python injected fields and
+/// version; 11 carries the extraction changes of Graphify 0.9.96-0.9.103
+/// (upstream schemas 26-39; 38 and 39 in 0.9.103: C# preprocessor blanking,
+/// Solidity event, error and library calls, YAML merge order, Markdown
+/// namespace and member mentions; also JS/TS receiver-shadow and `new`
+/// stamps on raw calls and TypeScript import types; earlier: Zig and Dart
+/// records, Python injected fields and
 /// method results, C# owner labels and constructors, Go composite literals,
 /// sibling-file and cross-package receivers, unique declaration ids at
 /// every file-stem mint site, PHP class-constant references, R, Elixir,
