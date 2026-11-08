@@ -473,14 +473,87 @@ fn column_types(db: &Connection, table: &str) -> Result<Vec<String>> {
     Ok(rows.collect::<std::result::Result<_, _>>()?)
 }
 
-/// A type name an archive may give a column: letters, digits, spaces,
-/// brackets and parentheses only.
-fn plain_type(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() < 64
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || " _[](),".contains(c))
+/// The column types an archive may give a table this program does not
+/// create: those of this program's own tables (`bigint`, `text`, `double
+/// precision`, `bytea`) and other plain built-in ones. A type is the
+/// column's whole definition in `CREATE TABLE`, so anything else, such as a
+/// `CHECK`, `DEFAULT` or `GENERATED` clause, which would run functions the
+/// archive chose while it loads, is refused.
+const ALLOWED_TYPES: &[&str] = &[
+    "bigint",
+    "integer",
+    "smallint",
+    "int",
+    "int2",
+    "int4",
+    "int8",
+    "double precision",
+    "real",
+    "float4",
+    "float8",
+    "numeric",
+    "boolean",
+    "bool",
+    "text",
+    "character varying",
+    "varchar",
+    "bytea",
+    "json",
+    "jsonb",
+    "uuid",
+    "date",
+    "timestamp",
+    "timestamp without time zone",
+    "timestamp with time zone",
+    "timestamptz",
+];
+
+/// The type an archive gives a column, as it is written into `CREATE
+/// TABLE`: one of [`ALLOWED_TYPES`], in any case and with any spacing,
+/// optionally an array (`[]`); `None` for anything else.
+fn allowed_type(name: &str) -> Option<String> {
+    let normal = name
+        .split_ascii_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase();
+    let (base, array) = match normal.strip_suffix("[]") {
+        Some(base) => (base.trim_end(), true),
+        None => (normal.as_str(), false),
+    };
+    if !ALLOWED_TYPES.contains(&base) {
+        return None;
+    }
+    Some(if array {
+        format!("{base}[]")
+    } else {
+        base.to_string()
+    })
+}
+
+/// Whether one table of an archive is one this program may load: plain
+/// table and column names, never PostgreSQL's own, and an allowed type for
+/// every column whose type it gives.
+fn plain_section(section: &Section) -> bool {
+    plain_name(&section.table)
+        && section.columns.iter().all(|c| plain_name(c))
+        && (section.types.is_empty() || section.types.len() == section.columns.len())
+        && section.types.iter().all(|t| allowed_type(t).is_some())
+}
+
+/// Check the whole archive at `path` before anything is created from it:
+/// its digest, and that every table has plain names and allowed column
+/// types ([`ALLOWED_TYPES`]).
+pub fn verify(path: &Path) -> Result<Value> {
+    read(path, |section, _| {
+        if !plain_section(section) {
+            return Err(Error::bad(format!(
+                "The backup's table {} has a name or column type this version of Graphicle does not load",
+                section.table
+            )));
+        }
+        Ok(())
+    })
 }
 
 /// Read an archive front to back, handing each table's rows to `table` as
@@ -607,7 +680,7 @@ impl Read for Chunks<'_> {
 /// archive has and the schema lacks is refused.
 pub fn load(db: &mut Connection, path: &Path) -> Result<Value> {
     // Check the whole file before changing anything.
-    let checked = read(path, |_, _| Ok(()))?;
+    let checked = verify(path)?;
     let present: BTreeMap<String, Table> = tables(db)?
         .into_iter()
         .map(|t| (t.name.clone(), t))
@@ -647,18 +720,24 @@ pub fn load(db: &mut Connection, path: &Path) -> Result<Value> {
             // as a store keeps every table, with the columns and types
             // the backup gives.
             None => {
+                let types: Vec<String> = section
+                    .types
+                    .iter()
+                    .filter_map(|t| allowed_type(t))
+                    .collect();
                 if section.types.len() != section.columns.len()
-                    || !section.types.iter().all(|t| plain_type(t))
+                    || types.len() != section.types.len()
                 {
                     return Err(Error::bad(format!(
                         "The backup has table {} that this version of Graphicle does not know",
                         section.table
                     )));
                 }
+                // Only the allowed type's own name reaches the statement.
                 let definition: Vec<String> = section
                     .columns
                     .iter()
-                    .zip(&section.types)
+                    .zip(&types)
                     .map(|(c, t)| format!("{} {t}", quote(c)))
                     .collect();
                 tx.execute_batch(&format!(

@@ -1461,8 +1461,9 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
     if !crate::db::postgres_configured() {
         return restore_sqlite(backup, directory);
     }
-    // The whole archive is checked before the data folder is made.
-    crate::archive::read(backup, |_, _| Ok(()))?;
+    // The whole archive is checked, its names and column types too, before
+    // the data folder is made.
+    crate::archive::verify(backup)?;
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]

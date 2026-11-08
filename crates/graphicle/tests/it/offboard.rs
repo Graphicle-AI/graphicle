@@ -438,3 +438,107 @@ fn offboarding_a_backup_never_follows_a_link_beside_it() {
         .collect();
     assert_eq!(left, vec!["marker".to_string()]);
 }
+
+/// Whether the store is PostgreSQL, whose backups are archives.
+fn postgres_store() -> bool {
+    if !graphicle_runtime::db::postgres_configured() {
+        eprintln!("skipped: a PostgreSQL backup archive; GRAPHICLE_DATABASE_URL is not set");
+        return false;
+    }
+    true
+}
+
+/// An archive written by hand, as anyone who hands over a backup file can:
+/// one table this program does not create, with `columns` of `types` and
+/// `rows` in COPY text format, and a trailer whose digest matches.
+fn handmade_archive(path: &Path, table: &str, columns: &[&str], types: &[&str], rows: &str) {
+    let mut body = String::from("GRAPHICLE-STORE-ARCHIVE 1\n");
+    let header = json!({"format":graphicle_runtime::archive::FORMAT,"version":"0.1.14","created_at":"2026-11-08T00:00:00.000000Z"});
+    body.push_str(&format!("{header}\n"));
+    let section = json!({"table":table,"columns":columns,"types":types});
+    body.push_str(&format!("{section}\n"));
+    if !rows.is_empty() {
+        body.push_str(&format!("{}\n{rows}", rows.len()));
+    }
+    body.push_str("0\n");
+    let digest = graphicle_memory::text::sha256(body.as_bytes());
+    let trailer = json!({"end":true,"tables":1,"rows":rows.lines().count(),"sha256":digest});
+    body.push_str(&format!("{trailer}\n"));
+    std::fs::write(path, body).unwrap();
+}
+
+/// A backup's column type is the column's whole definition in `CREATE
+/// TABLE`: one with a `CHECK` that calls a function (run once per row as
+/// the rows load) is refused before the data folder or its schema exists.
+#[test]
+fn a_backup_whose_column_type_calls_a_function_is_refused_before_anything_is_created() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let backup = dir.path().join("given.backup");
+    let target = dir.path().join("restored");
+    handmade_archive(
+        &backup,
+        "x",
+        &["c"],
+        &["int CHECK (pg_terminate_backend(c))"],
+        "1\n2\n3\n",
+    );
+    let refused = local::restore(&backup, &target).expect_err("restored");
+    assert!(refused.to_string().contains("column type"), "{refused}");
+    assert!(!target.exists());
+    for definition in [
+        "text CHECK (set_config(c,c,false) IS NULL)",
+        "text CHECK (query_to_xml(c,true,true,c) IS NULL)",
+        "int DEFAULT (pg_advisory_lock(1))",
+        "bigint GENERATED ALWAYS AS (1) STORED",
+        "numeric(10,2)",
+        "text, d int CHECK (pg_sleep(1) IS NULL)",
+    ] {
+        handmade_archive(&backup, "x", &["c"], &[definition], "1\n");
+        assert!(
+            graphicle_runtime::archive::verify(&backup).is_err(),
+            "{definition} accepted"
+        );
+        assert!(local::restore(&backup, &target).is_err(), "{definition}");
+        assert!(!target.exists(), "{definition}");
+    }
+}
+
+/// A table of an edition this program does not know, with allowed types in
+/// any case and spacing, restores with those types and its rows.
+#[test]
+fn a_backup_with_an_edition_table_of_plain_types_restores() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let backup = dir.path().join("edition.backup");
+    let target = dir.path().join("restored");
+    handmade_archive(
+        &backup,
+        "edition_notes",
+        &["id", "note", "weights"],
+        &["BIGINT", "Text", "double   precision []"],
+        "1\tkept\t{1.5,2}\n",
+    );
+    graphicle_runtime::archive::verify(&backup).unwrap();
+    local::restore(&backup, &target).unwrap();
+    let store = Store::open(&target).unwrap();
+    let db = store.connect().unwrap();
+    let note: String = db
+        .query_row("SELECT note FROM edition_notes WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(note, "kept");
+    let kind: String = db
+        .query_row(
+            "SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a WHERE a.attrelid='edition_notes'::regclass AND a.attname='weights'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(kind, "double precision[]");
+}
