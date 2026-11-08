@@ -104,3 +104,44 @@ SHA-256 of the files as recorded:
 `RESULTS.json` names the recorded protocol by its original SHA-256. The
 measurement driver is not published; `PROTOCOL.json` records its SHA-256 and
 describes its method.
+
+## Engine speed and peak memory against Graphify 0.9.100: `graphify-comparison-2026-11-01/`
+
+The method record of the comparison of 1 November 2026 between Graphicle 0.1.11
+and Graphify 0.9.100 (with Graphicle 0.1.0 where named), whose results are the
+section [Graphicle 0.1.11 against Graphify 0.9.100](../benchmarks.md#graphicle-0111-against-graphify-09100)
+of `benchmarks.md`:
+
+- `PROTOCOL.md`: the protocol, registered at 2026-11-01T05:52:49Z, before the
+  first measured run (05:53:29Z). It names the programs and how each was
+  obtained, the machine and its CPU pinning, and each step's method and
+  changes from the earlier published runs.
+- `AMENDMENTS.md`: four notes added after registration, each before any result
+  it could affect was read. None changes the method.
+- `ranges/`: the registered commit ranges for updates after commits (pinned on
+  15 October 2026 and reused unchanged).
+- `graphify-constraints.txt`: the package constraints Graphify 0.9.100 was
+  installed with.
+
+Changed for publication, in `PROTOCOL.md` and `AMENDMENTS.md` only: the
+machine's job and cluster identifiers, the host's working folders and the
+names of private files are removed or replaced by a description (for example
+`<run>` for the working folder, "an archive of the 0.1.11 release source" for
+a private file name), and private names for the parallel run slots and
+earlier protocols are replaced by plain descriptions. Nothing else differs.
+`ranges/` and `graphify-constraints.txt` are published as recorded. The SHA-256
+of the files:
+
+| File | As registered | As published |
+|---|---|---|
+| `PROTOCOL.md` | `1be4dc64aacdcb5f29741d6af4ea0782763b7c36b2d44dfc929a5fcaf1fa07fc` | `48dd49e896c0143015fd35bfa77ebb58316096101b778c1a1b7bb113129c38d8` |
+| `AMENDMENTS.md` | `6088c5fe462b1b9a98048605d1e5f3d5232127e1a7827cfa255ae721a7877ba0` | `0b39333413fccc12a489697d0a2521e7983c55d31dd9fe8f5a1130480e3d0335` |
+| `graphify-constraints.txt` | `ba43ffcda305798241abcd1ac5adacdee6e9f23a7e363ae9a15a93cf012261cc` | the same |
+| `ranges/prometheus_prometheus.json` | `4dfeea6477e02a4b80cc4c6c88c4387f446723cb81f7e6e58e2958b975bb4ce8` | the same |
+| `ranges/python-poetry_poetry.json` | `e0c1d1f2a60bd2036517310327be2639bff45cd8acfede81dc7f29d3fc6a1b64` | the same |
+| `ranges/tokio-rs_tokio.json` | `24d92403e4eb9ed3220dbe1fd7fc3da41cf566f14c1989e813152132be5c0749` | the same |
+
+The measurement scripts that `PROTOCOL.md` names are not published; the
+registration recorded their SHA-256 with the protocol's. The per-run rows,
+logs and graph digests stay with the maintainers; the tables in
+`benchmarks.md` are computed from them.

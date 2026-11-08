@@ -40,7 +40,8 @@ Graphicle 0.1.0 (the published Linux release archive). One cloud Linux machine
 (AMD EPYC 9V84, 40 vCPUs, one NUMA node, 314 GiB; its GPU not used); measured
 runs one at a time, each pinned to its CPUs with `taskset`; code-only, with no
 model calls; measured on 1 November 2026. The protocol was registered before
-the first measured run, and its method did not change. The repositories,
+the first measured run, and its method did not change
+([protocol](evidence/README.md#engine-speed-and-peak-memory-against-graphify-09100-graphify-comparison-2026-11-01)). The repositories,
 commits, tags and operations are those of the sections below; the machine is
 not, so times compare only within this section.
 

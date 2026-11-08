@@ -1,0 +1,160 @@
+{
+ "head": "d2266dcd4f690a20ed050ab0059d4de68ffa274a",
+ "start": "b4f1cbf99a326d5419edcce43a5aef5ea3163f47",
+ "ext": [
+  ".go"
+ ],
+ "steps": [
+  {
+   "commit": "32cd8f8432ce75c7b5df8519534104403ac7c713",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "72ec71faad58fe7ce8e147a118270e6f8a939b67",
+   "first_parent_commits_spanned": 2,
+   "merges_folded": 1
+  },
+  {
+   "commit": "dee5127070290d0152159de46d89401e831adc45",
+   "first_parent_commits_spanned": 6,
+   "merges_folded": 5
+  },
+  {
+   "commit": "09fdfcd2659dd9c816e9e23c992fc161c0091757",
+   "first_parent_commits_spanned": 3,
+   "merges_folded": 1
+  },
+  {
+   "commit": "0298fe0018398944307f3e5b59c1bcc64a7661d3",
+   "first_parent_commits_spanned": 50,
+   "merges_folded": 5
+  },
+  {
+   "commit": "8aad4b49860f8c0d08ced55f1a5ad669e5eb99ca",
+   "first_parent_commits_spanned": 3,
+   "merges_folded": 0
+  },
+  {
+   "commit": "1885dfd99d1b89d350ba4b56b3a74ffa0de50427",
+   "first_parent_commits_spanned": 10,
+   "merges_folded": 1
+  },
+  {
+   "commit": "78169fb57d69371b24863b0f26555631a754204c",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "8374d30cb3fe705773bbac72d7015eba17480557",
+   "first_parent_commits_spanned": 4,
+   "merges_folded": 1
+  },
+  {
+   "commit": "46ef3704189798f58af5dd4ac7d2f87ac8880f30",
+   "first_parent_commits_spanned": 12,
+   "merges_folded": 11
+  },
+  {
+   "commit": "ba860bfd0ea767a5da2f301caada12b29b1d2526",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "f6ccc4acc44c0d41025db9e3a293d34057454c5a",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "29bafc4e06b581479573b0f53dfdbb94d3a6a0e7",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "b0f312ba48c9d31dad04e7014bfb0fa300153a07",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "3fab29b0da5f31f98893b73bcc2b20fcf79d0e1e",
+   "first_parent_commits_spanned": 3,
+   "merges_folded": 2
+  },
+  {
+   "commit": "6a8453ce4723f381639428b201e9420f41b01265",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "e31ee3f6adc529df4423577fedd6d3705bda2546",
+   "first_parent_commits_spanned": 3,
+   "merges_folded": 2
+  },
+  {
+   "commit": "64c05e80ccd15eae229980dcf15fa82bbb513113",
+   "first_parent_commits_spanned": 3,
+   "merges_folded": 2
+  },
+  {
+   "commit": "b26bc1767365293c036036e6f44663ae51280f32",
+   "first_parent_commits_spanned": 3,
+   "merges_folded": 1
+  },
+  {
+   "commit": "970b878cc775271673e82c029344807f05662ddb",
+   "first_parent_commits_spanned": 44,
+   "merges_folded": 10
+  },
+  {
+   "commit": "5f325dd18c88077d00a0e54554b3433696a24664",
+   "first_parent_commits_spanned": 2,
+   "merges_folded": 1
+  },
+  {
+   "commit": "6751c52b6919c521f56f916699410962e4205e2f",
+   "first_parent_commits_spanned": 14,
+   "merges_folded": 12
+  },
+  {
+   "commit": "c45b13bbdd96b47a5441000fb454dce42894349d",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "7d180b0c7e40f60672b49a0888326278bd872a8e",
+   "first_parent_commits_spanned": 7,
+   "merges_folded": 5
+  },
+  {
+   "commit": "21fd457f2b67fe417e181817d814dba812471e9f",
+   "first_parent_commits_spanned": 20,
+   "merges_folded": 19
+  },
+  {
+   "commit": "6690d48c2c8b2d56fb90295c01afd4974abee8f0",
+   "first_parent_commits_spanned": 1,
+   "merges_folded": 0
+  },
+  {
+   "commit": "fffc15f5b5a6c3ed50282d307e96db0e5f25bcb2",
+   "first_parent_commits_spanned": 3,
+   "merges_folded": 1
+  },
+  {
+   "commit": "025b78f5eb995b742b7090ad8b192b07b60938c4",
+   "first_parent_commits_spanned": 11,
+   "merges_folded": 10
+  },
+  {
+   "commit": "6036882468febf589e31134b3fab9889d4146603",
+   "first_parent_commits_spanned": 7,
+   "merges_folded": 6
+  },
+  {
+   "commit": "5ee21818d8abd5677381d9d0e7bca27352e4f46b",
+   "first_parent_commits_spanned": 3,
+   "merges_folded": 2
+  }
+ ],
+ "newest_replayed_index_from_head": 4
+}
