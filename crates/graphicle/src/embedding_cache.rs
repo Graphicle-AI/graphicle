@@ -177,20 +177,24 @@ fn private_files(path: &Path) -> std::io::Result<()> {
     use std::io::ErrorKind;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
+    // With PostgreSQL the file only names the cache's schema, and only the
+    // process that creates it writes it ([`crate::db::Database::for_file`],
+    // with these permissions): an empty one made here would be refused.
+    let named = crate::db::postgres_configured();
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let mut name = path.as_os_str().to_owned();
         name.push(suffix);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
-            .create(suffix.is_empty())
+            .create(suffix.is_empty() && !named)
             .truncate(false)
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW)
             .open(Path::new(&name));
         match file {
             Ok(file) => file.set_permissions(Permissions::from_mode(0o600))?,
-            Err(error) if !suffix.is_empty() && error.kind() == ErrorKind::NotFound => {}
+            Err(error) if (!suffix.is_empty() || named) && error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(error),
         }
     }
@@ -353,8 +357,13 @@ mod tests {
         drop(Cache::open(&path, "m").unwrap());
         // A running service can clear and recreate a cache at the same path.
         std::fs::remove_file(&path).unwrap();
-        std::fs::write(&path, []).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        // On SQLite as an empty, readable file. With PostgreSQL the file
+        // names a schema, and an empty one that another process made is
+        // refused (`crate::db::Database::schema_in`), so it stays removed.
+        if !crate::db::postgres_configured() {
+            std::fs::write(&path, []).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
         let cache = Cache::open(&path, "m").unwrap();
         cache.put([("private passage", [1.0].as_slice())]).unwrap();
         for suffix in suffixes() {
