@@ -9,20 +9,38 @@
 //! once it passes a limit (`Connection::bound_wal`).
 
 use graphicle_runtime::store::Store;
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-/// Rows of 128 KiB committed one per transaction while four readers keep
-/// read transactions open back to back; the largest the log grew, in
-/// bytes, with the store's log limit set to `limit` (or none). With `pin`,
-/// a fifth reader also holds one read transaction open from before the
-/// first commit to the end, so SQLite's own checkpoint can never restart
-/// the log: without it, a moment when all four readers are between
-/// transactions (more likely on a loaded machine) lets the log restart and
-/// makes the unbounded growth this test compares against vary from run to
-/// run.
-fn largest_log(limit: Option<u64>, commits: usize, pin: bool) -> u64 {
+/// How long each snapshot of the relay reader lasts: well under the 2
+/// seconds a checkpoint waits for readers.
+const SNAPSHOT: Duration = Duration::from_millis(50);
+
+/// One read snapshot of the store at `path`, held until `COMMIT`.
+fn snapshot(path: &Path) -> rusqlite::Connection {
+    let reader = rusqlite::Connection::open(path).unwrap();
+    reader.busy_timeout(Duration::from_secs(10)).unwrap();
+    reader.execute_batch("BEGIN").unwrap();
+    let _: i64 = reader
+        .query_row("SELECT count(*) FROM wal_probe", [], |r| r.get(0))
+        .unwrap();
+    reader
+}
+
+/// Rows of 128 KiB committed one per transaction while readers are always
+/// in flight; the largest the log grew, in bytes, with the store's log
+/// limit set to `limit` (or none). The load is the same with and without
+/// the limit: four readers keep short read transactions open back to back,
+/// and a relay reader always holds a snapshot, each for [`SNAPSHOT`],
+/// opening the next before it ends the last. There is never a moment
+/// without a reader on an older snapshot, so SQLite's own checkpoint can
+/// never restart the log, on any machine: without the limit the log grows
+/// by everything written. Every snapshot ends within the 2 seconds a
+/// checkpoint waits, so with the limit the store's checkpoint can always
+/// cut the log back.
+fn largest_log(limit: Option<u64>, commits: usize) -> u64 {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     store.pool.set_wal_limit(limit);
@@ -52,26 +70,24 @@ fn largest_log(limit: Option<u64>, commits: usize, pin: bool) -> u64 {
             })
         })
         .collect();
-    let pinned = pin.then(|| {
-        let store = store.clone();
+    let relay = {
+        let path = dir.path().join("reviews.sqlite3");
         let stop = stop.clone();
-        let (started, snapshot) = std::sync::mpsc::channel();
-        let pinned = std::thread::spawn(move || {
-            store
-                .read(|db| {
-                    let _: i64 =
-                        db.query_row("SELECT count(*) FROM wal_probe", [], |r| r.get(0))?;
-                    started.send(()).unwrap();
-                    while !stop.load(Ordering::Relaxed) {
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                    Ok(())
-                })
-                .unwrap();
+        let (started, snapshot_held) = std::sync::mpsc::channel();
+        let relay = std::thread::spawn(move || {
+            let mut held = snapshot(&path);
+            started.send(()).unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(SNAPSHOT);
+                let next = snapshot(&path);
+                held.execute_batch("COMMIT").unwrap();
+                held = next;
+            }
+            held.execute_batch("COMMIT").unwrap();
         });
-        snapshot.recv().unwrap();
-        pinned
-    });
+        snapshot_held.recv().unwrap();
+        relay
+    };
     let log = dir.path().join("reviews.sqlite3-wal");
     let body = vec![7u8; 128 << 10];
     let mut largest = 0;
@@ -88,10 +104,16 @@ fn largest_log(limit: Option<u64>, commits: usize, pin: bool) -> u64 {
         largest = largest.max(std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0));
     }
     stop.store(true, Ordering::Relaxed);
-    for reader in readers.into_iter().chain(pinned) {
+    for reader in readers.into_iter().chain([relay]) {
         reader.join().unwrap();
     }
     largest
+}
+
+fn checkpoints() -> u64 {
+    graphicle_runtime::db::wal_report()["wal_checkpoints"]
+        .as_u64()
+        .unwrap_or(0)
 }
 
 #[test]
@@ -100,22 +122,27 @@ fn the_write_ahead_log_stays_bounded_under_constant_reads() {
         eprintln!("skipped: a SQLite store's log; GRAPHICLE_DATABASE_URL is set");
         return;
     }
-    // 240 commits of 128 KiB: 30 MiB written.
-    let commits = 240;
+    // 200 commits of 128 KiB: 25 MiB written, under the same reads.
+    let commits = 200;
     let limit: u64 = 4 << 20;
-    let unbounded = largest_log(None, commits, true);
-    let bounded = largest_log(Some(limit), commits, false);
+    let unbounded = largest_log(None, commits);
+    let before = checkpoints();
+    let bounded = largest_log(Some(limit), commits);
+    let ran = checkpoints() - before;
     eprintln!(
-        "largest log: {unbounded} bytes without the limit, {bounded} with a {limit}-byte limit"
+        "largest log: {unbounded} bytes without the limit, {bounded} with a {limit}-byte limit ({ran} checkpoints)"
     );
-    // Without the limit the log keeps most of what was written (a pinned
-    // reader keeps SQLite's own checkpoint from restarting it).
+    // Without the limit the log keeps what was written: SQLite's own
+    // checkpoint never restarts it while the relay holds a snapshot.
     assert!(
         unbounded > 16 << 20,
         "the log did not grow without the limit: {unbounded} bytes"
     );
-    // With it, the log never passes the limit by more than the commits
-    // made while a checkpoint waited for readers.
+    // With it, under the same load, the store's checkpoint cut it back
+    // (no other test's store passes the default 64 MiB limit), and the log
+    // never passed the limit by more than the commits made while a
+    // checkpoint waited for readers.
+    assert!(ran > 0, "no checkpoint ran");
     assert!(
         bounded <= limit + (6 << 20),
         "the log passed its limit: {bounded} bytes"
