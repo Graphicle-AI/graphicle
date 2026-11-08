@@ -1782,13 +1782,23 @@ impl Database {
     /// and marked unfinished: every opener refuses it until [`Database::finish`].
     /// What `import-sqlite` and `restore` copy into, so that one stopped
     /// before its copy committed never leaves a store that opens empty.
-    pub fn create_unfinished(path: &Path) -> Result<Arc<Database>> {
+    /// The returned [`CopyLock`] is taken before the schema is created and
+    /// holds off [`Database::discard_unfinished`] until it is dropped.
+    pub fn create_unfinished(path: &Path) -> Result<(Arc<Database>, CopyLock)> {
         let settings = Settings::from_environment()?;
         let schema = format!("g_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
-        admin(
-            &settings,
-            &format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""),
-        )?;
+        let key = copy_key(&schema);
+        let client = blocking(|| -> Result<postgres::Client> {
+            let mut client = connect_raw(&settings)?;
+            client.batch_execute(&format!(
+                "SELECT pg_advisory_lock({key}); CREATE SCHEMA IF NOT EXISTS \"{schema}\""
+            ))?;
+            Ok(client)
+        })?;
+        let lock = CopyLock {
+            client: Mutex::new(Some(client)),
+            key,
+        };
         let file = serde_json::to_vec_pretty(&SchemaFile {
             schema: schema.clone(),
             incomplete: true,
@@ -1801,7 +1811,7 @@ impl Database {
             );
             return Err(error);
         }
-        Self::named_by(&settings, &schema, path)
+        Ok((Self::named_by(&settings, &schema, path)?, lock))
     }
 
     /// Mark this store, made by [`Database::create_unfinished`], finished:
@@ -1855,7 +1865,9 @@ impl Database {
     /// Remove the store that the file at `path` names when an import or
     /// restore did not finish it (or an empty file its creator never
     /// wrote): its schema is dropped and the file removed. Returns whether
-    /// there was such a store; a finished store is never touched.
+    /// there was such a store; a finished store is never touched, and nor
+    /// is one whose import or restore is still running (its [`CopyLock`]
+    /// is held): that is refused.
     pub fn discard_unfinished(path: &Path) -> Result<bool> {
         match Self::named_in(path)? {
             Named::Missing => Ok(false),
@@ -1868,14 +1880,33 @@ impl Database {
             }
             Named::File(file) => {
                 let settings = Settings::from_environment()?;
-                admin(
-                    &settings,
-                    &format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE", file.schema),
-                )?;
-                std::fs::remove_file(path).map_err(|e| {
-                    Error::Other(format!("Could not remove {}: {e}", path.display()))
-                })?;
-                Ok(true)
+                let key = copy_key(&file.schema);
+                blocking(|| -> Result<bool> {
+                    let mut client = connect_raw(&settings)?;
+                    let free: bool = client
+                        .query_one(format!("SELECT pg_try_advisory_lock({key})").as_str(), &[])?
+                        .get(0);
+                    if !free {
+                        return Err(Error::Other(format!(
+                            "{}: an import is still running into this store; wait for it to finish",
+                            path.display()
+                        )));
+                    }
+                    // Read again under the lock: the copy may have finished
+                    // since, and a finished store is never touched.
+                    match Self::read_named(path)? {
+                        Named::File(now) if now.schema == file.schema && now.incomplete => {}
+                        _ => return Ok(false),
+                    }
+                    client.batch_execute(&format!(
+                        "DROP SCHEMA IF EXISTS \"{}\" CASCADE",
+                        file.schema
+                    ))?;
+                    std::fs::remove_file(path).map_err(|e| {
+                        Error::Other(format!("Could not remove {}: {e}", path.display()))
+                    })?;
+                    Ok(true)
+                })
             }
         }
     }
@@ -2133,11 +2164,54 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 
 /// The advisory-lock key of a schema: a stable 64-bit hash of its name.
 fn lock_key(schema: &str) -> i64 {
+    key_of("write", schema)
+}
+
+/// The advisory-lock key that an import or restore copying into a schema
+/// holds ([`CopyLock`]). Not [`lock_key`]: the copy's own write
+/// transactions, on other connections, take that one.
+fn copy_key(schema: &str) -> i64 {
+    key_of("copy", schema)
+}
+
+fn key_of(purpose: &str, schema: &str) -> i64 {
     use sha2::Digest;
-    let digest = sha2::Sha256::digest(format!("graphicle.write.{schema}").as_bytes());
+    let digest = sha2::Sha256::digest(format!("graphicle.{purpose}.{schema}").as_bytes());
     let mut bytes = [0u8; 8];
     bytes.copy_from_slice(&digest[..8]);
     i64::from_be_bytes(bytes)
+}
+
+/// Held by an import or restore for the whole of its copy, from before
+/// its schema is created ([`Database::create_unfinished`]) until it is
+/// dropped: a session advisory lock on [`copy_key`], on a connection of
+/// its own. While it is held, [`Database::discard_unfinished`] refuses to
+/// replace the store; a process that is stopped loses it with its
+/// connection.
+pub struct CopyLock {
+    /// In a mutex so that a [`crate::store::Store`] holding it can be
+    /// shared between threads.
+    client: Mutex<Option<postgres::Client>>,
+    key: i64,
+}
+
+impl Drop for CopyLock {
+    fn drop(&mut self) {
+        let client = self
+            .client
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(mut client) = client {
+            let key = self.key;
+            // Released before the connection closes, so that the next
+            // command sees it free at once.
+            blocking(move || {
+                let _ = client.batch_execute(&format!("SELECT pg_advisory_unlock({key})"));
+                drop(client);
+            });
+        }
+    }
 }
 
 /// Run `sql` on a connection of its own, outside any store's schema

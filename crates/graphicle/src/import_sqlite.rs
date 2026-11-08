@@ -112,7 +112,8 @@ pub fn import(source: &Path, directory: &Path) -> Result<Value> {
         )));
     }
     // An import (or restore) that was stopped before it finished left a
-    // store that nothing opens: it is replaced. A finished store never is.
+    // store that nothing opens: it is replaced. A finished store never is,
+    // nor one whose import is still running (its copy lock is held).
     if directory.join(crate::db::SCHEMA_FILE).is_file()
         && !crate::db::Database::discard_unfinished(&crate::db::schema_file(directory))?
     {

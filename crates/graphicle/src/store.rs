@@ -140,6 +140,11 @@ pub struct Store {
     /// The size limits of whoever runs this program ([`Store::with_limits`]);
     /// without them, the environment's over Graphicle Core's defaults.
     limits: Option<Arc<crate::limits::Limits>>,
+    /// For a store of [`Store::create_postgres`], what keeps another
+    /// `import-sqlite` from replacing it while this one copies into it.
+    /// Held, never read: released when the last clone is dropped.
+    #[allow(dead_code)]
+    copying: Option<Arc<crate::db::CopyLock>>,
 }
 #[derive(Clone)]
 pub struct Principal {
@@ -422,10 +427,12 @@ impl Store {
                 crate::db::URL_ENV
             )));
         }
-        let pool = if beside_sqlite {
-            crate::db::Database::create_unfinished(&crate::db::schema_file(directory))?
+        let (pool, copying) = if beside_sqlite {
+            let (pool, lock) =
+                crate::db::Database::create_unfinished(&crate::db::schema_file(directory))?;
+            (pool, Some(Arc::new(lock)))
         } else {
-            crate::db::Database::for_directory(directory, true)?
+            (crate::db::Database::for_directory(directory, true)?, None)
         };
         let store = Self {
             directory: Arc::new(directory.to_path_buf()),
@@ -433,6 +440,7 @@ impl Store {
             pool,
             wake: Arc::new(tokio::sync::Notify::new()),
             limits: None,
+            copying,
         };
         if let Err(error) = store.migrate() {
             if beside_sqlite {
@@ -466,6 +474,7 @@ impl Store {
             pool,
             wake: Arc::new(tokio::sync::Notify::new()),
             limits: None,
+            copying: None,
         }))
     }
 

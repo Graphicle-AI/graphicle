@@ -97,6 +97,37 @@ fn an_import_stopped_before_its_copy_committed_is_refused_and_replaced() {
     assert_eq!(Store::open(&folder).unwrap().schema(), store.schema());
 }
 
+/// An import that is still copying holds its store's copy lock, from
+/// before the schema is made until it is done: a second `import-sqlite`
+/// on the folder is refused and leaves the store, its file and the SQLite
+/// file as they were, instead of dropping the store under the first. The
+/// first still finishes, and its store opens.
+#[test]
+fn an_import_refuses_to_replace_a_store_whose_copy_is_still_running() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path().join("data");
+    let source = sqlite_source(&folder);
+    let file = folder.join(graphicle_runtime::db::SCHEMA_FILE);
+    let running = Store::create_postgres(&folder).unwrap();
+    let schema = running.schema().to_string();
+    let named = std::fs::read(&file).unwrap();
+    let copied = std::fs::read(&source).unwrap();
+    let refused = import_sqlite::import(&source, &folder).expect_err("replaced a running import");
+    assert!(
+        refused.to_string().contains("an import is still running"),
+        "{refused}"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), named);
+    assert_eq!(std::fs::read(&source).unwrap(), copied);
+    assert!(schema_exists(&running, &schema));
+    running.finish().unwrap();
+    drop(running);
+    assert_eq!(Store::open(&folder).unwrap().schema(), schema);
+}
+
 /// The same for `restore`, which loads into a store made the same way: one
 /// it had not finished loading is refused; a finished one opens.
 #[test]
