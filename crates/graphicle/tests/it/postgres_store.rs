@@ -159,3 +159,23 @@ fn an_import_refuses_a_store_that_needs_a_newer_reader() {
     assert!(refused.to_string().contains("99.0.0"), "{refused}");
     assert!(!folder.join(graphicle_runtime::db::SCHEMA_FILE).exists());
 }
+
+/// With the URL set, a data folder with only `reviews.sqlite3` is refused
+/// until it is imported by the opens that create nothing as well, instead
+/// of silently using the SQLite store.
+#[test]
+fn a_sqlite_only_folder_is_refused_by_read_only_opens_too() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path().join("data");
+    sqlite_source(&folder);
+    assert!(Store::existing(&folder).is_err());
+    let Err(refused) = graphicle_runtime::db::open_existing(&folder) else {
+        panic!("a SQLite-only folder opened with the URL set");
+    };
+    assert!(refused.to_string().contains("import-sqlite"), "{refused}");
+    assert!(Store::open(&folder).is_err());
+    assert!(!folder.join(graphicle_runtime::db::SCHEMA_FILE).exists());
+}

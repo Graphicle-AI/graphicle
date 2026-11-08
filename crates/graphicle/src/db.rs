@@ -1912,6 +1912,17 @@ impl Database {
                 if !create && !path.is_file() {
                     return Err(Error::Other("This data folder has no store".into()));
                 }
+                // GRAPHICLE_DATABASE_URL asks for PostgreSQL and the folder
+                // has only a SQLite store: refused until it is imported, by
+                // read-only opens too ([`crate::store::Store::existing`],
+                // [`open_existing`]), as `Store::open` refuses it.
+                if postgres_configured() {
+                    return Err(Error::Other(format!(
+                        "{} holds a SQLite store; copy it into PostgreSQL first with graphicle --data-dir {} import-sqlite, or unset {URL_ENV} to keep using it",
+                        directory.display(),
+                        directory.display()
+                    )));
+                }
                 Ok(Self::sqlite(&path, true))
             }
         }
