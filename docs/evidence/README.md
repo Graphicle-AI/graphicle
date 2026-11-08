@@ -1,9 +1,12 @@
 # Evidence
 
-The records behind the numbers in [benchmarks.md](../benchmarks.md). Each one
-is published as it was written, apart from the changes listed for it. The
-records name the internal pre-release builds they ran on; 0.1.0 is the first
-public release.
+Published evidence artifacts for measurements in [benchmarks.md](../benchmarks.md).
+The notes below describe each artifact and any changes made for publication.
+The numerical summaries in `benchmarks.md` are not all accompanied by a public
+raw record. For example, the 1 November 2026 Graphicle 0.1.11 against Graphify
+0.9.100 comparison is summarized there, but this directory contains no matching
+registered protocol or raw results. The engine-speed records below describe
+earlier runs.
 
 ## Engine parity: `engine-parity-0.9.88.json`
 
