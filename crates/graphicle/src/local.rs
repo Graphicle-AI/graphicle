@@ -1436,12 +1436,12 @@ pub fn spawn_graph_build(directory: &Path, repository: &str) -> Result<()> {
 }
 pub fn open_url(url: &str) -> Result<()> {
     #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
+    let mut command = crate::platform::program("open");
     #[cfg(target_os = "windows")]
     let mut command = crate::platform::open_url_command(url)
         .ok_or_else(|| Error::bad("Could not open the app URL"))?;
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
-    let mut command = std::process::Command::new("xdg-open");
+    let mut command = crate::platform::program("xdg-open");
     #[cfg(not(target_os = "windows"))]
     command.arg(url);
     if !command.status()?.success() {

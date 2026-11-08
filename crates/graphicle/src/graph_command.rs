@@ -303,7 +303,7 @@ fn command(args: &[OsString]) -> Result<Command, i32> {
         eprintln!("{}", missing(program.as_deref()));
         return Err(NOT_FOUND);
     };
-    let mut command = Command::new(engine);
+    let mut command = crate::platform::program(engine);
     if args.is_empty() {
         command.arg("--help");
     } else {

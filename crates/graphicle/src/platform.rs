@@ -201,15 +201,33 @@ fn program_names_with(name: &str, pathext: Option<&str>) -> Vec<String> {
 /// found on `PATH` with [`program_names`], so npm's `codex.cmd` shims run:
 /// the standard library starts a `.cmd` or `.bat` file through
 /// `cmd.exe /d /c` with its batch-file escaping, and refuses an argument it
-/// cannot quote safely.
+/// cannot quote safely. Like [`program`], without [`STORE_ENV`].
 pub fn command(name: &str) -> Command {
     #[cfg(windows)]
     {
         if let Some(found) = find_program(name) {
-            return Command::new(found);
+            return program(found);
         }
     }
-    Command::new(name)
+    program(name)
+}
+
+/// The variables a child process that is not Graphicle never gets: the
+/// PostgreSQL store's address, which may hold its password, and the
+/// password file libpq reads.
+pub const STORE_ENV: [&str; 2] = [crate::db::URL_ENV, "PGPASSFILE"];
+
+/// `Command::new(program)` for a program that is not Graphicle (Git, the
+/// graph engine, a document helper, a browser opener), without
+/// [`STORE_ENV`]: none of them needs the store, and Git runs commands that
+/// an indexed repository's configuration names (`core.fsmonitor`,
+/// filters). `fix`'s test commands and drivers keep their own list.
+pub fn program(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut command = Command::new(program);
+    for name in STORE_ENV {
+        command.env_remove(name);
+    }
+    command
 }
 
 /// The first file named [`program_names`]`(name)` in `PATH`'s absolute
@@ -282,7 +300,7 @@ pub fn open_url_command(url: &str) -> Option<Command> {
     if !web || url.chars().any(refused) {
         return None;
     }
-    let mut command = Command::new("cmd");
+    let mut command = program("cmd");
     command.raw_arg(format!("/d /c start \"\" \"{url}\""));
     no_window(&mut command);
     Some(command)
@@ -472,6 +490,22 @@ mod tests {
         assert_eq!(strip_verbatim(r"\\?\UNC\server"), None);
         let long = format!(r"\\?\C:\{}", "a\\".repeat(140));
         assert_eq!(strip_verbatim(&long), None);
+    }
+
+    #[test]
+    fn children_that_are_not_graphicle_never_get_the_store_address() {
+        for command in [program("git"), command("git")] {
+            let removed: Vec<_> = command
+                .get_envs()
+                .filter(|(_, value)| value.is_none())
+                .map(|(name, _)| name.to_string_lossy().into_owned())
+                .collect();
+            for name in STORE_ENV {
+                assert!(removed.iter().any(|r| r == name), "{name} inherited");
+            }
+        }
+        assert!(STORE_ENV.contains(&"GRAPHICLE_DATABASE_URL"));
+        assert!(STORE_ENV.contains(&"PGPASSFILE"));
     }
 
     #[test]

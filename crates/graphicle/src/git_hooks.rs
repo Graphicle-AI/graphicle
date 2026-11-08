@@ -40,7 +40,7 @@ pub struct Repository {
 /// `git -C folder <args>`'s output, trimmed, when it succeeds with one line.
 fn git(folder: &Path, args: &[&str]) -> Option<String> {
     // Git refuses Windows' verbatim `\\?\` paths.
-    let output = std::process::Command::new("git")
+    let output = crate::platform::program("git")
         .arg("-C")
         .arg(crate::platform::simplified(folder.to_path_buf()))
         .args(args)

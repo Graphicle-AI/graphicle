@@ -544,7 +544,7 @@ pub fn extract(name: &str, bytes: &[u8]) -> Result<Value> {
     let dir = tempfile::tempdir()?;
     let input = dir.path().join(format!("source.{}", extension(name)));
     std::fs::write(&input, bytes)?;
-    let mut command = std::process::Command::new(executable);
+    let mut command = crate::platform::program(executable);
     command
         .arg("document-worker")
         .arg(&input)
@@ -659,7 +659,7 @@ fn native_document(name: &str, bytes: &[u8]) -> Result<Value> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join(format!("source.{}", extension(name)));
     std::fs::write(&path, bytes)?;
-    let mut child = std::process::Command::new(executable)
+    let mut child = crate::platform::program(executable)
         .arg(&path)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

@@ -59,7 +59,7 @@ fn rfc3339(at: i64) -> Value {
 }
 
 fn git(root: &Path) -> std::process::Command {
-    let mut command = std::process::Command::new("git");
+    let mut command = crate::platform::program("git");
     command
         .arg("-C")
         .arg(root)

@@ -95,7 +95,7 @@ const EXCLUDE_PATTERN: &str = "*.graphicle-bak";
 /// `git -C folder <args>`'s one line of output, with the variables a Git
 /// hook sets removed; `None` when it fails.
 fn git_line(folder: &Path, args: &[&str]) -> Option<String> {
-    let mut command = std::process::Command::new("git");
+    let mut command = crate::platform::program("git");
     // Git refuses Windows' verbatim `\\?\` paths.
     command
         .arg("-C")

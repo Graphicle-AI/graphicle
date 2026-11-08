@@ -760,7 +760,7 @@ fn porcelain(output: &[u8], prefix: &str) -> (String, Vec<(String, Vec<u8>)>, bo
 /// repository, and optional locks are off, so the check never writes the
 /// index another git process may be using.
 pub(crate) fn git(folder: &Path, args: &[&str]) -> Option<Vec<u8>> {
-    let mut command = std::process::Command::new("git");
+    let mut command = crate::platform::program("git");
     // Git refuses Windows' verbatim `\\?\` paths.
     command
         .arg("-C")

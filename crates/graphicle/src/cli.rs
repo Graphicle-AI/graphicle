@@ -2861,7 +2861,7 @@ fn engine_guard(kind: &str, input: &[u8]) {
     else {
         return;
     };
-    let Ok(mut child) = std::process::Command::new(engine)
+    let Ok(mut child) = crate::platform::program(engine)
         .args(["hook-guard", kind])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

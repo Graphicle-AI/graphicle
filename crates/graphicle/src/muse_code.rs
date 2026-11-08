@@ -226,7 +226,7 @@ pub fn program() -> Option<PathBuf> {
 /// Run `muse plugins <args> --json`; the reply is its exit status, and its
 /// JSON (or its text) from standard output and error.
 fn plugins(muse: &Path, args: &[&str]) -> Result<(bool, Value)> {
-    let output = std::process::Command::new(muse)
+    let output = crate::platform::program(muse)
         .arg("plugins")
         .args(args)
         .arg("--json")

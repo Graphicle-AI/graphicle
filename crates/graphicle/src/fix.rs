@@ -1160,7 +1160,7 @@ impl Git {
 
     /// `git -C dir ARGS`: its standard output, or its error's last lines.
     pub(crate) fn run(&self, dir: &Path, args: &[&str]) -> Result<String> {
-        let mut command = Command::new("git");
+        let mut command = crate::platform::program("git");
         command
             .arg("-c")
             .arg(format!("core.hooksPath={}", self.hooks.display()))

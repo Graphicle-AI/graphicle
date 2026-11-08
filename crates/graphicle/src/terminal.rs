@@ -685,7 +685,7 @@ fn health(port: u16, challenge: Option<&str>) -> Option<Value> {
 
 /// The process listening on TCP `port`, from `lsof`: its PID and command.
 pub fn port_holder(port: u16) -> Option<(u32, String)> {
-    let output = std::process::Command::new("lsof")
+    let output = crate::platform::program("lsof")
         .args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"])
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -2084,7 +2084,7 @@ fn graphicle_hooks(folder: Option<&Path>, home: Option<&Path>, guard: bool) -> V
 /// sync`. `None` outside a Git repository.
 pub fn git_hooks(folder: &Path) -> Option<Vec<String>> {
     // Git refuses Windows' verbatim `\\?\` paths.
-    let output = std::process::Command::new("git")
+    let output = crate::platform::program("git")
         .arg("-C")
         .arg(crate::platform::simplified(folder.to_path_buf()))
         .args(["rev-parse", "--git-path", "hooks"])
@@ -4628,7 +4628,7 @@ fn checks(options: &Doctor<'_>) -> Vec<Check> {
     checks.push(
         match crate::graph_command::locate(Some(&exe), std::env::var_os("PATH").as_deref()) {
             Some(engine) => {
-                let version = std::process::Command::new(&engine)
+                let version = crate::platform::program(&engine)
                     .arg("--version")
                     .stdin(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
