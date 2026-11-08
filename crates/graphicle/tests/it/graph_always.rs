@@ -515,6 +515,49 @@ fn a_running_projection_renews_its_lease() {
     assert_eq!(jobs::LEASE_HEARTBEAT, Duration::from_secs(60));
 }
 
+/// A lease beat waits out a writer that holds the store for longer than a
+/// second (a SQLite checkpoint holds it up to 2 s), so a busy store at beat
+/// time does not let the lease run out.
+#[test]
+fn a_lease_beat_waits_out_a_busy_store() {
+    let f = Fixture::new(&[("a.py", A_V1), ("b.py", B)]);
+    let held = f
+        .store
+        .lease_job_of_kind(&f.repo, "project")
+        .unwrap()
+        .unwrap();
+    let soon = lease_in(2.0);
+    f.store
+        .connect()
+        .unwrap()
+        .execute(
+            "UPDATE am_jobs SET lease_until=? WHERE id=?",
+            [soon.as_str(), held.id.as_str()],
+        )
+        .unwrap();
+    // Another connection holds the write lock across the first beat (at 1 s)
+    // until 2.5 s; the work ends at 3 s, before a second beat.
+    let (locked, wait) = std::sync::mpsc::channel();
+    let store = f.store.clone();
+    let writer = std::thread::spawn(move || {
+        let db = store.connect().unwrap();
+        db.execute_batch("BEGIN IMMEDIATE").unwrap();
+        locked.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(2500));
+        db.execute_batch("COMMIT").unwrap();
+    });
+    wait.recv().unwrap();
+    jobs::with_lease_heartbeat(&f.store, &held, Duration::from_secs(1), || {
+        std::thread::sleep(Duration::from_secs(3));
+    });
+    writer.join().unwrap();
+    let renewed = f.job_field(&held.id, "lease_until");
+    assert!(
+        renewed.as_str().unwrap() > lease_in(200.0).as_str(),
+        "{renewed} after {soon}"
+    );
+}
+
 /// SQLite's busy error is recognised, and a foreground build behind
 /// another process's long write waits for it instead of reporting the
 /// graph as failed.
