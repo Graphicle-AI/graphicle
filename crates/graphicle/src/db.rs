@@ -1597,12 +1597,50 @@ struct SchemaFile {
     /// A store that `import-sqlite` or `restore` is still copying into, or
     /// that one of them left when it was stopped: every opener refuses it
     /// ([`Database::create_unfinished`], [`Database::finish`]).
-    #[serde(default, skip_serializing_if = "is_false")]
-    incomplete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    incomplete: Option<Mark>,
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
+/// The command that copies into a store it made unfinished
+/// ([`Database::create_unfinished`]).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Origin {
+    /// `graphicle import-sqlite`.
+    Import,
+    /// `graphicle restore`.
+    Restore,
+}
+
+/// `"incomplete"` of a store file: the command that left the store
+/// unfinished, or `true` as earlier builds wrote it, which does not say.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy)]
+#[serde(untagged)]
+enum Mark {
+    Flag(bool),
+    Origin(Origin),
+}
+
+/// Why a store file names no store that opens.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Left {
+    /// Unfinished by this command.
+    By(Origin),
+    /// Unfinished, by a command the file does not name.
+    Unknown,
+    /// An empty file.
+    Empty,
+}
+
+impl SchemaFile {
+    /// Why the store is not finished, when it is not.
+    fn left(&self) -> Option<Left> {
+        match self.incomplete {
+            None | Some(Mark::Flag(false)) => None,
+            Some(Mark::Flag(true)) => Some(Left::Unknown),
+            Some(Mark::Origin(origin)) => Some(Left::By(origin)),
+        }
+    }
 }
 
 /// What the file that names a store holds, as read.
@@ -1619,10 +1657,43 @@ enum Named {
 /// `postgres.json` to write it.
 const SCHEMA_FILE_WAIT: Duration = Duration::from_secs(2);
 
-/// The refusal of a store that an import or restore has not finished.
-fn unfinished(path: &Path) -> Error {
+/// The refusal of the file at `path`, which names no store that opens:
+/// one exact instruction for each case, never to remove a data folder (it
+/// holds the SQLite store and the backups).
+fn unfinished(path: &Path, left: Left) -> Error {
+    let folder = match path.parent() {
+        Some(folder) if !folder.as_os_str().is_empty() => folder,
+        _ => Path::new("."),
+    };
+    let (file, folder) = (path.display(), folder.display());
+    Error::Other(match left {
+        Left::By(Origin::Import) => format!(
+            "{file} names a store that graphicle import-sqlite has not finished: it is still copying, or was stopped. The SQLite file is untouched; once no import is running, run graphicle --data-dir {folder} import-sqlite again (naming the same SQLite file, if you named one), which replaces the unfinished store"
+        ),
+        Left::By(Origin::Restore) => format!(
+            "{file} names a store that graphicle restore has not finished: it is still loading, or was stopped. Once no restore is running, run graphicle --data-dir {folder} restore again with the same backup, which replaces the unfinished store"
+        ),
+        Left::Unknown => format!(
+            "{file} names a store that graphicle import-sqlite or restore has not finished: it is still copying, or was stopped. Once neither is running, run the same command again, which replaces the unfinished store: graphicle --data-dir {folder} import-sqlite, or graphicle --data-dir {folder} restore with the same backup"
+        ),
+        Left::Empty if path.file_name() == Some(std::ffi::OsStr::new(SCHEMA_FILE)) => format!(
+            "{file} is empty: the process that created it was stopped before it wrote it. Remove only {file}; the SQLite store and the backups in {folder} are untouched"
+        ),
+        Left::Empty => format!(
+            "{file} is empty: the process that created it was stopped before it wrote it. Remove only {file}"
+        ),
+    })
+}
+
+/// The refusal to replace an unfinished store whose copy is still running.
+fn still_running(path: &Path, left: Left) -> Error {
+    let what = match left {
+        Left::By(Origin::Import) => "an import is",
+        Left::By(Origin::Restore) => "a restore is",
+        Left::Unknown | Left::Empty => "an import or restore is",
+    };
     Error::Other(format!(
-        "{} names a store that is not finished: an import-sqlite or restore is still copying into it, or was stopped before it finished. Run graphicle import-sqlite again to replace an unfinished import, or remove the data folder and restore again",
+        "{}: {what} still running into this store; wait for it to finish",
         path.display()
     ))
 }
@@ -1729,8 +1800,11 @@ impl Database {
     pub fn schema_in(path: &Path) -> Result<Option<String>> {
         match Self::named_in(path)? {
             Named::Missing => Ok(None),
-            Named::File(file) if !file.incomplete => Ok(Some(file.schema)),
-            Named::Empty | Named::File(_) => Err(unfinished(path)),
+            Named::Empty => Err(unfinished(path, Left::Empty)),
+            Named::File(file) => match file.left() {
+                None => Ok(Some(file.schema)),
+                Some(left) => Err(unfinished(path, left)),
+            },
         }
     }
 
@@ -1782,9 +1856,10 @@ impl Database {
     /// and marked unfinished: every opener refuses it until [`Database::finish`].
     /// What `import-sqlite` and `restore` copy into, so that one stopped
     /// before its copy committed never leaves a store that opens empty.
-    /// The returned [`CopyLock`] is taken before the schema is created and
+    /// The file names `origin`, the command copying, for the refusal. The
+    /// returned [`CopyLock`] is taken before the schema is created and
     /// holds off [`Database::discard_unfinished`] until it is dropped.
-    pub fn create_unfinished(path: &Path) -> Result<(Arc<Database>, CopyLock)> {
+    pub fn create_unfinished(path: &Path, origin: Origin) -> Result<(Arc<Database>, CopyLock)> {
         let settings = Settings::from_environment()?;
         let schema = format!("g_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
         let key = copy_key(&schema);
@@ -1801,7 +1876,7 @@ impl Database {
         };
         let file = serde_json::to_vec_pretty(&SchemaFile {
             schema: schema.clone(),
-            incomplete: true,
+            incomplete: Some(Mark::Origin(origin)),
         })
         .unwrap_or_default();
         if let Err(error) = write_private(path, &file) {
@@ -1831,7 +1906,7 @@ impl Database {
         }
         let bytes = serde_json::to_vec_pretty(&SchemaFile {
             schema: self.schema.clone(),
-            incomplete: false,
+            incomplete: None,
         })
         .unwrap_or_default();
         let temporary =
@@ -1862,16 +1937,19 @@ impl Database {
         self.drop_schema()
     }
 
-    /// Remove the store that the file at `path` names when an import or
-    /// restore did not finish it (or an empty file its creator never
-    /// wrote): its schema is dropped and the file removed. Returns whether
-    /// there was such a store; a finished store is never touched, and nor
-    /// is one whose import or restore is still running (its [`CopyLock`]
-    /// is held): that is refused.
-    pub fn discard_unfinished(path: &Path) -> Result<bool> {
+    /// Remove the store that the file at `path` names when `origin` (or a
+    /// command the file does not name) did not finish it, or an empty file
+    /// its creator never wrote: its schema is dropped and the file removed.
+    /// Returns whether there was such a store; a finished store is never
+    /// touched. One that the other command left, or whose import or
+    /// restore is still running (its [`CopyLock`] is held), is refused.
+    pub fn discard_unfinished(path: &Path, origin: Origin) -> Result<bool> {
         match Self::named_in(path)? {
             Named::Missing => Ok(false),
-            Named::File(file) if !file.incomplete => Ok(false),
+            Named::File(file) if file.left().is_none() => Ok(false),
+            Named::File(file) if matches!(file.left(), Some(Left::By(other)) if other != origin) => {
+                Err(unfinished(path, file.left().unwrap_or(Left::Unknown)))
+            }
             Named::Empty => {
                 std::fs::remove_file(path).map_err(|e| {
                     Error::Other(format!("Could not remove {}: {e}", path.display()))
@@ -1887,15 +1965,12 @@ impl Database {
                         .query_one(format!("SELECT pg_try_advisory_lock({key})").as_str(), &[])?
                         .get(0);
                     if !free {
-                        return Err(Error::Other(format!(
-                            "{}: an import is still running into this store; wait for it to finish",
-                            path.display()
-                        )));
+                        return Err(still_running(path, file.left().unwrap_or(Left::Unknown)));
                     }
                     // Read again under the lock: the copy may have finished
                     // since, and a finished store is never touched.
                     match Self::read_named(path)? {
-                        Named::File(now) if now.schema == file.schema && now.incomplete => {}
+                        Named::File(now) if now.schema == file.schema && now.left().is_some() => {}
                         _ => return Ok(false),
                     }
                     client.batch_execute(&format!(
@@ -1990,7 +2065,7 @@ impl Database {
                 )?;
                 let file = serde_json::to_vec_pretty(&SchemaFile {
                     schema: schema.clone(),
-                    incomplete: false,
+                    incomplete: None,
                 })
                 .unwrap_or_default();
                 if let Err(error) = write_private(path, &file) {

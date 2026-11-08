@@ -375,15 +375,16 @@ impl Store {
     /// schema of the configured PostgreSQL database ([`crate::db`]),
     /// created on first use and brought up to this program's tables.
     pub fn open(directory: impl AsRef<Path>) -> Result<Self> {
-        Self::open_with(directory.as_ref(), false)
+        Self::open_with(directory.as_ref(), None)
     }
 
     /// A new PostgreSQL store for `directory`, beside the SQLite store it
     /// may hold, to copy a store into (`graphicle import-sqlite`,
     /// `graphicle restore`). It is marked unfinished, and every opener
     /// refuses it, until [`Store::finish`]: a copy that is stopped before
-    /// it commits never leaves a store that opens empty.
-    pub fn create_postgres(directory: &Path) -> Result<Self> {
+    /// it commits never leaves a store that opens empty. Its file names
+    /// `origin`, the command copying, for the refusal's instruction.
+    pub fn create_postgres(directory: &Path, origin: crate::db::Origin) -> Result<Self> {
         if !crate::db::postgres_configured() {
             return Err(Error::bad(format!("Set {} first", crate::db::URL_ENV)));
         }
@@ -392,7 +393,7 @@ impl Store {
                 "This data folder already has a PostgreSQL store",
             ));
         }
-        Self::open_with(directory, true)
+        Self::open_with(directory, Some(origin))
     }
 
     /// Mark a store of [`Store::create_postgres`] finished, once what was
@@ -401,7 +402,10 @@ impl Store {
         Ok(self.pool.finish()?)
     }
 
-    fn open_with(directory: &Path, beside_sqlite: bool) -> Result<Self> {
+    /// `copy`: a new unfinished store for this command to copy into
+    /// ([`Store::create_postgres`]).
+    fn open_with(directory: &Path, copy: Option<crate::db::Origin>) -> Result<Self> {
+        let beside_sqlite = copy.is_some();
         if directory.is_symlink() {
             return Err(Error::bad("Data directory cannot be a symlink"));
         }
@@ -427,12 +431,15 @@ impl Store {
                 crate::db::URL_ENV
             )));
         }
-        let (pool, copying) = if beside_sqlite {
-            let (pool, lock) =
-                crate::db::Database::create_unfinished(&crate::db::schema_file(directory))?;
-            (pool, Some(Arc::new(lock)))
-        } else {
-            (crate::db::Database::for_directory(directory, true)?, None)
+        let (pool, copying) = match copy {
+            Some(origin) => {
+                let (pool, lock) = crate::db::Database::create_unfinished(
+                    &crate::db::schema_file(directory),
+                    origin,
+                )?;
+                (pool, Some(Arc::new(lock)))
+            }
+            None => (crate::db::Database::for_directory(directory, true)?, None),
         };
         let store = Self {
             directory: Arc::new(directory.to_path_buf()),

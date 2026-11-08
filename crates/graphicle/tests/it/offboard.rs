@@ -542,3 +542,64 @@ fn a_backup_with_an_edition_table_of_plain_types_restores() {
         .unwrap();
     assert_eq!(kind, "double precision[]");
 }
+
+/// A restore that was stopped before its load committed left a store that
+/// every command refuses, with the instruction to restore again: that
+/// replaces it, its schema dropped. While a restore is still loading, a
+/// second one is refused and the first's store and file are left alone.
+#[test]
+fn a_restore_again_replaces_its_own_unfinished_store_but_never_a_running_one() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let backup = dir.path().join("edition.backup");
+    let target = dir.path().join("restored");
+    handmade_archive(
+        &backup,
+        "edition_notes",
+        &["id", "note"],
+        &["bigint", "text"],
+        "1\tkept\n",
+    );
+    let file = target.join(graphicle_runtime::db::SCHEMA_FILE);
+    let running = Store::create_postgres(&target, graphicle_runtime::db::Origin::Restore).unwrap();
+    let left = running.schema().to_string();
+    let named = std::fs::read(&file).unwrap();
+    let refused = local::restore(&backup, &target).expect_err("replaced a running restore");
+    assert!(
+        refused.to_string().contains("a restore is still running"),
+        "{refused}"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), named);
+    // Stopped: its copy lock is gone with it.
+    drop(running);
+    let Err(refused) = Store::open(&target) else {
+        panic!("an unfinished restore opened");
+    };
+    assert!(
+        refused
+            .to_string()
+            .contains("restore again with the same backup"),
+        "{refused}"
+    );
+    let restored = local::restore(&backup, &target).unwrap();
+    assert_eq!(restored["restored"], true, "{restored}");
+    let store = Store::open(&target).unwrap();
+    assert_ne!(store.schema(), left);
+    let db = store.connect().unwrap();
+    let note: String = db
+        .query_row("SELECT note FROM edition_notes WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(note, "kept");
+    let gone: i64 = db
+        .query_row(
+            "SELECT count(*) FROM pg_namespace WHERE nspname=?",
+            [left.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(gone, 0);
+}

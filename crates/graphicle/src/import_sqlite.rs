@@ -3,7 +3,8 @@
 //! names the server.
 //!
 //! The data folder must not have a PostgreSQL store yet, other than one an
-//! import that was stopped left unfinished, which is replaced. The SQLite file is
+//! import that was stopped left unfinished, which is replaced (one whose
+//! import is still running is refused). The SQLite file is
 //! opened read-only and checked (`PRAGMA quick_check`), and read in one
 //! snapshot, so a program still writing to it cannot leave the copy
 //! half-old; the store is created at this program's schema; then every
@@ -115,7 +116,10 @@ pub fn import(source: &Path, directory: &Path) -> Result<Value> {
     // store that nothing opens: it is replaced. A finished store never is,
     // nor one whose import is still running (its copy lock is held).
     if directory.join(crate::db::SCHEMA_FILE).is_file()
-        && !crate::db::Database::discard_unfinished(&crate::db::schema_file(directory))?
+        && !crate::db::Database::discard_unfinished(
+            &crate::db::schema_file(directory),
+            crate::db::Origin::Import,
+        )?
     {
         return Err(Error::bad(
             "This data folder already has a PostgreSQL store; import into a new --data-dir",
@@ -191,7 +195,7 @@ pub fn import(source: &Path, directory: &Path) -> Result<Value> {
     // The store is marked unfinished until its copy has committed, so a
     // copy that is stopped (a kill, a reboot) leaves no store that opens
     // empty beside the SQLite file; running import-sqlite again replaces it.
-    let store = Store::create_postgres(directory)?;
+    let store = Store::create_postgres(directory, crate::db::Origin::Import)?;
     let outcome = copy_all(&sqlite, &source_tables, &store).and_then(|copied| {
         store.finish()?;
         Ok(copied)

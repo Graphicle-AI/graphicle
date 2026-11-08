@@ -1453,6 +1453,20 @@ pub fn open_url(url: &str) -> Result<()> {
 pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<Value> {
     #[cfg(unix)]
     use std::os::unix::fs::DirBuilderExt;
+    // A restore that was stopped before it finished left a store that
+    // nothing opens: it is replaced, as import-sqlite replaces its own. A
+    // finished store never is, nor one whose restore is still running.
+    if crate::db::postgres_configured()
+        && directory.join(crate::db::SCHEMA_FILE).is_file()
+        && !crate::db::Database::discard_unfinished(
+            &crate::db::schema_file(directory),
+            crate::db::Origin::Restore,
+        )?
+    {
+        return Err(Error::bad(
+            "Restore into a new --data-dir; an existing store cannot be replaced",
+        ));
+    }
     if crate::db::Database::exists(directory) {
         return Err(Error::bad(
             "Restore into a new --data-dir; an existing store cannot be replaced",
@@ -1477,7 +1491,7 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
     }
     // Marked unfinished until the load commits: a restore that is stopped
     // leaves no store that opens empty.
-    let store = Store::create_postgres(directory)?;
+    let store = Store::create_postgres(directory, crate::db::Origin::Restore)?;
     let loaded = crate::archive::load(&mut store.connect()?, backup).and_then(|_| store.finish());
     if let Err(error) = loaded {
         let _ = store.pool.discard();

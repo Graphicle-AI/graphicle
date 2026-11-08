@@ -4,7 +4,11 @@
 //! that opens empty, and only the process that creates a `postgres.json`
 //! ever writes it.
 
-use graphicle_runtime::{db::Database, import_sqlite, store::Store};
+use graphicle_runtime::{
+    db::{Database, Origin},
+    import_sqlite,
+    store::Store,
+};
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
@@ -40,6 +44,16 @@ fn schema_exists(store: &Store, schema: &str) -> bool {
     count > 0
 }
 
+/// A refusal of an unfinished store: never advice to remove the data
+/// folder (the SQLite store and backups are in it), never the address.
+fn assert_safe(refused: &str) {
+    assert!(!refused.contains("remove the data folder"), "{refused}");
+    assert!(!refused.contains("data folder and"), "{refused}");
+    if let Ok(url) = std::env::var(graphicle_runtime::db::URL_ENV) {
+        assert!(!refused.contains(&url), "the address is in: {refused}");
+    }
+}
+
 /// An empty `postgres.json` (a process stopped between creating it and
 /// writing it) is refused by every opener and never filled by one: before,
 /// two openers could each fill it and use a schema of their own.
@@ -57,7 +71,18 @@ fn an_empty_store_file_is_refused_never_filled_and_replaced_by_an_import() {
     let Err(refused) = Store::open(&folder) else {
         panic!("a folder with an empty postgres.json opened");
     };
-    assert!(refused.to_string().contains("not finished"), "{refused}");
+    let refused = refused.to_string();
+    assert!(refused.contains("is empty"), "{refused}");
+    assert!(
+        refused.contains(&format!("Remove only {}", file.display())),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("the SQLite store and the backups"),
+        "{refused}"
+    );
+    assert!(!refused.contains("import-sqlite"), "{refused}");
+    assert_safe(&refused);
     assert!(Database::for_file(&file, true).is_err());
     assert!(Store::existing(&folder).is_err());
     assert_eq!(std::fs::metadata(&file).unwrap().len(), 0);
@@ -79,13 +104,26 @@ fn an_import_stopped_before_its_copy_committed_is_refused_and_replaced() {
     let dir = TempDir::new().unwrap();
     let folder = dir.path().join("data");
     let source = sqlite_source(&folder);
-    let stopped = Store::create_postgres(&folder).unwrap();
+    let stopped = Store::create_postgres(&folder, Origin::Import).unwrap();
     let left = stopped.schema().to_string();
     drop(stopped);
     let Err(refused) = Store::open(&folder) else {
         panic!("an unfinished import opened");
     };
-    assert!(refused.to_string().contains("not finished"), "{refused}");
+    let refused = refused.to_string();
+    assert!(
+        refused.contains(&format!(
+            "run graphicle --data-dir {} import-sqlite again",
+            folder.display()
+        )),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("The SQLite file is untouched"),
+        "{refused}"
+    );
+    assert!(!refused.contains("restore"), "{refused}");
+    assert_safe(&refused);
     assert!(Store::existing(&folder).is_err());
     let imported = import_sqlite::import(&source, &folder).unwrap();
     assert_eq!(imported["imported"], true, "{imported}");
@@ -111,7 +149,7 @@ fn an_import_refuses_to_replace_a_store_whose_copy_is_still_running() {
     let folder = dir.path().join("data");
     let source = sqlite_source(&folder);
     let file = folder.join(graphicle_runtime::db::SCHEMA_FILE);
-    let running = Store::create_postgres(&folder).unwrap();
+    let running = Store::create_postgres(&folder, Origin::Import).unwrap();
     let schema = running.schema().to_string();
     let named = std::fs::read(&file).unwrap();
     let copied = std::fs::read(&source).unwrap();
@@ -129,7 +167,9 @@ fn an_import_refuses_to_replace_a_store_whose_copy_is_still_running() {
 }
 
 /// The same for `restore`, which loads into a store made the same way: one
-/// it had not finished loading is refused; a finished one opens.
+/// it had not finished loading is refused, with the instruction to restore
+/// again; `import-sqlite` does not replace it but gives the same refusal.
+/// A finished one opens.
 #[test]
 fn a_restore_stopped_before_its_load_committed_is_refused() {
     if !postgres_store() {
@@ -137,15 +177,35 @@ fn a_restore_stopped_before_its_load_committed_is_refused() {
     }
     let dir = TempDir::new().unwrap();
     let folder = dir.path().join("restored");
-    let stopped = Store::create_postgres(&folder).unwrap();
+    let stopped = Store::create_postgres(&folder, Origin::Restore).unwrap();
+    let left = stopped.schema().to_string();
     drop(stopped);
     let Err(refused) = Store::open(&folder) else {
         panic!("an unfinished restore opened");
     };
-    assert!(refused.to_string().contains("not finished"), "{refused}");
+    let refused = refused.to_string();
+    assert!(
+        refused.contains(&format!(
+            "run graphicle --data-dir {} restore again with the same backup",
+            folder.display()
+        )),
+        "{refused}"
+    );
+    assert!(!refused.contains("import-sqlite"), "{refused}");
+    assert_safe(&refused);
+    let file = folder.join(graphicle_runtime::db::SCHEMA_FILE);
+    let named = std::fs::read(&file).unwrap();
+    let source = sqlite_source(&dir.path().join("elsewhere"));
+    let not_imported = import_sqlite::import(&source, &folder).expect_err("imported");
+    assert!(
+        not_imported.to_string().contains("restore again"),
+        "{not_imported}"
+    );
+    assert_eq!(std::fs::read(&file).unwrap(), named);
+    assert!(std::fs::read_to_string(&file).unwrap().contains(&left));
     // A finished store opens.
     let finished = dir.path().join("finished");
-    let store = Store::create_postgres(&finished).unwrap();
+    let store = Store::create_postgres(&finished, Origin::Restore).unwrap();
     store.finish().unwrap();
     assert_eq!(Store::open(&finished).unwrap().schema(), store.schema());
 }
@@ -209,4 +269,49 @@ fn a_sqlite_only_folder_is_refused_by_read_only_opens_too() {
     assert!(refused.to_string().contains("import-sqlite"), "{refused}");
     assert!(Store::open(&folder).is_err());
     assert!(!folder.join(graphicle_runtime::db::SCHEMA_FILE).exists());
+}
+
+/// A store file marked unfinished in the boolean form an earlier build
+/// wrote does not say which command left it: the refusal names both, each
+/// of which replaces it, and `import-sqlite` does.
+#[test]
+fn an_unfinished_store_of_unknown_origin_names_both_commands_and_is_replaced() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path().join("data");
+    let source = sqlite_source(&folder);
+    let file = folder.join(graphicle_runtime::db::SCHEMA_FILE);
+    let left = format!("g_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+    std::fs::write(
+        &file,
+        serde_json::to_vec(&serde_json::json!({"schema": left, "incomplete": true})).unwrap(),
+    )
+    .unwrap();
+    let Err(refused) = Store::open(&folder) else {
+        panic!("an unfinished store opened");
+    };
+    let refused = refused.to_string();
+    let folder_shown = folder.display().to_string();
+    assert!(
+        refused.contains(&format!(
+            "graphicle --data-dir {folder_shown} import-sqlite"
+        )),
+        "{refused}"
+    );
+    assert!(
+        refused.contains(&format!(
+            "graphicle --data-dir {folder_shown} restore with the same backup"
+        )),
+        "{refused}"
+    );
+    assert_safe(&refused);
+    let imported = import_sqlite::import(&source, &folder).unwrap();
+    assert_eq!(imported["imported"], true, "{imported}");
+    assert_ne!(imported["schema"], left.as_str());
+    assert_eq!(
+        Store::open(&folder).unwrap().schema(),
+        imported["schema"].as_str().unwrap()
+    );
 }
