@@ -253,9 +253,14 @@ fn copy_all(
         };
         // The columns both have, and the SQLite rowid for the hidden
         // `rowid` identity (tables whose `rowid` is their `id` recompute it).
+        // A `WITHOUT ROWID` table (the passage index's) has none: the
+        // identity numbers its rows.
+        let has_rowid = sqlite
+            .prepare(&format!("SELECT rowid FROM \"{table}\" LIMIT 0"))
+            .is_ok();
         let mut copied_columns: Vec<(String, String)> = Vec::new();
         for (column, kind) in columns {
-            if column == "rowid" || present.contains(column) {
+            if (column == "rowid" && has_rowid) || present.contains(column) {
                 copied_columns.push((column.clone(), kind.clone()));
             }
         }
@@ -274,8 +279,9 @@ fn copy_all(
             .collect();
         let mut statement = sqlite
             .prepare(&format!(
-                "SELECT {} FROM \"{table}\" ORDER BY rowid",
-                select.join(",")
+                "SELECT {} FROM \"{table}\"{}",
+                select.join(","),
+                if has_rowid { " ORDER BY rowid" } else { "" }
             ))
             .map_err(sqlite_error)?;
         let mut rows = statement.query([]).map_err(sqlite_error)?;
