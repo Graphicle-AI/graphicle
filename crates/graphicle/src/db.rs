@@ -2161,8 +2161,23 @@ impl Database {
                     lite.pragma_update(None, "journal_size_limit", DEFAULT_WAL_LIMIT as i64)?;
                     lite
                 } else {
+                    // SQLite's NOFOLLOW refuses a link anywhere in the path,
+                    // not only at the file (macOS temporary folders sit under
+                    // /var, a link to /private/var). Resolve the folder, never
+                    // the file, so a file that is a link is still refused.
+                    let resolved = match path.file_name() {
+                        Some(name) => {
+                            use crate::platform::CanonicalExt;
+                            path.parent()
+                                .filter(|parent| !parent.as_os_str().is_empty())
+                                .unwrap_or_else(|| Path::new("."))
+                                .canonical()
+                                .map_or_else(|_| path.clone(), |parent| parent.join(name))
+                        }
+                        None => path.clone(),
+                    };
                     rusqlite::Connection::open_with_flags(
-                        path,
+                        &resolved,
                         rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
                     )?
                 };
@@ -3712,6 +3727,36 @@ pub fn store_file(directory: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A SQLite file that is not a store (a backup, its private copy)
+    /// opens through a linked folder, as every macOS temporary folder is,
+    /// but a file that is itself a link is refused.
+    #[cfg(unix)]
+    #[test]
+    fn a_sqlite_file_opens_through_a_linked_folder_but_not_as_a_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        rusqlite::Connection::open(real.join("a.sqlite3"))
+            .unwrap()
+            .execute_batch("CREATE TABLE t(x); INSERT INTO t VALUES(1)")
+            .unwrap();
+        let linked = dir.path().join("linked");
+        std::os::unix::fs::symlink(&real, &linked).unwrap();
+        let db = Database::sqlite(&linked.join("a.sqlite3"), false)
+            .connect()
+            .unwrap();
+        let rows: i64 = db
+            .query_row("SELECT count(*) FROM t", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 1);
+        std::os::unix::fs::symlink(real.join("a.sqlite3"), real.join("b.sqlite3")).unwrap();
+        assert!(
+            Database::sqlite(&real.join("b.sqlite3"), false)
+                .connect()
+                .is_err()
+        );
+    }
 
     #[test]
     fn text_arrays_quote_their_values() {
