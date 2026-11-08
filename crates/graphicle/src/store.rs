@@ -1246,6 +1246,13 @@ fn check_reader(db: &Connection) -> Result<()> {
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
         .optional()?;
+    check_reader_format(needed)
+}
+
+/// [`check_reader`] of the newest format a store's `store_readers` asks
+/// for, with the version that first read it (also `import-sqlite`'s check
+/// of the SQLite file it copies).
+pub(crate) fn check_reader_format(needed: Option<(i64, String)>) -> Result<()> {
     match needed {
         Some((format, version)) if format > READER_FORMAT => Err(Error::bad(format!(
             "This store needs Graphicle {version} or newer (store format {format}); this is Graphicle {} (store format {READER_FORMAT}). Open it with Graphicle {version} or newer.",

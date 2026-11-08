@@ -118,3 +118,44 @@ fn a_restore_stopped_before_its_load_committed_is_refused() {
     store.finish().unwrap();
     assert_eq!(Store::open(&finished).unwrap().schema(), store.schema());
 }
+
+/// A column the SQLite store has and this version does not create (one a
+/// newer Graphicle added) is refused, as an unknown table is, instead of
+/// being left behind; nothing is created.
+#[test]
+fn an_import_refuses_a_column_this_version_does_not_know() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path().join("data");
+    let source = sqlite_source(&folder);
+    rusqlite::Connection::open(&source)
+        .unwrap()
+        .execute_batch("ALTER TABLE repo_projects ADD COLUMN later_notes TEXT")
+        .unwrap();
+    let refused = import_sqlite::import(&source, &folder).expect_err("imported");
+    assert!(refused.to_string().contains("later_notes"), "{refused}");
+    assert!(!folder.join(graphicle_runtime::db::SCHEMA_FILE).exists());
+}
+
+/// A SQLite store that a newer Graphicle needs (its `store_readers`) is
+/// refused before anything is created, as opening it is.
+#[test]
+fn an_import_refuses_a_store_that_needs_a_newer_reader() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path().join("data");
+    let source = sqlite_source(&folder);
+    rusqlite::Connection::open(&source)
+        .unwrap()
+        .execute_batch(
+            "INSERT INTO store_readers(reason,format,version,updated_at) VALUES('later',999999,'99.0.0','2026-11-08T00:00:00.000000Z')",
+        )
+        .unwrap();
+    let refused = import_sqlite::import(&source, &folder).expect_err("imported");
+    assert!(refused.to_string().contains("99.0.0"), "{refused}");
+    assert!(!folder.join(graphicle_runtime::db::SCHEMA_FILE).exists());
+}

@@ -166,6 +166,20 @@ pub fn import(source: &Path, directory: &Path) -> Result<Value> {
             source_tables.insert(name, list);
         }
     }
+    // A store that a newer program needs (`store_readers`) is refused, as
+    // opening it is: what it holds may not be honoured by this version.
+    if source_tables.contains_key("store_readers") {
+        use rusqlite::OptionalExtension;
+        let needed: Option<(i64, String)> = sqlite
+            .query_row(
+                "SELECT format,version FROM store_readers ORDER BY format DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        crate::store::check_reader_format(needed)?;
+    }
     if !source_tables.contains_key("repo_projects") {
         return Err(Error::bad(format!(
             "{} is not a Graphicle store",
@@ -215,6 +229,21 @@ fn copy_all(
         if skipped_reason(name).is_none() && !target_names.contains(name.as_str()) {
             return Err(Error::bad(format!(
                 "The SQLite store has table {name}, which this version of Graphicle does not know; import it with the version that wrote it"
+            )));
+        }
+    }
+    // A column this version does not know would be left behind: refused
+    // as an unknown table is.
+    for (table, columns) in &targets {
+        let Some(present) = source_tables.get(table) else {
+            continue;
+        };
+        if let Some(column) = present
+            .iter()
+            .find(|c| !columns.iter().any(|(t, _)| t == *c))
+        {
+            return Err(Error::bad(format!(
+                "The SQLite store's table {table} has column {column}, which this version of Graphicle does not know; import it with the version that wrote it"
             )));
         }
     }
