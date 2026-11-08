@@ -15,8 +15,14 @@ use std::time::Duration;
 
 /// Rows of 128 KiB committed one per transaction while four readers keep
 /// read transactions open back to back; the largest the log grew, in
-/// bytes, with the store's log limit set to `limit` (or none).
-fn largest_log(limit: Option<u64>, commits: usize) -> u64 {
+/// bytes, with the store's log limit set to `limit` (or none). With `pin`,
+/// a fifth reader also holds one read transaction open from before the
+/// first commit to the end, so SQLite's own checkpoint can never restart
+/// the log: without it, a moment when all four readers are between
+/// transactions (more likely on a loaded machine) lets the log restart and
+/// makes the unbounded growth this test compares against vary from run to
+/// run.
+fn largest_log(limit: Option<u64>, commits: usize, pin: bool) -> u64 {
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     store.pool.set_wal_limit(limit);
@@ -46,6 +52,26 @@ fn largest_log(limit: Option<u64>, commits: usize) -> u64 {
             })
         })
         .collect();
+    let pinned = pin.then(|| {
+        let store = store.clone();
+        let stop = stop.clone();
+        let (started, snapshot) = std::sync::mpsc::channel();
+        let pinned = std::thread::spawn(move || {
+            store
+                .read(|db| {
+                    let _: i64 =
+                        db.query_row("SELECT count(*) FROM wal_probe", [], |r| r.get(0))?;
+                    started.send(()).unwrap();
+                    while !stop.load(Ordering::Relaxed) {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    Ok(())
+                })
+                .unwrap();
+        });
+        snapshot.recv().unwrap();
+        pinned
+    });
     let log = dir.path().join("reviews.sqlite3-wal");
     let body = vec![7u8; 128 << 10];
     let mut largest = 0;
@@ -62,7 +88,7 @@ fn largest_log(limit: Option<u64>, commits: usize) -> u64 {
         largest = largest.max(std::fs::metadata(&log).map(|m| m.len()).unwrap_or(0));
     }
     stop.store(true, Ordering::Relaxed);
-    for reader in readers {
+    for reader in readers.into_iter().chain(pinned) {
         reader.join().unwrap();
     }
     largest
@@ -77,12 +103,13 @@ fn the_write_ahead_log_stays_bounded_under_constant_reads() {
     // 240 commits of 128 KiB: 30 MiB written.
     let commits = 240;
     let limit: u64 = 4 << 20;
-    let unbounded = largest_log(None, commits);
-    let bounded = largest_log(Some(limit), commits);
+    let unbounded = largest_log(None, commits, true);
+    let bounded = largest_log(Some(limit), commits, false);
     eprintln!(
         "largest log: {unbounded} bytes without the limit, {bounded} with a {limit}-byte limit"
     );
-    // Without the limit the log keeps most of what was written.
+    // Without the limit the log keeps most of what was written (a pinned
+    // reader keeps SQLite's own checkpoint from restarting it).
     assert!(
         unbounded > 16 << 20,
         "the log did not grow without the limit: {unbounded} bytes"
