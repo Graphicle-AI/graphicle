@@ -1197,13 +1197,53 @@ pub const CHECKPOINT_WAIT: Duration = Duration::from_secs(2);
 /// `CHECKPOINT_WAIT + CHECKPOINT_PAUSE`.
 pub const CHECKPOINT_PAUSE: Duration = Duration::from_secs(8);
 
-/// One checkpoint at a time per store in this process, and a pause after
-/// one that found readers ([`CHECKPOINT_PAUSE`]).
+/// One checkpoint at a time per store file in this process, and a pause
+/// after one that found readers ([`CHECKPOINT_PAUSE`]); see
+/// [`checkpoint_gate`].
 #[derive(Default)]
 struct CheckpointGate {
     running: std::sync::atomic::AtomicBool,
     /// Milliseconds since the Unix epoch before which no checkpoint starts.
     not_before_ms: std::sync::atomic::AtomicU64,
+}
+
+/// The checkpoint gate of the SQLite file at `path`: one per file in this
+/// process, shared by every [`Database`] of the file, so that a process
+/// that opened a store more than once still runs one checkpoint of it at a
+/// time and keeps one pause. Files are told apart by their canonical path.
+fn checkpoint_gate(path: &Path) -> Arc<CheckpointGate> {
+    type Gates = Mutex<HashMap<PathBuf, std::sync::Weak<CheckpointGate>>>;
+    static GATES: OnceLock<Gates> = OnceLock::new();
+    if path == Path::new(":memory:") {
+        return Arc::new(CheckpointGate::default());
+    }
+    // A store not created yet: its folder's canonical path and its name.
+    let key = path
+        .canonicalize()
+        .ok()
+        .or_else(|| {
+            let name = path.file_name()?;
+            let folder = path.parent().filter(|p| !p.as_os_str().is_empty());
+            Some(
+                folder
+                    .unwrap_or(Path::new("."))
+                    .canonicalize()
+                    .ok()?
+                    .join(name),
+            )
+        })
+        .unwrap_or_else(|| path.to_path_buf());
+    let mut gates = GATES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if let Some(gate) = gates.get(&key).and_then(std::sync::Weak::upgrade) {
+        return gate;
+    }
+    gates.retain(|_, gate| gate.strong_count() > 0);
+    let gate = Arc::new(CheckpointGate::default());
+    gates.insert(key, Arc::downgrade(&gate));
+    gate
 }
 
 fn now_ms() -> u64 {
@@ -1617,7 +1657,7 @@ pub struct Database {
     wal_limit: std::sync::atomic::AtomicU64,
     /// Whether this process is checkpointing the log, and until when a
     /// checkpoint that found readers keeps others away ([`Connection::bound_wal`]).
-    checkpoint: CheckpointGate,
+    checkpoint: Arc<CheckpointGate>,
     backend: Backend,
 }
 
@@ -1661,7 +1701,7 @@ impl Database {
             lock_key: 0,
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             wal_limit: std::sync::atomic::AtomicU64::new(DEFAULT_WAL_LIMIT),
-            checkpoint: CheckpointGate::default(),
+            checkpoint: checkpoint_gate(path),
             backend: Backend::Sqlite {
                 path: path.to_path_buf(),
                 store,
@@ -1951,7 +1991,7 @@ impl Database {
                 lock_key: database.lock_key,
                 generation: database.generation.clone(),
                 wal_limit: std::sync::atomic::AtomicU64::new(0),
-                checkpoint: CheckpointGate::default(),
+                checkpoint: Arc::new(CheckpointGate::default()),
                 backend: Backend::Postgres(pool.clone()),
             });
             all.insert((settings.url.clone(), schema.to_string()), replaced.clone());
@@ -1981,7 +2021,7 @@ impl Database {
             lock_key: lock_key(schema),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             wal_limit: std::sync::atomic::AtomicU64::new(0),
-            checkpoint: CheckpointGate::default(),
+            checkpoint: Arc::new(CheckpointGate::default()),
             backend: Backend::Postgres(pool),
         });
         all.insert(key, database.clone());
@@ -2423,7 +2463,7 @@ impl Connection {
             lock_key: lock_key(&schema),
             generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             wal_limit: std::sync::atomic::AtomicU64::new(0),
-            checkpoint: CheckpointGate::default(),
+            checkpoint: Arc::new(CheckpointGate::default()),
             schema,
             file: None,
             temporary: true,
@@ -3720,6 +3760,38 @@ mod tests {
         assert!(!valid_identifier("gf_edges; DROP TABLE x"));
         assert!(!valid_identifier("1abc"));
         assert!(!valid_identifier(""));
+    }
+
+    #[test]
+    fn one_checkpoint_gate_per_sqlite_file_in_a_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(SQLITE_FILE);
+        // Before the file exists (a store being created), and after.
+        let first = Database::sqlite(&path, true);
+        let second = Database::sqlite(&dir.path().join(".").join(SQLITE_FILE), true);
+        assert!(std::sync::Arc::ptr_eq(
+            &first.checkpoint,
+            &second.checkpoint
+        ));
+        std::fs::write(&path, b"").unwrap();
+        let third = Database::sqlite(&path, true);
+        assert!(std::sync::Arc::ptr_eq(&first.checkpoint, &third.checkpoint));
+        let other = Database::sqlite(&dir.path().join("other.sqlite3"), true);
+        assert!(!std::sync::Arc::ptr_eq(
+            &first.checkpoint,
+            &other.checkpoint
+        ));
+        // A checkpoint one of them runs keeps the others from starting one.
+        first
+            .checkpoint
+            .running
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(
+            third
+                .checkpoint
+                .running
+                .load(std::sync::atomic::Ordering::Acquire)
+        );
     }
 
     #[test]
