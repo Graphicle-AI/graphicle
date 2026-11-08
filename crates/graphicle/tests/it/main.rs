@@ -63,6 +63,7 @@ mod one_server;
 mod passage_index;
 mod permissions_refresh;
 mod pixel;
+mod postgres_store;
 mod product_workspace;
 mod project_identity;
 mod provider_http_hosts;

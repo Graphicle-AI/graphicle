@@ -1475,11 +1475,12 @@ pub fn restore(backup: &std::path::Path, directory: &std::path::Path) -> Result<
     {
         return Err(Error::bad("Store directory must not be a symlink"));
     }
-    let store = Store::open(directory)?;
-    let loaded = crate::archive::load(&mut store.connect()?, backup);
+    // Marked unfinished until the load commits: a restore that is stopped
+    // leaves no store that opens empty.
+    let store = Store::create_postgres(directory)?;
+    let loaded = crate::archive::load(&mut store.connect()?, backup).and_then(|_| store.finish());
     if let Err(error) = loaded {
-        let _ = store.pool.drop_schema();
-        let _ = std::fs::remove_file(crate::db::schema_file(directory));
+        let _ = store.pool.discard();
         return Err(error);
     }
     Ok(

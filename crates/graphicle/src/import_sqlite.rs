@@ -2,7 +2,8 @@
 //! the data folder's PostgreSQL store, once, when `GRAPHICLE_DATABASE_URL`
 //! names the server.
 //!
-//! The data folder must not have a PostgreSQL store yet. The SQLite file is
+//! The data folder must not have a PostgreSQL store yet, other than one an
+//! import that was stopped left unfinished, which is replaced. The SQLite file is
 //! opened read-only and checked (`PRAGMA quick_check`), and read in one
 //! snapshot, so a program still writing to it cannot leave the copy
 //! half-old; the store is created at this program's schema; then every
@@ -10,7 +11,8 @@
 //! each row's `rowid` kept, and the identity sequences are moved past the
 //! copied ids. Text keeps NUL characters the way every write to the
 //! PostgreSQL store keeps them ([`crate::db`]). A copy that fails leaves no
-//! store behind. The SQLite file is never changed or removed.
+//! store behind, and one that is stopped leaves a store marked unfinished,
+//! which nothing opens. The SQLite file is never changed or removed.
 
 use crate::store::Store;
 use crate::{Error, Result};
@@ -109,7 +111,11 @@ pub fn import(source: &Path, directory: &Path) -> Result<Value> {
             crate::db::URL_ENV
         )));
     }
-    if directory.join(crate::db::SCHEMA_FILE).is_file() {
+    // An import (or restore) that was stopped before it finished left a
+    // store that nothing opens: it is replaced. A finished store never is.
+    if directory.join(crate::db::SCHEMA_FILE).is_file()
+        && !crate::db::Database::discard_unfinished(&crate::db::schema_file(directory))?
+    {
         return Err(Error::bad(
             "This data folder already has a PostgreSQL store; import into a new --data-dir",
         ));
@@ -167,11 +173,16 @@ pub fn import(source: &Path, directory: &Path) -> Result<Value> {
         )));
     }
     std::fs::create_dir_all(directory)?;
+    // The store is marked unfinished until its copy has committed, so a
+    // copy that is stopped (a kill, a reboot) leaves no store that opens
+    // empty beside the SQLite file; running import-sqlite again replaces it.
     let store = Store::create_postgres(directory)?;
-    let outcome = copy_all(&sqlite, &source_tables, &store);
+    let outcome = copy_all(&sqlite, &source_tables, &store).and_then(|copied| {
+        store.finish()?;
+        Ok(copied)
+    });
     if outcome.is_err() {
-        let _ = store.pool.drop_schema();
-        let _ = std::fs::remove_file(crate::db::schema_file(directory));
+        let _ = store.pool.discard();
     }
     outcome
 }

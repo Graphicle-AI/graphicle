@@ -1554,6 +1554,37 @@ pub fn redact(message: &str, url: &str) -> String {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SchemaFile {
     schema: String,
+    /// A store that `import-sqlite` or `restore` is still copying into, or
+    /// that one of them left when it was stopped: every opener refuses it
+    /// ([`Database::create_unfinished`], [`Database::finish`]).
+    #[serde(default, skip_serializing_if = "is_false")]
+    incomplete: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+/// What the file that names a store holds, as read.
+enum Named {
+    /// No such file.
+    Missing,
+    /// An empty file: one that the process that created it is still
+    /// writing, or that a process stopped while writing left.
+    Empty,
+    File(SchemaFile),
+}
+
+/// How long an opener waits for the process that created an empty
+/// `postgres.json` to write it.
+const SCHEMA_FILE_WAIT: Duration = Duration::from_secs(2);
+
+/// The refusal of a store that an import or restore has not finished.
+fn unfinished(path: &Path) -> Error {
+    Error::Other(format!(
+        "{} names a store that is not finished: an import-sqlite or restore is still copying into it, or was stopped before it finished. Run graphicle import-sqlite again to replace an unfinished import, or remove the data folder and restore again",
+        path.display()
+    ))
 }
 
 /// Where a store's rows are.
@@ -1651,15 +1682,40 @@ impl Database {
         Self::schema_in(&directory.join(SCHEMA_FILE))
     }
 
-    /// The schema the file at `path` names, when it exists.
+    /// The schema the file at `path` names, when it exists. A store that an
+    /// import or restore has not finished is refused, and so is an empty
+    /// file that its creator has not written within [`SCHEMA_FILE_WAIT`]:
+    /// only the process that created the file ever writes it.
     pub fn schema_in(path: &Path) -> Result<Option<String>> {
-        let path = path.to_path_buf();
+        match Self::named_in(path)? {
+            Named::Missing => Ok(None),
+            Named::File(file) if !file.incomplete => Ok(Some(file.schema)),
+            Named::Empty | Named::File(_) => Err(unfinished(path)),
+        }
+    }
+
+    /// The file at `path` as read; an empty one is read again until its
+    /// creator has written it or [`SCHEMA_FILE_WAIT`] has passed.
+    fn named_in(path: &Path) -> Result<Named> {
+        let deadline = std::time::Instant::now() + SCHEMA_FILE_WAIT;
+        loop {
+            let named = Self::read_named(path)?;
+            if !matches!(named, Named::Empty) || std::time::Instant::now() >= deadline {
+                return Ok(named);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn read_named(path: &Path) -> Result<Named> {
         if path.is_symlink() {
             return Err(Error::Other(format!("{SCHEMA_FILE} cannot be a symlink")));
         }
-        let bytes = match std::fs::read(&path) {
+        let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Named::Missing);
+            }
             Err(error) => {
                 return Err(Error::Other(format!(
                     "Could not read {}: {error}",
@@ -1667,10 +1723,8 @@ impl Database {
                 )));
             }
         };
-        // An empty file is one made to reserve the name (with its
-        // permissions) before the store was created.
         if bytes.is_empty() {
-            return Ok(None);
+            return Ok(Named::Empty);
         }
         let file: SchemaFile = serde_json::from_slice(&bytes).map_err(|_| {
             Error::Other(format!("{} is not a Graphicle store file", path.display()))
@@ -1681,7 +1735,109 @@ impl Database {
                 path.display()
             )));
         }
-        Ok(Some(file.schema))
+        Ok(Named::File(file))
+    }
+
+    /// A new store, named by a new file at `path` (which must not exist)
+    /// and marked unfinished: every opener refuses it until [`Database::finish`].
+    /// What `import-sqlite` and `restore` copy into, so that one stopped
+    /// before its copy committed never leaves a store that opens empty.
+    pub fn create_unfinished(path: &Path) -> Result<Arc<Database>> {
+        let settings = Settings::from_environment()?;
+        let schema = format!("g_{}", &uuid::Uuid::new_v4().simple().to_string()[..24]);
+        admin(
+            &settings,
+            &format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\""),
+        )?;
+        let file = serde_json::to_vec_pretty(&SchemaFile {
+            schema: schema.clone(),
+            incomplete: true,
+        })
+        .unwrap_or_default();
+        if let Err(error) = write_private(path, &file) {
+            let _ = admin(
+                &settings,
+                &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
+            );
+            return Err(error);
+        }
+        Self::named_by(&settings, &schema, path)
+    }
+
+    /// Mark this store, made by [`Database::create_unfinished`], finished:
+    /// its file is replaced, in one rename, by one without the mark.
+    pub fn finish(&self) -> Result<()> {
+        let Some(path) = &self.file else {
+            return Err(Error::Other("Not a PostgreSQL store".into()));
+        };
+        match Self::read_named(path)? {
+            Named::File(file) if file.schema == self.schema => {}
+            _ => {
+                return Err(Error::Other(format!(
+                    "{} no longer names this store",
+                    path.display()
+                )));
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&SchemaFile {
+            schema: self.schema.clone(),
+            incomplete: false,
+        })
+        .unwrap_or_default();
+        let temporary =
+            path.with_file_name(format!(".{SCHEMA_FILE}.{}", uuid::Uuid::new_v4().simple()));
+        write_private(&temporary, &bytes)?;
+        if let Err(error) = std::fs::rename(&temporary, path) {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(Error::Other(format!(
+                "Could not write {}: {error}",
+                path.display()
+            )));
+        }
+        #[cfg(unix)]
+        if let Some(folder) = path.parent() {
+            let _ = std::fs::File::open(folder).and_then(|folder| folder.sync_all());
+        }
+        Ok(())
+    }
+
+    /// Drop this store's schema, and remove its file when the file still
+    /// names it (an import or restore that failed).
+    pub fn discard(&self) -> Result<()> {
+        if let Some(path) = &self.file
+            && matches!(Self::read_named(path), Ok(Named::File(file)) if file.schema == self.schema)
+        {
+            let _ = std::fs::remove_file(path);
+        }
+        self.drop_schema()
+    }
+
+    /// Remove the store that the file at `path` names when an import or
+    /// restore did not finish it (or an empty file its creator never
+    /// wrote): its schema is dropped and the file removed. Returns whether
+    /// there was such a store; a finished store is never touched.
+    pub fn discard_unfinished(path: &Path) -> Result<bool> {
+        match Self::named_in(path)? {
+            Named::Missing => Ok(false),
+            Named::File(file) if !file.incomplete => Ok(false),
+            Named::Empty => {
+                std::fs::remove_file(path).map_err(|e| {
+                    Error::Other(format!("Could not remove {}: {e}", path.display()))
+                })?;
+                Ok(true)
+            }
+            Named::File(file) => {
+                let settings = Settings::from_environment()?;
+                admin(
+                    &settings,
+                    &format!("DROP SCHEMA IF EXISTS \"{}\" CASCADE", file.schema),
+                )?;
+                std::fs::remove_file(path).map_err(|e| {
+                    Error::Other(format!("Could not remove {}: {e}", path.display()))
+                })?;
+                Ok(true)
+            }
+        }
     }
 
     /// Whether `directory` has a store: its `postgres.json`, or its SQLite
@@ -1752,10 +1908,12 @@ impl Database {
                 )?;
                 let file = serde_json::to_vec_pretty(&SchemaFile {
                     schema: schema.clone(),
+                    incomplete: false,
                 })
                 .unwrap_or_default();
                 if let Err(error) = write_private(path, &file) {
-                    // Another process created it first: use its schema.
+                    // Another process created it first: use its schema,
+                    // once that process has written it.
                     let _ = admin(
                         &settings,
                         &format!("DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"),
@@ -1770,7 +1928,12 @@ impl Database {
             }
             None => return Err(Error::Other("This data folder has no store".into())),
         };
-        let database = Self::open(&settings, &schema)?;
+        Self::named_by(&settings, &schema, path)
+    }
+
+    /// The store in `schema`, named by the file at `path`.
+    fn named_by(settings: &Settings, schema: &str, path: &Path) -> Result<Arc<Database>> {
+        let database = Self::open(settings, schema)?;
         if database.file.as_deref() != Some(path) {
             // The same schema reached through another path (a moved data
             // folder): keep one pool, and remember the latest path.
@@ -1791,7 +1954,7 @@ impl Database {
                 checkpoint: CheckpointGate::default(),
                 backend: Backend::Postgres(pool.clone()),
             });
-            all.insert((settings.url.clone(), schema), replaced.clone());
+            all.insert((settings.url.clone(), schema.to_string()), replaced.clone());
             return Ok(replaced);
         }
         Ok(database)
@@ -1897,6 +2060,9 @@ impl Database {
     }
 }
 
+/// Create the file at `path`, readable by this user only, with `bytes`.
+/// A file that exists already, even an empty one, is never written: only
+/// the process that created a file names a store in it.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
@@ -1906,25 +2072,9 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = match options.open(path) {
-        Ok(file) => file,
-        // A file made empty to reserve the name: fill it.
-        Err(error)
-            if error.kind() == std::io::ErrorKind::AlreadyExists
-                && std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.len() == 0) =>
-        {
-            std::fs::OpenOptions::new()
-                .write(true)
-                .open(path)
-                .map_err(|e| Error::Other(format!("Could not write {}: {e}", path.display())))?
-        }
-        Err(error) => {
-            return Err(Error::Other(format!(
-                "Could not create {}: {error}",
-                path.display()
-            )));
-        }
-    };
+    let mut file = options
+        .open(path)
+        .map_err(|e| Error::Other(format!("Could not create {}: {e}", path.display())))?;
     file.write_all(bytes)
         .and_then(|_| file.sync_all())
         .map_err(|e| Error::Other(format!("Could not write {}: {e}", path.display())))

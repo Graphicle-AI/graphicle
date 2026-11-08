@@ -374,7 +374,10 @@ impl Store {
     }
 
     /// A new PostgreSQL store for `directory`, beside the SQLite store it
-    /// may hold (`graphicle import-sqlite`, which copies that one in).
+    /// may hold, to copy a store into (`graphicle import-sqlite`,
+    /// `graphicle restore`). It is marked unfinished, and every opener
+    /// refuses it, until [`Store::finish`]: a copy that is stopped before
+    /// it commits never leaves a store that opens empty.
     pub fn create_postgres(directory: &Path) -> Result<Self> {
         if !crate::db::postgres_configured() {
             return Err(Error::bad(format!("Set {} first", crate::db::URL_ENV)));
@@ -384,24 +387,13 @@ impl Store {
                 "This data folder already has a PostgreSQL store",
             ));
         }
-        // Make the folder's engine PostgreSQL before the store is opened:
-        // the schema file, empty, reserves the name with its permissions.
-        std::fs::create_dir_all(directory)?;
-        {
-            let mut options = std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                options.mode(0o600);
-            }
-            options.open(crate::db::schema_file(directory))?;
-        }
-        let opened = Self::open_with(directory, true);
-        if opened.is_err() {
-            let _ = std::fs::remove_file(crate::db::schema_file(directory));
-        }
-        opened
+        Self::open_with(directory, true)
+    }
+
+    /// Mark a store of [`Store::create_postgres`] finished, once what was
+    /// copied into it has committed: from then on it opens.
+    pub fn finish(&self) -> Result<()> {
+        Ok(self.pool.finish()?)
     }
 
     fn open_with(directory: &Path, beside_sqlite: bool) -> Result<Self> {
@@ -430,7 +422,11 @@ impl Store {
                 crate::db::URL_ENV
             )));
         }
-        let pool = crate::db::Database::for_directory(directory, true)?;
+        let pool = if beside_sqlite {
+            crate::db::Database::create_unfinished(&crate::db::schema_file(directory))?
+        } else {
+            crate::db::Database::for_directory(directory, true)?
+        };
         let store = Self {
             directory: Arc::new(directory.to_path_buf()),
             database: Arc::new(crate::db::store_file(directory)),
@@ -438,7 +434,12 @@ impl Store {
             wake: Arc::new(tokio::sync::Notify::new()),
             limits: None,
         };
-        store.migrate()?;
+        if let Err(error) = store.migrate() {
+            if beside_sqlite {
+                let _ = std::fs::remove_file(crate::db::schema_file(directory));
+            }
+            return Err(error);
+        }
         #[cfg(unix)]
         if store.pool.engine() == crate::db::Engine::Sqlite {
             use std::os::unix::fs::PermissionsExt;
