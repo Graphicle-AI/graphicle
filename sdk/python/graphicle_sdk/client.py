@@ -200,9 +200,10 @@ def default_data_dir() -> Path:
         try:
             home = Path.home()
         except RuntimeError:
-            home = Path(".")
-        if not home.is_absolute():
-            home = Path(".")
+            home = None
+        if home is None or not home.is_absolute():
+            # As the native program: no usable home folder, so the current one.
+            return Path(".") / "Graphicle"
         return home / "AppData" / "Local" / "Graphicle"
     home = Path(os.environ.get("HOME") or ".")
     if sys.platform == "darwin":

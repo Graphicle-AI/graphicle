@@ -27,6 +27,12 @@ class DefaultDataDirTests(unittest.TestCase):
         ):
             self.assertEqual(default_data_dir(), home / "AppData" / "Local" / "Graphicle")
 
+    def test_windows_without_a_home_folder_uses_the_current_folder(self):
+        with patch("graphicle_sdk.client.sys.platform", "win32"), patch.object(
+            Path, "home", side_effect=RuntimeError
+        ), patch.dict(os.environ, {"GRAPHICLE_DATA_DIR": ""}, clear=True):
+            self.assertEqual(default_data_dir(), Path(".") / "Graphicle")
+
 
 if __name__ == "__main__":
     unittest.main()
