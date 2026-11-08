@@ -436,7 +436,8 @@ impl Store {
         };
         if let Err(error) = store.migrate() {
             if beside_sqlite {
-                let _ = std::fs::remove_file(crate::db::schema_file(directory));
+                // Its schema too: nothing else names it, or would drop it.
+                let _ = store.pool.discard();
             }
             return Err(error);
         }
