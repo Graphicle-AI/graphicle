@@ -2700,13 +2700,8 @@ impl Connection {
     ) -> Result<(Arc<Vec<String>>, Vec<Row>)> {
         let sql = sqlite_sql(sql);
         let mut statement = lite.prepare_cached(&sql)?;
-        let columns: Arc<Vec<String>> = Arc::new(
-            statement
-                .column_names()
-                .into_iter()
-                .map(str::to_string)
-                .collect(),
-        );
+        let columns: Arc<Vec<String>> =
+            Arc::new(statement.column_names().map(str::to_string).collect());
         let width = columns.len();
         let mut rows = statement.query(rusqlite::params_from_iter(values.iter().map(Lite)))?;
         let mut out = Vec::new();
@@ -3021,7 +3016,6 @@ impl Connection {
             let columns = lite
                 .prepare_cached(&sqlite_sql(sql))?
                 .column_names()
-                .into_iter()
                 .map(str::to_string)
                 .collect();
             return Ok(Statement {
