@@ -41,7 +41,7 @@
   </picture>
 </p>
 
-Built during Meta's Global AI Developer Hackathon ([what was built, and when](HACKATHON.md)). With a key for the Meta Model API, `graphicle see` lets Muse Spark reproduce a bug in a web app with computer use, `graphicle pixel` finds the code that draws what the model points at, and `graphicle fix` patches it with a model such as Muse Wonder and runs your tests; when a round fails, the next one reads the failing lines and the files they name. The picture is one live run on excalidraw issue #12053, built from source, and the fix passes excalidraw's own regression test ([see it, find it, fix it, check it](docs/flow.md)).
+With a key for the Meta Model API, `graphicle see` lets Muse Spark reproduce a bug in a web app with computer use, `graphicle pixel` finds the code that draws what the model points at, and `graphicle fix` patches it with a model such as Muse Wonder and runs your tests; when a round fails, the next one reads the failing lines and the files they name. The picture is one live run on excalidraw issue #12053, built from source, and the fix passes excalidraw's own regression test ([see it, find it, fix it, check it](docs/flow.md)).
 
 ## Agent memory, compared
 
@@ -320,7 +320,7 @@ More answers: [FAQ](docs/faq.md) · [Troubleshooting](docs/troubleshooting.md) �
 ## Documentation
 
 [Quick start](docs/quickstart.md) · [Agents](docs/agents.md) · [Muse Code](docs/muse-code.md) · [MCP](docs/mcp.md) · [Packs](docs/pack.md) · [Fix](docs/fix.md) · [Flow](docs/flow.md) · [Review](docs/review.md) · [Wiki](docs/wiki.md) · [Install](docs/install.md) · [Configuration](docs/configuration.md) ·
-[Team server](docs/team.md) · [Moving from Graphify](docs/migrate-from-graphify.md) · [Benchmarks](docs/benchmarks.md) · [FAQ](docs/faq.md) · [Changelog](CHANGELOG.md) · [Built at Meta's hackathon](HACKATHON.md)
+[Team server](docs/team.md) · [Moving from Graphify](docs/migrate-from-graphify.md) · [Benchmarks](docs/benchmarks.md) · [FAQ](docs/faq.md) · [Changelog](CHANGELOG.md)
 
 The code: [`crates/graphicle/`](crates/graphicle/README.md) (the program: command line, app, HTTP and MCP server), [`crates/graphicle-graph/`](crates/graphicle-graph/README.md) (the code-graph engine),
 [`crates/graphicle-memory/`](crates/graphicle-memory/README.md) (the memory library), SDKs for [Python](sdk/python/README.md) and [TypeScript](sdk/typescript/README.md),
