@@ -1983,7 +1983,8 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             .as_ref()
             .ok_or("no update baseline")
             .and_then(|state| crate::watch_gate::base_matches(out, state));
-        let manifest = crate::detect_manifest::load_manifest(&out.join("manifest.json"), Some(&watch_root));
+        let manifest =
+            crate::detect_manifest::load_manifest(&out.join("manifest.json"), Some(&watch_root));
         match baseline {
             Ok(()) if crate::cache_paths::truth(&manifest) => {
                 let split = crate::detect_manifest::incremental_from_full(
@@ -2116,25 +2117,30 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     // stored route's path from another file, can move routes declared in
     // unchanged files; such a change set rebuilds every file, as `update`
     // does (see `extractors::routes`).
-    let changed_paths = o.changed_paths.as_ref().or(derived.as_ref()).filter(|changed| {
-        if !crate::extractors::routes::enabled() || !graph_path.exists() {
-            return true;
-        }
-        let cwd = resolved(Path::new("."));
-        let files = changed
-            .iter()
-            .flat_map(|raw| changed_candidates(raw, &cwd, &watch_root))
-            .collect::<Vec<_>>();
-        let moved =
-            crate::extractors::routes::stored_mounts(&existing, |s| PathBuf::from(sp.identity(s)))
-                .moved_by(&files);
-        if moved {
-            result
-                .messages
-                .push("Route mounts changed - rebuilding every file.".into());
-        }
-        !moved
-    });
+    let changed_paths = o
+        .changed_paths
+        .as_ref()
+        .or(derived.as_ref())
+        .filter(|changed| {
+            if !crate::extractors::routes::enabled() || !graph_path.exists() {
+                return true;
+            }
+            let cwd = resolved(Path::new("."));
+            let files = changed
+                .iter()
+                .flat_map(|raw| changed_candidates(raw, &cwd, &watch_root))
+                .collect::<Vec<_>>();
+            let moved = crate::extractors::routes::stored_mounts(&existing, |s| {
+                PathBuf::from(sp.identity(s))
+            })
+            .moved_by(&files);
+            if moved {
+                result
+                    .messages
+                    .push("Route mounts changed - rebuilding every file.".into());
+            }
+            !moved
+        });
     let full = changed_paths.is_none();
     let mut deleted = BTreeSet::new();
     let mut deleted_ids = BTreeSet::new();
@@ -2384,7 +2390,11 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     if let Some(changed) = &derived {
         let redone: BTreeSet<String> = changed
             .iter()
-            .map(|p| absolute(&p.to_string_lossy()).to_string_lossy().into_owned())
+            .map(|p| {
+                absolute(&p.to_string_lossy())
+                    .to_string_lossy()
+                    .into_owned()
+            })
             .collect();
         failed_now.extend(
             prior_failed

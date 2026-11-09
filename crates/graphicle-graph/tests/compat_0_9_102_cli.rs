@@ -13,7 +13,9 @@ fn unfinished_check_run_statuses_are_pending() {
     // test_prs.py (Graphify 0.9.96): every CheckStatusState but COMPLETED is
     // pending, alone or beside a passing sibling.
     for status in ["REQUESTED", "QUEUED", "IN_PROGRESS", "WAITING", "PENDING"] {
-        let rollup = [json!({"__typename": "CheckRun", "name": "deploy", "status": status, "conclusion": ""})];
+        let rollup = [
+            json!({"__typename": "CheckRun", "name": "deploy", "status": status, "conclusion": ""}),
+        ];
         assert_eq!(graphicle::prs::parse_ci(&rollup), "PENDING", "{status}");
     }
     for status in ["REQUESTED", "WAITING", "PENDING"] {
@@ -65,7 +67,10 @@ fn obsidian_note_lists_every_parallel_relation() {
     let connections: Vec<&str> = note.lines().filter(|l| l.starts_with("- [[")).collect();
     assert_eq!(
         connections,
-        ["- [[b.py]] - `calls` [INFERRED]", "- [[b.py]] - `imports` [EXTRACTED]"]
+        [
+            "- [[b.py]] - `calls` [INFERRED]",
+            "- [[b.py]] - `imports` [EXTRACTED]"
+        ]
     );
 }
 
@@ -84,10 +89,21 @@ fn numeric_hyperedge_members_are_coerced_under_every_alias() {
             "hyperedges": [{"id": "h_num", "relation": "collab", alias: [1, 2, 3], "source_file": "a.md"}]
         });
         let mut d = graphicle::build::Diagnostics::default();
-        let g = graphicle::build::build_from_json_dedup(&mut extraction, true, false, false, None, &mut d)
-            .unwrap();
+        let g = graphicle::build::build_from_json_dedup(
+            &mut extraction,
+            true,
+            false,
+            false,
+            None,
+            &mut d,
+        )
+        .unwrap();
         let hyperedges = &g.attributes()["hyperedges"];
-        assert_eq!(hyperedges.as_array().map(Vec::len), Some(1), "{alias}: {hyperedges}");
+        assert_eq!(
+            hyperedges.as_array().map(Vec::len),
+            Some(1),
+            "{alias}: {hyperedges}"
+        );
         assert_eq!(hyperedges[0]["id"], "h_num", "{alias}");
         assert_eq!(hyperedges[0]["nodes"], json!(["1", "2", "3"]), "{alias}");
     }
@@ -116,30 +132,59 @@ fn msbuild_obj_and_bin_are_pruned_only_on_msbuild_evidence() {
     // test_msbuild_dir_evidence.py (Graphify 0.9.96).
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
-    write(&root.join("App.csproj"), "<Project Sdk=\"Microsoft.NET.Sdk.Web\" />\n");
+    write(
+        &root.join("App.csproj"),
+        "<Project Sdk=\"Microsoft.NET.Sdk.Web\" />\n",
+    );
     write(&root.join("Program.cs"), "public class Program { }\n");
     write(&root.join("appsettings.json"), "{}\n");
     write(&root.join("obj/project.assets.json"), "{}\n");
-    write(&root.join("obj/Debug/net8.0/App.GlobalUsings.g.cs"), "global using global::System;\n");
-    write(&root.join("bin/Release/net8.0/linux-x64/App.runtimeconfig.json"), "{}\n");
-    write(&root.join("bin/Release/net8.0/linux-x64/appsettings.json"), "{}\n");
+    write(
+        &root.join("obj/Debug/net8.0/App.GlobalUsings.g.cs"),
+        "global using global::System;\n",
+    );
+    write(
+        &root.join("bin/Release/net8.0/linux-x64/App.runtimeconfig.json"),
+        "{}\n",
+    );
+    write(
+        &root.join("bin/Release/net8.0/linux-x64/appsettings.json"),
+        "{}\n",
+    );
     let files = scanned(root);
-    assert!(files.iter().any(|f| f.ends_with("/Program.cs")), "{files:?}");
-    assert!(!files.iter().any(|f| f.contains("/obj/") || f.contains("/bin/")), "{files:?}");
+    assert!(
+        files.iter().any(|f| f.ends_with("/Program.cs")),
+        "{files:?}"
+    );
+    assert!(
+        !files
+            .iter()
+            .any(|f| f.contains("/obj/") || f.contains("/bin/")),
+        "{files:?}"
+    );
     // A Rust src/bin/ with no MSBuild artifact stays source.
     let dir = tempfile::tempdir().unwrap();
     write(&dir.path().join("src/bin/tool.rs"), "fn main() {}\n");
     let files = scanned(dir.path());
-    assert!(files.iter().any(|f| f.ends_with("src/bin/tool.rs")), "{files:?}");
+    assert!(
+        files.iter().any(|f| f.ends_with("src/bin/tool.rs")),
+        "{files:?}"
+    );
 }
 
 #[test]
 fn query_terms_drop_get_question_filler() {
     // test_serve.py (Graphify 0.9.97, #4684).
     use graphicle::query_terms::query_terms;
-    assert_eq!(query_terms("how does payroll.approve get authorized"), ["payroll", "approve", "authorized"]);
+    assert_eq!(
+        query_terms("how does payroll.approve get authorized"),
+        ["payroll", "approve", "authorized"]
+    );
     for verb in ["gets", "got", "getting"] {
-        assert_eq!(query_terms(&format!("payroll {verb} authorized")), ["payroll", "authorized"]);
+        assert_eq!(
+            query_terms(&format!("payroll {verb} authorized")),
+            ["payroll", "authorized"]
+        );
     }
     assert_eq!(query_terms("get"), ["get"]);
     assert_eq!(query_terms("how do I get it"), ["how", "get"]);
@@ -156,7 +201,10 @@ fn workspace_with_worktree(ws: &std::path::Path) -> (std::path::PathBuf, std::pa
     write(&wt.join("src/a.py"), "x = 1\n");
     write(
         &wt.join(".git"),
-        &format!("gitdir: {}\n", app.join(".git/worktrees/app-feature").display()),
+        &format!(
+            "gitdir: {}\n",
+            app.join(".git/worktrees/app-feature").display()
+        ),
     );
     (app, wt)
 }
@@ -169,8 +217,14 @@ fn sibling_linked_worktree_is_pruned() {
     let ws = dir.path().join("ws");
     let (_app, wt) = workspace_with_worktree(&ws);
     let files = scanned(&ws);
-    assert!(files.iter().any(|f| f.ends_with("app/src/a.py")), "{files:?}");
-    assert!(!files.iter().any(|f| f.contains("app-feature/")), "{files:?}");
+    assert!(
+        files.iter().any(|f| f.ends_with("app/src/a.py")),
+        "{files:?}"
+    );
+    assert!(
+        !files.iter().any(|f| f.contains("app-feature/")),
+        "{files:?}"
+    );
     let files = scanned(&wt);
     assert!(files.iter().any(|f| f.ends_with("src/a.py")), "{files:?}");
     // A worktree whose main checkout is outside the root stays indexed.
@@ -185,7 +239,11 @@ fn lone_help_after_query_or_explain_prints_usage() {
         for flag in ["--help", "-h"] {
             let r = run(&[command, flag]);
             assert_eq!(r.exit_code, 0, "{}", r.stderr);
-            assert!(r.stdout.contains("Usage: ") && r.stdout.contains(command), "{}", r.stdout);
+            assert!(
+                r.stdout.contains("Usage: ") && r.stdout.contains(command),
+                "{}",
+                r.stdout
+            );
             assert!(!r.stdout.contains("No node matching"), "{}", r.stdout);
         }
     }
@@ -282,7 +340,11 @@ fn query_depth_and_budget_come_from_options_then_project_settings() {
     }
     std::fs::write(dir.path().join(".graphiclerc"), "query_depth=9\n").unwrap();
     let r = run(&["query", q, "--graph", &graph]);
-    assert!(r.stderr.contains("ignoring project settings"), "{}", r.stderr);
+    assert!(
+        r.stderr.contains("ignoring project settings"),
+        "{}",
+        r.stderr
+    );
     assert!(r.stdout.contains("depth=2"), "{}", r.stdout);
 }
 
@@ -310,10 +372,24 @@ fn path_reports_its_weakest_hop_and_scored_tags() {
         .to_string(),
     )
     .unwrap();
-    let r = run(&["path", "alpha()", "gamma()", "--graph", graph.to_str().unwrap()]);
+    let r = run(&[
+        "path",
+        "alpha()",
+        "gamma()",
+        "--graph",
+        graph.to_str().unwrap(),
+    ]);
     assert_eq!(r.exit_code, 0, "{}", r.stderr);
-    assert!(r.stdout.contains("--calls [INFERRED 0.60]--> beta()"), "{}", r.stdout);
-    assert!(r.stdout.contains("--calls [EXTRACTED]--> gamma()"), "{}", r.stdout);
+    assert!(
+        r.stdout.contains("--calls [INFERRED 0.60]--> beta()"),
+        "{}",
+        r.stdout
+    );
+    assert!(
+        r.stdout.contains("--calls [EXTRACTED]--> gamma()"),
+        "{}",
+        r.stdout
+    );
     assert!(
         r.stdout
             .trim_end()
@@ -350,7 +426,12 @@ fn affected_sets_the_documented_exit_codes() {
     assert_eq!(r.exit_code, 3, "{} {}", r.stdout, r.stderr);
     let r = run(&["affected", "nothing_like_this", "--graph", g]);
     assert_eq!(r.exit_code, 4, "{} {}", r.stdout, r.stderr);
-    assert!(r.stderr.contains("No unique node match for nothing_like_this"), "{}", r.stderr);
+    assert!(
+        r.stderr
+            .contains("No unique node match for nothing_like_this"),
+        "{}",
+        r.stderr
+    );
     let r = run(&["affected", "a_run", "--graph", g]);
     assert_eq!(r.exit_code, 0, "{}", r.stderr);
     assert!(r.stdout.contains("main()"), "{}", r.stdout);
@@ -363,7 +444,8 @@ fn path_reports_the_weakest_of_equal_length_routes() {
     // unique route carries no such note.
     let dir = tempfile::tempdir().unwrap();
     let graph = dir.path().join("graph.json");
-    let node = |id: &str| json!({"id": id, "label": id, "file_type": "code", "source_file": "m.py"});
+    let node =
+        |id: &str| json!({"id": id, "label": id, "file_type": "code", "source_file": "m.py"});
     std::fs::write(
         &graph,
         json!({
@@ -383,9 +465,19 @@ fn path_reports_the_weakest_of_equal_length_routes() {
     let g = graph.to_str().unwrap();
     let r = run(&["path", "A", "C", "--graph", g]);
     assert_eq!(r.exit_code, 0, "{}", r.stderr);
-    let last = r.stdout.trim_end().lines().last().unwrap_or_default().to_owned();
+    let last = r
+        .stdout
+        .trim_end()
+        .lines()
+        .last()
+        .unwrap_or_default()
+        .to_owned();
     assert!(last.contains("AMBIGUOUS"), "{}", r.stdout);
-    assert!(last.contains("weakest of 2 equal-length routes"), "{}", r.stdout);
+    assert!(
+        last.contains("weakest of 2 equal-length routes"),
+        "{}",
+        r.stdout
+    );
     let r = run(&["path", "C", "D", "--graph", g]);
     assert_eq!(r.exit_code, 0, "{}", r.stderr);
     assert!(!r.stdout.contains("equal-length routes"), "{}", r.stdout);
@@ -398,7 +490,8 @@ fn type_member_endpoints_name_the_member_not_the_type() {
     // no such member fails closed instead of scoring its way to the type.
     let dir = tempfile::tempdir().unwrap();
     let graph = dir.path().join("graph.json");
-    let node = |id: &str, label: &str| json!({"id": id, "label": label, "source_file": "src/Report.cs"});
+    let node =
+        |id: &str, label: &str| json!({"id": id, "label": label, "source_file": "src/Report.cs"});
     let edge = |a: &str, b: &str, rel: &str| json!({"source": a, "target": b, "relation": rel, "confidence": "EXTRACTED"});
     std::fs::write(
         &graph,
@@ -425,7 +518,11 @@ fn type_member_endpoints_name_the_member_not_the_type() {
         let r = run(&["path", source, "PdfReport.Build", "--graph", g]);
         assert_eq!(r.exit_code, 0, "{}", r.stderr);
         assert!(r.stdout.contains("Shortest path (1 hops):"), "{}", r.stdout);
-        assert!(r.stdout.contains(".Run() --calls [EXTRACTED]--> .Build()"), "{}", r.stdout);
+        assert!(
+            r.stdout.contains(".Run() --calls [EXTRACTED]--> .Build()"),
+            "{}",
+            r.stdout
+        );
     }
     let r = run(&["path", "Exporter.Run", "PdfReport.Missing", "--graph", g]);
     assert_ne!(r.exit_code, 0, "{}", r.stdout);

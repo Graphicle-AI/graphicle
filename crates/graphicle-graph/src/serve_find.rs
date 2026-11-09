@@ -1240,7 +1240,9 @@ fn path_confidence_line(hop_datas: &[Vec<&crate::record::Attributes>]) -> String
         None => format!("Path confidence: unknown (hop {hop}: {relation} has no confidence tag)"),
         Some(conf) => format!(
             "Path confidence: {conf} (weakest hop {hop}: {relation}{})",
-            score.map(|s| format!(", score {}", format_g(s))).unwrap_or_default()
+            score
+                .map(|s| format!(", score {}", format_g(s)))
+                .unwrap_or_default()
         ),
     }
 }

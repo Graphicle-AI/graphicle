@@ -139,7 +139,10 @@ pub(crate) fn record_extract_cost(
                 o.entry("total_input_tokens").or_insert(json!(0));
                 o.entry("total_output_tokens").or_insert(json!(0));
                 let int = |k: &str| o[k].as_i64().is_some() && !o[k].is_boolean();
-                if !o["runs"].is_array() || !int("total_input_tokens") || !int("total_output_tokens") {
+                if !o["runs"].is_array()
+                    || !int("total_input_tokens")
+                    || !int("total_output_tokens")
+                {
                     return Err("unexpected layout".to_string());
                 }
                 Ok(v)
@@ -161,7 +164,10 @@ pub(crate) fn record_extract_cost(
         "output_tokens": output_tokens,
         "files": files,
     }));
-    for (k, n) in [("total_input_tokens", input_tokens), ("total_output_tokens", output_tokens)] {
+    for (k, n) in [
+        ("total_input_tokens", input_tokens),
+        ("total_output_tokens", output_tokens),
+    ] {
         cost[k] = json!(cost[k].as_i64().unwrap_or(0) + n);
     }
     if let Err(e) = crate::paths::write_json_atomic(&cost_path, &cost, Some(2), false) {
@@ -1199,17 +1205,39 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&cost_path).unwrap()).unwrap();
         assert_eq!(cost["runs"].as_array().unwrap().len(), 2);
         assert_eq!(cost["runs"][0]["files"], 2);
-        assert!(cost["runs"][0]["date"].as_str().is_some_and(|s| !s.is_empty()));
-        assert_eq!((cost["total_input_tokens"].clone(), cost["total_output_tokens"].clone()), (json!(200), json!(80)));
+        assert!(
+            cost["runs"][0]["date"]
+                .as_str()
+                .is_some_and(|s| !s.is_empty())
+        );
+        assert_eq!(
+            (
+                cost["total_input_tokens"].clone(),
+                cost["total_output_tokens"].clone()
+            ),
+            (json!(200), json!(80))
+        );
         let earlier = json!({"date": "2026-01-01T00:00:00+00:00", "input_tokens": 5000, "output_tokens": 0, "files": 493});
-        std::fs::write(&cost_path, json!({"runs": [earlier], "total_input_tokens": 5000, "total_output_tokens": 0}).to_string()).unwrap();
+        std::fs::write(
+            &cost_path,
+            json!({"runs": [earlier], "total_input_tokens": 5000, "total_output_tokens": 0})
+                .to_string(),
+        )
+        .unwrap();
         super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
         let cost: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(&cost_path).unwrap()).unwrap();
         assert_eq!(cost["runs"][0], earlier);
         assert_eq!(cost["total_input_tokens"], 5100);
         assert!(stderr.is_empty(), "{stderr:?}");
-        for bad in ["{not json", "[]", "null", "{\"runs\": {}}", "{\"runs\": [], \"total_input_tokens\": \"5\"}", "{\"runs\": [], \"total_input_tokens\": null}"] {
+        for bad in [
+            "{not json",
+            "[]",
+            "null",
+            "{\"runs\": {}}",
+            "{\"runs\": [], \"total_input_tokens\": \"5\"}",
+            "{\"runs\": [], \"total_input_tokens\": null}",
+        ] {
             std::fs::write(&cost_path, bad).unwrap();
             super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
             assert_eq!(std::fs::read_to_string(&cost_path).unwrap(), bad);

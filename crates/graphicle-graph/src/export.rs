@@ -651,18 +651,18 @@ pub fn to_json(
             .filter(|node| node.is_object())
             .filter_map(|node| node.get("id").and_then(Value::as_str).map(str::to_owned))
             .collect();
-        let mut merged = folded.values().filter(|twin| existing_ids.contains(*twin)).count();
+        let mut merged = folded
+            .values()
+            .filter(|twin| existing_ids.contains(*twin))
+            .count();
         if !graph.dedup_remap().is_empty() {
             let new_ids: std::collections::HashSet<String> = graph
                 .nodes
                 .iter()
                 .filter_map(|node| node.id.as_str().map(str::to_owned))
                 .collect();
-            merged += crate::build::dedup_shrink_allowance(
-                &existing_ids,
-                &new_ids,
-                graph.dedup_remap(),
-            );
+            merged +=
+                crate::build::dedup_shrink_allowance(&existing_ids, &new_ids, graph.dedup_remap());
         }
         if n + merged < old {
             d.stderr.push(format!("[graphicle] WARNING: new graph has {n} nodes but existing graph.json has {old} (net -{}). Refusing to overwrite. Possible causes: missing chunk files from a previous session, or fuzzy dedup collapsed same-named symbols across files during an --update on an already-current graph. Run a full rebuild (/graphicle .) to be safe, or pass force=True only if you have verified the reduction is legitimate.",old-n));

@@ -851,16 +851,24 @@ mod tests {
             ),
         ] {
             let out = redact_secrets(&text);
-            assert!(!out.contains(&secret) && out.contains(REDACTED_MARKER), "{text}");
+            assert!(
+                !out.contains(&secret) && out.contains(REDACTED_MARKER),
+                "{text}"
+            );
         }
         for secret in [
             format!("xoxe-1-{}", "c".repeat(40)),
             format!("eyJhbGciOiJIUzI1NiJ9.e30.{}", "d".repeat(43)),
         ] {
             let out = redact_secrets(&format!("see {secret} here"));
-            assert!(!out.contains(&secret) && out.contains(REDACTED_MARKER), "{secret}");
+            assert!(
+                !out.contains(&secret) && out.contains(REDACTED_MARKER),
+                "{secret}"
+            );
         }
-        assert!(redact_secrets(&format!("key sk-proj-{}", "a1".repeat(12))).contains(REDACTED_MARKER));
+        assert!(
+            redact_secrets(&format!("key sk-proj-{}", "a1".repeat(12))).contains(REDACTED_MARKER)
+        );
     }
     struct FixedDns(Vec<SocketAddr>);
     impl Resolver for FixedDns {

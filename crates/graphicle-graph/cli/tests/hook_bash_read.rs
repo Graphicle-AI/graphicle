@@ -34,7 +34,11 @@ fn guard(dir: &Path, kind: &str, payload: &Value, extra: &[&str], env: &[(&str, 
         .write_all(payload.to_string().as_bytes())
         .unwrap();
     let out = child.wait_with_output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8(out.stdout).unwrap()
 }
 
@@ -75,7 +79,14 @@ impl Project {
     fn dir(&self) -> std::path::PathBuf {
         self.tmp.path().join("proj")
     }
-    fn bash_as(&self, command: &str, sid: &str, agent: Option<&str>, tool: Option<&str>, strict: bool) -> String {
+    fn bash_as(
+        &self,
+        command: &str,
+        sid: &str,
+        agent: Option<&str>,
+        tool: Option<&str>,
+        strict: bool,
+    ) -> String {
         let mut payload = json!({
             "session_id": sid,
             "cwd": self.dir(),
@@ -164,9 +175,16 @@ fn bash_reader_gets_the_read_nudge_with_the_file_hint() {
         let out = p.bash(&command);
         assert!(is_read_nudge(&out), "{command}: {out}");
         let ctx = context(&out);
-        assert!(ctx.contains("Start with: `graphicle-graph explain \"app.py\"`"), "{command}: {ctx}");
+        assert!(
+            ctx.contains("Start with: `graphicle-graph explain \"app.py\"`"),
+            "{command}: {ctx}"
+        );
         assert!(ctx.contains("- run() (src/app.py L3)"), "{command}: {ctx}");
-        assert_eq!(p.nudges(), vec![(format!("{SID}.nudges"), "1".to_string())], "{command}");
+        assert_eq!(
+            p.nudges(),
+            vec![(format!("{SID}.nudges"), "1".to_string())],
+            "{command}"
+        );
     }
 }
 
@@ -199,7 +217,10 @@ fn non_reads_stay_silent() {
         let p = Project::new();
         let command = command.replace("{tmp}", &p.tmp.path().to_string_lossy());
         assert_eq!(p.bash(&command), "", "{command}");
-        assert!(p.nudges().is_empty(), "{command}: a silent call spends no budget");
+        assert!(
+            p.nudges().is_empty(),
+            "{command}: a silent call spends no budget"
+        );
         // Control in the same project and session: a real read nudges.
         assert!(is_read_nudge(&p.bash("cat src/app.py")), "{command}");
     }
@@ -217,7 +238,11 @@ fn bash_reads_share_the_read_budget() {
     ];
     assert!(outs.iter().all(|o| !o.is_empty()), "{outs:?}");
     assert!(is_read_nudge(&outs[0]));
-    assert_eq!(p.bash("tail src/app.py"), "", "cap of 5 shared with the Read tool");
+    assert_eq!(
+        p.bash("tail src/app.py"),
+        "",
+        "cap of 5 shared with the Read tool"
+    );
     let sub = p.bash_as("cat src/app.py", SID, Some("agent-7"), Some("Bash"), false);
     assert!(is_read_nudge(&sub), "a subagent has its own budget (#3435)");
 }

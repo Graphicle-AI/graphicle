@@ -4,8 +4,8 @@
 //! build, the --no-cluster writers' node-list form, the method-ghost and
 //! old-stem alias indexes and the analyze method-stub predicate. Extraction
 //! keeps the bare `.Name()` form (compat_0_9_98_extract.rs).
-use graphicle::build::{self, Diagnostics};
 use graphicle::api::{ExtractOptions, extract};
+use graphicle::build::{self, Diagnostics};
 use graphicle::extractors::csharp::{bare_csharp_method_label, csharp_method_label_reassignments};
 use graphicle::graph::Graph;
 use serde_json::{Value, json};
@@ -68,17 +68,40 @@ fn issue_repro_methods_display_their_owning_type() {
         "{extraction:#}"
     );
     let g = build_graph(extraction.clone());
-    assert_eq!(label(&g, "report_pdfreport_build"), Some(json!("PdfReport.Build()")));
-    assert_eq!(label(&g, "report_csvreport_build"), Some(json!("CsvReport.Build()")));
-    assert_eq!(label(&g, "report_ireport_build"), Some(json!("IReport.Build()")));
-    assert_eq!(label(&g, "report_exporter_run"), Some(json!("Exporter.Run()")));
+    assert_eq!(
+        label(&g, "report_pdfreport_build"),
+        Some(json!("PdfReport.Build()"))
+    );
+    assert_eq!(
+        label(&g, "report_csvreport_build"),
+        Some(json!("CsvReport.Build()"))
+    );
+    assert_eq!(
+        label(&g, "report_ireport_build"),
+        Some(json!("IReport.Build()"))
+    );
+    assert_eq!(
+        label(&g, "report_exporter_run"),
+        Some(json!("Exporter.Run()"))
+    );
     assert_eq!(label(&g, "report_ireport"), Some(json!("IReport")));
     assert_eq!(label(&g, "report"), Some(json!("Report.cs")));
     // The --no-cluster form gives the same labels.
     let mut nodes = extraction["nodes"].as_array().unwrap().clone();
-    build::qualify_csharp_method_labels_in_nodes(&mut nodes, extraction["edges"].as_array().unwrap());
-    let raw = |id: &str| nodes.iter().find(|n| n["id"] == id).map(|n| n["label"].clone());
-    assert_eq!(raw("report_pdfreport_build"), Some(json!("PdfReport.Build()")));
+    build::qualify_csharp_method_labels_in_nodes(
+        &mut nodes,
+        extraction["edges"].as_array().unwrap(),
+    );
+    let raw = |id: &str| {
+        nodes
+            .iter()
+            .find(|n| n["id"] == id)
+            .map(|n| n["label"].clone())
+    };
+    assert_eq!(
+        raw("report_pdfreport_build"),
+        Some(json!("PdfReport.Build()"))
+    );
     assert_eq!(raw("report_exporter_run"), Some(json!("Exporter.Run()")));
 }
 
@@ -102,7 +125,10 @@ fn ids_and_edges_match_the_raw_extraction() {
     raw.dedup();
     assert_eq!(built, raw);
     assert_eq!(
-        g.number_of_edges(&json!("report_exporter_run"), &json!("report_ireport_build")),
+        g.number_of_edges(
+            &json!("report_exporter_run"),
+            &json!("report_ireport_build")
+        ),
         1
     );
 }
@@ -123,17 +149,26 @@ fn rebuilding_from_qualified_labels_does_not_stack_the_owner() {
         "edges": edges,
     });
     let g = build_graph(extraction);
-    assert_eq!(label(&g, "r_pdfreport_build"), Some(json!("PdfReport.Build()")));
+    assert_eq!(
+        label(&g, "r_pdfreport_build"),
+        Some(json!("PdfReport.Build()"))
+    );
     let again = json!({"nodes": g.to_node_link("edges")["nodes"].clone(), "edges": edges});
     let g2 = build_graph(again);
-    assert_eq!(label(&g2, "r_pdfreport_build"), Some(json!("PdfReport.Build()")));
+    assert_eq!(
+        label(&g2, "r_pdfreport_build"),
+        Some(json!("PdfReport.Build()"))
+    );
 }
 
 #[test]
 fn qualified_methods_stay_out_of_god_nodes() {
     let (_dir, extraction) = extract_files(&[("Report.cs", ISSUE_REPRO)]);
     let g = build_graph(extraction);
-    assert_eq!(label(&g, "report_pdfreport_build"), Some(json!("PdfReport.Build()")));
+    assert_eq!(
+        label(&g, "report_pdfreport_build"),
+        Some(json!("PdfReport.Build()"))
+    );
     let method = g.node_index(&json!("report_pdfreport_build")).unwrap();
     let class = g.node_index(&json!("report_pdfreport")).unwrap();
     assert!(graphicle::analyze::is_file_node(&g, method).unwrap());
@@ -159,7 +194,10 @@ fn semantic_method_ghost_still_collapses_onto_a_qualified_method() {
     });
     let g = build_graph(extraction);
     assert!(g.node_index(&json!("report_build")).is_none());
-    assert_eq!(g.number_of_edges(&json!("doc"), &json!("report_pdfreport_build")), 1);
+    assert_eq!(
+        g.number_of_edges(&json!("doc"), &json!("report_pdfreport_build")),
+        1
+    );
 }
 
 #[test]
@@ -187,14 +225,25 @@ fn class_segment_less_method_alias_still_resolves_a_qualified_method() {
 #[test]
 fn other_languages_keep_bare_method_labels() {
     let (_dir, extraction) = extract_files(&[
-        ("Report.java", "class PdfReport { String build() { return \"pdf\"; } }\n"),
-        ("Report.swift", "class PdfReport { func build() -> String { return \"pdf\" } }\n"),
+        (
+            "Report.java",
+            "class PdfReport { String build() { return \"pdf\"; } }\n",
+        ),
+        (
+            "Report.swift",
+            "class PdfReport { func build() -> String { return \"pdf\" } }\n",
+        ),
     ]);
     let g = build_graph(extraction);
     let labels: std::collections::BTreeSet<String> = g
         .nodes()
         .iter()
-        .filter_map(|n| n.attributes.get("label").and_then(Value::as_str).map(str::to_owned))
+        .filter_map(|n| {
+            n.attributes
+                .get("label")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
         .filter(|l| l.ends_with("()"))
         .collect();
     assert_eq!(labels, [".build()".to_string()].into_iter().collect());
@@ -205,10 +254,22 @@ fn reassignment_fails_closed_on_missing_or_conflicting_owners() {
     let nodes = [
         ("a", json!({"label": "A", "source_file": "x.cs"})),
         ("b", json!({"label": "B", "source_file": "x.cs"})),
-        ("ns", json!({"label": "Acme.Reports", "source_file": "x.cs"})),
-        ("m_two_owners", json!({"label": ".Two()", "source_file": "x.cs"})),
-        ("m_no_owner", json!({"label": ".None()", "source_file": "x.cs"})),
-        ("m_dotted_owner", json!({"label": ".Dotted()", "source_file": "x.cs"})),
+        (
+            "ns",
+            json!({"label": "Acme.Reports", "source_file": "x.cs"}),
+        ),
+        (
+            "m_two_owners",
+            json!({"label": ".Two()", "source_file": "x.cs"}),
+        ),
+        (
+            "m_no_owner",
+            json!({"label": ".None()", "source_file": "x.cs"}),
+        ),
+        (
+            "m_dotted_owner",
+            json!({"label": ".Dotted()", "source_file": "x.cs"}),
+        ),
         ("m_ok", json!({"label": ".Ok()", "source_file": "x.cs"})),
         ("m_java", json!({"label": ".Ok()", "source_file": "x.java"})),
     ];

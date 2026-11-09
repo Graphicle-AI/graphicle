@@ -850,7 +850,11 @@ fn js_scope_bindings(scope: Node<'_>, source: &[u8]) -> BTreeSet<String> {
         }
     }
     if matches!(kind, "catch_clause" | "for_in_statement") {
-        let field = if kind == "catch_clause" { "parameter" } else { "left" };
+        let field = if kind == "catch_clause" {
+            "parameter"
+        } else {
+            "left"
+        };
         if let Some(pattern) = scope.child_by_field_name(field) {
             js_collect_pattern_idents(pattern, source, &mut bound);
         }
@@ -866,8 +870,12 @@ pub fn js_import_is_type_only(node: Node<'_>) -> bool {
     let mut node = Some(node);
     while let Some(n) = node {
         match n.kind() {
-            "type_annotation" | "type_alias_declaration" | "type_query"
-            | "interface_declaration" | "constraint" | "default_type" => return true,
+            "type_annotation"
+            | "type_alias_declaration"
+            | "type_query"
+            | "interface_declaration"
+            | "constraint"
+            | "default_type" => return true,
             "statement_block" | "program" => break,
             _ => node = n.parent(),
         }

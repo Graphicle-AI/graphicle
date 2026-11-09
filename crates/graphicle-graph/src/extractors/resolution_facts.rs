@@ -142,7 +142,9 @@ pub fn js_default_object_members(path: &Path) -> FxHashMap<String, (String, Stri
                 return FxHashMap::default();
             }
             let name = if key.kind_name() == "string" {
-                raw.get(1..raw.len().saturating_sub(1)).unwrap_or("").to_owned()
+                raw.get(1..raw.len().saturating_sub(1))
+                    .unwrap_or("")
+                    .to_owned()
             } else {
                 raw.clone()
             };
@@ -157,7 +159,10 @@ pub fn js_default_object_members(path: &Path) -> FxHashMap<String, (String, Stri
             {
                 members.insert(
                     name,
-                    (format!("{raw}()"), format!("L{}", prop.start_position().row + 1)),
+                    (
+                        format!("{raw}()"),
+                        format!("L{}", prop.start_position().row + 1),
+                    ),
                 );
             }
         }

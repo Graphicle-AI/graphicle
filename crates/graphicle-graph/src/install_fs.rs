@@ -144,10 +144,7 @@ pub fn remove_global_registration(target: &Path, prefix: &str) -> Vec<String> {
     let Ok(bytes) = fs::read(target) else {
         return vec![];
     };
-    if !bytes
-        .windows(MARKER.len())
-        .any(|w| w == MARKER.as_bytes())
-    {
+    if !bytes.windows(MARKER.len()).any(|w| w == MARKER.as_bytes()) {
         return vec![];
     }
     let (content, newline) = match read_keep_newline(target) {
@@ -181,7 +178,9 @@ pub fn remove_global_registration(target: &Path, prefix: &str) -> Vec<String> {
                 "{prefix}left as is: {} also has a `{MARKER}` section the engine did not write",
                 target.display()
             ),
-            format!("  hint: remove the engine's own `{MARKER}` block (the one naming the graphicle skill) by hand"),
+            format!(
+                "  hint: remove the engine's own `{MARKER}` block (the one naming the graphicle skill) by hand"
+            ),
         ];
     }
     let Some(cleaned) = remove_section(content, MARKER, "# ") else {

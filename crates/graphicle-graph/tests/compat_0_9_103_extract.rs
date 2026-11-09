@@ -116,11 +116,7 @@ fn dotted_mention_resolves_when_method_name_is_a_builtin() {
             "# Notes\n\nSee `Repository.open` and `Repository.connect`.\n",
         ),
     ]);
-    let notes = nodes(&r)
-        .iter()
-        .find(|n| n["label"] == "Notes")
-        .unwrap()["id"]
-        .clone();
+    let notes = nodes(&r).iter().find(|n| n["label"] == "Notes").unwrap()["id"].clone();
     let cited: Vec<&Value> = edges(&r)
         .iter()
         .filter(|e| e["relation"] == "references" && e["source"] == notes)
@@ -170,7 +166,10 @@ fn builtin_case(files: &[(&str, &str)]) -> (Fixture, Value) {
 #[test]
 fn unimported_builtin_exception_has_no_cross_file_edge() {
     // test_python_builtin_call_shadowing_4989.py
-    let (_f, r) = builtin_case(&[("pkg/a.py", "def todo():\n    raise NotImplementedError(\"x\")\n")]);
+    let (_f, r) = builtin_case(&[(
+        "pkg/a.py",
+        "def todo():\n    raise NotImplementedError(\"x\")\n",
+    )]);
     assert!(file_edges(&r, "pkg/a.py", "pkg/errors.py", &["calls"]).is_empty());
 }
 
@@ -285,13 +284,22 @@ fn type_import_does_not_emit_runtime_edge_or_package_path() {
         ] {
             let (_dir, r) = extract_js_text(suffix, source.as_bytes());
             assert!(r.get("error").is_none(), "{suffix} {source}: {r}");
-            assert!(runtime_edges(&r).is_empty(), "{suffix} {source}: {:?}", runtime_edges(&r));
             assert!(
-                !nodes(&r).iter().any(|n| n["source_file"] == "@playwright/test"),
+                runtime_edges(&r).is_empty(),
+                "{suffix} {source}: {:?}",
+                runtime_edges(&r)
+            );
+            assert!(
+                !nodes(&r)
+                    .iter()
+                    .any(|n| n["source_file"] == "@playwright/test"),
                 "{suffix} {source}"
             );
             if source.contains("function after") {
-                assert!(nodes(&r).iter().any(|n| n["label"] == "after()"), "{suffix} {source}");
+                assert!(
+                    nodes(&r).iter().any(|n| n["label"] == "after()"),
+                    "{suffix} {source}"
+                );
             }
         }
     }
@@ -331,8 +339,7 @@ fn runtime_comparison_import_is_not_a_type_import() {
 // --- A call inside `_main` belongs to `_main`, not `main` (#4994) ------------
 
 const TARGETS: &str = "def alpha():\n    return 1\n\ndef beta():\n    return 2\n";
-const CLI: &str =
-    "from targets import alpha, beta\n\ndef _main():\n    return beta()\n\ndef main():\n    return alpha()\n";
+const CLI: &str = "from targets import alpha, beta\n\ndef _main():\n    return beta()\n\ndef main():\n    return alpha()\n";
 
 /// `(source label, target label, line)` of every calls edge.
 fn labelled_calls(r: &Value) -> std::collections::BTreeSet<(String, String, String)> {
@@ -366,9 +373,18 @@ fn private_main_call_not_attributed_to_public_main() {
     let f = Fixture::new();
     let r = f.extract_files(&[("targets.py", TARGETS), ("cli.py", CLI)]);
     let calls = labelled_calls(&r);
-    assert!(calls.contains(&triple("_main()", "beta()", "L4")), "{calls:?}");
-    assert!(calls.contains(&triple("main()", "alpha()", "L7")), "{calls:?}");
-    assert!(!calls.contains(&triple("main()", "beta()", "L4")), "{calls:?}");
+    assert!(
+        calls.contains(&triple("_main()", "beta()", "L4")),
+        "{calls:?}"
+    );
+    assert!(
+        calls.contains(&triple("main()", "alpha()", "L7")),
+        "{calls:?}"
+    );
+    assert!(
+        !calls.contains(&triple("main()", "beta()", "L4")),
+        "{calls:?}"
+    );
     let id = |label: &str| {
         nodes(&r)
             .iter()
@@ -383,10 +399,16 @@ fn underscore_sibling_without_collision_is_unchanged() {
     let f = Fixture::new();
     let r = f.extract_files(&[
         ("targets.py", TARGETS),
-        ("cli.py", "from targets import beta\n\ndef _helper():\n    return beta()\n"),
+        (
+            "cli.py",
+            "from targets import beta\n\ndef _helper():\n    return beta()\n",
+        ),
     ]);
     let calls = labelled_calls(&r);
-    assert!(calls.contains(&triple("_helper()", "beta()", "L4")), "{calls:?}");
+    assert!(
+        calls.contains(&triple("_helper()", "beta()", "L4")),
+        "{calls:?}"
+    );
     assert!(!calls.iter().any(|(s, _, _)| s == "main()"));
 }
 
@@ -414,12 +436,19 @@ fn class_field_reference_stays_on_the_class_not_a_method() {
         .map(|e| (label(&e["source"]), label(&e["target"])))
         .collect();
     assert!(refs.contains(&("Foo".into(), "Baz".into())), "{refs:?}");
-    assert!(!refs.iter().any(|(s, t)| s.ends_with("render()") && t == "Baz"), "{refs:?}");
+    assert!(
+        !refs
+            .iter()
+            .any(|(s, t)| s.ends_with("render()") && t == "Baz"),
+        "{refs:?}"
+    );
 }
 
 // --- C# preprocessor directives no longer derail the parse ------------------
 
-fn cs_calls(files: &[(&str, &str)]) -> (Fixture, Value, std::collections::BTreeSet<(String, String)>) {
+fn cs_calls(
+    files: &[(&str, &str)],
+) -> (Fixture, Value, std::collections::BTreeSet<(String, String)>) {
     let f = Fixture::new();
     let r = f.extract_files(files);
     let calls = edges(&r)
@@ -450,10 +479,14 @@ fn member(r: &Value, owner: &str, name: &str) -> Value {
 }
 
 fn pair(a: &Value, b: &Value) -> (String, String) {
-    (a["id"].as_str().unwrap().to_owned(), b["id"].as_str().unwrap().to_owned())
+    (
+        a["id"].as_str().unwrap().to_owned(),
+        b["id"].as_str().unwrap().to_owned(),
+    )
 }
 
-const PP_BUFFER: &str = "namespace Repro3;\n\npublic class Buffer\n{\n    public void Append(char c) { }\n}\n";
+const PP_BUFFER: &str =
+    "namespace Repro3;\n\npublic class Buffer\n{\n    public void Append(char c) { }\n}\n";
 const PP_WRITER: &str = "namespace Repro3\n{\n    public class Writer\n    {\n        private readonly Buffer _buffer = new Buffer();\n        private int _state;\n\n        public int State\n        {\n            get\n            {\n                {\n                    return _state;\n                }\n            }\n        }\n\n        public string Path\n        {\n            get\n            {\n                {\n                    return \"\";\n                }\n            }\n        }\n\n        public void WriteValue(int typeCode)\n        {\n            {\n                switch (typeCode)\n                {\n#if HAVE_DB_NULL\n                    case 1:\n                        break;\n#endif\n                }\n            }\n        }\n\n        public void Flush()\n        {\n            Prepare();\n            _buffer.Append('x');\n        }\n\n        private void Prepare() { }\n    }\n}\n";
 
 #[test]
@@ -477,7 +510,11 @@ fn preprocessor_blanking_keeps_member_line_numbers() {
         ("Prepare", "private void Prepare()"),
     ] {
         let want = PP_WRITER.lines().position(|l| l.contains(decl)).unwrap() + 1;
-        assert_eq!(member(&r, "Writer", name)["source_location"], format!("L{want}"), "{name}");
+        assert_eq!(
+            member(&r, "Writer", name)["source_location"],
+            format!("L{want}"),
+            "{name}"
+        );
     }
 }
 
@@ -498,8 +535,14 @@ fn preprocessor_nested_split_signature_keeps_one_header() {
     assert_eq!(write["source_location"], "L8");
     assert_eq!(flush["source_location"], "L28");
     assert!(calls.contains(&pair(&write, &member(&r, "Fast", "Run"))));
-    assert!(calls.contains(&pair(&write, &member(&r, "Slow", "Run"))), "nested first branch kept");
-    assert!(calls.contains(&pair(&write, &member(&r, "Old", "Run"))), "balanced #else kept");
+    assert!(
+        calls.contains(&pair(&write, &member(&r, "Slow", "Run"))),
+        "nested first branch kept"
+    );
+    assert!(
+        calls.contains(&pair(&write, &member(&r, "Old", "Run"))),
+        "balanced #else kept"
+    );
     assert!(calls.contains(&pair(&flush, &member(&r, "Fast", "Run"))));
 }
 
@@ -521,7 +564,10 @@ fn preprocessor_elif_else_redeclaring_a_member_are_blanked() {
     assert_eq!(tail["source_location"], "L14");
     assert!(calls.contains(&pair(&run, &member(&r, "A", "Go"))));
     for other in ["B", "C"] {
-        assert!(!calls.contains(&pair(&run, &member(&r, other, "Go"))), "{other}");
+        assert!(
+            !calls.contains(&pair(&run, &member(&r, other, "Go"))),
+            "{other}"
+        );
     }
     assert!(calls.contains(&pair(&tail, &run)));
 }
@@ -549,9 +595,18 @@ fn preprocessor_blanking_is_length_preserving() {
     let out = blank_csharp_preprocessor(src).unwrap();
     assert_eq!(out.len(), src.len());
     let text = String::from_utf8(out).unwrap();
-    assert_eq!(text.matches('\n').count(), src.iter().filter(|b| **b == b'\n').count());
-    assert!(text.contains("void F()") && text.contains("void G()"), "{text}");
-    assert!(!text.contains("#endif") && !text.contains("#else"), "{text}");
+    assert_eq!(
+        text.matches('\n').count(),
+        src.iter().filter(|b| **b == b'\n').count()
+    );
+    assert!(
+        text.contains("void F()") && text.contains("void G()"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("#endif") && !text.contains("#else"),
+        "{text}"
+    );
     assert!(text.contains("#if inside a string") && text.contains("// #if not a directive"));
     assert_eq!(blank_csharp_preprocessor(b"class A {}\n"), None);
 }
@@ -569,7 +624,10 @@ fn merge_key_sequence_earlier_map_wins() {
     let r = graphicle::extractors::yaml_config::extract_yaml(&path);
     let stem = graphicle::extractors::base::file_stem(&path);
     let id = graphicle::extractors::base::make_id([stem.as_str(), "web", "common"]);
-    let node = nodes(&r).iter().find(|n| n["id"] == id.as_str()).unwrap_or_else(|| panic!("{r:#}"));
+    let node = nodes(&r)
+        .iter()
+        .find(|n| n["id"] == id.as_str())
+        .unwrap_or_else(|| panic!("{r:#}"));
     assert_eq!(node["source_location"], "L2");
 }
 
@@ -612,9 +670,15 @@ fn solidity_emit_revert_and_require_call_events_and_errors_of_the_same_contract(
     )]);
     assert_eq!(
         sol_calls_to(&r, "error"),
-        set3(&[("withdraw()", "NotOwner", "Vault.sol"), ("check()", "Paused", "Vault.sol")])
+        set3(&[
+            ("withdraw()", "NotOwner", "Vault.sol"),
+            ("check()", "Paused", "Vault.sol")
+        ])
     );
-    assert_eq!(sol_calls_to(&r, "event"), set3(&[("withdraw()", "Withdrawn", "Vault.sol")]));
+    assert_eq!(
+        sol_calls_to(&r, "event"),
+        set3(&[("withdraw()", "Withdrawn", "Vault.sol")])
+    );
 }
 
 #[test]
@@ -632,9 +696,15 @@ fn solidity_emit_and_revert_bind_events_and_errors_of_a_base_contract() {
     ]);
     assert_eq!(
         sol_calls_to(&r, "error"),
-        set3(&[("deposit()", "ZeroAmount", "Base.sol"), ("deposit()", "TooLarge", "Base.sol")])
+        set3(&[
+            ("deposit()", "ZeroAmount", "Base.sol"),
+            ("deposit()", "TooLarge", "Base.sol")
+        ])
     );
-    assert_eq!(sol_calls_to(&r, "event"), set3(&[("deposit()", "Deposited", "Base.sol")]));
+    assert_eq!(
+        sol_calls_to(&r, "event"),
+        set3(&[("deposit()", "Deposited", "Base.sol")])
+    );
 }
 
 #[test]
@@ -666,7 +736,10 @@ fn solidity_qualified_revert_and_emit_bind_through_the_imported_type() {
         sol_calls_to(&r, "error"),
         set3(&[("withdraw()", "InsufficientBalance", "Errors.sol")])
     );
-    assert_eq!(sol_calls_to(&r, "event"), set3(&[("withdraw()", "Moved", "Errors.sol")]));
+    assert_eq!(
+        sol_calls_to(&r, "event"),
+        set3(&[("withdraw()", "Moved", "Errors.sol")])
+    );
 }
 
 const MATH_LIB: &str = "pragma solidity ^0.8.20;\nlibrary MathLib {\n    function max(uint256 a, uint256 b) internal pure returns (uint256) { return a > b ? a : b; }\n    function clamp(uint256 x, uint256 hi) internal pure returns (uint256) {\n        return MathLib.max(x, hi) == x ? hi : x;\n    }\n}\n";
@@ -687,7 +760,10 @@ fn solidity_library_calls_bind_through_imports() {
         let f = Fixture::new();
         let r = f.extract_files(&[("MathLib.sol", MATH_LIB), ("Vault.sol", vault)]);
         let calls = sol_calls_to(&r, "function");
-        assert!(calls.contains(&triple(caller, "max()", "MathLib.sol")), "{caller}: {calls:?}");
+        assert!(
+            calls.contains(&triple(caller, "max()", "MathLib.sol")),
+            "{caller}: {calls:?}"
+        );
     }
     let f = Fixture::new();
     let r = f.extract_files(&[
@@ -700,14 +776,20 @@ fn solidity_library_calls_bind_through_imports() {
             "pragma solidity ^0.8.20;\nimport \"./TimeLib.sol\";\ncontract Vault {\n    uint48 public updatedAt;\n    function touch() external { updatedAt = TimeLib.now48(); }\n}\n",
         ),
     ]);
-    assert_eq!(sol_calls_to(&r, "function"), set3(&[("touch()", "now48()", "TimeLib.sol")]));
+    assert_eq!(
+        sol_calls_to(&r, "function"),
+        set3(&[("touch()", "now48()", "TimeLib.sol")])
+    );
 }
 
 #[test]
 fn solidity_qualified_call_inside_the_library_itself() {
     let f = Fixture::new();
     let r = f.extract_files(&[("MathLib.sol", MATH_LIB)]);
-    assert_eq!(sol_calls_to(&r, "function"), set3(&[("clamp()", "max()", "MathLib.sol")]));
+    assert_eq!(
+        sol_calls_to(&r, "function"),
+        set3(&[("clamp()", "max()", "MathLib.sol")])
+    );
 }
 
 #[test]
@@ -723,7 +805,10 @@ fn solidity_negated_library_call_binds() {
             "pragma solidity ^0.8.20;\nimport {MathLib} from \"./MathLib.sol\";\ncontract Vault {\n    function check(uint256 a) external pure { if (!MathLib.isZero(a)) revert(); }\n}\n",
         ),
     ]);
-    assert_eq!(sol_calls_to(&r, "function"), set3(&[("check()", "isZero()", "MathLib.sol")]));
+    assert_eq!(
+        sol_calls_to(&r, "function"),
+        set3(&[("check()", "isZero()", "MathLib.sol")])
+    );
 }
 
 #[test]
@@ -749,7 +834,10 @@ fn solidity_require_with_a_qualified_error_binds_the_library_error() {
             "pragma solidity ^0.8.20;\nimport {Errors} from \"./Errors.sol\";\ncontract Vault {\n    function deposit(uint256 v) external pure { require(v > 1, Errors.TooSmall(v)); }\n}\n",
         ),
     ]);
-    assert_eq!(sol_calls_to(&r, "error"), set3(&[("deposit()", "TooSmall", "Errors.sol")]));
+    assert_eq!(
+        sol_calls_to(&r, "error"),
+        set3(&[("deposit()", "TooSmall", "Errors.sol")])
+    );
 }
 
 #[test]
@@ -767,7 +855,10 @@ fn solidity_library_call_fails_closed_when_ambiguous_or_not_a_type() {
             "pragma solidity ^0.8.20;\nimport \"./A.sol\";\nimport \"./B.sol\";\ncontract Caller {\n    function run(uint256 x) external {\n        Dup.f();\n        Over.g(x);\n        Over.h(x, x);\n        Hidden.k();\n        x.h(x);\n    }\n    function ok(uint256 x) external { Over.h(x); }\n}\n",
         ),
     ]);
-    assert_eq!(sol_calls_to(&r, "function"), set3(&[("ok()", "h()", "A.sol")]));
+    assert_eq!(
+        sol_calls_to(&r, "function"),
+        set3(&[("ok()", "h()", "A.sol")])
+    );
 }
 
 #[test]
@@ -779,8 +870,14 @@ fn namespace_and_member_code_span_mentions() {
         code_span_mention("App\\Services\\Mailer"),
         Some((None, names(&["App", "Services", "Mailer"])))
     );
-    assert_eq!(code_span_mention("Mailer::send"), Some((None, names(&["Mailer", "send"]))));
-    assert_eq!(code_span_mention("Mailer::send()"), Some((None, names(&["Mailer", "send"]))));
+    assert_eq!(
+        code_span_mention("Mailer::send"),
+        Some((None, names(&["Mailer", "send"])))
+    );
+    assert_eq!(
+        code_span_mention("Mailer::send()"),
+        Some((None, names(&["Mailer", "send"])))
+    );
     for span in ["Foo::CONST", "Foo::class", "App\\", "C:\\Users\\me"] {
         assert_eq!(code_span_mention(span), None, "{span}");
     }
@@ -802,7 +899,8 @@ fn namespace_and_member_chains_resolve() {
             .iter()
             .find(|n| {
                 n["label"] == label
-                    && file.is_none_or(|f| n["source_file"].as_str().is_some_and(|s| s.ends_with(f)))
+                    && file
+                        .is_none_or(|f| n["source_file"].as_str().is_some_and(|s| s.ends_with(f)))
             })
             .unwrap_or_else(|| panic!("{label}"))["id"]
             .clone()
@@ -818,7 +916,10 @@ fn namespace_and_member_chains_resolve() {
         .find(|n| n["label"] == ".send()" && n["id"].as_str().unwrap().contains("mailer"))
         .unwrap()["id"]
         .clone();
-    assert!(refs.contains(&(mail.clone(), id("Mailer", Some("mailer.py")))), "{refs:?}");
+    assert!(
+        refs.contains(&(mail.clone(), id("Mailer", Some("mailer.py")))),
+        "{refs:?}"
+    );
     assert!(refs.contains(&(mail, send)), "{refs:?}");
     let constants = id("Constants", None);
     assert!(!refs.iter().any(|(s, _)| *s == constants), "{refs:?}");

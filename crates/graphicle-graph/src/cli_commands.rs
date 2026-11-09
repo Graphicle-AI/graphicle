@@ -104,7 +104,10 @@ fn query_loaded(
                         .ok_or_else(|| "--depth must be an integer from 1 to 6".to_string())?,
                 ),
             };
-            let budget = a.get("budget").map(|_| a.number("budget", 2000)).transpose()?;
+            let budget = a
+                .get("budget")
+                .map(|_| a.number("budget", 2000))
+                .transpose()?;
             let graph_root = graph_root_for(&gp);
             let settings = match crate::rcfile::load_rc_file(&graph_root) {
                 Ok(settings) => settings,

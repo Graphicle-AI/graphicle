@@ -47,7 +47,10 @@ impl Fixture {
 }
 
 fn items<'a>(result: &'a Value, key: &str) -> &'a [Value] {
-    result[key].as_array().map(Vec::as_slice).unwrap_or_default()
+    result[key]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
 }
 
 /// The node of `file` (root-relative, `/`-separated) labelled `label`.
@@ -116,7 +119,11 @@ fn default_object_member_call_resolves() {
                 .collect();
             assert_eq!(methods.len(), 1, "{suffix} {binding}");
             assert_eq!(methods[0]["source_file"], native.as_str());
-            assert!(!items(&result, "nodes").iter().any(|n| n["label"] == "default"));
+            assert!(
+                !items(&result, "nodes")
+                    .iter()
+                    .any(|n| n["label"] == "default")
+            );
         }
     }
 }
@@ -143,8 +150,14 @@ fn default_object_member_calls_stay_in_imported_module() {
             ("useLeft()", "left/native.ts", "right/native.ts"),
             ("useRight()", "right/native.ts", "left/native.ts"),
         ] {
-            assert_eq!(calls_between(&result, ("app.ts", caller), (target, "toast()")), 1);
-            assert_eq!(calls_between(&result, ("app.ts", caller), (other, "toast()")), 0);
+            assert_eq!(
+                calls_between(&result, ("app.ts", caller), (target, "toast()")),
+                1
+            );
+            assert_eq!(
+                calls_between(&result, ("app.ts", caller), (other, "toast()")),
+                0
+            );
         }
     }
 }
@@ -171,10 +184,17 @@ fn default_object_unknown_or_uncertain_member_has_no_call() {
         let unrelated = f.write("other.ts", "export function missing() {}\n");
         let result = f.run(&[target, importer, unrelated]);
         if exported == certain {
-            assert_eq!(calls_between(&result, ("app.ts", "run()"), ("native.ts", "toast()")), 1);
+            assert_eq!(
+                calls_between(&result, ("app.ts", "run()"), ("native.ts", "toast()")),
+                1
+            );
             assert_eq!(calls(&result).len(), 1, "{exported}");
         } else {
-            assert!(calls(&result).is_empty(), "{exported}: {:?}", calls(&result));
+            assert!(
+                calls(&result).is_empty(),
+                "{exported}: {:?}",
+                calls(&result)
+            );
         }
     }
 }
@@ -193,7 +213,11 @@ fn default_object_member_requires_direct_default_binding() {
         let target = f.write("native.ts", "export default { toast() {} };\n");
         let importer = f.write("app.ts", &format!("{statement}\n"));
         let result = f.run(&[target, importer]);
-        assert!(calls(&result).is_empty(), "{statement}: {:?}", calls(&result));
+        assert!(
+            calls(&result).is_empty(),
+            "{statement}: {:?}",
+            calls(&result)
+        );
     }
 }
 
@@ -210,7 +234,10 @@ fn default_object_member_requires_unshadowed_method_call() {
         for incremental in [false, true] {
             let f = Fixture::new();
             let target = f.write("native.ts", "export default { toast() {} };\n");
-            let importer = f.write("app.ts", &format!("import native from './native';\n{body}\n"));
+            let importer = f.write(
+                "app.ts",
+                &format!("import native from './native';\n{body}\n"),
+            );
             let result = if incremental {
                 let baseline = f.run(&[target]);
                 let context = items(&baseline, "nodes").to_vec();
@@ -224,7 +251,11 @@ fn default_object_member_requires_unshadowed_method_call() {
             } else {
                 f.run(&[target, importer])
             };
-            assert_eq!(calls_into_toast(&result), 0, "{body} incremental={incremental}");
+            assert_eq!(
+                calls_into_toast(&result),
+                0,
+                "{body} incremental={incremental}"
+            );
         }
     }
 }
@@ -238,7 +269,10 @@ fn default_object_member_keeps_calls_outside_shadow_scope() {
     ] {
         let f = Fixture::new();
         let target = f.write("native.ts", "export default { toast() {} };\n");
-        let importer = f.write("app.ts", &format!("import native from './native';\n{body}\n"));
+        let importer = f.write(
+            "app.ts",
+            &format!("import native from './native';\n{body}\n"),
+        );
         let result = f.run(&[target, importer]);
         assert_eq!(calls_into_toast(&result), 1, "{body}");
     }
@@ -248,7 +282,10 @@ fn default_object_member_keeps_calls_outside_shadow_scope() {
 fn default_object_member_call_from_class() {
     for method in ["toast", "'toast'", "\"toast\""] {
         let f = Fixture::new();
-        let target = f.write("native.ts", &format!("export default {{ {method}() {{}} }};\n"));
+        let target = f.write(
+            "native.ts",
+            &format!("export default {{ {method}() {{}} }};\n"),
+        );
         let importer = f.write(
             "app.ts",
             "import renamed from './native';\nclass App { run() { renamed.toast(); } }\n",

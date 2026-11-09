@@ -75,9 +75,8 @@ static BARE_MENTION: LazyLock<Regex> =
 /// `_MD_NS_MENTION_RE` (Graphify 0.9.103, #4610): the namespace and member
 /// chains other languages' docs write, `App\Services\Mailer` (PHP) and
 /// `Mailer::send()` (PHP, Rust, C++): plain identifiers joined by `\` or `::`.
-static NS_MENTION: LazyLock<Regex> = LazyLock::new(|| {
-    regex_compat::compile(r"^[A-Za-z_]\w*(?:(?:::|\\)[A-Za-z_]\w*)+(?:\(\))?$")
-});
+static NS_MENTION: LazyLock<Regex> =
+    LazyLock::new(|| regex_compat::compile(r"^[A-Za-z_]\w*(?:(?:::|\\)[A-Za-z_]\w*)+(?:\(\))?$"));
 /// `_MD_NS_NON_SYMBOL_RE`: `Foo::CONST` names a constant and `Foo::class` a
 /// keyword; neither has a node to land on.
 static NS_NON_SYMBOL: LazyLock<Regex> =
@@ -449,7 +448,10 @@ pub fn code_span_mention(span: &str) -> Option<(Option<String>, Vec<String>)> {
             .flat_map(|part| part.split('\\'))
             .map(str::to_owned)
             .collect();
-        if parts.last().is_some_and(|last| NS_NON_SYMBOL.is_match(last)) {
+        if parts
+            .last()
+            .is_some_and(|last| NS_NON_SYMBOL.is_match(last))
+        {
             return None;
         }
         return Some((None, parts));

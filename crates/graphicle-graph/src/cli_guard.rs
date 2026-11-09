@@ -716,17 +716,19 @@ pub fn bash_read_target(cmd: &str, cwd: &str) -> Option<std::path::PathBuf> {
             base = c;
         }
     }
-    let outs: Vec<std::path::PathBuf> =
-        [out(), std::path::PathBuf::from(crate::paths::DEFAULT_OUT_DIR)]
-            .into_iter()
-            .map(|o| {
-                if cwd_relative(&o.to_string_lossy(), cfg!(windows)) {
-                    resolved(&root.join(o))
-                } else {
-                    resolved(&o)
-                }
-            })
-            .collect();
+    let outs: Vec<std::path::PathBuf> = [
+        out(),
+        std::path::PathBuf::from(crate::paths::DEFAULT_OUT_DIR),
+    ]
+    .into_iter()
+    .map(|o| {
+        if cwd_relative(&o.to_string_lossy(), cfg!(windows)) {
+            resolved(&root.join(o))
+        } else {
+            resolved(&o)
+        }
+    })
+    .collect();
     let expansion = regex::Regex::new(r"[$`~*?\[\]{}]").unwrap();
     let exts = DATA["_HOOK_SOURCE_EXTS"].as_array();
     for (name, args, _piped) in bash_commands(cmd) {
@@ -932,7 +934,11 @@ pub fn search_is_outside_project(t: &Map<String, Value>) -> bool {
     let command = t
         .get("command")
         .filter(|v| crate::build::truthy(v))
-        .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| crate::python_compat::string(v)))
+        .map(|v| {
+            v.as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| crate::python_compat::string(v))
+        })
         .unwrap_or_default();
     let paths: Vec<String> = if !command.is_empty() {
         if command.chars().any(|c| "$`;&|<>\n\\".contains(c)) {
@@ -1002,12 +1008,20 @@ pub fn search_is_outside_project(t: &Map<String, Value>) -> bool {
         vec![
             t.get("path")
                 .filter(|v| crate::build::truthy(v))
-                .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| crate::python_compat::string(v)))
+                .map(|v| {
+                    v.as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| crate::python_compat::string(v))
+                })
                 .unwrap_or_default(),
         ]
     };
     let glob = regex::Regex::new(r"[$`*?\[\]{}~]").unwrap();
-    if paths.is_empty() || paths.iter().any(|p| p.is_empty() || p == "-" || glob.is_match(p)) {
+    if paths.is_empty()
+        || paths
+            .iter()
+            .any(|p| p.is_empty() || p == "-" || glob.is_match(p))
+    {
         return false;
     }
     // Bash on Windows may use /c/... or /mnt/c/... paths whose drive is
@@ -1048,7 +1062,9 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
         if reset_hook_session(&payload_text(d, "session_id")).is_err() || !graph.is_file() {
             return String::new();
         }
-        return nudge_for_out(crate::cli::program_text(DATA["_COMPACT_CONTEXT"].as_str().unwrap_or("")).into_owned());
+        return nudge_for_out(
+            crate::cli::program_text(DATA["_COMPACT_CONTEXT"].as_str().unwrap_or("")).into_owned(),
+        );
     }
     let input = d.get("tool_input").unwrap_or(data);
     let Some(t) = input.as_object() else {
@@ -1060,7 +1076,8 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     // over a search in the same command, since the read nudge names the
     // file's symbols.
     let bash_target = (kind == "search"
-        && d.get("tool_name").is_none_or(|v| v.is_null() || v == "Bash"))
+        && d.get("tool_name")
+            .is_none_or(|v| v.is_null() || v == "Bash"))
     .then(|| bash_read_target(&payload_text(t, "command"), &payload_text(d, "cwd")))
     .flatten();
     let read_input: Map<String, Value>;
@@ -1128,8 +1145,7 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
             }
             // A single-file target needs the same index evidence as Read; a
             // folder is the code the graph covers.
-            let indexed =
-                !target.is_file() || target_indexed(&target.to_string_lossy(), &root);
+            let indexed = !target.is_file() || target_indexed(&target.to_string_lossy(), &root);
             if indexed
                 && strict(strict_flag)
                 && !out().join("needs_update").exists()
@@ -1270,9 +1286,15 @@ mod tests {
         }
         let input = |v: serde_json::Value| v.as_object().unwrap().clone();
         let outside = super::search_is_outside_project;
-        assert!(outside(&input(serde_json::json!({"command": "grep -rn foo /"}))));
-        assert!(outside(&input(serde_json::json!({"command": "rg -e foo /"}))));
-        assert!(outside(&input(serde_json::json!({"pattern": "foo", "path": "/"}))));
+        assert!(outside(&input(
+            serde_json::json!({"command": "grep -rn foo /"})
+        )));
+        assert!(outside(&input(
+            serde_json::json!({"command": "rg -e foo /"})
+        )));
+        assert!(outside(&input(
+            serde_json::json!({"pattern": "foo", "path": "/"})
+        )));
         for inside in [
             "grep -rn foo src",
             "grep -rn foo / | head",
@@ -1281,7 +1303,10 @@ mod tests {
             "grep --weird foo /",
             "find / -name x",
         ] {
-            assert!(!outside(&input(serde_json::json!({"command": inside}))), "{inside}");
+            assert!(
+                !outside(&input(serde_json::json!({"command": inside}))),
+                "{inside}"
+            );
         }
         assert!(!outside(&input(serde_json::json!({"pattern": "foo"}))));
     }

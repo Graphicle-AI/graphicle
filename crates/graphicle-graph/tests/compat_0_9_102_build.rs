@@ -27,24 +27,60 @@ fn semantic_reference_stubs_are_namespaced() {
     let runtime = "functional_agent_runtime_doc";
     let license = "company_license_schedule_c";
     let nodes = [
-        stub(logging, "Logging", "specifications/20-architecture/delivery/change-policy.md"),
-        stub(logging, "Logging specification", ".github/instructions/rust.instructions.md"),
-        stub(runtime, "Agent runtime", "functional/agents/agent-operator.md"),
-        stub(runtime, "Agent Runtime and Subagent Contract (referenced)", "delivery/developer-interaction.md"),
+        stub(
+            logging,
+            "Logging",
+            "specifications/20-architecture/delivery/change-policy.md",
+        ),
+        stub(
+            logging,
+            "Logging specification",
+            ".github/instructions/rust.instructions.md",
+        ),
+        stub(
+            runtime,
+            "Agent runtime",
+            "functional/agents/agent-operator.md",
+        ),
+        stub(
+            runtime,
+            "Agent Runtime and Subagent Contract (referenced)",
+            "delivery/developer-interaction.md",
+        ),
         stub(license, "Schedule C - Support", "company/license.md"),
         json!({"id": license, "label": "Schedule C - Support", "file_type": "document", "source_file": "company/license-schedule-c.md"}),
     ];
     let kept: BTreeSet<(String, String)> = dedup(&nodes, &[])
         .nodes
         .iter()
-        .map(|n| (n["id"].as_str().unwrap().into(), n["source_file"].as_str().unwrap().into()))
+        .map(|n| {
+            (
+                n["id"].as_str().unwrap().into(),
+                n["source_file"].as_str().unwrap().into(),
+            )
+        })
         .collect();
     let expected: BTreeSet<(String, String)> = [
-        (format!("specifications_20_architecture_delivery_change_policy__ref__{logging}"), "specifications/20-architecture/delivery/change-policy.md"),
-        (format!("github_instructions_rust_instructions__ref__{logging}"), ".github/instructions/rust.instructions.md"),
-        (format!("functional_agents_agent_operator__ref__{runtime}"), "functional/agents/agent-operator.md"),
-        (format!("delivery_developer_interaction__ref__{runtime}"), "delivery/developer-interaction.md"),
-        (format!("company_license__ref__{license}"), "company/license.md"),
+        (
+            format!("specifications_20_architecture_delivery_change_policy__ref__{logging}"),
+            "specifications/20-architecture/delivery/change-policy.md",
+        ),
+        (
+            format!("github_instructions_rust_instructions__ref__{logging}"),
+            ".github/instructions/rust.instructions.md",
+        ),
+        (
+            format!("functional_agents_agent_operator__ref__{runtime}"),
+            "functional/agents/agent-operator.md",
+        ),
+        (
+            format!("delivery_developer_interaction__ref__{runtime}"),
+            "delivery/developer-interaction.md",
+        ),
+        (
+            format!("company_license__ref__{license}"),
+            "company/license.md",
+        ),
         (license.to_string(), "company/license-schedule-c.md"),
     ]
     .into_iter()
@@ -61,7 +97,11 @@ fn semantic_reference_stub_rewires_its_own_file_edges() {
         json!({"id": "functional_agents_agent_operator", "label": "Agent operator", "file_type": "document", "source_file": "functional/agents/agent-operator.md", "_origin": "semantic"}),
         stub(nid, "Agent runtime", "functional/agents/agent-operator.md"),
         json!({"id": "delivery_developer_interaction", "label": "Developer interaction", "file_type": "document", "source_file": "delivery/developer-interaction.md", "_origin": "semantic"}),
-        stub(nid, "Agent Runtime and Subagent Contract (referenced)", "delivery/developer-interaction.md"),
+        stub(
+            nid,
+            "Agent Runtime and Subagent Contract (referenced)",
+            "delivery/developer-interaction.md",
+        ),
     ];
     let edges = [
         json!({"source": "functional_agents_agent_operator", "target": nid, "relation": "references", "source_file": "functional/agents/agent-operator.md"}),
@@ -70,13 +110,24 @@ fn semantic_reference_stub_rewires_its_own_file_edges() {
     let rewired: BTreeSet<(String, String)> = dedup(&nodes, &edges)
         .edges
         .iter()
-        .map(|e| (e["source_file"].as_str().unwrap().into(), e["target"].as_str().unwrap().into()))
+        .map(|e| {
+            (
+                e["source_file"].as_str().unwrap().into(),
+                e["target"].as_str().unwrap().into(),
+            )
+        })
         .collect();
     assert_eq!(
         rewired,
         [
-            ("functional/agents/agent-operator.md".to_string(), format!("functional_agents_agent_operator__ref__{nid}")),
-            ("delivery/developer-interaction.md".to_string(), format!("delivery_developer_interaction__ref__{nid}")),
+            (
+                "functional/agents/agent-operator.md".to_string(),
+                format!("functional_agents_agent_operator__ref__{nid}")
+            ),
+            (
+                "delivery/developer-interaction.md".to_string(),
+                format!("delivery_developer_interaction__ref__{nid}")
+            ),
         ]
         .into_iter()
         .collect()
@@ -94,7 +145,12 @@ fn unmarked_nested_document_collision_keeps_existing_survivor() {
     let kept: Vec<(String, String)> = dedup(&nodes, &[])
         .nodes
         .iter()
-        .map(|n| (n["id"].as_str().unwrap().into(), n["source_file"].as_str().unwrap().into()))
+        .map(|n| {
+            (
+                n["id"].as_str().unwrap().into(),
+                n["source_file"].as_str().unwrap().into(),
+            )
+        })
         .collect();
     assert_eq!(kept, [(nid.to_string(), "docs/protocol.md".to_string())]);
 }
@@ -105,10 +161,22 @@ fn shared_module_nodes_are_no_id_collision() {
     // mints the same module node; that is no collision warning.
     let module = |file: &str| json!({"id": "foundation", "label": "Foundation", "type": "module", "file_type": "code", "source_file": file});
     let out = dedup(&[module("a.swift"), module("b.swift")], &[]);
-    assert!(!out.stderr.iter().any(|l| l.contains("minted by two different files")), "{:?}", out.stderr);
+    assert!(
+        !out.stderr
+            .iter()
+            .any(|l| l.contains("minted by two different files")),
+        "{:?}",
+        out.stderr
+    );
     let other = json!({"id": "foundation", "label": "Foundation", "type": "namespace", "file_type": "code", "source_file": "c.cs"});
     let out = dedup(&[module("a.swift"), other], &[]);
-    assert!(out.stderr.iter().any(|l| l.contains("minted by two different files")), "{:?}", out.stderr);
+    assert!(
+        out.stderr
+            .iter()
+            .any(|l| l.contains("minted by two different files")),
+        "{:?}",
+        out.stderr
+    );
 }
 
 #[test]
@@ -130,7 +198,14 @@ fn edges_missing_relation_are_dropped() {
     let mut d = graphicle::build::Diagnostics::default();
     let g = graphicle::build::build_from_json(&mut extraction.clone(), true, None, &mut d).unwrap();
     assert_eq!(g.edge_count(), 1);
-    assert!(d.stderr.iter().any(|l| l.contains("dropped 1 schema-invalid edge(s) missing required field 'relation'")), "{:?}", d.stderr);
+    assert!(
+        d.stderr
+            .iter()
+            .any(|l| l
+                .contains("dropped 1 schema-invalid edge(s) missing required field 'relation'")),
+        "{:?}",
+        d.stderr
+    );
     let mut raw = extraction;
     assert_eq!(graphicle::build::finalize_raw_graph_endpoints(&mut raw), 1);
     assert_eq!(raw["edges"].as_array().unwrap().len(), 1);
@@ -159,7 +234,11 @@ fn two_file_import_cycle_survives_the_undirected_build() {
         "edges": [import("a", "b", "src/a.ts")],
     });
     let g = graphicle::build::build_from_json(&mut extraction, false, None, &mut d).unwrap();
-    assert!(graphicle::analyze::find_import_cycles(&g, 10, 10).unwrap().is_empty());
+    assert!(
+        graphicle::analyze::find_import_cycles(&g, 10, 10)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -184,7 +263,9 @@ fn collapsed_edge_keeps_weaker_evidence_in_also_seen() {
         assert_eq!(attrs.get("confidence_score"), None);
         assert_eq!(
             attrs.get("also_seen"),
-            Some(&json!([{"confidence": "INFERRED", "confidence_score": 0.6, "source_file": "b.py"}]))
+            Some(
+                &json!([{"confidence": "INFERRED", "confidence_score": 0.6, "source_file": "b.py"}])
+            )
         );
     }
 }
@@ -206,7 +287,11 @@ fn dedup_reports_each_id_it_merged_away() {
     let out = dedup(&nodes, &[]);
     assert_eq!(out.remap.len(), 1, "{:?}", out.remap);
     let (loser, winner) = out.remap.iter().next().unwrap();
-    let survivors: BTreeSet<&str> = out.nodes.iter().map(|n| n["id"].as_str().unwrap()).collect();
+    let survivors: BTreeSet<&str> = out
+        .nodes
+        .iter()
+        .map(|n| n["id"].as_str().unwrap())
+        .collect();
     assert!(survivors.contains(winner.as_str()) && !survivors.contains(loser.as_str()));
     let out = dedup(
         &[
@@ -235,7 +320,16 @@ fn build_carries_the_dedup_map_but_never_writes_it() {
     let dir = tempfile::tempdir().unwrap();
     let out = dir.path().join("graph.json");
     let communities: graphicle::cluster::Communities = vec![];
-    assert!(graphicle::export::to_json(&g, &communities, &out, &graphicle::export::JsonOptions::default(), &mut d).unwrap());
+    assert!(
+        graphicle::export::to_json(
+            &g,
+            &communities,
+            &out,
+            &graphicle::export::JsonOptions::default(),
+            &mut d
+        )
+        .unwrap()
+    );
     let text = std::fs::read_to_string(&out).unwrap();
     assert!(!text.contains("_dedup_remap"), "{text}");
 }
@@ -245,16 +339,22 @@ fn a_survivor_that_is_itself_gone_excuses_nothing() {
     let saved = [concept("loser", "The nudge", "GLOSSARY.md")];
     let remap: std::collections::BTreeMap<String, String> =
         [("loser".to_string(), "winner".to_string())].into();
-    let lost = graphicle::build::lost_saved_semantic_nodes_with(&saved, &[], &[], None, Some(&remap));
+    let lost =
+        graphicle::build::lost_saved_semantic_nodes_with(&saved, &[], &[], None, Some(&remap));
     assert_eq!(lost, saved);
     let kept = [concept("winner", "The nudge", "GLOSSARY.md")];
-    let lost = graphicle::build::lost_saved_semantic_nodes_with(&saved, &kept, &[], None, Some(&remap));
+    let lost =
+        graphicle::build::lost_saved_semantic_nodes_with(&saved, &kept, &[], None, Some(&remap));
     assert!(lost.is_empty());
 }
 
 #[test]
 fn the_allowance_counts_only_merges_whose_survivor_is_present() {
-    let set = |ids: &[&str]| ids.iter().map(|s| s.to_string()).collect::<std::collections::HashSet<_>>();
+    let set = |ids: &[&str]| {
+        ids.iter()
+            .map(|s| s.to_string())
+            .collect::<std::collections::HashSet<_>>()
+    };
     let remap: std::collections::BTreeMap<String, String> = [("a", "w"), ("b", "w"), ("c", "gone")]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))

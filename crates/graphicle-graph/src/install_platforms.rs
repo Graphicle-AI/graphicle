@@ -117,10 +117,7 @@ fn hook_file(name: &str, o: &Options, path: &Path, remove: bool) -> Result<()> {
         }
     }
     for event in &events {
-        let groups = hooks
-            .get_mut(*event)
-            .and_then(Value::as_array_mut)
-            .unwrap();
+        let groups = hooks.get_mut(*event).and_then(Value::as_array_mut).unwrap();
         if let Some(kept) = strip_engine_hooks(groups) {
             *groups = kept;
         }

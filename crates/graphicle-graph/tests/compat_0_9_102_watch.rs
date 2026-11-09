@@ -202,7 +202,10 @@ fn update_skips_a_file_whose_content_is_unchanged() {
             "Incremental: none of the 4 scanned files differ from the last build."
         );
     }
-    assert_eq!(fs::read(root.join(".graphicle/graph.json")).unwrap(), before);
+    assert_eq!(
+        fs::read(root.join(".graphicle/graph.json")).unwrap(),
+        before
+    );
 }
 
 #[test]
@@ -288,7 +291,11 @@ fn a_contended_incremental_request_is_recorded_not_dropped() {
     )
     .unwrap();
     assert!(!busy.success);
-    assert!(busy.messages[0].contains("changes queued"), "{:?}", busy.messages);
+    assert!(
+        busy.messages[0].contains("changes queued"),
+        "{:?}",
+        busy.messages
+    );
     assert!(out.join(".pending_incremental").exists());
     assert!(!out.join(".pending_full").exists());
     drop(lock);
@@ -319,10 +326,15 @@ fn a_code_only_graph_stays_code_only_on_rebuilds() {
     let root = dir.path();
     fs::write(root.join("app.py"), "def f():\n    return 1\n").unwrap();
     fs::write(root.join("README.md"), "# Notes\n\n## Usage\n\nRun it.\n").unwrap();
-    let args: Vec<String> = ["extract", root.to_str().unwrap(), "--code-only", "--no-cluster"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let args: Vec<String> = [
+        "extract",
+        root.to_str().unwrap(),
+        "--code-only",
+        "--no-cluster",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
     let r = graphicle::cli::run(&args);
     assert_eq!(r.exit_code, 0, "{}", r.stderr);
     assert!(watch::build_flag(&root.join(".graphicle"), "code_only"));
@@ -357,11 +369,29 @@ fn shrink_guard_rejects_a_same_id_ast_overwrite() {
     let none = std::collections::BTreeSet::new();
     let mut messages = vec![];
     assert!(!watch::check_shrink(
-        false, &saved, &damaged, false, None, &none, &none, &mut messages
+        false,
+        &saved,
+        &damaged,
+        false,
+        None,
+        &none,
+        &none,
+        &mut messages
     ));
-    assert!(messages.iter().any(|m| m.contains("provenance field(s) stripped")));
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("provenance field(s) stripped"))
+    );
     let kept = json!({"nodes": [saved["nodes"][0].clone(), {"id": "new_function"}]});
     assert!(watch::check_shrink(
-        false, &saved, &kept, false, None, &none, &none, &mut vec![]
+        false,
+        &saved,
+        &kept,
+        false,
+        None,
+        &none,
+        &none,
+        &mut vec![]
     ));
 }

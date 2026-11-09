@@ -1456,7 +1456,15 @@ pub fn augment_symbol_resolution_edges(
     super::resolution_facts::collect_python(paths, root, &mut python, ambiguous);
     drop(span);
     let facts = PassFacts::new(js, python);
-    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes, js_member_calls);
+    apply_pass_facts(
+        paths,
+        nodes,
+        edges,
+        root,
+        facts,
+        context_nodes,
+        js_member_calls,
+    );
 }
 /// A JS/TS member call the extractor left unresolved, as the pass through a
 /// default-exported object reads it (Graphify 0.9.102, #4963).
@@ -1492,7 +1500,11 @@ impl JsMemberCall {
                     return None;
                 }
                 let location = text("source_location");
-                let line = location.strip_prefix('L').unwrap_or(location).parse().ok()?;
+                let line = location
+                    .strip_prefix('L')
+                    .unwrap_or(location)
+                    .parse()
+                    .ok()?;
                 Some(Self {
                     caller: text("caller_nid").to_owned(),
                     receiver: text("receiver").to_owned(),
@@ -1539,9 +1551,9 @@ fn js_default_object_member_calls(
     let fresh: FxHashSet<PathBuf> = paths.iter().map(|p| resolved(p)).collect();
     let mut member_nodes: FxHashMap<(PathBuf, String, String), BTreeSet<String>> =
         FxHashMap::default();
-    let context = context_nodes.iter().filter(|n| {
-        js_source_path(s(n, "source_file"), root).is_none_or(|p| !fresh.contains(&p))
-    });
+    let context = context_nodes
+        .iter()
+        .filter(|n| js_source_path(s(n, "source_file"), root).is_none_or(|p| !fresh.contains(&p)));
     for node in nodes.iter().chain(context) {
         if !node.get("_callable").is_some_and(crate::build::truthy) {
             continue;
@@ -1724,7 +1736,10 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             json!(facts)
         }
         "augment" => {
-            let raw_calls = r["raw_calls"].as_array().map(Vec::as_slice).unwrap_or_default();
+            let raw_calls = r["raw_calls"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default();
             augment_symbol_resolution_edges(
                 &paths,
                 &mut nodes,

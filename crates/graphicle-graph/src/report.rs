@@ -303,10 +303,7 @@ pub fn generate(graph: &Graph, r: &Value) -> Result<String> {
         // The plain count reads as routine even when it is most of the
         // corpus: say plainly that the graph may be missing a large part of
         // the codebase (Graphify 0.9.103, #2942).
-        if let Some(warning) = detection
-            .get("unclassified_warning")
-            .filter(|v| truthy(v))
-        {
+        if let Some(warning) = detection.get("unclassified_warning").filter(|v| truthy(v)) {
             lines.push(format!("- WARNING: {}", s(warning)));
         }
     }

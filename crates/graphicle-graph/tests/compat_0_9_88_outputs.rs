@@ -1495,7 +1495,11 @@ fn a_global_opencode_install_writes_the_plugin_to_the_config_dir() {
     o.project = false;
     graphicle::install::install("opencode", &o).unwrap();
     let global = home.join(".config/opencode/plugins/graphicle.js");
-    assert!(fs::read_to_string(&global).unwrap().contains("tool.execute.before"));
+    assert!(
+        fs::read_to_string(&global)
+            .unwrap()
+            .contains("tool.execute.before")
+    );
     assert!(!project.join(".opencode").exists());
     assert!(!home.join(".config/opencode/.opencode").exists());
     graphicle::install::uninstall_all(&o, false).unwrap();
@@ -1522,7 +1526,11 @@ fn a_global_uninstall_removes_only_the_registration_it_wrote() {
     fs::create_dir_all(claude_md.parent().unwrap()).unwrap();
     fs::write(&claude_md, "# mine\nkeep this\n").unwrap();
     graphicle::install::install("claude", &o).unwrap();
-    assert!(fs::read_to_string(&claude_md).unwrap().contains("Trigger: `/graphicle`"));
+    assert!(
+        fs::read_to_string(&claude_md)
+            .unwrap()
+            .contains("Trigger: `/graphicle`")
+    );
     graphicle::install::uninstall("claude", &o).unwrap();
     let text = fs::read_to_string(&claude_md).unwrap();
     assert!(!text.contains("# graphicle"), "{text}");

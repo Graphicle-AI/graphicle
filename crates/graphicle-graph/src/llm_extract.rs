@@ -274,7 +274,9 @@ impl Runtime {
         let mut slices_left: BTreeMap<PathBuf, usize> = BTreeMap::new();
         for unit in chunks.iter().flatten() {
             if matches!(unit, Unit::Slice(_)) {
-                *slices_left.entry(unit_path(unit).to_path_buf()).or_default() += 1;
+                *slices_left
+                    .entry(unit_path(unit).to_path_buf())
+                    .or_default() += 1;
             }
         }
         let mut held: BTreeMap<PathBuf, Vec<(usize, Value)>> = BTreeMap::new();
@@ -663,7 +665,9 @@ mod tests {
                 } else {
                     json!([{"id": "k", "source_file": path.to_string_lossy(), "file_type": "document"}])
                 };
-                Ok(json!({"nodes": nodes, "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}))
+                Ok(
+                    json!({"nodes": nodes, "edges": [], "hyperedges": [], "input_tokens": 1, "output_tokens": 1}),
+                )
             };
             let mut d = Diagnostics::default();
             let result = rt
@@ -688,13 +692,19 @@ mod tests {
                 .lines()
                 .find(|l| l.contains("failed.md") && l.contains("produced no nodes"))
                 .unwrap_or_default();
-            assert!(failed_line.contains("Their chunk failed before returning a response"), "{err}");
+            assert!(
+                failed_line.contains("Their chunk failed before returning a response"),
+                "{err}"
+            );
             assert!(!failed_line.contains("omitted them"), "{err}");
             let omitted_line = err
                 .lines()
                 .find(|l| l.contains("omitted.md") && l.contains("produced no nodes"))
                 .unwrap_or_default();
-            assert!(omitted_line.contains("The model returned a response but omitted them"), "{err}");
+            assert!(
+                omitted_line.contains("The model returned a response but omitted them"),
+                "{err}"
+            );
         }
     }
 }

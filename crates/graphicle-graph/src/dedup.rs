@@ -159,7 +159,8 @@ pub fn outranked_by_ast(nodes: &[Value], root: Option<&Path>, mentions: &Mention
         let nid = id(node);
         let source_file = source(node);
         let path = rank_path(source_file, root);
-        if nid.is_empty() || !defines_id(node) || mentions.contains(&(nid.to_owned(), path.clone())) {
+        if nid.is_empty() || !defines_id(node) || mentions.contains(&(nid.to_owned(), path.clone()))
+        {
             continue;
         }
         let stem = full_stem(source_file);
@@ -328,7 +329,10 @@ fn rename_references_skipping<R: Record, E: EdgeItem<Record = R>>(
 pub fn is_reference_stub(node: &Value) -> bool {
     field(node, "metadata")
         .and_then(Value::as_object)
-        .and_then(|m| m.get("graphicle_reference_stub").or_else(|| m.get("graphify_reference_stub")))
+        .and_then(|m| {
+            m.get("graphicle_reference_stub")
+                .or_else(|| m.get("graphify_reference_stub"))
+        })
         == Some(&Value::Bool(true))
 }
 /// `_namespace_reference_stub_collisions` (Graphify 0.9.96, #4738; 0.9.101):
@@ -360,7 +364,10 @@ fn namespace_reference_stub_collisions_in<R: Record, E: EdgeItem<Record = R>>(
     let mut by_id: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
     let mut order: Vec<String> = Vec::new();
     for (i, node) in nodes.iter().enumerate() {
-        if let Some(nid) = field(node, "id").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        if let Some(nid) = field(node, "id")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+        {
             let entry = by_id.entry(nid.to_owned()).or_default();
             if entry.is_empty() {
                 order.push(nid.to_owned());
@@ -373,11 +380,21 @@ fn namespace_reference_stub_collisions_in<R: Record, E: EdgeItem<Record = R>>(
         .filter(|n| field(n, "id").is_some_and(crate::build_normalize::truthy))
         .map(id_text)
         .collect();
-    let origin = |node: &Value| field(node, "_origin").and_then(Value::as_str).map(str::to_owned);
+    let origin = |node: &Value| {
+        field(node, "_origin")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
     let mut renames: HashMap<(String, String), String> = HashMap::new();
     for nid in &order {
         let members = &by_id[nid];
-        if members.iter().map(|&i| key(&nodes[i])).collect::<HashSet<_>>().len() < 2 {
+        if members
+            .iter()
+            .map(|&i| key(&nodes[i]))
+            .collect::<HashSet<_>>()
+            .len()
+            < 2
+        {
             continue;
         }
         let ast_sources: HashSet<String> = members
@@ -427,7 +444,9 @@ fn namespace_reference_stub_collisions_in<R: Record, E: EdgeItem<Record = R>>(
                 let base = value.clone();
                 let mut candidate = base.clone();
                 let mut suffix = 2;
-                while taken.contains(&candidate) || (candidate != base && reserved.contains(&candidate)) {
+                while taken.contains(&candidate)
+                    || (candidate != base && reserved.contains(&candidate))
+                {
                     candidate = format!("{base}__{suffix}");
                     suffix += 1;
                 }
@@ -912,8 +931,12 @@ pub fn report_id_collision(nid: &str, survivor: &Value, losers: &[Value]) -> Vec
     // no collision (Graphify 0.9.96).
     let kind = survivor.get("type").unwrap_or(&Value::Null);
     if matches!(kind.as_str(), Some("module" | "namespace"))
-        && losers.iter().all(|n| n.get("type").unwrap_or(&Value::Null) == kind)
-        && losers.iter().all(|n| n.get("label") == survivor.get("label"))
+        && losers
+            .iter()
+            .all(|n| n.get("type").unwrap_or(&Value::Null) == kind)
+        && losers
+            .iter()
+            .all(|n| n.get("label") == survivor.get("label"))
     {
         return messages;
     }

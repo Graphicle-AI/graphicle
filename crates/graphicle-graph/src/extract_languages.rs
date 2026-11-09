@@ -1054,7 +1054,11 @@ fn csharp_token_end(source: &[u8], i: usize) -> usize {
         while j < n && !matches!(source[j], b'\'' | b'\n') {
             j += if source[j] == b'\\' { 2 } else { 1 };
         }
-        return if at(j) == Some(b'\'') { j + 1 } else { j.min(n) };
+        return if at(j) == Some(b'\'') {
+            j + 1
+        } else {
+            j.min(n)
+        };
     }
     let (quote, run, interpolated, verbatim) = csharp_string_opener(source, i);
     if run == 0 {
@@ -1127,10 +1131,39 @@ fn csharp_branch_balanced(src: &[u8]) -> bool {
 /// `_CSHARP_NOT_A_TYPE`: statement words that precede a name without
 /// declaring it.
 const CSHARP_NOT_A_TYPE: &[&[u8]] = &[
-    b"return", b"new", b"await", b"throw", b"if", b"while", b"for", b"foreach", b"switch",
-    b"case", b"using", b"lock", b"catch", b"when", b"is", b"as", b"in", b"out", b"ref",
-    b"else", b"yield", b"nameof", b"typeof", b"sizeof", b"default", b"var", b"goto", b"fixed",
-    b"checked", b"unchecked", b"and", b"or", b"not",
+    b"return",
+    b"new",
+    b"await",
+    b"throw",
+    b"if",
+    b"while",
+    b"for",
+    b"foreach",
+    b"switch",
+    b"case",
+    b"using",
+    b"lock",
+    b"catch",
+    b"when",
+    b"is",
+    b"as",
+    b"in",
+    b"out",
+    b"ref",
+    b"else",
+    b"yield",
+    b"nameof",
+    b"typeof",
+    b"sizeof",
+    b"default",
+    b"var",
+    b"goto",
+    b"fixed",
+    b"checked",
+    b"unchecked",
+    b"and",
+    b"or",
+    b"not",
 ];
 static CSHARP_MEMBER_DECL: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
     regex::bytes::Regex::new(

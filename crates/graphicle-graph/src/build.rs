@@ -342,7 +342,10 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) -> usize {
 /// file are both in a known, different language family. The alias index
 /// only guards two same-stem files of one language; a Dart `PunchType`
 /// reference must not bind to an unrelated `PunchType.java`.
-pub fn alias_lang_compatible(edge_source_file: Option<&Value>, alias_source_file: Option<&Value>) -> bool {
+pub fn alias_lang_compatible(
+    edge_source_file: Option<&Value>,
+    alias_source_file: Option<&Value>,
+) -> bool {
     let family = |value: Option<&Value>| {
         value
             .filter(|v| truthy(v))
@@ -749,14 +752,19 @@ fn evidence(attrs: &(impl crate::record::Properties + ?Sized)) -> Map<String, Va
 }
 /// `_evidence_sort_key`: weakest first, by confidence tier, then score.
 fn evidence_order(a: &Map<String, Value>, b: &Map<String, Value>) -> std::cmp::Ordering {
-    let rank = |ev: &Map<String, Value>| match ev.get("confidence").map(python_compat::string).as_deref() {
+    let rank = |ev: &Map<String, Value>| match ev
+        .get("confidence")
+        .map(python_compat::string)
+        .as_deref()
+    {
         Some("EXTRACTED") => 3,
         Some("INFERRED") => 2,
         Some("AMBIGUOUS") => 1,
         _ => 0,
     };
     let score = |ev: &Map<String, Value>| ev.get("confidence_score").and_then(Value::as_f64);
-    let text = |ev: &Map<String, Value>, k: &str| ev.get(k).map(python_compat::string).unwrap_or_default();
+    let text =
+        |ev: &Map<String, Value>, k: &str| ev.get(k).map(python_compat::string).unwrap_or_default();
     rank(a)
         .cmp(&rank(b))
         .then_with(|| score(a).is_none().cmp(&score(b).is_none()))
@@ -1225,11 +1233,9 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<EndpointMaps> {
                 located.insert(key, nid.clone());
                 // A persisted C# method label carries its owner (Graphify
                 // 0.9.98, #4883): the index keys on the bare `.Name()` form.
-                let m_label = crate::extractors::csharp::bare_csharp_method_label(
-                    &json!(label),
-                    &json!(sf),
-                )
-                .unwrap_or_else(|| label.clone());
+                let m_label =
+                    crate::extractors::csharp::bare_csharp_method_label(&json!(label), &json!(sf))
+                        .unwrap_or_else(|| label.clone());
                 if m_label.starts_with('.') && m_label.ends_with("()") {
                     ast_methods
                         .entry((sf.clone(), method_name(&m_label)))

@@ -238,13 +238,16 @@ pub fn lost_saved_semantic_nodes_with(
             .filter(|s| !s.is_empty());
         let source = raw_source.map(norm);
         let label = label_of(node);
-        let evidence = node.as_object().is_some_and(has_independent_semantic_evidence);
+        let evidence = node
+            .as_object()
+            .is_some_and(has_independent_semantic_evidence);
         let id_string = python_compat::string(id);
         if let Some(source) = &source
             && !label.is_empty()
         {
             let key = (source.clone(), label.clone());
-            if !evidence && !ast_collisions.contains(&key)
+            if !evidence
+                && !ast_collisions.contains(&key)
                 && let Some(twin) = ast_locations.get(&key)
             {
                 if let Some(folded) = folded.as_deref_mut() {
@@ -260,13 +263,17 @@ pub fn lost_saved_semantic_nodes_with(
                 let same_source: BTreeSet<&String> = ast_files
                     .iter()
                     .filter(|(_, sf)| {
-                        norm(sf) == *source && crate::build_labels::is_file_node_label_str(&label, sf)
+                        norm(sf) == *source
+                            && crate::build_labels::is_file_node_label_str(&label, sf)
                     })
                     .map(|(twin, _)| twin)
                     .collect();
                 if same_source.len() == 1 {
                     if let Some(folded) = folded.as_deref_mut() {
-                        folded.insert(id_string.clone(), (*same_source.iter().next().unwrap()).clone());
+                        folded.insert(
+                            id_string.clone(),
+                            (*same_source.iter().next().unwrap()).clone(),
+                        );
                     }
                     continue;
                 }

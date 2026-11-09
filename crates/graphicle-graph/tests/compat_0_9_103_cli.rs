@@ -48,7 +48,11 @@ fn worktree_guard_survives_exported_cdpath() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let top = stdout
         .split("TOP=")
         .nth(1)
@@ -115,7 +119,12 @@ fn install_adds_one_compact_session_start_hook() {
     let entries = ours[0]["hooks"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["type"], "command");
-    assert!(entries[0]["command"].as_str().unwrap().ends_with("hook-guard compact"));
+    assert!(
+        entries[0]["command"]
+            .as_str()
+            .unwrap()
+            .ends_with("hook-guard compact")
+    );
     let timeout = entries[0]["timeout"].as_i64().unwrap();
     assert!(0 < timeout && timeout <= 30);
 }
@@ -125,9 +134,15 @@ fn install_and_uninstall_keep_the_users_session_start_hooks() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join(".claude/settings.json");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let user_group = json!({"matcher": "startup", "hooks": [{"type": "command", "command": "echo hello"}]});
-    let shared = json!({"matcher": "compact", "hooks": [{"type": "command", "command": "./notify.sh"}]});
-    fs::write(&path, json!({"hooks": {"SessionStart": [user_group, shared]}}).to_string()).unwrap();
+    let user_group =
+        json!({"matcher": "startup", "hooks": [{"type": "command", "command": "echo hello"}]});
+    let shared =
+        json!({"matcher": "compact", "hooks": [{"type": "command", "command": "./notify.sh"}]});
+    fs::write(
+        &path,
+        json!({"hooks": {"SessionStart": [user_group, shared]}}).to_string(),
+    )
+    .unwrap();
     let o = options(dir.path(), dir.path());
     settings_hook(&o, false);
     let groups = settings(dir.path(), "settings.json")["hooks"]["SessionStart"].clone();
@@ -158,9 +173,16 @@ fn uninstall_cleans_session_start_from_settings_local() {
     let local = dir.path().join(".claude/settings.local.json");
     fs::create_dir_all(local.parent().unwrap()).unwrap();
     let entry = graphicle::install::claude_sessionstart_hooks(&o);
-    fs::write(&local, json!({"hooks": {"SessionStart": entry}}).to_string()).unwrap();
+    fs::write(
+        &local,
+        json!({"hooks": {"SessionStart": entry}}).to_string(),
+    )
+    .unwrap();
     settings_hook(&o, true);
-    assert_eq!(settings(dir.path(), "settings.local.json")["hooks"]["SessionStart"], json!([]));
+    assert_eq!(
+        settings(dir.path(), "settings.local.json")["hooks"]["SessionStart"],
+        json!([])
+    );
 }
 
 #[test]
@@ -202,7 +224,10 @@ fn unclassified_warning_fires_when_most_of_the_corpus_has_no_extractor() {
     let res = detect_dir(dir.path());
     assert_eq!(res["unclassified"].as_array().unwrap().len(), 30);
     let warning = res["unclassified_warning"].as_str().unwrap();
-    assert!(warning.contains("30 of 40") && warning.contains("75%"), "{warning}");
+    assert!(
+        warning.contains("30 of 40") && warning.contains("75%"),
+        "{warning}"
+    );
 }
 
 #[test]
@@ -314,9 +339,7 @@ fn build_tree_directory_cap_preserves_file_symbol_behavior() {
 #[test]
 fn build_tree_caps_the_synthetic_merged_root() {
     use graphicle::tree_html::build_tree;
-    let node = |repo: &str, src: &str, label: &str| {
-        json!({"id": format!("{repo}::{label}"), "label": label, "source_file": src, "repo": repo})
-    };
+    let node = |repo: &str, src: &str, label: &str| json!({"id": format!("{repo}::{label}"), "label": label, "source_file": src, "repo": repo});
     let graph = json!({"nodes": [
         node("Alpha", "a.py", "A"), node("Beta", "b.py", "B"),
         node("Zulu", "x.py", "X"), node("Zulu", "y.py", "Y"), node("Zulu", "z.py", "Z")
@@ -350,10 +373,12 @@ fn build_tree_directory_cap_boundaries_and_negative() {
             .map(|c| c["total_count"].as_i64().unwrap())
             .sum();
         assert_eq!(sum, 2);
-        assert!(build_tree(&json!({"nodes": []}), None, cap, None).unwrap()["children"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(
+            build_tree(&json!({"nodes": []}), None, cap, None).unwrap()["children"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
     }
     let wide: Vec<(String, String)> = (0..201)
         .map(|i| (format!("pkg/f{i:03}.py"), i.to_string()))
@@ -368,6 +393,9 @@ fn build_tree_directory_cap_boundaries_and_negative() {
     );
     for graph in [json!({"nodes": []}), tree_graph(&[("pkg/a.py", "A")])] {
         let error = build_tree(&graph, None, -1, None).unwrap_err().to_string();
-        assert!(error.contains("--max-children must be nonnegative"), "{error}");
+        assert!(
+            error.contains("--max-children must be nonnegative"),
+            "{error}"
+        );
     }
 }

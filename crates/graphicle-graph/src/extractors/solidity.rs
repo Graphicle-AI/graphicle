@@ -195,7 +195,9 @@ impl Extractor<'_> {
         let args = if emit {
             Some(node)
         } else {
-            named(node).into_iter().find(|c| c.kind() == "revert_arguments")
+            named(node)
+                .into_iter()
+                .find(|c| c.kind() == "revert_arguments")
         };
         let arity = args.map_or(0, |a| {
             named(a)
@@ -388,7 +390,12 @@ impl Extractor<'_> {
                 let name = self.text(name_node);
                 let arity = named(member)
                     .into_iter()
-                    .filter(|c| matches!(c.kind(), "event_parameter" | "error_parameter" | "parameter"))
+                    .filter(|c| {
+                        matches!(
+                            c.kind(),
+                            "event_parameter" | "error_parameter" | "parameter"
+                        )
+                    })
                     .count();
                 if simple == "state_variable" {
                     let id = self.add_member(
@@ -898,11 +905,15 @@ pub fn resolve_solidity_inherited_calls_any<P: PerFile, E: Rec>(
     {
         let mut file_by_id: HashMap<String, String> = HashMap::new();
         for node in nodes {
-            let Some(node_file) = node.get("source_file").filter(|v| crate::build::truthy(v)) else {
+            let Some(node_file) = node.get("source_file").filter(|v| crate::build::truthy(v))
+            else {
                 continue;
             };
             let node_file = python_compat::string(node_file);
-            let label = node.get("label").map(python_compat::string).unwrap_or_default();
+            let label = node
+                .get("label")
+                .map(python_compat::string)
+                .unwrap_or_default();
             let base_name = Path::new(&node_file)
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())

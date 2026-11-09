@@ -672,7 +672,12 @@ pub fn plan(
     if stored_edges.iter().any(stamped) {
         let node_files: HashMap<String, Value> = existing_nodes
             .iter()
-            .map(|n| (text(n, "id"), n.get("source_file").cloned().unwrap_or(Value::Null)))
+            .map(|n| {
+                (
+                    text(n, "id"),
+                    n.get("source_file").cloned().unwrap_or(Value::Null),
+                )
+            })
             .collect();
         let edge_kept = |e: &Value| {
             (!sp.evicted(e, &edge_evicted) || sp.evicted(e, &excluded))
@@ -761,13 +766,21 @@ fn ast_collision_successors(
 /// Moves the fresh nodes, edges and hyperedge members onto their successors.
 fn rekey_fresh(result: &mut Value, collisions: &BTreeMap<String, String>) {
     for node in result["nodes"].as_array_mut().into_iter().flatten() {
-        if let Some(alias) = node.get("id").and_then(Value::as_str).and_then(|id| collisions.get(id)) {
+        if let Some(alias) = node
+            .get("id")
+            .and_then(Value::as_str)
+            .and_then(|id| collisions.get(id))
+        {
             node["id"] = json!(alias);
         }
     }
     for edge in result["edges"].as_array_mut().into_iter().flatten() {
         for field in ["source", "target"] {
-            if let Some(alias) = edge.get(field).and_then(Value::as_str).and_then(|id| collisions.get(id)) {
+            if let Some(alias) = edge
+                .get(field)
+                .and_then(Value::as_str)
+                .and_then(|id| collisions.get(id))
+            {
                 edge[field] = json!(alias);
             }
         }
@@ -810,7 +823,11 @@ pub fn finish(
     } = plan;
     if !carried_reverse.is_empty() {
         for edge in result["edges"].as_array_mut().into_iter().flatten() {
-            let key = (text(edge, "source"), text(edge, "target"), text(edge, "relation"));
+            let key = (
+                text(edge, "source"),
+                text(edge, "target"),
+                text(edge, "relation"),
+            );
             if carried_reverse.contains(&key) {
                 edge["reverse_import"] = json!(true);
             }
@@ -1067,7 +1084,9 @@ mod tests {
             ]);
             let mut nodes = fresh.as_array().unwrap().clone();
             if linked_node {
-                nodes.push(json!({"id": "linked", "label": "linked", "source_file": l, "_origin": "ast"}));
+                nodes.push(
+                    json!({"id": "linked", "label": "linked", "source_file": l, "_origin": "ast"}),
+                );
             }
             nodes.push(json!({"id": "control", "label": "control", "source_file": c, "_origin": "semantic"}));
             let existing = json!({
@@ -1112,7 +1131,10 @@ mod tests {
                 .iter()
                 .map(|n| n["id"].as_str().unwrap().to_owned())
                 .collect();
-            assert_eq!(node_ids, BTreeSet::from(["a".into(), "b".into(), "control".into()]));
+            assert_eq!(
+                node_ids,
+                BTreeSet::from(["a".into(), "b".into(), "control".into()])
+            );
             let edge_files: Vec<_> = result["edges"]
                 .as_array()
                 .unwrap()
@@ -1183,11 +1205,16 @@ mod tests {
         let memory = nodes.iter().find(|n| n["id"] == "memory").unwrap();
         assert_eq!(memory["rationale"], "Reviewed evidence");
         assert_eq!(memory["_origin"], "semantic");
-        assert!(nodes.iter().any(|n| n["id"]
-            .as_str()
-            .unwrap()
-            .starts_with("memory__ast_")));
-        assert!(messages.iter().any(|m| m.contains("independent semantic node")));
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n["id"].as_str().unwrap().starts_with("memory__ast_"))
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.contains("independent semantic node"))
+        );
     }
 
     // Graphify 0.9.101, #4896 and #4927:
@@ -1209,14 +1236,17 @@ mod tests {
             });
             let records = [&a, &b]
                 .iter()
-                .map(|p| json!({"id": "shared_registry", "_origin": "ast", "label": "Registry",
+                .map(|p| {
+                    json!({"id": "shared_registry", "_origin": "ast", "label": "Registry",
                     "file_type": "code", "source_file": p.to_string_lossy(),
-                    "source_location": "L1"}))
+                    "source_location": "L1"})
+                })
                 .collect::<Vec<_>>();
             let fresh = json!({"nodes": records, "edges": [
                 {"source": "shared_registry", "target": "ast_target",
                  "source_file": a.to_string_lossy(), "_origin": "ast"}], "hyperedges": []});
-            let (result, _) = reconcile_plain(&root, existing, fresh, &[a.clone(), b.clone()], full);
+            let (result, _) =
+                reconcile_plain(&root, existing, fresh, &[a.clone(), b.clone()], full);
             let nodes = result["nodes"].as_array().unwrap();
             let semantic = nodes.iter().find(|n| n["id"] == "shared_registry").unwrap();
             assert_eq!(semantic["rationale"], "Original reviewed registry");
