@@ -34,14 +34,7 @@
 
 ## From a bug on the screen to a tested fix
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/flow-excalidraw-dark.png">
-    <img src="assets/flow-excalidraw-light.png" alt="From a bug on the screen to a tested fix: Graphicle with Meta's models, live on a real excalidraw bug. 1, See it: Muse Spark 1.3 with computer use, 20 s, opens the main menu and clicks the canvas, and the menu stays open. 2, Find it: SAM 3.1 and Muse Spark 1.3, 18 s: SAM outlines the menu items at the point the model chose, and Graphicle ranks the code that draws them, first App.tsx line 1175, then DefaultItems.tsx line 377. 3, Fix it: Muse Wonder 1.0, 2 min 51 s, reads a pack of 193,474 tokens from 117 files; round 1's tests fail, the failing lines are fed back, and round 2's tests pass. 4, Check it: Muse Spark 1.3 on the rebuilt app, 22 s: with the fix built in, the same two steps, and the menu closes. Fixed and checked in 5 min 12 s, with 12 model calls, for $1.64. A live run on 30 Oct 2026 on excalidraw issue #12053, built from source; the fix passes excalidraw's own regression test; costs come from Meta's reported tokens at list prices." width="860">
-  </picture>
-</p>
-
-Built during Meta's Global AI Developer Hackathon ([what was built, and when](HACKATHON.md)). With a key for the Meta Model API, `graphicle see` lets Muse Spark reproduce a bug in a web app with computer use, `graphicle pixel` finds the code that draws what the model points at, and `graphicle fix` patches it with a model such as Muse Wonder and runs your tests; when a round fails, the next one reads the failing lines and the files they name. The picture is one live run on excalidraw issue #12053, built from source, and the fix passes excalidraw's own regression test ([see it, find it, fix it, check it](docs/flow.md)).
+With a key for the Meta Model API, `graphicle see` lets Muse Spark reproduce a bug in a web app with computer use, `graphicle pixel` finds the code that draws what the model points at, and `graphicle fix` patches it with a model such as Muse Wonder and runs your tests; when a round fails, the next one reads the failing lines and the files they name. In one live run on excalidraw issue #12053, built from source, the fix passed excalidraw's own regression test ([see it, find it, fix it, check it](docs/flow.md)).
 
 ## Agent memory, compared
 
@@ -320,7 +313,7 @@ More answers: [FAQ](docs/faq.md) · [Troubleshooting](docs/troubleshooting.md) �
 ## Documentation
 
 [Quick start](docs/quickstart.md) · [Agents](docs/agents.md) · [Muse Code](docs/muse-code.md) · [MCP](docs/mcp.md) · [Packs](docs/pack.md) · [Fix](docs/fix.md) · [Flow](docs/flow.md) · [Review](docs/review.md) · [Wiki](docs/wiki.md) · [Install](docs/install.md) · [Configuration](docs/configuration.md) ·
-[Team server](docs/team.md) · [Moving from Graphify](docs/migrate-from-graphify.md) · [Benchmarks](docs/benchmarks.md) · [FAQ](docs/faq.md) · [Changelog](CHANGELOG.md) · [Built at Meta's hackathon](HACKATHON.md)
+[Team server](docs/team.md) · [Moving from Graphify](docs/migrate-from-graphify.md) · [Benchmarks](docs/benchmarks.md) · [FAQ](docs/faq.md) · [Changelog](CHANGELOG.md)
 
 The code: [`crates/graphicle/`](crates/graphicle/README.md) (the program: command line, app, HTTP and MCP server), [`crates/graphicle-graph/`](crates/graphicle-graph/README.md) (the code-graph engine),
 [`crates/graphicle-memory/`](crates/graphicle-memory/README.md) (the memory library), SDKs for [Python](sdk/python/README.md) and [TypeScript](sdk/typescript/README.md),
