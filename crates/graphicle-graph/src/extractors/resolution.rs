@@ -1715,7 +1715,16 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         "apply_facts" => {
             let facts = serde_json::from_value(r["facts"].clone()).map_err(crate::Error::from)?;
             let facts = PassFacts::new(Vec::new(), facts);
-            apply_pass_facts(&paths, &mut nodes, &mut edges, root, facts, context_nodes);
+            let raw_calls = r["raw_calls"].as_array().map(Vec::as_slice).unwrap_or_default();
+            apply_pass_facts(
+                &paths,
+                &mut nodes,
+                &mut edges,
+                root,
+                facts,
+                context_nodes,
+                &JsMemberCall::collect(raw_calls),
+            );
             json!({"nodes":nodes,"edges":edges})
         }
         "facts" => {
@@ -1831,6 +1840,7 @@ mod pass_facts_tests {
             &mut compact_edges,
             &root,
             facts,
+            &[],
             &[],
         );
 
