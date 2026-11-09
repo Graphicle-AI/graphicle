@@ -15,6 +15,16 @@ yet: `migration/FILES.json` lists the 97 application modules as pending.
 No speed or graph-size figures are claimed for this release; the published
 comparison is still the one of 0.1.11 against Graphify 0.9.100.
 
+### Security
+
+- The bundled SQLite is now 3.54.1 (rusqlite 0.41.1, libsqlite3-sys
+  0.39.1), for CVE-2026-119375 (RUSTSEC-2026-0459): SQLite before 3.54.0
+  can return stale bytes from the process's memory when it opens a
+  database file together with a `-wal` file of a different page size.
+  Graphicle is exposed only when it opens a SQLite store and `-wal` file
+  that a less trusted party could have written; its own data folder is
+  private to your user. 0.1.14 and earlier bundle an affected SQLite.
+
 ### After upgrading
 
 - The AST cache schema goes from 10 to 11 for the new extraction rules,

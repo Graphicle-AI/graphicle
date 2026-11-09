@@ -30,7 +30,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "tim
 # The store (src/db.rs): a SQLite file by default; PostgreSQL when
 # GRAPHICLE_DATABASE_URL is set, over TLS (rustls with ring, as reqwest
 # uses) for any server that is not on this machine.
-rusqlite = { version = "0.37", features = ["bundled", "backup"] }
+rusqlite = { version = "0.41", default-features = false, features = ["bundled", "backup", "cache", "fallible_uint"] }
 postgres = "0.19"
 r2d2 = "0.8"
 bytes = "1"
