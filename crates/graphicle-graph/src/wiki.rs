@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/wiki.py
 //! Graph wiki articles, source audits, portable links and complete exports.
 
@@ -283,21 +283,27 @@ pub fn god_node_article(
     neighbors.sort_by_key(|n| std::cmp::Reverse(analyze::degree(g, *n)));
     for other in neighbors {
         let edges = g.edges_between(&g.nodes[n].id, &g.nodes[other].id);
-        let edge = edges.first().ok_or("Missing neighbor edge")?;
-        let relation = edge
-            .attributes
-            .get("relation")
-            .map(display)
-            .unwrap_or("related".into());
-        let conf = edge.attributes.get("confidence");
-        let suffix = conf
-            .filter(|v| truthy(v))
-            .map(|c| format!(" `{}`", display(c)))
-            .unwrap_or_default();
-        by_relation
-            .entry(relation)
-            .or_default()
-            .push(format!("{}{suffix}", md_link(&label(g, other), resolver)?));
+        if edges.is_empty() {
+            return Err("Missing neighbor edge".into());
+        }
+        // Every parallel relation to the neighbour is listed (Graphify
+        // 0.9.101, 1954192a).
+        for edge in edges {
+            let relation = edge
+                .attributes
+                .get("relation")
+                .map(display)
+                .unwrap_or("related".into());
+            let conf = edge.attributes.get("confidence");
+            let suffix = conf
+                .filter(|v| truthy(v))
+                .map(|c| format!(" `{}`", display(c)))
+                .unwrap_or_default();
+            by_relation
+                .entry(relation)
+                .or_default()
+                .push(format!("{}{suffix}", md_link(&label(g, other), resolver)?));
+        }
     }
     lines.extend(["## Connections by Relation".into(), "".into()]);
     for (rel, targets) in by_relation {
@@ -502,15 +508,56 @@ pub fn to_wiki(
         )?,
     )?;
     // Publish every replacement before removing obsolete generated pages.
-    for entry in std::fs::read_dir(out)? {
-        let entry = entry?;
+    // Names are compared case-folded, and a case-only relabel is settled
+    // before judging (Graphify 0.9.97, #4508): on a case-insensitive file
+    // system the entry keeps its old case and holds this run's content, so it
+    // is renamed through a temporary name; on a case-sensitive one the old
+    // entry is a stale twin of the file just written, so it is removed.
+    let produced_by_fold: std::collections::HashMap<String, &String> = produced
+        .iter()
+        .map(|name| (crate::dedup_strings::casefold(name), name))
+        .collect();
+    let entries = std::fs::read_dir(out)?.collect::<std::io::Result<Vec<_>>>()?;
+    for entry in entries {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.ends_with(".md") && !produced.contains(name.as_ref()) {
-            std::fs::remove_file(entry.path())?;
+        if !name.ends_with(".md") {
+            continue;
+        }
+        match produced_by_fold.get(&crate::dedup_strings::casefold(&name)) {
+            None => std::fs::remove_file(entry.path())?,
+            Some(wanted) if wanted.as_str() != name => {
+                let target = out.join(wanted.as_str());
+                if target.exists() && !same_entry(&target, &entry.path()) {
+                    std::fs::remove_file(entry.path())?;
+                } else {
+                    let temp = out.join(format!(".{wanted}.case-tmp"));
+                    std::fs::rename(entry.path(), &temp)?;
+                    std::fs::rename(&temp, &target)?;
+                }
+            }
+            Some(_) => {}
         }
     }
     Ok((communities.len() + god_articles.len(), warnings))
+}
+/// `Path.samefile`: both paths name one file.
+fn same_entry(a: &Path, b: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match (std::fs::metadata(a), std::fs::metadata(b)) {
+            (Ok(a), Ok(b)) => a.dev() == b.dev() && a.ino() == b.ino(),
+            _ => false,
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 pub fn dispatch(r: &Value) -> Result<Value> {
     let op = r["operation"].as_str().unwrap_or("");

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/llm.py
 //! Native model adapters, semantic extraction and community naming.
 //!
@@ -263,7 +263,16 @@ fn response_parts<'a>(r: &Request, response: &'a Value) -> Result<(Option<&'a st
         "claude" => Ok((
             parse::anthropic_text(&response["content"], None),
             Usage {
-                input: integer(&usage["input_tokens"]),
+                // The cached system prompt is reported in its own cache
+                // fields; they count as input (Graphify 0.9.100, #4835).
+                input: [
+                    "input_tokens",
+                    "cache_read_input_tokens",
+                    "cache_creation_input_tokens",
+                ]
+                .iter()
+                .map(|k| integer(&usage[*k]))
+                .sum(),
                 output: integer(&usage["output_tokens"]),
             },
             json!(if response["stop_reason"].as_str() == Some("max_tokens") {

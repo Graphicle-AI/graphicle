@@ -63,8 +63,10 @@ fn fresh_stamp(dir: &Path) {
     std::fs::write(stamp, "x").unwrap();
 }
 
+/// A nudge states the graph as a fact (Graphify 0.9.96 worded the hook
+/// reminders so agents stop reading them as prompt injection).
 fn nudged(out: &str) -> bool {
-    out.contains("MANDATORY")
+    out.contains("knowledge graph at")
 }
 
 #[test]

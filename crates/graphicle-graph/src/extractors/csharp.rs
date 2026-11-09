@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/csharp.py
 //! Native translation of graphify/extractors/csharp.py.
 //! This file resolves C# graph facts; the source parser remains in the extractor core.
@@ -37,6 +37,96 @@ pub fn metadata(value: &Value) -> Map<String, Value> {
 /// language declaration counts, #2961).
 pub fn is_cs_file(value: &Value) -> bool {
     value.as_str().is_some_and(|s| effective_suffix(s) == ".cs")
+}
+fn is_plain_csharp_name(text: &str) -> bool {
+    !text.is_empty() && !text.contains(['.', '(', ')']) && !text.chars().any(char::is_whitespace)
+}
+/// `bare_csharp_method_label` (Graphify 0.9.98, #4883): the `.Name()`
+/// resolver form of a C# method label, from the extractor's bare `.Name()`
+/// or the build's owner-qualified `Owner.Name()` display form; `None` for
+/// anything else. Extraction, call resolution, interface dispatch and the
+/// method-ghost index match the bare form, so labels read back from a
+/// persisted graph go through here.
+pub fn bare_csharp_method_label(label: &Value, source_file: &Value) -> Option<String> {
+    if !is_cs_file(source_file) {
+        return None;
+    }
+    let stem = label.as_str()?.strip_suffix("()")?;
+    let (owner, name) = stem.rsplit_once('.')?;
+    if !is_plain_csharp_name(name) || (!owner.is_empty() && !is_plain_csharp_name(owner)) {
+        return None;
+    }
+    Some(format!(".{name}()"))
+}
+/// `bare_csharp_method_labels_in_nodes`: `nodes` with owner-qualified C#
+/// method labels back in the `.Name()` form, or `None` when none changes.
+pub fn bare_csharp_method_labels_in_nodes(nodes: &[Value]) -> Option<Vec<Value>> {
+    let changed = |n: &Value| {
+        bare_csharp_method_label(&n["label"], &n["source_file"])
+            .filter(|bare| n["label"].as_str() != Some(bare.as_str()))
+    };
+    if !nodes.iter().any(|n| changed(n).is_some()) {
+        return None;
+    }
+    Some(
+        nodes
+            .iter()
+            .map(|n| match changed(n) {
+                Some(bare) => {
+                    let mut n = n.clone();
+                    n["label"] = Value::String(bare);
+                    n
+                }
+                None => n.clone(),
+            })
+            .collect(),
+    )
+}
+/// `csharp_method_label_reassignments` (Graphify 0.9.98, #4883): the
+/// `Owner.Name()` display label of each C# method with exactly one owner
+/// whose label is a plain type name, from `(owner id, method id)` pairs of
+/// `method` edges. Derived from the bare form, so it is idempotent.
+pub fn csharp_method_label_reassignments<'a>(
+    nodes: impl IntoIterator<Item = (&'a str, &'a Value)>,
+    method_edges: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> std::collections::BTreeMap<String, String> {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut owner_label: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut bare: BTreeMap<&str, String> = BTreeMap::new();
+    for (id, attrs) in nodes {
+        let (Some(label), source_file) = (attrs["label"].as_str(), &attrs["source_file"]) else {
+            continue;
+        };
+        if !is_cs_file(source_file) {
+            continue;
+        }
+        if is_plain_csharp_name(label) {
+            owner_label.insert(id, label);
+        } else if let Some(b) = bare_csharp_method_label(&attrs["label"], source_file) {
+            bare.insert(id, b);
+        }
+    }
+    let mut owners: BTreeMap<&str, BTreeSet<Option<&str>>> = BTreeMap::new();
+    for (owner, method) in method_edges {
+        if bare.contains_key(method) {
+            owners
+                .entry(method)
+                .or_default()
+                .insert(owner_label.get(owner).copied());
+        }
+    }
+    owners
+        .into_iter()
+        .filter_map(|(method, labels)| {
+            let mut labels = labels.into_iter();
+            match (labels.next(), labels.next()) {
+                (Some(Some(owner)), None) => {
+                    Some((method.to_string(), format!("{owner}{}", bare[method])))
+                }
+                _ => None,
+            }
+        })
+        .collect()
 }
 pub fn is_dotnet_source_file(value: &Value) -> bool {
     value

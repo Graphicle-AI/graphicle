@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Complete native AST corpus extraction and cross-file assembly.
 pub mod per_file;
@@ -114,6 +114,13 @@ fn null_as_empty<'de, D: serde::Deserializer<'de>>(
     Ok(Option::<Vec<Value>>::deserialize(deserializer)?.unwrap_or_default())
 }
 pub fn get_extractor(path: &Path) -> Option<String> {
+    get_extractor_with(path, true)
+}
+/// [`get_extractor`]; with `sniff_headers` false it answers only "does an
+/// extractor own this file" without reading a `.h` (Graphify 0.9.103, #4978):
+/// every `.h` dialect has one. Not for picking a grammar: a C++ header asked
+/// this way gets the C extractor.
+pub fn get_extractor_with(path: &Path, sniff_headers: bool) -> Option<String> {
     let name = path
         .file_name()
         .unwrap_or_default()
@@ -144,6 +151,11 @@ pub fn get_extractor(path: &Path) -> Option<String> {
             .map(str::to_string);
     }
     let ext = languages::suffix(path);
+    if ext == ".h" && !sniff_headers {
+        return merge::CONSTANTS["_DISPATCH"][".h"]
+            .as_str()
+            .map(str::to_string);
+    }
     if ext == ".h" {
         if header_kind(path, true) {
             return Some("objc".into());
@@ -201,6 +213,24 @@ pub fn header_kind(path: &Path, objc: bool) -> bool {
     };
     markers.iter().any(|m| source.contains(m))
 }
+/// `_redact_rationale_labels` (Graphify 0.9.97): credential shapes are
+/// redacted from every rationale label, on every extractor's output and
+/// before it is cached, not only where an extractor redacts its own.
+fn redact_rationale_labels(mut result: Value) -> Value {
+    if let Some(nodes) = result.get_mut("nodes").and_then(Value::as_array_mut) {
+        for node in nodes {
+            if node["file_type"] == "rationale"
+                && let Some(label) = node["label"].as_str()
+            {
+                let redacted = crate::security::redact_secrets(label);
+                if redacted != label {
+                    node["label"] = Value::String(redacted);
+                }
+            }
+        }
+    }
+    result
+}
 pub fn extract_file(path: &Path, root: Option<&Path>) -> Value {
     let _markdown_root = extractors::markdown::enter_scan_root(root);
     let _python_root = extractors::engine::enter_scan_root(root);
@@ -226,7 +256,7 @@ pub fn extract_file(path: &Path, root: Option<&Path>) -> Value {
         }
     }));
     match result {
-        Ok(Ok(value)) => value,
+        Ok(Ok(value)) => redact_rationale_labels(value),
         Ok(Err(e)) => {
             log::warn!("skipped {}: {e}", path.display());
             json!({"nodes":[],"edges":[],"error":e})
@@ -504,6 +534,13 @@ pub fn register_resolvers() {
             &[".swift"],
             Arc::new(|p, n, e| crate::swift_dispatch::resolve_swift_protocol_dispatch(p, n, e)),
         );
+        // Go interfaces are satisfied implicitly: the implementers are inferred
+        // from method sets (Graphify 0.9.102).
+        add(
+            "go_interface_dispatch",
+            &[".go"],
+            Arc::new(|p, n, e| crate::go_dispatch::resolve_go_interface_dispatch(p, n, e)),
+        );
         add(
             "markdown_mentions",
             &[".md", ".mdx", ".qmd", ".skill", ".rst", ".txt"],
@@ -580,6 +617,12 @@ pub fn register_resolvers() {
                 "swift_protocol_dispatch",
                 resolver_registry::any_form!(|p, n, e| {
                     crate::swift_dispatch::resolve_swift_protocol_dispatch_any(p, n, e)
+                }),
+            ),
+            (
+                "go_interface_dispatch",
+                resolver_registry::any_form!(|p, n, e| {
+                    crate::go_dispatch::resolve_go_interface_dispatch_any(p, n, e)
                 }),
             ),
             (
@@ -1283,8 +1326,17 @@ fn failed_sources<P: PerFile>(per: &[P], paths: &[PathBuf]) -> (Failed, Vec<Stri
         if let Some(errors) = r.key("parse_errors")
             && (r.node_count().is_none_or(|n| n <= 1) || errors["multiline_error"] == true)
         {
+            // The error region's line, else the first error's (Graphify
+            // 0.9.96, #4711).
+            let line = errors["lossy_error_line"]
+                .as_u64()
+                .or_else(|| errors["first_error_line"].as_u64());
+            let place = line.map_or_else(
+                || "syntax error".to_string(),
+                |l| format!("error region at line {l}"),
+            );
             log::warn!(
-                "{} has syntax errors; extracted symbols may be incomplete",
+                "{} has syntax errors ({place}); extracted symbols may be incomplete",
                 p.display()
             );
         }
@@ -1466,7 +1518,15 @@ fn language_passes<P: PerFile>(
             if !extract_python::is_identifier(name) || fresh.contains(target) {
                 continue;
             }
-            let stub = json!({"id":target,"label":name,"file_type":"code","source_file":""});
+            // `crate`: the `use` names this crate (Graphify 0.9.96, #4699).
+            let stub = json!({
+                "id": target,
+                "label": name,
+                "file_type": "code",
+                "source_file": "",
+                "origin_file": e.get("source_file").cloned().unwrap_or(Value::Null),
+                "_rust_use_roots": ["crate"],
+            });
             match use_stub_index.get(target) {
                 Some(&i) => use_stubs[i] = stub,
                 None => {
@@ -1482,7 +1542,13 @@ fn language_passes<P: PerFile>(
             .collect::<Vec<_>>();
         drop(fresh);
         let lent = use_stubs.iter().chain(context).collect::<Vec<_>>();
-        merge::rewire_unique_stubs_with(nodes, &lent, edges);
+        merge::rewire_unique_stubs_with(nodes, &lent, edges, Some(root));
+        // The rewire's scoping markers (Graphify 0.9.96, #4699).
+        for n in nodes.iter_mut() {
+            if let Some(n) = n.as_object_mut() {
+                n.shift_remove("_rust_use_roots");
+            }
+        }
     }
     drop(profiled);
     let profiled = crate::profile::span("assemble.java_csharp_bash_kotlin");
@@ -1524,6 +1590,9 @@ fn language_passes<P: PerFile>(
         restore(per, sh_idx, sh);
         edges.extend(added?);
     }
+    // Java and Kotlin share one namespace (Graphify 0.9.100, #4874): before
+    // the Kotlin-only resolver and before call evidence is built.
+    members::jvm_references(&*per, paths, nodes, edges);
     members::kotlin_imports(&*per, edges);
     // Quoted C/C++/ObjC includes outside the including file's directory, to
     // their header file nodes (#4354): after the id remaps, before the
@@ -1675,6 +1744,21 @@ fn assemble_records(
     options: &ExtractOptions,
     corpus_paths: &[PathBuf],
 ) -> Result<Assembled> {
+    // Persisted C# method labels carry their owner (Graphify 0.9.98, #4883);
+    // the resolvers match the bare `.Name()` form a fresh extraction makes.
+    let bare_options;
+    let options = match extractors::csharp::bare_csharp_method_labels_in_nodes(
+        &options.resolution_context_nodes,
+    ) {
+        Some(nodes) => {
+            bare_options = ExtractOptions {
+                resolution_context_nodes: nodes,
+                ..options.clone()
+            };
+            &bare_options
+        }
+        None => options,
+    };
     let assemble_started = std::time::Instant::now();
     let _assemble_span = crate::profile::span("extract.assemble");
     let collect_span = crate::profile::span("assemble.collect");
@@ -1738,6 +1822,10 @@ fn assemble_records(
     phase("python_modules", t);
     let t = std::time::Instant::now();
     let profiled = crate::profile::span("assemble.symbol_resolution");
+    // The unresolved JS/TS member calls, for calls through a default-exported
+    // object (Graphify 0.9.102, #4963).
+    let js_member_calls =
+        per_dispatch!(&per, p => resolution::JsMemberCall::collect(raw_calls_of(&p[..])));
     resolution::augment_symbol_resolution_edges(
         paths,
         &mut nodes,
@@ -1745,7 +1833,9 @@ fn assemble_records(
         root,
         &ambiguous,
         &options.resolution_context_nodes,
+        &js_member_calls,
     );
+    drop(js_member_calls);
     drop(profiled);
     phase("symbol_resolution", t);
     let profiled = crate::profile::span("assemble.merge_decl_def");
@@ -1790,6 +1880,15 @@ fn assemble_records(
     // the call edges bound below and the ~10^5-10^6 repointed Go imports are
     // cloned and added in that form. Passes that read only JSON get it back
     // losslessly for their run (`EdgeList`).
+    // Qualified C++ definitions owned by a class their file includes
+    // (Graphify 0.9.101): before the bare-name and member passes.
+    per_dispatch!(&mut per, p => members::cpp_out_of_line_methods(
+        &mut p[..],
+        &nodes,
+        &mut edges,
+        &options.resolution_context_nodes,
+        &options.resolution_context_edges,
+    ));
     let mut edges = EdgeList::Values(edges);
     stamp_python_fixture_paths(&mut per, root);
     if options.resolution_context_nodes.is_empty() && options.resolution_context_edges.is_empty() {
@@ -1991,12 +2090,95 @@ fn assemble_records(
     })
 }
 
+/// `_jvm_scope_index` (Graphify 0.9.102, #4935): method -> declaring class,
+/// class -> its `inherits` targets, nested class -> enclosing class, and the
+/// sourceless ids (classes declared outside the corpus).
+struct JvmScope<'a> {
+    owner_of: FxHashMap<&'a str, &'a str>,
+    bases_of: FxHashMap<&'a str, Vec<&'a str>>,
+    enclosing_of: FxHashMap<&'a str, &'a str>,
+    sourceless: FxHashSet<&'a str>,
+}
+impl<'a> JvmScope<'a> {
+    fn new<E: Rec>(nodes: &'a [Value], edges: &'a [E]) -> Self {
+        let mut scope = Self {
+            owner_of: FxHashMap::default(),
+            bases_of: FxHashMap::default(),
+            enclosing_of: FxHashMap::default(),
+            sourceless: nodes
+                .iter()
+                .filter(|n| !n.get("source_file").is_some_and(crate::build::truthy))
+                .map(|n| s(n, "id"))
+                .collect(),
+        };
+        for e in edges {
+            let (source, target) = (rs(e, "source"), rs(e, "target"));
+            match rs(e, "relation") {
+                "method" => {
+                    scope.owner_of.insert(target, source);
+                }
+                "inherits" => scope.bases_of.entry(source).or_default().push(target),
+                "contains" => {
+                    scope.enclosing_of.insert(target, source);
+                }
+                _ => {}
+            }
+        }
+        scope
+    }
+    /// `_jvm_reachable_candidates`: when a class in the caller's chain (its
+    /// own class, bases, enclosing classes) extends a class outside the
+    /// corpus, a bare call may name that base's member: keep only candidates
+    /// that are no class member, belong to the chain, or are imported by
+    /// name. A chain fully in the corpus keeps every candidate.
+    fn reachable(
+        &self,
+        candidates: Vec<String>,
+        caller: &str,
+        callee: &str,
+        imported: impl Fn(&str) -> bool,
+    ) -> Vec<String> {
+        let mut chain: FxHashSet<&str> = FxHashSet::default();
+        let mut todo = vec![self.owner_of.get(caller).copied().unwrap_or(caller)];
+        let mut external = false;
+        while let Some(class) = todo.pop() {
+            if !chain.insert(class) {
+                continue;
+            }
+            for &base in self.bases_of.get(class).into_iter().flatten() {
+                if self.sourceless.contains(base) {
+                    external = true;
+                } else {
+                    todo.push(base);
+                }
+            }
+            if let Some(&outer) = self.enclosing_of.get(class) {
+                todo.push(outer);
+            }
+        }
+        if !external {
+            return candidates;
+        }
+        let by_name = imported(&extractors::base::make_id([callee]));
+        candidates
+            .into_iter()
+            .filter(|c| {
+                self.owner_of
+                    .get(c.as_str())
+                    .is_none_or(|owner| chain.contains(owner))
+                    || imported(c)
+                    || by_name
+            })
+            .collect()
+    }
+}
 /// Drop the Rust `use` group edges and the binding markers (#4135).
 fn drop_rust_use_groups<E: Rec>(edges: &mut Vec<E>) {
     edges.retain_mut(|e| {
         let group = e.rec_shift_remove("_rust_use_group");
         e.rec_shift_remove("_rust_use_binding");
         e.rec_shift_remove("_rust_use_name");
+        e.rec_shift_remove("_rust_pub_use");
         !group.is_some_and(|g| crate::build::truthy(&g))
     });
 }
@@ -2150,6 +2332,19 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
             call_pairs.insert(pair);
         }
     }
+    // A Go bare call never names a method: methods are reached through their
+    // receivers (Graphify 0.9.102).
+    let method_ids: FxHashSet<&str> = edges
+        .iter()
+        .filter(|e| rs(*e, "relation") == "method")
+        .map(|e| rs(e, "target"))
+        .chain(
+            context_edges
+                .iter()
+                .filter(|e| s(e, "relation") == "method")
+                .map(|e| s(e, "target")),
+        )
+        .collect();
     // Enum members (`case_of`) and fields/properties (`defines`) are never what
     // a C# `new X()` constructs (#3815, #3888).
     let member_ids: FxHashSet<&str> = edges
@@ -2182,6 +2377,9 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
     let mut outer_type: Option<FxHashMap<&str, &str>> = None;
     // The Go package of every candidate's file, read from disk once per pass.
     let mut go_modules = types::GoModules::new(root);
+    // Which classes a bare Kotlin/Java call can reach, built on first use
+    // (Graphify 0.9.102, #4935).
+    let mut jvm_index: Option<JvmScope<'_>> = None;
     // The tables borrow from `edges`; new edges are appended after the loop.
     let mut added = vec![];
     for &rc in raw {
@@ -2208,9 +2406,41 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         {
             continue;
         }
+        if rc
+            .rec_get("is_scoped_call")
+            .is_some_and(crate::build::truthy)
+        {
+            // A Rust `module::function()` binds only through its verified
+            // qualifier, EXTRACTED, and never falls through to the bare-name
+            // tie-breakers (Graphify 0.9.101, #908).
+            let source_of = |id: &str| id_source.get(id).copied().unwrap_or("").to_string();
+            let label_of = |id: &str| id_label.get(id).copied().unwrap_or("").to_string();
+            let survivors = crate::symbol_resolution::rust_scoped_call_survivors(
+                rs(rc, "scope_qualifier").trim(),
+                labels.get(callee).map(Vec::as_slice).unwrap_or_default(),
+                &source_of,
+                sf,
+                Some(&label_of),
+            );
+            let caller = rs(rc, "caller_nid");
+            if let [target] = survivors.as_slice()
+                && target != caller
+                && existing.insert(pair_ids.pair(caller, target))
+            {
+                let edge = json!({"source":caller,"target":target,"relation":"calls","context":"call","confidence":"EXTRACTED","confidence_score":1.0,"source_file":sf,"source_location":rc.rec_get("source_location").cloned().unwrap_or(Value::Null),"weight":1.0});
+                let Value::Object(edge) = edge else {
+                    unreachable!("an edge literal is an object")
+                };
+                added.push(E::from_object(edge));
+            }
+            continue;
+        }
         let mut cs = labels.get(callee).cloned().unwrap_or_default();
         if cs.is_empty() && merge::case_insensitive(sf) {
             cs = ci.get(&callee.to_lowercase()).cloned().unwrap_or_default();
+        }
+        if rs(rc, "language") == "go" {
+            cs.retain(|c| !method_ids.contains(c.as_str()));
         }
         // An enum member or a field/property is never a C# call target, nor
         // what `new X()` constructs (#3815, #3888, #4245).
@@ -2317,6 +2547,15 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         let cf = sf_file.get(sf).or_else(|| id_file.get(caller));
         let syms = cf.and_then(|f| symbols.get(f.as_str()));
         let mods = cf.and_then(|f| modules.get(f.as_str()));
+        if merge::family(sf) == Some("jvm") {
+            let index = jvm_index.get_or_insert_with(|| JvmScope::new(nodes, &edges[..]));
+            cs = index.reachable(cs, caller, callee, |id| {
+                syms.is_some_and(|s| s.contains(id))
+            });
+            if cs.is_empty() {
+                continue;
+            }
+        }
         let has_symbol = |id: &String| syms.is_some_and(|s| s.contains(id.as_str()));
         let has_module = |id: &String| {
             id_file
@@ -2408,6 +2647,17 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
                 }
             }
         };
+        // A bare Python name resolves through the caller module's own
+        // bindings: a builtin-named callee is a project symbol only when the
+        // caller's file imports that exact symbol. Module-import evidence does
+        // not count; without a direct import the name is the builtin, so no
+        // edge (Graphify 0.9.103, #4989).
+        if effective_suffix(sf) == ".py"
+            && extractors::base::is_python_builtin_name(callee)
+            && !has_symbol(&target)
+        {
+            continue;
+        }
         if id_source
             .get(target.as_str())
             .is_none_or(|sf| sf.is_empty())
@@ -2447,6 +2697,7 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         };
         added.push(E::from_object(edge));
     }
+    drop(jvm_index);
     edges.reserve_exact(added.len());
     edges.extend(added);
     repoint_go_imports(

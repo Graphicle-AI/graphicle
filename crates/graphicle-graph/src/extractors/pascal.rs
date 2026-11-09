@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/pascal.py
 //! Pascal/Delphi AST traversal and the original regex fallback.
 use super::{
@@ -27,16 +27,16 @@ pattern!(
 pattern!(USES, r"(?is)\buses\b\s*([^;]+);");
 pattern!(
     TYPE,
-    r"(?i)\b(?P<name>[A-Za-z_]\w*)(?:\s*<[^>]+>)?\s*=\s*(?:packed\s+)?(?P<kind>class|interface)\b(?:\s*\(\s*(?P<bases>[^)]*)\s*\))?"
+    r"(?i)\b(?P<name>[A-Za-z_]\w*)(?:\s*<[^>]+>)?\s*=\s*(?:packed\s+)?(?P<kind>class|interface|record)\b(?:\s*\(\s*(?P<bases>[^)]*)\s*\))?"
 );
 pattern!(END, r"(?i)\bend\s*;");
 pattern!(
     METHOD,
-    r"(?i)\b(?:procedure|function|constructor|destructor)\s+(?P<name>[A-Za-z_]\w*)(?:\s*\([^)]*\))?(?:\s*:\s*[\w<>,\s.]+)?\s*;"
+    r"(?i)\b(?:procedure|function|constructor|destructor|operator)\s+(?P<name>[A-Za-z_]\w*)(?:\s*\([^)]*\))?(?:\s*:\s*[\w<>,\s.]+)?\s*;"
 );
 pattern!(
     IMPL,
-    r"(?i)\b(?:procedure|function|constructor|destructor)\s+(?P<qual>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\s*<[^>]+>)?(?:\s*\([^)]*\))?(?:\s*:\s*[\w<>,\s.]+)?\s*;"
+    r"(?i)\b(?:procedure|function|constructor|destructor|operator)\s+(?P<qual>[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\s*<[^>]+>)?(?:\s*\([^)]*\))?(?:\s*:\s*[\w<>,\s.]+)?\s*;"
 );
 pattern!(BLOCK, r"(?i)\b(begin|end|case|try|asm|record)\b");
 pattern!(BEGIN, r"(?i)\bbegin\b");
@@ -89,6 +89,7 @@ const KEYWORDS: &[&str] = &[
     "function",
     "constructor",
     "destructor",
+    "operator",
     "class",
     "record",
     "object",

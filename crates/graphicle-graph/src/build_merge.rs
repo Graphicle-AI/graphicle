@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py
 //! Incremental replacement, deletion pruning and loss accounting for graph builds.
 use crate::{
@@ -632,6 +632,16 @@ pub fn build_merge_owned(
                 || node["id"].is_null()
                 || scalar_key(&node["id"]).is_none()
                 || graph.node_index(&node["id"]).is_some()
+            {
+                continue;
+            }
+            // A fold into a survivor still in the graph is one node, not a
+            // loss; a survivor that is gone excuses nothing (Graphify
+            // 0.9.102, #4955).
+            if node["id"]
+                .as_str()
+                .and_then(|id| graph.dedup_remap.get(id))
+                .is_some_and(|survivor| graph.node_index(&json!(survivor)).is_some())
             {
                 continue;
             }

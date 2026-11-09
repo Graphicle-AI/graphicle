@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/vbnet.py
 //! Port of graphify/extractors/vbnet.py (Graphify 0.9.69, #3717): namespaces,
 //! classes/modules/interfaces/structures/enums, members, `Handles` clauses and
@@ -99,14 +99,25 @@ impl<'t> Extractor<'t, '_> {
             item.insert("id".into(), json!(id));
             item.insert("label".into(), json!(label));
             item.insert("file_type".into(), json!("code"));
+            // A stub for an external namespace or type is sourceless: empty
+            // file and location (Graphify 0.9.96, #4725).
+            item.insert(
+                "source_file".into(),
+                json!(if source_backed {
+                    self.path.as_str()
+                } else {
+                    ""
+                }),
+            );
             item.insert(
                 "source_location".into(),
-                json!(format!("L{}", node.start_position().row + 1)),
+                json!(if source_backed {
+                    format!("L{}", node.start_position().row + 1)
+                } else {
+                    String::new()
+                }),
             );
             item.insert("metadata".into(), Value::Object(details));
-            if source_backed {
-                item.insert("source_file".into(), json!(self.path));
-            }
             if callable {
                 item.insert("_callable".into(), json!(true));
             }
@@ -265,7 +276,8 @@ impl<'t> Extractor<'t, '_> {
                     }
                     continue;
                 }
-                "method_declaration" | "constructor_declaration" => {}
+                // An operator is a method member (Graphify 0.9.97).
+                "method_declaration" | "constructor_declaration" | "operator_declaration" => {}
                 _ => continue,
             }
             let (method_name, method_kind) = if member.kind() == "constructor_declaration" {
@@ -274,7 +286,12 @@ impl<'t> Extractor<'t, '_> {
                 let Some(name_node) = member.child_by_field_name("name") else {
                     continue;
                 };
-                (self.text(name_node), "method")
+                let kind = if member.kind() == "operator_declaration" {
+                    "operator"
+                } else {
+                    "method"
+                };
+                (self.text(name_node), kind)
             };
             let parameters = member
                 .child_by_field_name("parameters")
@@ -465,7 +482,10 @@ pub fn extract_vbnet(path: &Path) -> Value {
             if node.id() != body.id()
                 && matches!(
                     node.kind(),
-                    "method_declaration" | "constructor_declaration" | "property_declaration"
+                    "method_declaration"
+                        | "constructor_declaration"
+                        | "property_declaration"
+                        | "operator_declaration"
                 )
             {
                 continue;

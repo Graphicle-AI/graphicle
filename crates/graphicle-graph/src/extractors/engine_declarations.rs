@@ -1,9 +1,9 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Class, field and signature traversal for the shared engine.
 use super::{
     base::make_id,
-    engine::{Engine, decorator_name},
+    engine::{Engine, ts_decorator_name},
     engine_scope::*,
     engine_types::*,
 };
@@ -136,7 +136,13 @@ impl<'a, 't> Engine<'a, 't> {
                 meta["ruby_lookup_unsafe"] = json!(true);
             }
         }
+        // A class whose id is the file's gets its own (Graphify 0.9.98, #4854).
+        let id = self.decl_id(&id, &name, "type");
         self.add_node(&id, &name, line, None, meta.clone());
+        if self.is("cpp") {
+            let qualified = cpp_qualified_name(n, &name, self.source);
+            self.note_cpp_qualified(&id, qualified);
+        }
         if self.is("ruby")
             && meta.as_object().is_some_and(|m| !m.is_empty())
             && let Some(node) = self.nodes.iter_mut().find(|v| v["id"] == id)
@@ -880,6 +886,11 @@ impl<'a, 't> Engine<'a, 't> {
             {
                 self.refs(owner, ty, line, "field", false);
             }
+            if self.is("php") {
+                // A parameter default's `Scope::MEMBER` (Graphify 0.9.100).
+                let source = parent.unwrap_or(id).to_string();
+                self.php_const_refs(p, &source);
+            }
             if self.is("swift") {
                 let mut refs = vec![];
                 swift_collect_type_refs(ty, self.source, false, &mut refs);
@@ -964,9 +975,69 @@ impl<'a, 't> Engine<'a, 't> {
             }
         }
     }
+    /// `_php_const_ref_target` (Graphify 0.9.100, #4648): the real local node
+    /// a `Scope::MEMBER` scope names; `self::`/`static::`/`parent::` and an
+    /// unknown scope name none, and a qualified scope is its class segment.
+    fn php_const_ref_target(&self, access: Node<'_>) -> Option<String> {
+        let first = named(access).into_iter().next()?;
+        if !matches!(first.kind_name(), "name" | "qualified_name") {
+            return None;
+        }
+        let mut name = self.text(first);
+        if first.kind_name() == "qualified_name" {
+            name = name.rsplit('\\').next().unwrap_or("").to_string();
+        }
+        if let Some(declared) = self.decl.lookup(&name) {
+            return Some(declared);
+        }
+        let nid = make_id([
+            self.stem.as_str(),
+            self.namespace.join(".").as_str(),
+            name.as_str(),
+        ]);
+        (self.seen.contains(&nid) && nid != self.file).then_some(nid)
+    }
+    /// The `references_constant` edges of the `Scope::MEMBER` accesses under
+    /// `node`, which sit outside any function body: a class-level
+    /// initializer or a parameter default (Graphify 0.9.100, #4648).
+    pub(crate) fn php_const_refs(&mut self, node: Node<'t>, source: &str) {
+        let mut seen_here = BTreeSet::new();
+        let mut stack = children(node);
+        while let Some(sub) = stack.pop() {
+            if sub.kind_name() == "class_constant_access_expression"
+                && let Some(target) = self.php_const_ref_target(sub)
+                && target != source
+                && seen_here.insert(target.clone())
+            {
+                let line = sub.start_position().row + 1;
+                self.edge(
+                    source,
+                    &target,
+                    "references_constant",
+                    line,
+                    None,
+                    Value::Null,
+                );
+            }
+            stack.extend(children(sub));
+        }
+    }
     pub(crate) fn field(&mut self, n: Node<'t>, parent: Option<&str>) -> bool {
         let t = n.kind_name();
         let line = n.start_position().row + 1;
+        if self.is("php")
+            && let Some(owner) = parent
+            && matches!(t, "const_declaration" | "property_declaration")
+        {
+            self.php_const_refs(n, owner);
+        }
+        // `init { ... }`: its calls belong to the enclosing class, or the file
+        // (Graphify 0.9.102, #4935).
+        if self.is("kotlin") && t == "anonymous_initializer" {
+            let owner = parent.unwrap_or(&self.file).to_string();
+            self.initializers.push((owner, n));
+            return true;
+        }
         if self.is("kotlin") && t == "property_declaration" {
             if let Some(p) = parent {
                 self.refs(p, kotlin_property_type_node(n), line, "field", false);
@@ -1397,7 +1468,7 @@ impl<'a, 't> Engine<'a, 't> {
             }
         }
         for (d, owner) in work {
-            if let Some(name) = decorator_name(d, self.source) {
+            if let Some(name) = ts_decorator_name(d, self.source) {
                 let target = self.ensure(&name, true);
                 if target != owner {
                     self.edge(

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/affected.py
 //! Native translation of graphify/affected.py: reverse dependency traversal.
 use crate::{Result, graph::Graph, path_syntax, python_compat::string, unicode15::CASEFOLD};
@@ -145,11 +145,32 @@ pub fn prefer_file_node(graph: &Graph, ids: &[String], query: &str) -> Option<St
     }
     None
 }
+/// `resolve_reference_forms` (Graphify 0.9.100, #4792): the reference
+/// forms `explain` accepts, a `path::Symbol` and a dotted Python name,
+/// resolved as `explain` resolves them: the one node of the winning exact
+/// tier. Several nodes there are ambiguity, never a looser tier's guess.
+pub fn resolve_reference_forms(graph: &Graph, query: &str) -> Option<String> {
+    let index = crate::serve_search::SearchIndex::new(graph);
+    let [source_exact, exact, _, _] = crate::serve_find::tiers(graph, &index, query);
+    for tier in [source_exact, exact] {
+        if tier.len() == 1 {
+            return Some(string(&graph.nodes[tier[0]].id));
+        }
+        if !tier.is_empty() {
+            break;
+        }
+    }
+    None
+}
 pub fn resolve_seed(graph: &Graph, query: &str, root: Option<&Path>) -> Result<Option<String>> {
     let trimmed = query.trim_end_matches(['/', '\\']);
     let query = if trimmed.is_empty() { query } else { trimmed };
     if graph.node_index(&json!(query)).is_some() {
         return Ok(Some(query.into()));
+    }
+    // Checked before the label tiers, which cannot express them (#4792).
+    if let Some(qualified) = resolve_reference_forms(graph, query) {
+        return Ok(Some(qualified));
     }
     let lower = normalize_label(query);
     let bare = bare_name(&lower);

@@ -7,10 +7,13 @@ graphicle-graph extract . --code-only
 graphicle-graph extract . --backend openai --model MODEL
 graphicle-graph extract . --out OUTPUT_ROOT --no-gitignore
 graphicle-graph update .
+graphicle-graph update . --force
 graphicle-graph cluster-only . --no-label
 graphicle-graph label . --missing-only
 graphicle-graph watch .
 ```
+
+`update` re-extracts only the code files whose content changed since the last build and writes the graph a full rebuild would write; it stops at once when nothing it reads changed since a full rebuild that found nothing to change. A new engine version, other settings or a manifest another command wrote take the full rebuild, and so does `--force`.
 
 Semantic extraction supports the native provider registry, custom endpoints, chunking, bounded concurrency, checkpoint recovery, and per-source cache invalidation. Configure API keys through the provider's environment variable. Do not put credentials in graph data, committed files, or progress output. `--token-budget`, `--max-concurrency`, and `--api-timeout` control dispatch. Use `--allow-partial` only when explicitly accepting an incomplete result; inspect its recorded failed sources.
 
@@ -25,6 +28,10 @@ graphicle-graph god-nodes --top 10
 graphicle-graph diagnose multigraph --json
 graphicle-graph benchmark
 ```
+
+`query` takes `--budget N` (default 2000 tokens) and `--depth N` (1 to 6, default 2); a project sets its own defaults with `query_budget=N` and `query_depth=N` in `.graphiclerc`, and explicit options win. Answers list source before tests and documents, file by file.
+
+For a question about why a node bridges communities or has unusually many edges, the neighbour listing shows only code that already has an edge to it. Pick one or two literal, distinctive things the hub does (a constant it wraps, a string it returns, the exact computation in its body), search the corpus for that text in files with no edge to the hub, and report hits separately as bypasses: code that reimplements the hub instead of calling it. A shared utility is often clustered into its heaviest consumer's community, so say so when its community label names another node.
 
 Use `--graph PATH` to target another graph. Preserve provenance and distinguish extracted relationships from inferred ones. A missing graph result does not prove the underlying relationship is absent.
 
@@ -65,6 +72,8 @@ graphicle-graph hook install
 graphicle-graph hook status
 graphicle-graph check-update .
 ```
+
+The assistant hooks remind an agent of the graph before raw searches and reads. A file newer than graph.json whose content still matches its extraction hashes is not treated as stale. In strict mode (`install --strict`) the first raw Read of an indexed file or the first dedicated Grep in the project per session is blocked once with a pointer to `query`; Bash and Glob stay advisory, and searches outside the project get no hint.
 
 Point the MCP client at the installed native executable with arguments `serve` and the absolute graph path. For HTTP authentication use `GRAPHICLE_MCP_API_KEY`. Scope an assistant installation with `graphicle-graph install --platform PLATFORM --project` or install its skill in the user configuration directory without `--project`.
 

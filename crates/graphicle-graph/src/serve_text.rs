@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Graph traversal, precise symbol lookup, and budgeted text context.
 
@@ -241,6 +241,21 @@ pub fn subgraph_text(
     budget: i64,
     seeds: &[usize],
 ) -> String {
+    subgraph_text_scored(g, nodes, edges, budget, seeds, None)
+}
+/// [`subgraph_text`] with `query`'s node scores: the answer is file-first
+/// (Graphify 0.9.102). Files rank by their best-scoring node in the answer;
+/// the seeds come first, then the other nodes file by file, by score, then by
+/// hop and degree as before. Nodes the question did not match keep the old
+/// order after every matched file.
+pub fn subgraph_text_scored(
+    g: &Graph,
+    nodes: &BTreeSet<usize>,
+    edges: &[(usize, usize)],
+    budget: i64,
+    seeds: &[usize],
+    scores: Option<&BTreeMap<usize, f64>>,
+) -> String {
     let char_budget = (budget.max(0) as usize).saturating_mul(3);
     let ds = degrees(g);
     let seedset = seeds.iter().copied().collect::<BTreeSet<_>>();
@@ -268,13 +283,64 @@ pub fn subgraph_text(
         }
     }
     let mut rest = nodes.difference(&seedset).copied().collect::<Vec<_>>();
-    rest.sort_by(|a, b| {
-        dist.get(a)
-            .unwrap_or(&(1 << 30))
-            .cmp(dist.get(b).unwrap_or(&(1 << 30)))
-            .then_with(|| ds[*b].cmp(&ds[*a]))
-            .then_with(|| id(g, *a).cmp(&id(g, *b)))
-    });
+    let mut hits = hits;
+    match scores.filter(|s| !s.is_empty()) {
+        Some(scores) => {
+            let file = |i: usize| {
+                g.nodes[i]
+                    .attributes
+                    .get("source_file")
+                    .filter(|v| crate::build::truthy(v))
+                    .map(string)
+                    .unwrap_or_default()
+            };
+            let score = |i: usize| scores.get(&i).copied().unwrap_or(0.0);
+            let mut file_best: BTreeMap<String, f64> = BTreeMap::new();
+            for &n in nodes {
+                let sc = score(n);
+                if sc > 0.0 {
+                    let best = file_best.entry(file(n)).or_insert(0.0);
+                    if sc > *best {
+                        *best = sc;
+                    }
+                }
+            }
+            let mut ranked_files: Vec<(String, f64)> = file_best.into_iter().collect();
+            ranked_files.sort_by(|a, b| b.1.total_cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            let unranked = ranked_files.len();
+            let file_rank: BTreeMap<String, usize> = ranked_files
+                .into_iter()
+                .enumerate()
+                .map(|(r, (f, _))| (f, r))
+                .collect();
+            let key = |n: usize| {
+                let sc = score(n);
+                let fr = if sc > 0.0 {
+                    file_rank.get(&file(n)).copied().unwrap_or(unranked)
+                } else {
+                    unranked
+                };
+                (fr, sc, *dist.get(&n).unwrap_or(&(1 << 30)), ds[n])
+            };
+            let order = |a: &usize, b: &usize| {
+                let (ka, kb) = (key(*a), key(*b));
+                ka.0.cmp(&kb.0)
+                    .then_with(|| kb.1.total_cmp(&ka.1))
+                    .then_with(|| ka.2.cmp(&kb.2))
+                    .then_with(|| kb.3.cmp(&ka.3))
+                    .then_with(|| id(g, *a).cmp(&id(g, *b)))
+            };
+            hits.sort_by(order);
+            rest.sort_by(order);
+        }
+        None => rest.sort_by(|a, b| {
+            dist.get(a)
+                .unwrap_or(&(1 << 30))
+                .cmp(dist.get(b).unwrap_or(&(1 << 30)))
+                .then_with(|| ds[*b].cmp(&ds[*a]))
+                .then_with(|| id(g, *a).cmp(&id(g, *b)))
+        }),
+    }
     let ordered = hits.iter().copied().chain(rest);
     let mut lines = vec![];
     for i in ordered {
@@ -434,7 +500,7 @@ pub fn query_text(
                 values.join(", ")
             ));
         }
-        return render_query(g, index, q, &start, context, true, &unresolved);
+        return render_query(g, index, q, &start, context, true, &unresolved, None);
     }
     // A question that is itself the exact name of several nodes is refused,
     // matching `explain` and `path`; a sentence, or a keyword that only prefix-
@@ -443,7 +509,9 @@ pub fn query_text(
         return Ok(refusal);
     }
     let terms = crate::query_terms::query_terms(q);
-    let mut scored = score_query(g, index, &terms, true);
+    // Source above tests and docs (Graphify 0.9.102).
+    let weight = query_path_weight(g, &terms);
+    let mut scored = score_query_weighted(g, index, &terms, true, &weight);
     let intent = CONSTANTS["_RELATIONAL_INTENT_TERMS"].as_array().unwrap();
     if terms.iter().any(|t| !intent.contains(&json!(t))) {
         scored
@@ -461,11 +529,13 @@ pub fn query_text(
     if seeds.is_empty() {
         return Ok(QUERY_NO_MATCH.into());
     }
-    render_query(g, index, q, &seeds, context, false, &[])
+    let scores: BTreeMap<usize, f64> = scored.ranked.iter().map(|&(sc, i)| (i, sc)).collect();
+    render_query(g, index, q, &seeds, context, false, &[], Some(&scores))
 }
 /// The traversal from `seeds` and its text, under the query header;
 /// `given` marks explicit `--seed` start nodes, and `unresolved` lists the
 /// seed values that were skipped.
+#[allow(clippy::too_many_arguments)]
 fn render_query(
     g: &Graph,
     index: &SearchIndex,
@@ -474,6 +544,7 @@ fn render_query(
     context: QueryOptions<'_>,
     given: bool,
     unresolved: &[&str],
+    scores: Option<&BTreeMap<usize, f64>>,
 ) -> Result<String> {
     let QueryOptions {
         mode,
@@ -521,7 +592,7 @@ fn render_query(
     Ok(format!(
         "{}\n\n{}",
         head.join(" | "),
-        subgraph_text(&traversal, &nodes, &edges, budget, seeds)
+        subgraph_text_scored(&traversal, &nodes, &edges, budget, seeds, scores)
     ))
 }
 pub fn display_graph_path(path: &str) -> String {

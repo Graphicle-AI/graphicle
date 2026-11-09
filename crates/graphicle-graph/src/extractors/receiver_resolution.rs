@@ -1387,18 +1387,16 @@ func main() {
         assert!(calls(&run(root, &paths, false)).is_empty());
         let on = run(root, &paths, true);
         let c = calls(&on);
-        assert!(
-            has(&c, "cmd_main_use", "pkg_conn_send", "annotation"),
-            "{c:?}"
-        );
-        assert!(
-            has(&c, "cmd_main_main", "pkg_conn_send", "constructor"),
-            "{c:?}"
-        );
-        assert!(
-            has(&c, "cmd_main_main", "pkg_other_send", "constructor"),
-            "{c:?}"
-        );
+        // Since Graphify 0.9.102 the parity Go pass binds `pkg.T` receivers
+        // through the import path (#3368), so the opt-in pass need not: each
+        // call is bound once, by either.
+        for (src, tgt) in [
+            ("cmd_main_use", "pkg_conn_send"),
+            ("cmd_main_main", "pkg_conn_send"),
+            ("cmd_main_main", "pkg_other_send"),
+        ] {
+            assert_eq!(count_calls(&on, src, tgt), 1, "{src} -> {tgt}: {c:?}");
+        }
         let u = unresolved(&on);
         let iface = u
             .iter()

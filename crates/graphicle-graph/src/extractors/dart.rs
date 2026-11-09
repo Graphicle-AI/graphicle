@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/dart.py
 //! Native translation of Graphify's Dart and Flutter regex extractor.
 
@@ -80,7 +80,8 @@ struct Patterns {
     comment: Regex,
     part: Regex,
     class: Regex,
-    extends: Regex,
+    extends_or_on: Regex,
+    on_more: Regex,
     with: Regex,
     implements: Regex,
     event: Regex,
@@ -116,7 +117,8 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     class: compile(
         r"(?m)^\s*(?:(?:abstract|sealed|base|interface|final|mixin)\s+)*(?:class|mixin|enum|extension\s+type)\s+(\w+)",
     ),
-    extends: compile(r"^\s*(?:extends|on)\s+([a-zA-Z0-9_.]+)"),
+    extends_or_on: compile(r"^\s*(extends|on)\s+([a-zA-Z0-9_.]+)"),
+    on_more: compile(r"^\s*,\s*([a-zA-Z0-9_.]+)"),
     with: compile(r"^\s*with\s+"),
     implements: compile(r"^\s*implements\s+"),
     event: compile(r"\bon<(\w+)>\s*\("),
@@ -144,7 +146,9 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     typedef_line: compile(r"^\s*typedef\b"),
     // `re.fullmatch(r"([\w.]+)\s*(?:<.*>)?\s*\??", target, re.DOTALL)`.
     typedef_target: compile(&format!(r"(?s)^([{}.]+)\s*(?:<.*>)?\s*\??\z", word_chars())),
-    extension: compile(r"(?m)^\s{0,4}extension\s+(\w+)?(?:<[^>]+>)?\s+on\s+(\w+)"),
+    // The name, its generics and the space after them are one optional group,
+    // so `extension on String` matches too (Graphify 0.9.96).
+    extension: compile(r"(?m)^\s{0,4}extension\s+(?:(\w+)\s*(?:<[^>]+>)?\s+)?on\s+(\w+)"),
     variable: compile(
         r"(?m)^\s{0,2}(?:late\s+)?(?:(?:final|const|var)\s+)?(?:\([^)]+\)\s+|([a-zA-Z0-9_<>,.?]+(?:\s+[a-zA-Z0-9_<>,.?]+){0,3})\s+)?(?:(\w+)|(?:\w+\s*)?\(([^)]+)\))\s*(?:=|$|;)",
     ),
@@ -196,6 +200,28 @@ pub fn clean_comments(source: &str) -> Result<String> {
     }
     clean.push_str(&source[last..]);
     Ok(clean)
+}
+/// `_consume_generic_args`: the `<...>` argument text at the start of
+/// `text` (after whitespace) and what follows it; `(None, text)` without one
+/// or without its closing `>`.
+fn consume_generic_args(text: &str) -> (Option<&str>, &str) {
+    if !trim(text).starts_with('<') {
+        return (None, text);
+    }
+    let start = text.find('<').unwrap();
+    let mut depth = 1;
+    for (offset, c) in text[start + 1..].char_indices() {
+        if c == '<' {
+            depth += 1;
+        } else if c == '>' {
+            depth -= 1;
+            if depth == 0 {
+                let end = start + 1 + offset;
+                return (Some(&text[start + 1..end]), &text[end + 1..]);
+            }
+        }
+    }
+    (None, text)
 }
 pub fn split_types(text: &str) -> Vec<String> {
     let mut out = vec![];
@@ -410,30 +436,23 @@ impl Output<'_> {
                 .or_else(|| rest.find(';'))
                 .unwrap_or(rest.len());
             let mut header = &rest[..end];
-            let mut base = None;
-            let mut generics = None;
             let mut mixins = vec![];
             let mut interfaces = vec![];
-            if let Some(m) = find(&P.extends, header)? {
-                base = Some(m.get(1).unwrap().as_str());
-                let rest = &header[m.get(0).unwrap().end()..];
-                header = rest;
-                if trim(rest).starts_with('<') {
-                    let start = rest.find('<').unwrap();
-                    let mut depth = 1;
-                    for (offset, c) in rest[start + 1..].char_indices() {
-                        if c == '<' {
-                            depth += 1;
-                        } else if c == '>' {
-                            depth -= 1;
-                            if depth == 0 {
-                                let end = start + 1 + offset;
-                                generics = Some(&rest[start + 1..end]);
-                                header = &rest[end + 1..];
-                                break;
-                            }
-                        }
-                    }
+            // A mixin's `on` clause may list several superclass constraints
+            // (`mixin Foo on A, B {}`); `extends` names one (Graphify 0.9.100).
+            let mut bases: Vec<(&str, Option<&str>)> = vec![];
+            if let Some(m) = find(&P.extends_or_on, header)? {
+                let is_on = m.get(1).unwrap().as_str() == "on";
+                let base = m.get(2).unwrap().as_str();
+                let (generics, after) = consume_generic_args(&header[m.get(0).unwrap().end()..]);
+                header = after;
+                bases.push((base, generics));
+                while is_on && let Some(more) = find(&P.on_more, header)? {
+                    let base = more.get(1).unwrap().as_str();
+                    let (generics, after) =
+                        consume_generic_args(&header[more.get(0).unwrap().end()..]);
+                    header = after;
+                    bases.push((base, generics));
                 }
             }
             if let Some(m) = find(&P.with, header)? {
@@ -450,7 +469,7 @@ impl Output<'_> {
             if let Some(m) = find(&P.implements, header)? {
                 interfaces = split_types(&header[m.get(0).unwrap().end()..]);
             }
-            if let Some(base) = base.filter(|s| !s.is_empty()) {
+            for (base, generics) in bases.into_iter().filter(|(b, _)| !b.is_empty()) {
                 self.reference(&owner, base, "inherits", None, line);
                 if let Some(generics) = generics.filter(|s| !s.is_empty()) {
                     for generic in split_types(generics) {

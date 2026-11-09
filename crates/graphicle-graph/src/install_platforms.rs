@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 use crate::{Result, install::*, install_fs as f};
 use serde_json::{Value, json};
@@ -75,23 +75,34 @@ fn hook_file(name: &str, o: &Options, path: &Path, remove: bool) -> Result<()> {
     } else {
         "PreToolUse"
     };
+    // Claude Code also gets the SessionStart "compact" hook that resets the
+    // nudge budget after a compaction (Graphify 0.9.103).
+    let claude = ["claude", "windows"].contains(&name);
+    let events: Vec<&str> = if claude {
+        vec![event, "SessionStart"]
+    } else {
+        vec![event]
+    };
     let obj = cfg.as_object_mut().unwrap();
     if remove {
         // A missing or non-list section leaves the file as it is; a changed
         // one is written through the rolling backup (#4359).
-        let Some(groups) = obj
-            .get_mut("hooks")
-            .and_then(Value::as_object_mut)
-            .and_then(|hooks| hooks.get_mut(event))
-            .and_then(Value::as_array_mut)
-        else {
+        let Some(hooks) = obj.get_mut("hooks").and_then(Value::as_object_mut) else {
             return Ok(());
         };
-        let Some(kept) = strip_engine_hooks(groups) else {
-            return Ok(());
-        };
-        *groups = kept;
-        f::write_settings(path, &cfg, true)?;
+        let mut changed = false;
+        for event in &events {
+            let Some(groups) = hooks.get_mut(*event).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            if let Some(kept) = strip_engine_hooks(groups) {
+                *groups = kept;
+                changed = true;
+            }
+        }
+        if changed {
+            f::write_settings(path, &cfg, true)?;
+        }
         return Ok(());
     }
     let hooks = obj
@@ -99,21 +110,29 @@ fn hook_file(name: &str, o: &Options, path: &Path, remove: bool) -> Result<()> {
         .or_insert(json!({}))
         .as_object_mut()
         .ok_or_else(|| f::refuse(path))?;
-    let groups = hooks
-        .entry(event)
-        .or_insert(json!([]))
-        .as_array_mut()
-        .ok_or_else(|| f::refuse(path))?;
-    if let Some(kept) = strip_engine_hooks(groups) {
-        *groups = kept;
+    // Every section is checked before any is changed.
+    for event in &events {
+        if !hooks.entry(*event).or_insert(json!([])).is_array() {
+            return Err(f::refuse(path).into());
+        }
     }
-    groups.extend(match name {
-        "gemini" => vec![gemini_hook(o)],
-        "codex" => vec![
-            json!({"matcher":"Bash","hooks":[{"type":"command","command":format!("{} hook-check",command_executable(o))}]}),
-        ],
-        _ => claude_hooks(o).as_array().unwrap().clone(),
-    });
+    for event in &events {
+        let groups = hooks
+            .get_mut(*event)
+            .and_then(Value::as_array_mut)
+            .unwrap();
+        if let Some(kept) = strip_engine_hooks(groups) {
+            *groups = kept;
+        }
+        groups.extend(match (name, *event) {
+            (_, "SessionStart") => claude_sessionstart_hooks(o).as_array().unwrap().clone(),
+            ("gemini", _) => vec![gemini_hook(o)],
+            ("codex", _) => vec![
+                json!({"matcher":"Bash","hooks":[{"type":"command","command":format!("{} hook-check",command_executable(o))}]}),
+            ],
+            _ => claude_hooks(o).as_array().unwrap().clone(),
+        });
+    }
     f::write_settings(path, &cfg, true)?;
     Ok(())
 }
@@ -129,13 +148,14 @@ pub fn hook(name: &str, o: &Options, remove: bool) -> Result<()> {
     }
     Ok(())
 }
-/// Write (or remove) a project's plugin file. The OpenCode plugin is written
-/// atomically into `.opencode/plugins/`, where OpenCode discovers it, and the
+/// Write (or remove) a plugin file. For OpenCode, `project` is the config
+/// dir ([`opencode_dir`], Graphify 0.9.96, #3398): the plugin is written
+/// atomically into its `plugins/`, where OpenCode discovers it, and the
 /// bare-path entry older releases put in opencode.json is dropped, never
 /// written (0.9.84, #3554/#3732). Returns the lines asking for a manual edit.
 pub fn plugin(name: &str, project: &Path, remove: bool) -> Result<Vec<String>> {
     if name == "opencode" {
-        let file = project.join(OPENCODE_PLUGIN_PATH);
+        let file = project.join(OPENCODE_PLUGIN_FILE);
         if remove {
             f::remove(&file)?;
         } else {
@@ -266,7 +286,9 @@ pub fn configure(name: &str, o: &Options, remove: bool) -> Result<Vec<String>> {
             if name == "codex" {
                 hook(name, o, remove)?;
             }
-            if ["opencode", "kilo"].contains(&name) {
+            if name == "opencode" {
+                messages.extend(plugin(name, &opencode_dir(true, p, &o.home), remove)?);
+            } else if name == "kilo" {
                 messages.extend(plugin(name, p, remove)?);
             }
         }
@@ -326,6 +348,21 @@ pub fn install(name: &str, o: &Options) -> Result<Vec<String>> {
     }
     let dst = copy_skill(name, &actual)?;
     let mut messages = vec![format!("Skill installed: {}", dst.display())];
+    // Gemini CLI prefers ~/.agents/skills over ~/.gemini/skills for a skill
+    // of the same name, and a Windows install before Graphify 0.9.99 wrote
+    // there (#2800). It may belong to the `agents` platform, so it is named,
+    // not deleted.
+    if name == "gemini"
+        && !o.project
+        && let Ok(shadow) = crate::install::destination("agents", o)
+        && shadow.exists()
+    {
+        messages.push(format!(
+            "note: Gemini CLI loads {} ahead of this install. If an older `{} install --platform gemini` wrote it, delete that folder; if you use the `agents` platform, keep it.",
+            shadow.display(),
+            crate::cli::program()
+        ));
+    }
     if ["claude", "windows"].contains(&name) {
         let target = if o.project {
             o.project_dir.join(".claude/CLAUDE.md")
@@ -385,7 +422,11 @@ pub fn install(name: &str, o: &Options) -> Result<Vec<String>> {
             messages.extend(configure(name, &actual, false)?);
         }
     } else if name == "opencode" {
-        messages.extend(plugin(name, &o.project_dir, false)?);
+        messages.extend(plugin(
+            name,
+            &opencode_dir(o.project, &o.project_dir, &o.home),
+            false,
+        )?);
     }
     if o.project {
         messages.push(format!(
@@ -414,6 +455,26 @@ pub fn uninstall(name: &str, o: &Options) -> Result<Vec<String>> {
             "# graphicle",
             "# ",
         )?;
+    }
+    // A global install registers the skill in the user's CLAUDE.md
+    // (CLAUDE_CONFIG_DIR's when set) or CODEBUDDY.md; the registration goes
+    // with the skill (Graphify 0.9.101).
+    if ["claude", "windows"].contains(&name) && !o.project {
+        let target = o
+            .claude_config_dir
+            .clone()
+            .unwrap_or_else(|| o.home.join(".claude"))
+            .join("CLAUDE.md");
+        messages.extend(f::remove_global_registration(
+            &target,
+            "  CLAUDE.md        ->  ",
+        ));
+    }
+    if name == "codebuddy" && !o.project {
+        messages.extend(f::remove_global_registration(
+            &o.home.join(".codebuddy/CODEBUDDY.md"),
+            "  CODEBUDDY.md     ->  ",
+        ));
     }
     if name == "kilo" && !o.project {
         let p = o.home.join(".config/kilo/command/graphicle.md");
@@ -461,6 +522,12 @@ pub fn uninstall_all(o: &Options, purge: bool) -> Result<Vec<String>> {
     for name in platforms() {
         messages.extend(uninstall(&name, o)?);
     }
+    // A global `install --platform opencode` writes the plugin here (#3398).
+    messages.extend(plugin(
+        "opencode",
+        &opencode_dir(false, &o.project_dir, &o.home),
+        true,
+    )?);
     if !o.project
         && let Ok(result) = crate::hooks::uninstall(&o.project_dir)
     {

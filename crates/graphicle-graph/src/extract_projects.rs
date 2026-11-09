@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! Native project XML and XAML extraction, including code-behind and MVVM links.
 
@@ -485,11 +485,16 @@ pub fn codebehind_path(path: &Path) -> Option<PathBuf> {
     }
     let name = expected.file_name()?.to_string_lossy().to_lowercase();
     crate::inputs::listing(path.parent().unwrap_or(Path::new(".")));
+    // Several siblings can match on a case-sensitive filesystem
+    // (`App.xaml.cs` beside `app.xaml.CS`): the first by name, not by
+    // directory order, so the result does not depend on the layout
+    // (Graphify 0.9.96).
     std::fs::read_dir(path.parent().unwrap_or(Path::new(".")))
         .ok()?
         .flatten()
-        .find(|e| e.file_name().to_string_lossy().to_lowercase() == name)
+        .filter(|e| e.file_name().to_string_lossy().to_lowercase() == name)
         .map(|e| e.path())
+        .min_by(|a, b| a.file_name().cmp(&b.file_name()))
 }
 pub fn codebehind_symbols(
     path: &Path,

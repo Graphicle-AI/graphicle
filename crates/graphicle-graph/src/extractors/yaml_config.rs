@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/yaml_config.py
 //! Structural YAML extraction (Graphify 0.9.95, #2214): `.yaml`/`.yml` files are
 //! code. A file node plus `contains` edges to keys, the shape `extract_json`
@@ -9,7 +9,7 @@
 //! a `!!python/...` or unknown tag is refused, never constructed.
 use super::{
     base::{file_stem, make_id},
-    yaml_frontmatter::{self, Loaded},
+    yaml_frontmatter::{self, Loaded, Tree, TreeKind},
 };
 use crate::{fsutil, ids::normalize_id, io_compat, python_compat};
 use serde_json::{Value, json};
@@ -110,7 +110,14 @@ fn structured(value: &Loaded) -> bool {
 }
 
 /// `_is_config_yaml`: a recognized config/manifest document worth extracting.
-fn is_config_yaml(str_path: &str, name: &str, data: &Loaded) -> bool {
+/// `key_texts` are a top-level mapping's keys as written (Graphify 0.9.97,
+/// #4784): a workflow's `on:` constructs as the boolean `True`.
+fn is_config_yaml(
+    str_path: &str,
+    name: &str,
+    data: &Loaded,
+    key_texts: Option<HashSet<String>>,
+) -> bool {
     if CONFIG_YAML_NAMES.contains(&casefold(name).as_str()) {
         return true;
     }
@@ -134,7 +141,7 @@ fn is_config_yaml(str_path: &str, name: &str, data: &Loaded) -> bool {
         Loaded::Map(entries) => entries,
         Loaded::Other(_) => return false,
     };
-    let keys = folded_keys(entries);
+    let keys = key_texts.unwrap_or_else(|| folded_keys(entries));
     if (keys.contains("openapi") || keys.contains("swagger")) && keys.contains("paths") {
         return false;
     }
@@ -289,32 +296,40 @@ struct Walk {
 }
 
 impl Walk {
-    fn node(&mut self, id: &str, label: &str) {
+    fn node(&mut self, id: &str, label: &str, line: usize) {
         if !id.is_empty() && self.seen.insert(id.to_owned()) {
-            self.nodes.push(json!({"id":id,"label":label,"file_type":"code","source_file":self.path,"source_location":"L1"}));
+            self.nodes.push(json!({"id":id,"label":label,"file_type":"code","source_file":self.path,"source_location":format!("L{line}")}));
         }
     }
-    fn edge(&mut self, source: &str, target: &str) {
+    fn edge(&mut self, source: &str, target: &str, line: usize) {
         if source.is_empty() || target.is_empty() || source == target {
             return;
         }
-        self.edges.push(json!({"source":source,"target":target,"relation":"contains","confidence":"EXTRACTED","source_file":self.path,"source_location":"L1","weight":1.0}));
+        self.edges.push(json!({"source":source,"target":target,"relation":"contains","confidence":"EXTRACTED","source_file":self.path,"source_location":format!("L{line}"),"weight":1.0}));
     }
     /// `walk`: keys become nodes under their parent; a list's structured items
     /// are walked under the list's own parent, with no index nodes. Once the
-    /// pair budget is spent every mapping returns at its first key.
-    fn walk(&mut self, value: &Loaded, parent: &str, parent_key: Option<&str>, depth: usize) {
+    /// pair budget is spent every mapping returns at its first key. It walks
+    /// the composed tree: keys as written, each on its own line (Graphify
+    /// 0.9.97, #4784).
+    fn walk(
+        &mut self,
+        tree: &Tree,
+        value: usize,
+        parent: &str,
+        parent_key: Option<&str>,
+        depth: usize,
+    ) {
         if depth > MAX_DEPTH {
             return;
         }
-        match value {
-            Loaded::Map(entries) => {
-                for (key, child) in entries {
+        match tree.kind(value) {
+            TreeKind::Map => {
+                for (key, line, child) in tree.pairs(value) {
                     if self.pairs >= MAX_PAIRS {
                         return;
                     }
                     self.pairs += 1;
-                    let key = key_text(key);
                     if normalize_id(&key).is_empty() {
                         continue;
                     }
@@ -325,21 +340,21 @@ impl Walk {
                     if nid.is_empty() {
                         continue;
                     }
-                    self.node(&nid, &key);
-                    self.edge(parent, &nid);
-                    if structured(child) {
-                        self.walk(child, &nid, Some(&key), depth + 1);
+                    self.node(&nid, &key, line);
+                    self.edge(parent, &nid, line);
+                    if tree.kind(child) != TreeKind::Scalar {
+                        self.walk(tree, child, &nid, Some(&key), depth + 1);
                     }
                 }
             }
-            Loaded::Seq(items) => {
-                for item in items {
-                    if structured(item) {
-                        self.walk(item, parent, parent_key, depth + 1);
+            TreeKind::Seq => {
+                for item in tree.items(value) {
+                    if tree.kind(item) != TreeKind::Scalar {
+                        self.walk(tree, item, parent, parent_key, depth + 1);
                     }
                 }
             }
-            Loaded::Other(_) => {}
+            TreeKind::Scalar => {}
         }
     }
 }
@@ -377,13 +392,16 @@ pub fn extract_yaml(path: &Path) -> Value {
         ));
     }
     // PyYAML's scanner skips a byte-order mark at the very start of the stream.
-    let docs = match yaml_frontmatter::parse_all(text.strip_prefix('\u{feff}').unwrap_or(&text)) {
-        Ok(docs) => docs,
-        Err(error) => return refused(error.to_string()),
-    };
+    let (docs, tree) =
+        match yaml_frontmatter::parse_all_with_tree(text.strip_prefix('\u{feff}').unwrap_or(&text))
+        {
+            Ok(parsed) => parsed,
+            Err(error) => return refused(error.to_string()),
+        };
     let structured_docs = docs
         .iter()
-        .filter(|doc| structured(doc))
+        .zip(tree.roots.iter().copied())
+        .filter(|(doc, _)| structured(doc))
         .collect::<Vec<_>>();
     if structured_docs.is_empty() {
         return empty("skipped", "scalar yaml");
@@ -393,7 +411,15 @@ pub fn extract_yaml(path: &Path) -> Value {
     let name = crate::path_syntax::posix_name(&parts).to_owned();
     let config_docs = structured_docs
         .into_iter()
-        .filter(|doc| is_config_yaml(&str_path, &name, doc))
+        .filter(|(doc, root)| {
+            let top = (tree.kind(*root) == TreeKind::Map).then(|| {
+                tree.pairs(*root)
+                    .into_iter()
+                    .map(|(key, _, _)| casefold(&key))
+                    .collect()
+            });
+            is_config_yaml(&str_path, &name, doc, top)
+        })
         .collect::<Vec<_>>();
     if config_docs.is_empty() {
         return empty("skipped", "data yaml (not a config/manifest)");
@@ -407,9 +433,9 @@ pub fn extract_yaml(path: &Path) -> Value {
         pairs: 0,
     };
     let file_nid = make_id([str_path.as_str()]);
-    walk.node(&file_nid, &name);
+    walk.node(&file_nid, &name, 1);
     let multi = config_docs.len() > 1;
-    for (index, doc) in config_docs.into_iter().enumerate() {
+    for (index, (doc, root)) in config_docs.into_iter().enumerate() {
         if multi {
             // Each document of a stream stays distinct: a Deployment and a
             // Service in one file must not merge their metadata.
@@ -422,11 +448,12 @@ pub fn extract_yaml(path: &Path) -> Value {
             if doc_nid.is_empty() {
                 continue;
             }
-            walk.node(&doc_nid, &label);
-            walk.edge(&file_nid, &doc_nid);
-            walk.walk(doc, &doc_nid, Some(&label), 1);
+            let doc_line = tree.line(root);
+            walk.node(&doc_nid, &label, doc_line);
+            walk.edge(&file_nid, &doc_nid, doc_line);
+            walk.walk(&tree, root, &doc_nid, Some(&label), 1);
         } else {
-            walk.walk(doc, &file_nid, None, 0);
+            walk.walk(&tree, root, &file_nid, None, 0);
         }
     }
     json!({"nodes":walk.nodes,"edges":walk.edges})
@@ -506,10 +533,10 @@ mod tests {
     fn yaml_1_1_keys_read_as_pyyaml_reads_them() {
         // `on` is the boolean True in YAML 1.1 (a GitHub workflow's trigger key).
         let result = extract("ci.yml", "on:\n  push: {}\njobs:\n  build: {}\n");
-        assert_eq!(labels(&result), ["ci.yml", "True", "push", "jobs", "build"]);
+        assert_eq!(labels(&result), ["ci.yml", "on", "push", "jobs", "build"]);
         // `1` and `"1"` are two keys; `1` and `true` are one.
         let result = extract("values.yaml", "1: a\n'1': b\ntrue: c\nx: {y: 1}\n");
-        assert_eq!(labels(&result), ["values.yaml", "1", "x", "y"]);
+        assert_eq!(labels(&result), ["values.yaml", "1", "true", "x", "y"]);
         assert_eq!(result["edges"].as_array().unwrap().len(), 4);
     }
 
@@ -524,7 +551,7 @@ mod tests {
         );
         assert_eq!(
             labels(&result),
-            ["values.yaml", "limits", "inf", "nan", "nested", "-inf"]
+            ["values.yaml", "limits", ".inf", ".nan", "nested", "-.Inf"]
         );
         assert_eq!(result["edges"].as_array().unwrap().len(), 6);
     }

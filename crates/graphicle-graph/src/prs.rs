@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/prs.py
 //! Graph-aware pull-request status, impact and command orchestration.
 pub use crate::prs_io::{
@@ -158,7 +158,14 @@ pub fn parse_ci(rollup: &[Value]) -> &'static str {
         "FAILURE"
     } else if rollup
         .iter()
-        .any(|r| matches!(r["status"].as_str(), Some("IN_PROGRESS" | "QUEUED")))
+        // Every CheckStatusState but COMPLETED is a run with no conclusion
+        // yet; WAITING, REQUESTED and PENDING were missed (Graphify 0.9.96).
+        .any(|r| {
+            matches!(
+                r["status"].as_str(),
+                Some("REQUESTED" | "QUEUED" | "IN_PROGRESS" | "WAITING" | "PENDING")
+            )
+        })
         || any(&["PENDING", "EXPECTED"])
     {
         "PENDING"

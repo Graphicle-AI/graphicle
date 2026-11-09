@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/paths.py, graphify/security.py
 //! Port of graphify/security.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 //! Transport uses native Rust HTTP/TLS with a validated, pinned DNS address.
@@ -599,35 +599,52 @@ pub fn note_written_graph(path: &Path) {
 fn no_controls(text: &str) -> impl Iterator<Item = char> + '_ {
     text.chars().filter(|c| *c > '\x1f' && *c != '\x7f')
 }
-/// `_SECRET_SHAPE_RE` (Graphify 0.9.93, #4566): credential shapes redacted from
-/// free text copied into labels: PEM private-key headers, vendor-prefixed
-/// tokens, JWTs, `Bearer` tokens and `user:pass@` URL credentials. Shape-based
-/// only, so risk reduction rather than a guarantee. Python's `\b` is spelled
-/// with its own word class (`regex_compat::word_class`), next to an ASCII
-/// literal; `\s` is Python's whitespace (`fsutil::PY_WHITESPACE`).
+/// `_SECRET_SHAPE_RE` (Graphify 0.9.93, #4566; 0.9.97): credential shapes
+/// redacted from free text copied into labels: vendor-prefixed tokens, JWTs,
+/// `Bearer` tokens and URL userinfo. The PEM private-key block is
+/// [`PRIVATE_KEY_BLOCK`]. Shape-based only, so risk reduction rather than a
+/// guarantee. Boundaries are alphanumeric-only lookarounds rather than `\b`,
+/// so a token glued to an identifier by `_` still matches (0.9.97); Slack
+/// `xoxe-`/`xoxo-` tokens count; the `\b` of `Bearer` is spelled with
+/// Python's word class (`regex_compat::word_class`); `\s` is Python's
+/// whitespace (`fsutil::PY_WHITESPACE`).
 static SECRET_SHAPE: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
     let w = crate::regex_compat::word_class();
     let space = crate::fsutil::PY_WHITESPACE
         .trim_start_matches('[')
         .trim_end_matches(']');
-    let boundary = format!("(?:(?<={w})(?!{w})|(?<!{w})(?={w}))");
+    let alnum = "[A-Za-z0-9]";
     let pattern = [
-        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----".to_owned(),
-        format!("(?<!{w})(?:AKIA|ASIA)[0-9A-Z]{{16}}(?!{w})"),
-        format!("(?<!{w})gh[pousr]_[A-Za-z0-9]{{36,}}"),
-        format!("(?<!{w})github_pat_[A-Za-z0-9_]{{22,}}"),
-        format!("(?<!{w})xox[baprs]-[A-Za-z0-9-]{{10,}}"),
-        format!("(?<!{w})[sr]k_(?:live|test)_[A-Za-z0-9]{{10,}}"),
-        format!("(?<!{w})sk-(?:ant-|proj-)?[A-Za-z0-9_-]{{20,}}"),
-        format!("(?<!{w})AIza[0-9A-Za-z_-]{{35}}{boundary}"),
-        format!("(?<!{w})eyJ[A-Za-z0-9_-]{{10,}}\\.[A-Za-z0-9_-]{{10,}}\\.[A-Za-z0-9_-]{{10,}}"),
+        format!("(?<!{alnum})(?:AKIA|ASIA)[0-9A-Z]{{16}}(?!{alnum})"),
+        format!("(?<!{alnum})gh[pousr]_[A-Za-z0-9]{{36,}}"),
+        format!("(?<!{alnum})github_pat_[A-Za-z0-9_]{{22,}}"),
+        format!("(?<!{alnum})xox[abeoprs]-[A-Za-z0-9-]{{10,}}"),
+        format!("(?<!{alnum})[sr]k_(?:live|test)_[A-Za-z0-9]{{10,}}"),
+        // A digit is required, so hyphenated prose (`sk-learn-...`) stays.
+        format!("(?<!{alnum})sk-(?:ant-|proj-)?(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]{{20,}}"),
+        format!("(?<!{alnum})AIza[0-9A-Za-z_-]{{35}}"),
+        // The payload segment may be tiny (`e30` is `{}`).
+        format!("(?<!{alnum})eyJ[A-Za-z0-9_-]{{10,}}\\.[A-Za-z0-9_-]{{2,}}\\.[A-Za-z0-9_-]{{10,}}"),
         // `(?<=\bBearer )`: the seven characters before are `Bearer ` and the
         // one before those is no word character.
         format!("(?<=Bearer )(?<!{w}.{{7}})[A-Za-z0-9._~+/=-]{{16,}}"),
-        format!("(?<=://)[^{space}/:@]+:[^{space}/@]+(?=@)"),
+        // Userinfo up to the last `@` before the host: the user may be empty
+        // (`redis://:pw@host`) and the password may hold `@` or `/`.
+        format!("(?<=://)[^{space}/@]*:[^{space}?#]*(?=@[^{space}@/?#]+)"),
     ]
     .join("|");
     fancy_regex::Regex::new(&pattern).expect("verified credential pattern")
+});
+/// A PEM private-key block from its header through the END line, or to the
+/// end of the text when the block is cut off: the base64 body is the secret,
+/// not the header (Graphify 0.9.97). Upstream's single pattern holds it as an
+/// alternative; here it spans lines, so it is cut out before the
+/// line-by-line pass.
+static PRIVATE_KEY_BLOCK: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----(?:.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----|.*)",
+    )
+    .expect("verified private-key pattern")
 });
 pub const REDACTED_MARKER: &str = "[redacted]";
 /// `redact_secrets`: credential-shaped substrings of `text` replaced with
@@ -647,6 +664,21 @@ pub fn redact_secrets(text: &str) -> String {
     if text.is_empty() {
         return String::new();
     }
+    // A PEM private-key block spans lines: each is cut out first, and the
+    // text around it is searched line by line (Graphify 0.9.97), so the
+    // marker itself is never searched again.
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for block in PRIVATE_KEY_BLOCK.find_iter(text) {
+        out.push_str(&redact_lines(&text[last..block.start()]));
+        out.push_str(REDACTED_MARKER);
+        last = block.end();
+    }
+    out.push_str(&redact_lines(&text[last..]));
+    out
+}
+/// [`redact_secrets`] without the PEM blocks, one line at a time.
+fn redact_lines(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for line in text.split_inclusive('\n') {
         let (body, newline) = match line.strip_suffix('\n') {
@@ -773,6 +805,62 @@ mod tests {
                 .replace_all(&short, fancy_regex::NoExpand(REDACTED_MARKER))
                 .into_owned()
         );
+    }
+    /// Graphify 0.9.97 tests/test_security.py: URL userinfo edge cases, the
+    /// whole PEM block, tokens glued to identifiers, Slack refresh tokens,
+    /// short JWT payloads and `sk-` prose.
+    #[test]
+    fn redact_secrets_0_9_97_shapes() {
+        assert_eq!(
+            redact_secrets("redis://:s3cretpass@cache.internal"),
+            "redis://[redacted]@cache.internal"
+        );
+        assert_eq!(
+            redact_secrets("https://svc:p@ss@host/x"),
+            "https://[redacted]@host/x"
+        );
+        assert_eq!(
+            redact_secrets("https://svc:ab/cd@host"),
+            "https://[redacted]@host"
+        );
+        for benign in [
+            "https://host:8080/path?email=a@b.com",
+            "see https://example.com:443/a and mail ops@example.com",
+            "# NOTE: use the sk-learn-compatible-estimator-wrapper here",
+        ] {
+            assert_eq!(redact_secrets(benign), benign);
+        }
+        let body = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASC";
+        let full = format!(
+            "key:\n-----BEGIN RSA PRIVATE KEY-----\n{body}\n-----END RSA PRIVATE KEY-----\nafter"
+        );
+        assert_eq!(redact_secrets(&full), "key:\n[redacted]\nafter");
+        assert!(!redact_secrets(&format!("-----BEGIN PRIVATE KEY-----\n{body}")).contains(body));
+        for (secret, text) in [
+            (
+                "AKIAIOSFODNN7EXAMPLE".to_owned(),
+                "AKIAIOSFODNN7EXAMPLE_prod".to_owned(),
+            ),
+            (
+                format!("ghp_{}", "a".repeat(36)),
+                format!("token_ghp_{}", "a".repeat(36)),
+            ),
+            (
+                format!("AIza{}", "b".repeat(35)),
+                format!("AIza{}_backup", "b".repeat(35)),
+            ),
+        ] {
+            let out = redact_secrets(&text);
+            assert!(!out.contains(&secret) && out.contains(REDACTED_MARKER), "{text}");
+        }
+        for secret in [
+            format!("xoxe-1-{}", "c".repeat(40)),
+            format!("eyJhbGciOiJIUzI1NiJ9.e30.{}", "d".repeat(43)),
+        ] {
+            let out = redact_secrets(&format!("see {secret} here"));
+            assert!(!out.contains(&secret) && out.contains(REDACTED_MARKER), "{secret}");
+        }
+        assert!(redact_secrets(&format!("key sk-proj-{}", "a1".repeat(12))).contains(REDACTED_MARKER));
     }
     struct FixedDns(Vec<SocketAddr>);
     impl Resolver for FixedDns {

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 //! Native platform skill installation and project configuration.
 pub use crate::install_platforms::{
@@ -135,13 +135,10 @@ pub fn destination(name: &str, o: &Options) -> Result<PathBuf> {
     let name = canonical(name);
     let root = if o.project { &o.project_dir } else { &o.home };
     let rel = match name {
-        "gemini" => {
-            if !o.project && o.windows {
-                ".agents/skills/graphicle/SKILL.md"
-            } else {
-                ".gemini/skills/graphicle/SKILL.md"
-            }
-        }
+        // Gemini CLI reads ~/.gemini/skills on every OS; ~/.agents/skills is
+        // the `agents` platform's, and sharing it let each overwrite and
+        // uninstall the other's skill (Graphify 0.9.99, #2800).
+        "gemini" => ".gemini/skills/graphicle/SKILL.md",
         "opencode" => {
             if o.project {
                 ".opencode/skills/graphicle/SKILL.md"
@@ -174,6 +171,10 @@ pub fn destination(name: &str, o: &Options) -> Result<PathBuf> {
             }
         }
         "agents" => ".agents/skills/graphicle/SKILL.md",
+        // Pi reads project skills from ./.pi/skills; ~/.pi/agent/skills is
+        // the user-scope path only, and that shape inside a project left the
+        // skill where Pi never looks (Graphify 0.9.103, #5011).
+        "pi" if o.project => ".pi/skills/graphicle/SKILL.md",
         "antigravity" | "antigravity-windows" => {
             if o.project {
                 ".agents/skills/graphicle/SKILL.md"
@@ -218,9 +219,22 @@ pub fn command_executable(o: &Options) -> String {
         crate::hooks::shell_quote(&exe)
     }
 }
+/// With `strict`, both hooks carry `--strict`, so Read and a dedicated Grep
+/// share one block per session; Bash and Glob stay advisory (Graphify
+/// 0.9.102).
 pub fn claude_hooks(o: &Options) -> Value {
     let exe = command_executable(o);
-    json!([{"matcher":"Bash|Grep","hooks":[{"type":"command","command":format!("{exe} hook-guard search"),"timeout":10}]},{"matcher":"Read|Glob","hooks":[{"type":"command","command":format!("{exe} hook-guard read{}",if o.strict{" --strict"}else{""}),"timeout":10}]}])
+    let strict = if o.strict { " --strict" } else { "" };
+    json!([{"matcher":"Bash|Grep","hooks":[{"type":"command","command":format!("{exe} hook-guard search{strict}"),"timeout":10}]},{"matcher":"Read|Glob","hooks":[{"type":"command","command":format!("{exe} hook-guard read{}",if o.strict{" --strict"}else{""}),"timeout":10}]}])
+}
+/// `_claude_sessionstart_hooks` (Graphify 0.9.103): the Claude Code
+/// SessionStart hook, matcher "compact" only. Claude Code fires SessionStart
+/// with source "compact" after a compaction and keeps the session id; the
+/// model has lost the earlier nudges by then while their budget is spent, so
+/// `hook-guard compact` resets it and restates the graph in one line.
+pub fn claude_sessionstart_hooks(o: &Options) -> Value {
+    let exe = command_executable(o);
+    json!([{"matcher":"compact","hooks":[{"type":"command","command":format!("{exe} hook-guard compact"),"timeout":10}]}])
 }
 pub fn gemini_hook(o: &Options) -> Value {
     json!({"matcher":"read_file|list_directory","hooks":[{"type":"command","command":format!("{} hook-guard gemini",command_executable(o))}]})
@@ -533,6 +547,22 @@ fn auto_refresh_disabled() -> bool {
 /// in, and the config file older releases registered it in.
 pub const OPENCODE_PLUGIN_PATH: &str = ".opencode/plugins/graphicle.js";
 pub const OPENCODE_CONFIG_PATH: &str = ".opencode/opencode.json";
+/// The plugin and the config file inside an OpenCode config dir
+/// ([`opencode_dir`]).
+pub const OPENCODE_PLUGIN_FILE: &str = "plugins/graphicle.js";
+pub const OPENCODE_CONFIG_FILE: &str = "opencode.json";
+/// `_opencode_dir` (Graphify 0.9.96, #3398): OpenCode's config dir,
+/// `<project>/.opencode` for a project install and `~/.config/opencode`
+/// globally. OpenCode loads plugins from `<dir>/plugins/` in both; the global
+/// dir has no `.opencode/` segment, so a global install used to write the
+/// plugin into whatever directory the command ran from.
+pub fn opencode_dir(project: bool, project_dir: &Path, home: &Path) -> PathBuf {
+    if project {
+        project_dir.join(".opencode")
+    } else {
+        home.join(".config/opencode")
+    }
+}
 /// The first line of every OpenCode plugin the engine has written.
 pub const OPENCODE_PLUGIN_HEADER: &str = "// Graphicle OpenCode plugin";
 /// `_opencode_plugin_is_v1_only`: a plugin written before the OpenCode 2
@@ -542,10 +572,10 @@ pub const OPENCODE_PLUGIN_HEADER: &str = "// Graphicle OpenCode plugin";
 pub fn opencode_plugin_is_v1_only(body: &str) -> bool {
     body.starts_with(OPENCODE_PLUGIN_HEADER) && !body.contains("export default")
 }
-/// `_opencode_config_names_plugin`: opencode.json still mentions the bare
-/// plugin path.
-pub fn opencode_config_names_plugin(project_dir: &Path) -> bool {
-    fs::read_to_string(project_dir.join(OPENCODE_CONFIG_PATH))
+/// `_opencode_config_names_plugin`: the opencode.json of an OpenCode config
+/// dir still mentions the bare plugin path.
+pub fn opencode_config_names_plugin(opencode_dir: &Path) -> bool {
+    fs::read_to_string(opencode_dir.join(OPENCODE_CONFIG_FILE))
         .is_ok_and(|raw| raw.contains(&format!("\"{OPENCODE_PLUGIN_PATH}\"")))
 }
 /// `_drop_opencode_config_entry`: remove the plugin entry older releases
@@ -555,15 +585,16 @@ pub fn opencode_config_names_plugin(project_dir: &Path) -> bool {
 /// install it (#3732). Returns whether the config changed, and, for a file
 /// that is not plain JSON (OpenCode accepts comments, a rewrite would drop
 /// them) but still names the plugin, the line asking for the edit by hand.
-pub fn drop_opencode_config_entry(project_dir: &Path) -> Result<(bool, Option<String>)> {
-    let config_file = project_dir.join(OPENCODE_CONFIG_PATH);
+pub fn drop_opencode_config_entry(opencode_dir: &Path) -> Result<(bool, Option<String>)> {
+    let config_file = opencode_dir.join(OPENCODE_CONFIG_FILE);
     let Ok(raw) = fs::read_to_string(&config_file) else {
         return Ok((false, None));
     };
     let Ok(mut config) = serde_json::from_str::<Value>(&raw) else {
         let named = raw.contains(&format!("\"{OPENCODE_PLUGIN_PATH}\""));
         return Ok((false, named.then(|| format!(
-            "  {OPENCODE_CONFIG_PATH}  ->  not plain JSON, left as is; remove \"{OPENCODE_PLUGIN_PATH}\" from its plugin list by hand"
+            "  {}  ->  not plain JSON, left as is; remove \"{OPENCODE_PLUGIN_PATH}\" from its plugin list by hand",
+            config_file.display()
         ))));
     };
     let Some(object) = config.as_object_mut() else {
@@ -654,8 +685,9 @@ pub fn opencode_loads_current_plugin() -> bool {
 }
 /// Graphify 0.9.84 `_refresh_v1_opencode_plugins` (#3554, #3732): before a
 /// command runs, rewrite OpenCode plugins an older release left behind, in
-/// the working directory (where the install writes it) and the home folder
-/// (where it lands when the install ran from there). Returns the stderr lines.
+/// the `.opencode` dirs of the working directory and the home folder (where
+/// installs before Graphify 0.9.96 wrote) and `~/.config/opencode` (the
+/// global install's dir since, #3398). Returns the stderr lines.
 /// `GRAPHICLE_NO_AUTO_REFRESH=1` (or `true`/`yes`) turns it off.
 pub fn refresh_v1_opencode_plugins(o: &Options) -> Vec<String> {
     if auto_refresh_disabled() {
@@ -665,12 +697,16 @@ pub fn refresh_v1_opencode_plugins(o: &Options) -> Vec<String> {
         return vec![];
     };
     refresh_opencode_plugins_in(
-        &[cwd, o.home.clone()],
+        &[
+            opencode_dir(true, &cwd, &o.home),
+            opencode_dir(true, &o.home, &o.home),
+            opencode_dir(false, &cwd, &o.home),
+        ],
         &o.home,
         opencode_loads_current_plugin,
     )
 }
-/// [`refresh_v1_opencode_plugins`] over `directories` (each resolved, checked
+/// [`refresh_v1_opencode_plugins`] over OpenCode config `directories` (each resolved, checked
 /// once), with `loads_current` deciding whether the installed OpenCode can
 /// load the current plugin; it is asked once, and only when an old plugin is
 /// found. Only a plugin the engine wrote is touched. An old plugin is replaced
@@ -696,7 +732,7 @@ pub fn refresh_opencode_plugins_in(
     let mut loadable = None;
     let mut messages = vec![];
     for directory in unique {
-        let plugin_file = directory.join(OPENCODE_PLUGIN_PATH);
+        let plugin_file = directory.join(OPENCODE_PLUGIN_FILE);
         // Some(true) for an old plugin, Some(false) for a stale entry only.
         let pending = || -> Option<bool> {
             let body = fs::read_to_string(&plugin_file).ok()?;
@@ -748,7 +784,7 @@ pub fn refresh_opencode_plugins_in(
             }
             Ok((true, _)) => messages.push(format!(
                 "graphicle: removed the stale graphicle entry from {}; set GRAPHICLE_NO_AUTO_REFRESH=1 to disable",
-                directory.join(OPENCODE_CONFIG_PATH).display()
+                directory.join(OPENCODE_CONFIG_FILE).display()
             )),
             Ok(_) => {}
         }
@@ -874,6 +910,7 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             Value::Null
         }
         "claude_hooks" => claude_hooks(&o),
+        "claude_sessionstart_hooks" => claude_sessionstart_hooks(&o),
         "gemini_hook" => gemini_hook(&o),
         "skill_registration" => json!(skill_registration(
             r["path"]
@@ -899,7 +936,11 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         }
         "plugin" => json!(crate::install_platforms::plugin(
             s("platform"),
-            &o.project_dir,
+            &if s("platform") == "opencode" {
+                opencode_dir(true, &o.project_dir, &o.home)
+            } else {
+                o.project_dir.clone()
+            },
             r["remove"].as_bool().unwrap_or(false),
         )?),
         "unsafe_purge_reason" => json!(crate::install_platforms::unsafe_purge_reason(

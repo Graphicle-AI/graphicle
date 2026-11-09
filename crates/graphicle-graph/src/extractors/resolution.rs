@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py, graphify/extractors/resolution.py
 //! Corpus symbol resolution and collision handling from the pinned application.
 
@@ -288,6 +288,72 @@ impl<'n> Nodes<'n> {
     }
     fn iter(self) -> impl Iterator<Item = &'n Value> {
         self.base.iter().chain(self.added)
+    }
+}
+/// Graphify 0.9.103 (#4994): `make_id` strips the underscore edges of each
+/// part, so `_main` and `main` mint one plain id. The engine salts the pair
+/// apart (#3302) and leaves the plain id on the unique public spelling, while
+/// a top-level `def` collected by name here carries only the plain id: every
+/// call inside `_main` was credited to `main`. The declarations sharing the
+/// plain id sit on distinct lines, so the one whose line encloses the call is
+/// the caller. Only an underscore-collision salt (`_` and six lowercase hex
+/// digits) is a sibling spelling; a member id (`classid_methodname`) is not.
+struct SaltSiblings<'n> {
+    /// Plain id -> the node with that id and its salted siblings, in node order.
+    by_plain: FxHashMap<&'n str, Vec<&'n Value>>,
+}
+impl<'n> SaltSiblings<'n> {
+    fn new(all: Nodes<'n>) -> Self {
+        let salted_base = |id: &'n str| {
+            let (base, salt) = id.rsplit_once('_')?;
+            (salt.len() == 6 && salt.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')))
+                .then_some(base)
+        };
+        let bases: FxHashSet<&str> = all.iter().filter_map(|n| salted_base(s(n, "id"))).collect();
+        let mut by_plain: FxHashMap<&str, Vec<&Value>> = FxHashMap::default();
+        if !bases.is_empty() {
+            for n in all.iter() {
+                let id = s(n, "id");
+                if bases.contains(id) {
+                    by_plain.entry(id).or_default().push(n);
+                } else if let Some(base) = salted_base(id) {
+                    by_plain.entry(base).or_default().push(n);
+                }
+            }
+        }
+        Self { by_plain }
+    }
+    /// The declaration a call at `line` of `file` made by `source` belongs
+    /// to, when `source` has salted siblings and the line settles it.
+    fn caller(&self, source: &str, file: &Path, line: i64, root: &Path) -> Option<&'n str> {
+        let nodes = self.by_plain.get(source)?;
+        let file = resolved(file);
+        let start = |n: &Value| -> i64 {
+            s(n, "source_location")
+                .strip_prefix('L')
+                .unwrap_or(s(n, "source_location"))
+                .parse()
+                .unwrap_or(0)
+        };
+        let candidates: Vec<&Value> = nodes
+            .iter()
+            .copied()
+            .filter(|n| {
+                s(n, "id") == source
+                    || js_source_path(s(n, "source_file"), root).as_deref() == Some(file.as_path())
+            })
+            .collect();
+        if candidates.len() < 2 {
+            return None;
+        }
+        // The first of the latest declarations at or before the line.
+        let mut best: Option<&Value> = None;
+        for n in candidates.into_iter().filter(|n| start(n) <= line) {
+            if best.is_none_or(|b| start(n) > start(b)) {
+                best = Some(n);
+            }
+        }
+        best.map(|n| s(n, "id"))
     }
 }
 fn sym_id<'v>(sym: Sym, nodes: Nodes<'v>, context: &'v [Value]) -> &'v str {
@@ -629,7 +695,88 @@ pub fn apply_symbol_resolution_facts(
     context_nodes: &[Value],
 ) {
     let facts = PassFacts::new(Vec::new(), facts.clone());
-    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes);
+    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes, &[]);
+}
+/// Graphify 0.9.98 (#4854): a reference to an imported name can be minted
+/// before the imported declaration is known, as a sourceless stub. In a
+/// JS/TS importer, a `references` edge to such a stub is bound to the
+/// declaration in the imported file, keyed by (file, name), so two modules
+/// may declare the same symbol.
+fn bind_imported_references(nodes: &[Value], edges: &mut [Value], root: &Path, facts: &PassFacts) {
+    let mut paths: FxHashMap<String, Option<PathBuf>> = FxHashMap::default();
+    let mut source = |sf: &str| -> Option<PathBuf> {
+        paths
+            .entry(sf.to_string())
+            .or_insert_with(|| js_source_path(sf, root))
+            .clone()
+    };
+    let mut declared: FxHashMap<(PathBuf, String), &str> = FxHashMap::default();
+    for n in nodes {
+        let Some(path) = source(s(n, "source_file")) else {
+            continue;
+        };
+        let label = s(n, "label").trim();
+        if label.is_empty() || label.starts_with('.') {
+            continue;
+        }
+        let bare = label.strip_suffix("()").unwrap_or(label);
+        if bare.contains('.') {
+            continue;
+        }
+        declared
+            .entry((path, crate::ids::normalize_id(bare)))
+            .or_insert(s(n, "id"));
+    }
+    let by_id = nodes
+        .iter()
+        .map(|n| (s(n, "id"), n))
+        .collect::<FxHashMap<_, _>>();
+    let mut by_source: FxHashMap<PathBuf, Vec<usize>> = FxHashMap::default();
+    for (i, e) in edges.iter().enumerate() {
+        if s(e, "relation") == "references"
+            && let Some(path) = source(s(e, "source_file"))
+        {
+            by_source.entry(path).or_default().push(i);
+        }
+    }
+    for fact in facts.imports() {
+        let suffix = crate::rcfile::effective_suffix(fact.file_path).to_lowercase();
+        if ![".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"].contains(&suffix.as_str()) {
+            continue;
+        }
+        let source_path = resolved(fact.file_path);
+        let target_path = resolved(fact.target_path);
+        let names = [
+            crate::ids::normalize_id(fact.imported_name),
+            crate::ids::normalize_id(fact.local_name),
+        ];
+        let Some(&target) = names
+            .iter()
+            .find_map(|name| declared.get(&(target_path.clone(), name.clone())))
+        else {
+            continue;
+        };
+        for &i in by_source.get(&source_path).into_iter().flatten() {
+            let e = &mut edges[i];
+            if s(e, "target") == target {
+                continue;
+            }
+            let Some(node) = by_id.get(s(e, "target")) else {
+                continue;
+            };
+            if node.get("source_file").is_some_and(crate::build::truthy) {
+                continue;
+            }
+            let stub = crate::ids::normalize_id(
+                s(node, "label")
+                    .trim_matches(['(', ')'])
+                    .trim_start_matches('.'),
+            );
+            if names.contains(&stub) {
+                e["target"] = json!(target);
+            }
+        }
+    }
 }
 /// [`apply_symbol_resolution_facts`] consuming the facts, so each kind is
 /// freed as soon as its last pass ends.
@@ -640,7 +787,17 @@ fn apply_pass_facts(
     root: &Path,
     mut facts: PassFacts,
     context_nodes: &[Value],
+    js_member_calls: &[JsMemberCall],
 ) {
+    if facts.imports().next().is_some() {
+        bind_imported_references(nodes, edges, root, &facts);
+    }
+    // Read before the passes below consume the facts (Graphify 0.9.102, #4963).
+    let default_imports = if js_member_calls.is_empty() {
+        FxHashMap::default()
+    } else {
+        js_default_imports(&facts)
+    };
     let span = crate::profile::span("assemble.symbol_resolution.index");
     let mut rs = Resolver::default();
     let mut new = NewEdges::default();
@@ -935,6 +1092,7 @@ fn apply_pass_facts(
         added: &added_nodes,
     };
     let owned = all.iter().map(|n| s(n, "id")).collect::<FxHashSet<_>>();
+    let salt_siblings = SaltSiblings::new(all);
     drop(span);
     let span = crate::profile::span("assemble.symbol_resolution.retarget");
     let mut retargeted = false;
@@ -1166,7 +1324,9 @@ fn apply_pass_facts(
             });
         let Some(target) = target else { return };
         let target = sym_id(*target, all, context_nodes);
-        let mut source = u.source_id;
+        let mut source = salt_siblings
+            .caller(u.source_id, u.file_path, u.line, root)
+            .unwrap_or(u.source_id);
         if matches!(u.relation, "inherits" | "implements" | "references") && !owned.contains(source)
         {
             return;
@@ -1198,6 +1358,33 @@ fn apply_pass_facts(
     // Consumed one by one, so each use is freed once it is applied.
     for u in facts.take_rest_uses() {
         apply_use(UseRef::from(&u));
+    }
+    if !default_imports.is_empty() {
+        for (caller, target, line, path, target_file) in js_default_object_member_calls(
+            paths,
+            nodes,
+            root,
+            context_nodes,
+            js_member_calls,
+            &default_imports,
+        ) {
+            new.add(
+                edges,
+                &mut rs,
+                root,
+                &caller,
+                &target,
+                "calls",
+                ImportEvidence {
+                    context: "call",
+                    line,
+                    path: &path,
+                    target_file: Some(&target_file),
+                    alias: None,
+                    type_only: false,
+                },
+            );
+        }
     }
     drop(facts);
     drop(owned);
@@ -1257,6 +1444,7 @@ pub fn augment_symbol_resolution_edges(
     root: &Path,
     ambiguous: &super::resolution_facts::AmbiguousModules,
     context_nodes: &[Value],
+    js_member_calls: &[JsMemberCall],
 ) {
     // The JS/TS facts stay in the compact per-file form the files' passes
     // derived them in; only Python's are collected whole.
@@ -1268,7 +1456,141 @@ pub fn augment_symbol_resolution_edges(
     super::resolution_facts::collect_python(paths, root, &mut python, ambiguous);
     drop(span);
     let facts = PassFacts::new(js, python);
-    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes);
+    apply_pass_facts(paths, nodes, edges, root, facts, context_nodes, js_member_calls);
+}
+/// A JS/TS member call the extractor left unresolved, as the pass through a
+/// default-exported object reads it (Graphify 0.9.102, #4963).
+pub struct JsMemberCall {
+    pub caller: String,
+    pub receiver: String,
+    pub callee: String,
+    pub source_file: String,
+    pub line: i64,
+}
+impl JsMemberCall {
+    /// The raw calls that pass may bind: member calls in a JS/TS file whose
+    /// receiver no lexical scope rebinds, that construct nothing and are no
+    /// `this.field` call.
+    pub fn collect<'a, R: crate::resolver_registry::Rec>(
+        raw: impl IntoIterator<Item = &'a R>,
+    ) -> Vec<Self> {
+        let flag = |c: &R, key: &str| c.rec_get(key).is_some_and(crate::build::truthy);
+        raw.into_iter()
+            .filter(|c| {
+                flag(c, "is_member_call")
+                    && !flag(c, "_js_receiver_shadowed")
+                    && !flag(c, "_js_construct")
+                    && !flag(c, "ts_this_field")
+            })
+            .filter_map(|c| {
+                let text = move |key: &str| c.rec_get(key).and_then(Value::as_str).unwrap_or("");
+                let source_file = text("source_file");
+                if !JS_CACHE_BYPASS_SUFFIXES
+                    .contains(&crate::rcfile::effective_suffix(source_file).as_str())
+                    || text("receiver").is_empty()
+                {
+                    return None;
+                }
+                let location = text("source_location");
+                let line = location.strip_prefix('L').unwrap_or(location).parse().ok()?;
+                Some(Self {
+                    caller: text("caller_nid").to_owned(),
+                    receiver: text("receiver").to_owned(),
+                    callee: text("callee").to_owned(),
+                    source_file: source_file.to_owned(),
+                    line,
+                })
+            })
+            .collect()
+    }
+}
+/// `(importing file, local name)` -> imported file of every JS/TS default
+/// import (Graphify 0.9.102, #4963).
+fn js_default_imports(facts: &PassFacts) -> FxHashMap<(PathBuf, String), PathBuf> {
+    facts
+        .imports()
+        .filter(|i| {
+            i.imported_name == "default"
+                && JS_CACHE_BYPASS_SUFFIXES
+                    .contains(&crate::rcfile::effective_suffix(i.file_path).as_str())
+        })
+        .map(|i| {
+            (
+                (resolved(i.file_path), i.local_name.to_string()),
+                resolved(i.target_path),
+            )
+        })
+        .collect()
+}
+/// Graphify 0.9.102 (#4963): a member call through a default import
+/// (`import api from './api'; api.load()`) binds to the method of the object
+/// literal the imported file default-exports, when exactly one callable node
+/// of that file has the method's label and line. Unchanged files of an
+/// incremental rebuild are found among the context nodes. Returns
+/// `(caller, target, line, source file, target file)` per edge.
+fn js_default_object_member_calls(
+    paths: &[PathBuf],
+    nodes: &[Value],
+    root: &Path,
+    context_nodes: &[Value],
+    calls: &[JsMemberCall],
+    default_imports: &FxHashMap<(PathBuf, String), PathBuf>,
+) -> Vec<(String, String, i64, PathBuf, PathBuf)> {
+    let fresh: FxHashSet<PathBuf> = paths.iter().map(|p| resolved(p)).collect();
+    let mut member_nodes: FxHashMap<(PathBuf, String, String), BTreeSet<String>> =
+        FxHashMap::default();
+    let context = context_nodes.iter().filter(|n| {
+        js_source_path(s(n, "source_file"), root).is_none_or(|p| !fresh.contains(&p))
+    });
+    for node in nodes.iter().chain(context) {
+        if !node.get("_callable").is_some_and(crate::build::truthy) {
+            continue;
+        }
+        let Some(source) = js_source_path(s(node, "source_file"), root) else {
+            continue;
+        };
+        let key = (
+            source,
+            crate::python_compat::string(node.get("label").unwrap_or(&json!(""))),
+            crate::python_compat::string(node.get("source_location").unwrap_or(&json!(""))),
+        );
+        member_nodes
+            .entry(key)
+            .or_default()
+            .insert(crate::python_compat::string(&node["id"]));
+    }
+    let mut members_of: FxHashMap<PathBuf, FxHashMap<String, (String, String)>> =
+        FxHashMap::default();
+    let mut out = Vec::new();
+    for call in calls {
+        let Some(source) = js_source_path(&call.source_file, root) else {
+            continue;
+        };
+        let Some(target) = default_imports.get(&(source, call.receiver.clone())) else {
+            continue;
+        };
+        let members = members_of
+            .entry(target.clone())
+            .or_insert_with(|| super::resolution_facts::js_default_object_members(target));
+        let Some((label, location)) = members.get(&call.callee) else {
+            continue;
+        };
+        let Some(targets) = member_nodes.get(&(target.clone(), label.clone(), location.clone()))
+        else {
+            continue;
+        };
+        if targets.len() != 1 {
+            continue;
+        }
+        out.push((
+            call.caller.clone(),
+            targets.iter().next().unwrap().clone(),
+            call.line,
+            PathBuf::from(&call.source_file),
+            target.clone(),
+        ));
+    }
+    out
 }
 fn ambiguous_modules(r: &Value) -> super::resolution_facts::AmbiguousModules {
     r["ambiguous_python_modules"]
@@ -1402,6 +1724,7 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             json!(facts)
         }
         "augment" => {
+            let raw_calls = r["raw_calls"].as_array().map(Vec::as_slice).unwrap_or_default();
             augment_symbol_resolution_edges(
                 &paths,
                 &mut nodes,
@@ -1409,6 +1732,7 @@ pub fn dispatch(r: &Value) -> Result<Value> {
                 root,
                 &ambiguous,
                 context_nodes,
+                &JsMemberCall::collect(raw_calls),
             );
             json!({"nodes":nodes,"edges":edges})
         }

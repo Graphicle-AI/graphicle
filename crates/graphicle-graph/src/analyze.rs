@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/analyze.py
 //! Port of graphify/analyze.py: ranked entities, structural questions, changes,
 //! and file-level import cycles. Source attribution remains on original nodes.
@@ -205,9 +205,12 @@ pub fn is_file_node(graph: &Graph, node: usize) -> Result<bool> {
     if truthy(&source) && build_labels::is_file_node_label(&label, &source) {
         return Ok(true);
     }
-    let label = as_text(&label)?;
-    Ok((label.starts_with('.') && label.ends_with("()"))
-        || (label.ends_with("()") && degree(graph, node) <= 1))
+    let text = as_text(&label)?;
+    // Method stub: `.name()`; a C# method carries its owner for display
+    // (`Owner.name()`, Graphify 0.9.98, #4883).
+    Ok((text.starts_with('.') && text.ends_with("()"))
+        || crate::extractors::csharp::bare_csharp_method_label(&label, &source).is_some()
+        || (text.ends_with("()") && degree(graph, node) <= 1))
 }
 pub fn is_concept_node(graph: &Graph, node: usize) -> Result<bool> {
     let source = source(graph, node);
@@ -465,11 +468,17 @@ pub fn cross_community_surprises(
             return Err("ValueError: too many values to unpack (expected 2)".into());
         }
         let mut result = Vec::new();
-        for (u, v, score) in scores {
-            let edge = graph.edges_between(&graph.nodes[u].id, &graph.nodes[v].id)[0];
-            let mut row = edge_result(graph, u, v, &edge.attributes);
-            row["note"] = json!(format!("Bridges graph structure (betweenness={score:.3})"));
-            result.push(row);
+        // Every parallel relation of a bridging pair is reported, up to
+        // `top_n` rows (Graphify 0.9.101, 1954192a).
+        'pairs: for (u, v, score) in scores {
+            for edge in graph.edges_between(&graph.nodes[u].id, &graph.nodes[v].id) {
+                let mut row = edge_result(graph, u, v, &edge.attributes);
+                row["note"] = json!(format!("Bridges graph structure (betweenness={score:.3})"));
+                result.push(row);
+                if result.len() as i64 >= top_n {
+                    break 'pairs;
+                }
+            }
         }
         return Ok(result);
     }
@@ -634,7 +643,20 @@ pub fn suggest_questions(
         }
     }
     if !isolated.is_empty() {
-        questions.push(json!({"type":"isolated_nodes","question":format!("What connects {} to the rest of the system?",quoted_names(isolated.iter().take(3).map(|i|label(graph,*i)))),"why":format!("{} weakly-connected nodes found - possible documentation gaps or missing edges.",isolated.len())}));
+        // Documentation gaps are a possible reason only when the graph has a
+        // semantic layer (Graphify 0.9.100).
+        let has_semantic_layer = graph.nodes.iter().any(|n| {
+            matches!(
+                n.attributes.get("file_type").and_then(Value::as_str),
+                Some("document" | "paper" | "image")
+            )
+        });
+        let reason = if has_semantic_layer {
+            "possible documentation gaps or missing edges"
+        } else {
+            "possible missing edges"
+        };
+        questions.push(json!({"type":"isolated_nodes","question":format!("What connects {} to the rest of the system?",quoted_names(isolated.iter().take(3).map(|i|label(graph,*i)))),"why":format!("{} weakly-connected nodes found - {reason}.",isolated.len())}));
     }
     for (cid, nodes) in communities {
         let score = cluster::cohesion_score(graph, nodes);
@@ -762,9 +784,16 @@ pub fn find_import_cycles(graph: &Graph, max_cycle_length: i64, top_n: i64) -> R
         if !matches!(
             a.get("relation").and_then(Value::as_str),
             Some("imports_from" | "re_exports")
-        ) || a.get("deferred").is_some_and(truthy)
-            || a.get("type_only").is_some_and(truthy)
-        {
+        ) {
+            continue;
+        }
+        let forward =
+            !a.get("deferred").is_some_and(truthy) && !a.get("type_only").is_some_and(truthy);
+        // An undirected build keeps one edge per file pair, so the other
+        // file's runtime import back is only a stamp on this edge (Graphify
+        // 0.9.98, #4839).
+        let reverse = a.get("reverse_import").is_some_and(truthy);
+        if !forward && !reverse {
             continue;
         }
         let Some(src) = a
@@ -794,7 +823,12 @@ pub fn find_import_cycles(graph: &Graph, max_cycle_length: i64, top_n: i64) -> R
             uf
         };
         if !target.is_empty() {
-            files.add_edge(json!(src), json!(target), None, Map::new())?;
+            if forward {
+                files.add_edge(json!(src), json!(target), None, Map::new())?;
+            }
+            if reverse {
+                files.add_edge(json!(target), json!(src), None, Map::new())?;
+            }
         }
     }
     if files.edge_count() == 0 {

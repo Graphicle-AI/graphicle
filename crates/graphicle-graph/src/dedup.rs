@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/dedup.py
 //! Source-aware entity deduplication, preserving incremental and provenance rules.
 
@@ -133,11 +133,55 @@ pub fn rank_path(source_file: &str, root: Option<&Path>) -> String {
     }
     normalized
 }
-pub type CollisionRank = (bool, bool, u8, usize, String, Vec<String>);
+pub type CollisionRank = (bool, bool, bool, u8, usize, String, Vec<String>);
 /// `(id, root-relative file)` pairs read as a mention of a document ([`mentions`]).
 pub type Mentions = HashSet<(String, String)>;
 pub fn collision_rank(node: &Value, root: Option<&Path>) -> CollisionRank {
     collision_rank_with(node, root, &Mentions::new())
+}
+pub fn collision_rank_with(
+    node: &Value,
+    root: Option<&Path>,
+    mentions: &Mentions,
+) -> CollisionRank {
+    collision_rank_outranked(node, root, mentions, &Mentions::new())
+}
+/// `_outranked_by_ast` (Graphify 0.9.98, #4859): `(id, root-relative file)`
+/// of non-AST definers that an AST node from another file also defines,
+/// while their own file has no AST definer. The AST node is extracted fact,
+/// the other an inference about it, so the AST node keeps the id. A file with
+/// its own AST definer is never listed, and an AST node with the same full
+/// stem (an `x.py`/`x.html` twin) never counts against it.
+pub fn outranked_by_ast(nodes: &[Value], root: Option<&Path>, mentions: &Mentions) -> Mentions {
+    let mut ast_defs: HashMap<&str, Vec<(String, String)>> = HashMap::new();
+    let mut others: Vec<(&str, String, String)> = Vec::new();
+    for node in nodes {
+        let nid = id(node);
+        let source_file = source(node);
+        let path = rank_path(source_file, root);
+        if nid.is_empty() || !defines_id(node) || mentions.contains(&(nid.to_owned(), path.clone())) {
+            continue;
+        }
+        let stem = full_stem(source_file);
+        if field(node, "_origin").and_then(Value::as_str) == Some("ast") {
+            ast_defs.entry(nid).or_default().push((path, stem));
+        } else {
+            others.push((nid, path, stem));
+        }
+    }
+    let mut outranked = Mentions::new();
+    for (nid, path, stem) in others {
+        let Some(defs) = ast_defs.get(nid) else {
+            continue;
+        };
+        if !defs.is_empty()
+            && !defs.iter().any(|(p, _)| *p == path)
+            && defs.iter().any(|(_, s)| *s != stem)
+        {
+            outranked.insert((nid.to_owned(), path));
+        }
+    }
+    outranked
 }
 /// `_collision_rank(node, root, mentions)` (0.9.88, #4281): a node read as a
 /// mention of a document ranks as a reference even though its id is a path
@@ -145,16 +189,24 @@ pub fn collision_rank(node: &Value, root: Option<&Path>) -> CollisionRank {
 /// Right after that key a node with a `source_file` beats one without
 /// (Graphify 0.9.92, #4492): when neither defines the id, a sourceless node
 /// used to win on its empty path sorting first.
-pub fn collision_rank_with(
+/// `_collision_rank(node, root, mentions, outranked)`: a definer listed in
+/// `outranked` ranks right behind the other definers (Graphify 0.9.98,
+/// #4859).
+pub fn collision_rank_outranked(
     node: &Value,
     root: Option<&Path>,
     mentions: &Mentions,
+    outranked: &Mentions,
 ) -> CollisionRank {
     let label = text(node, "label");
     let path = rank_path(source(node), root);
-    let mentioned = !mentions.is_empty() && mentions.contains(&(id(node).to_owned(), path.clone()));
+    let key = (id(node).to_owned(), path.clone());
+    let mentioned = !mentions.is_empty() && mentions.contains(&key);
     (
         !defines_id(node) || mentioned,
+        !outranked.is_empty()
+            && outranked.contains(&key)
+            && field(node, "_origin").and_then(Value::as_str) != Some("ast"),
         !node
             .get("source_file")
             .is_some_and(crate::build_normalize::truthy),
@@ -223,10 +275,23 @@ fn rename_references<R: Record, E: EdgeItem<Record = R>>(
     renames: &HashMap<(String, String), String>,
     root: Option<&Path>,
 ) {
+    rename_references_skipping(items, renames, root, false)
+}
+/// [`rename_references`]; with `skip_ast`, an item whose `_origin` is `ast`
+/// keeps its endpoints.
+fn rename_references_skipping<R: Record, E: EdgeItem<Record = R>>(
+    items: &mut [E],
+    renames: &HashMap<(String, String), String>,
+    root: Option<&Path>,
+    skip_ast: bool,
+) {
     for item in items.iter_mut() {
         let Some(item) = item.record_mut() else {
             continue;
         };
+        if skip_ast && item.get("_origin").and_then(Value::as_str) == Some("ast") {
+            continue;
+        }
         let k = collision_key(item.get("source_file"), root);
         for end in ["source", "target"] {
             if let Some(new) = item
@@ -256,6 +321,136 @@ fn rename_references<R: Record, E: EdgeItem<Record = R>>(
         if let Some(members) = renamed {
             item.put("nodes", Value::Array(members));
         }
+    }
+}
+/// `_is_reference_stub`: semantic extraction marked the node as one it
+/// emitted only for a cross-document reference (Graphify 0.9.96, #4738).
+pub fn is_reference_stub(node: &Value) -> bool {
+    field(node, "metadata")
+        .and_then(Value::as_object)
+        .and_then(|m| m.get("graphicle_reference_stub").or_else(|| m.get("graphify_reference_stub")))
+        == Some(&Value::Bool(true))
+}
+/// `_namespace_reference_stub_collisions` (Graphify 0.9.96, #4738; 0.9.101):
+/// a marked reference stub whose id collides with another file's node is
+/// kept as `<citing-file stem>__ref__<id>`, and the citing file's edges
+/// follow it. With `preserve_saved_semantics` (AST-only updates, a scan root
+/// required), saved semantic evidence from a file that has no AST node under
+/// that id is kept the same way even without the marker, a taken name gets a
+/// `__2`, `__3`... suffix, and AST edges keep their endpoints.
+/// `_namespace_reference_stub_collisions(..., preserve_saved_semantics=True)`
+/// as a watch reconcile calls it on the merged fresh and preserved records
+/// (Graphify 0.9.101).
+pub fn namespace_saved_semantic_collisions(
+    nodes: &mut [Value],
+    edges: &mut [Value],
+    hyperedges: Option<&mut [Value]>,
+    root: &Path,
+) {
+    namespace_reference_stub_collisions_in(nodes, edges, hyperedges, Some(root), true);
+}
+fn namespace_reference_stub_collisions_in<R: Record, E: EdgeItem<Record = R>>(
+    nodes: &mut [Value],
+    edges: &mut [E],
+    hyperedges: Option<&mut [Value]>,
+    root: Option<&Path>,
+    preserve_saved_semantics: bool,
+) {
+    let key = |node: &Value| collision_key(field(node, "source_file"), root);
+    let mut by_id: std::collections::BTreeMap<String, Vec<usize>> = Default::default();
+    let mut order: Vec<String> = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if let Some(nid) = field(node, "id").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            let entry = by_id.entry(nid.to_owned()).or_default();
+            if entry.is_empty() {
+                order.push(nid.to_owned());
+            }
+            entry.push(i);
+        }
+    }
+    let mut taken: HashSet<String> = nodes
+        .iter()
+        .filter(|n| field(n, "id").is_some_and(crate::build_normalize::truthy))
+        .map(id_text)
+        .collect();
+    let origin = |node: &Value| field(node, "_origin").and_then(Value::as_str).map(str::to_owned);
+    let mut renames: HashMap<(String, String), String> = HashMap::new();
+    for nid in &order {
+        let members = &by_id[nid];
+        if members.iter().map(|&i| key(&nodes[i])).collect::<HashSet<_>>().len() < 2 {
+            continue;
+        }
+        let ast_sources: HashSet<String> = members
+            .iter()
+            .filter(|&&i| origin(&nodes[i]).as_deref() == Some("ast"))
+            .map(|&i| key(&nodes[i]))
+            .collect();
+        let stubs: Vec<usize> = members
+            .iter()
+            .copied()
+            .filter(|&i| {
+                let node = &nodes[i];
+                is_reference_stub(node)
+                    || (preserve_saved_semantics
+                        && root.is_some()
+                        && origin(node).as_deref() == Some("semantic")
+                        && !key(node).is_empty()
+                        && !ast_sources.is_empty()
+                        && !ast_sources.contains(&key(node)))
+            })
+            .collect();
+        if stubs.is_empty() {
+            continue;
+        }
+        let source_keys: BTreeSet<String> = stubs.iter().map(|&i| key(&nodes[i])).collect();
+        if source_keys.contains("") {
+            continue;
+        }
+        let mut candidates: std::collections::BTreeMap<String, String> = source_keys
+            .iter()
+            .filter(|k| !full_stem(k).is_empty())
+            .map(|k| (k.clone(), format!("{}__ref__{nid}", full_stem(k))))
+            .collect();
+        if candidates.len() != source_keys.len() {
+            continue;
+        }
+        if candidates.values().collect::<HashSet<_>>().len() != candidates.len() {
+            continue;
+        }
+        if candidates.values().any(|c| taken.contains(c)) {
+            if !preserve_saved_semantics {
+                continue;
+            }
+            let mut reserved: HashSet<String> = taken.clone();
+            reserved.extend(candidates.values().cloned());
+            for (_, value) in candidates.iter_mut() {
+                let base = value.clone();
+                let mut candidate = base.clone();
+                let mut suffix = 2;
+                while taken.contains(&candidate) || (candidate != base && reserved.contains(&candidate)) {
+                    candidate = format!("{base}__{suffix}");
+                    suffix += 1;
+                }
+                reserved.insert(candidate.clone());
+                *value = candidate;
+            }
+        }
+        for (source_key, candidate) in candidates {
+            taken.insert(candidate.clone());
+            renames.insert((nid.clone(), source_key), candidate);
+        }
+    }
+    if renames.is_empty() {
+        return;
+    }
+    for node in nodes.iter_mut() {
+        if let Some(new) = renames.get(&(id_text(node), key(node))) {
+            node["id"] = json!(new);
+        }
+    }
+    rename_references_skipping(edges, &renames, root, preserve_saved_semantics);
+    if let Some(hyperedges) = hyperedges {
+        rename_references_skipping(hyperedges, &renames, root, preserve_saved_semantics);
     }
 }
 /// `_disambiguate_defining_collisions` (0.9.85, #4281): keep `x.py` and
@@ -712,6 +907,16 @@ pub fn merge_missing_attributes(survivor: &Value, duplicate: &Value) -> Value {
 }
 pub fn report_id_collision(nid: &str, survivor: &Value, losers: &[Value]) -> Vec<String> {
     let mut messages = Vec::new();
+    // A module or namespace node (`import Foundation`) is one shared entity
+    // every importing file mints: a group of one such type under one label is
+    // no collision (Graphify 0.9.96).
+    let kind = survivor.get("type").unwrap_or(&Value::Null);
+    if matches!(kind.as_str(), Some("module" | "namespace"))
+        && losers.iter().all(|n| n.get("type").unwrap_or(&Value::Null) == kind)
+        && losers.iter().all(|n| n.get("label") == survivor.get("label"))
+    {
+        return messages;
+    }
     let keep_file = source(survivor);
     let keep_label = text(survivor, "label");
     for loser in losers {
@@ -960,6 +1165,11 @@ pub struct DedupOutput {
     pub edges: Vec<Value>,
     pub stdout: Vec<String>,
     pub stderr: Vec<String>,
+    /// `{merged-away id: surviving id}` for every node this call dropped
+    /// (`remap_out`, Graphify 0.9.101, #4940): a caller can tell a node
+    /// folded into a twin from one that was lost.
+    #[serde(skip)]
+    pub remap: std::collections::BTreeMap<String, String>,
 }
 fn merge_exact_group(group: &[usize], nodes: &[Value], uf: &mut ProtectedUnion) -> usize {
     if group.len() <= 1 {
@@ -1100,6 +1310,7 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
         edges: Vec::new(),
         stdout: Vec::new(),
         stderr: Vec::new(),
+        remap: Default::default(),
     };
     if nodes.len() <= 1 {
         output.nodes = nodes;
@@ -1128,8 +1339,16 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
         root.as_deref(),
         &mut output.stderr,
     );
+    namespace_reference_stub_collisions_in(
+        &mut nodes,
+        &mut edges,
+        hyperedges.as_deref_mut(),
+        root.as_deref(),
+        false,
+    );
     let mut mentioned = mentions_in(&nodes, &edges, root.as_deref());
     mentioned.extend(slice_references(&nodes, root.as_deref()));
+    let outranked = outranked_by_ast(&nodes, root.as_deref(), &mentioned);
     // The tables below are looked up, not iterated in any order that reaches
     // the output, so they use hashbrown's faster (still randomly seeded) hasher.
     let mut unique = Vec::<Value>::with_capacity(nodes.len());
@@ -1142,8 +1361,8 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
         }
         if let Some(&i) = indices.get(id(&node)) {
             let nid = id(&node).to_owned();
-            let loser = if collision_rank_with(&node, root.as_deref(), &mentioned)
-                < collision_rank_with(&unique[i], root.as_deref(), &mentioned)
+            let loser = if collision_rank_outranked(&node, root.as_deref(), &mentioned, &outranked)
+                < collision_rank_outranked(&unique[i], root.as_deref(), &mentioned, &outranked)
             {
                 std::mem::replace(&mut unique[i], node)
             } else {
@@ -1166,7 +1385,7 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
             .iter()
             .filter(|n| same_source_entity(&unique[i], n))
             .collect();
-        same.sort_by_key(|n| collision_rank_with(n, root.as_deref(), &mentioned));
+        same.sort_by_key(|n| collision_rank_outranked(n, root.as_deref(), &mentioned, &outranked));
         for loser in same {
             unique[i] = merge_missing_attributes(&unique[i], loser);
         }
@@ -1391,6 +1610,7 @@ pub(crate) fn deduplicate_records<R: Record, E: EdgeItem<Record = R>>(
     if let Some(hyperedges) = hyperedges.as_mut() {
         remap_hyperedge_members(hyperedges, &remap);
     }
+    output.remap = remap.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
     output.nodes = unique
         .into_iter()
         .filter(|n| !remap.contains_key(id(n)))

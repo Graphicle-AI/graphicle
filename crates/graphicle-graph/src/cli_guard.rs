@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Native assistant hook guards and session/query stamps.
 use serde_json::{Map, Value, json};
@@ -433,6 +433,38 @@ fn gc_hook_session_markers(dir: &Path) {
         }
     }
 }
+/// `_reset_hook_session` (Graphify 0.9.103): a compacted Claude Code session
+/// gets its hook budget back. Compaction keeps the session id while the model
+/// loses the nudges it was given, and [`nudge_allowed`] has spent the cap. The
+/// session's nudge counter, the counter of each of its subagents
+/// (`<key>-<16 hex>`, the per-agent key of [`nudge_allowed`]) and its
+/// strict-mode deny marker are deleted; other sessions' markers stay.
+pub fn reset_hook_session(session: &str) -> std::io::Result<()> {
+    let key = session_key(session);
+    if key.is_empty() {
+        return Ok(());
+    }
+    let dir = out().join("cache/hook_sessions");
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let own = regex::Regex::new(&format!(
+        r"^(?:{key}(?:-[0-9a-f]{{16}})?\.nudges|{key}\.denied)$",
+        key = regex::escape(&key)
+    ))
+    .unwrap();
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        if own.is_match(&entry.file_name().to_string_lossy()) {
+            if let Err(e) = fs::remove_file(entry.path())
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                return Err(e);
+            }
+        }
+    }
+    Ok(())
+}
 pub fn mark_denied(session: &str) -> bool {
     let sid = session_key(session);
     if sid.is_empty() {
@@ -512,7 +544,16 @@ pub fn nudge_allowed(payload: &Map<String, Value>) -> bool {
     }
     true
 }
-pub fn bash_search(cmd: &str) -> bool {
+/// `_bash_commands` (Graphify 0.9.103): `(name, args, piped)` for each
+/// command a Bash string executes, the parsing of #3121. Heredoc bodies are
+/// dropped, a quoted span is one placeholder word `Q`, and the string splits
+/// at shell operators and substitution boundaries. In each segment the
+/// executable is the first token after `VAR=value` prefixes and wrappers
+/// (sudo/xargs/env and their flags): its basename, lowercased, without
+/// `.exe`; `args` are the tokens after it; `piped` says the segment reads a
+/// pipe. A word in prose, a quoted argument or a heredoc body is never one.
+pub fn bash_commands(cmd: &str) -> Vec<(String, Vec<String>, bool)> {
+    let mut commands = Vec::new();
     let heredoc = fancy_regex::Regex::new(r#"<<-?\s*(['\"]?)(\w+)\1"#).unwrap();
     let mut text = cmd.to_string();
     let mut pos = 0;
@@ -539,19 +580,41 @@ pub fn bash_search(cmd: &str) -> bool {
             break;
         }
     }
+    // A quoted span becomes one placeholder word: never the executable, but
+    // a quoted sed/awk program is still an operand (Graphify 0.9.101).
     text = regex::Regex::new(r"'[^']*'")
         .unwrap()
-        .replace_all(&text, " ")
+        .replace_all(&text, "Q")
         .into_owned();
     text = regex::Regex::new(r#""[^"]*""#)
         .unwrap()
-        .replace_all(&text, " ")
+        .replace_all(&text, "Q")
         .into_owned();
-    for segment in regex::Regex::new(r"[|;&\n]|\$\(|`|\(|\)|\{|\}")
-        .unwrap()
-        .split(&text)
-    {
+    // Command segments split at shell operators, each knowing whether it
+    // reads a pipe; a pipe carries over the empty segments of `|&` and of a
+    // pipeline continued on the next line.
+    let operators = regex::Regex::new(r"\|\|?|[;&\n]|\$\(|`|\(|\)|\{|\}").unwrap();
+    let mut segments: Vec<(Option<&str>, &str)> = Vec::new();
+    let mut start = 0;
+    let mut before = None;
+    for m in operators.find_iter(&text) {
+        segments.push((before, &text[start..m.start()]));
+        before = Some(m.as_str());
+        start = m.end();
+    }
+    segments.push((before, &text[start..]));
+    let mut piped = false;
+    for (operator, segment) in segments {
+        if let Some(op) = operator
+            && (op == "|" || op == "||")
+        {
+            piped = op == "|";
+        }
         let tokens = segment.split_whitespace().collect::<Vec<_>>();
+        if tokens.is_empty() {
+            continue;
+        }
+        let segment_piped = std::mem::replace(&mut piped, false);
         let mut i = 0;
         while i < tokens.len() {
             let tok = tokens[i];
@@ -574,20 +637,172 @@ pub fn bash_search(cmd: &str) -> bool {
                 }
                 continue;
             }
-            if [
-                "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
-            ]
-            .contains(&name)
-            {
-                return true;
-            }
-            if name == "git" && tokens[i + 1..(i + 4).min(tokens.len())].contains(&"grep") {
-                return true;
-            }
+            commands.push((
+                name.to_string(),
+                tokens[i + 1..].iter().map(|t| t.to_string()).collect(),
+                segment_piped,
+            ));
             break;
         }
     }
-    false
+    commands
+}
+/// `_sed_awk_in_place`: sed or awk edits its files in place (`-i`,
+/// `--in-place`, `-Ei`).
+fn sed_awk_in_place(name: &str, args: &[String]) -> bool {
+    args.iter().any(|t2| {
+        t2.starts_with("--in-place")
+            || if name == "awk" {
+                t2.starts_with("-i")
+            } else {
+                t2.starts_with('-') && !t2.starts_with("--") && t2.contains('i')
+            }
+    })
+}
+/// `_bash_invokes_search` (#3121): whether a Bash command runs a search tool.
+/// `git grep` and `VAR=x grep` count; a tool name in prose, quotes or a
+/// heredoc body does not. sed and awk count when they open a file
+/// themselves: not reading a pipe, not editing in place, and a program plus
+/// at least one file (`x=1` is an awk assignment) (Graphify 0.9.101).
+pub fn bash_search(cmd: &str) -> bool {
+    bash_commands(cmd).iter().any(|(name, args, piped)| {
+        if [
+            "grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep", "find", "fd", "ack", "ag",
+        ]
+        .contains(&name.as_str())
+        {
+            return true;
+        }
+        if name == "git" && args.iter().take(3).any(|a| a == "grep") {
+            return true;
+        }
+        if (name == "sed" || name == "awk") && !piped {
+            let operands = args
+                .iter()
+                .filter(|t2| !t2.starts_with('-') && !t2.contains('='))
+                .count();
+            return !sed_awk_in_place(name, args) && operands >= 2;
+        }
+        false
+    })
+}
+/// Bash commands that print a file for the agent to read; sed only with
+/// -n/--quiet/--silent (Graphify 0.9.103).
+const BASH_READERS: &[&str] = &["cat", "head", "tail", "sed", "nl", "less", "more", "bat"];
+/// `cat README.md` in a shell is orientation, not a walk through the code:
+/// Bash reads nudge on code only.
+const BASH_READ_SKIP_EXTS: &[&str] = &[".md", ".rst", ".txt", ".mdx"];
+/// `_bash_read_target` (Graphify 0.9.103): the in-project source file a Bash
+/// command prints (`cat src/app.py`, `sed -n 1,80p src/app.py`, `head -50
+/// src/app.py`), as an absolute path. Only executed commands count. The file
+/// is a reader's operand (or `< file`), exists, has a graphed code extension
+/// and resolves inside the project (CLAUDE_PROJECT_DIR or the current
+/// directory) and outside the graph output (#1840, #4961). A relative path
+/// resolves against the hook payload's `cwd` when that is inside the project.
+/// A stdout redirect or `sed -i` makes the command a write, a reader without
+/// a file reads stdin, and paths with shell expansion are skipped.
+pub fn bash_read_target(cmd: &str, cwd: &str) -> Option<std::path::PathBuf> {
+    use crate::extractors::resolution::resolved;
+    let root = resolved(Path::new(
+        &std::env::var("CLAUDE_PROJECT_DIR")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| ".".into()),
+    ));
+    let mut base = root.clone();
+    if !cwd.is_empty() && !cwd_relative(cwd, cfg!(windows)) {
+        let c = resolved(Path::new(cwd));
+        if c.starts_with(&root) {
+            base = c;
+        }
+    }
+    let outs: Vec<std::path::PathBuf> =
+        [out(), std::path::PathBuf::from(crate::paths::DEFAULT_OUT_DIR)]
+            .into_iter()
+            .map(|o| {
+                if cwd_relative(&o.to_string_lossy(), cfg!(windows)) {
+                    resolved(&root.join(o))
+                } else {
+                    resolved(&o)
+                }
+            })
+            .collect();
+    let expansion = regex::Regex::new(r"[$`~*?\[\]{}]").unwrap();
+    let exts = DATA["_HOOK_SOURCE_EXTS"].as_array();
+    for (name, args, _piped) in bash_commands(cmd) {
+        if !BASH_READERS.contains(&name.as_str()) {
+            continue;
+        }
+        if name == "sed"
+            && (sed_awk_in_place(&name, &args)
+                || !args.iter().any(|a| {
+                    a == "--quiet"
+                        || a == "--silent"
+                        || (a.starts_with('-') && !a.starts_with("--") && a.contains('n'))
+                }))
+        {
+            continue;
+        }
+        let mut files: Vec<String> = Vec::new();
+        let mut it = args.iter();
+        while let Some(tok) = it.next() {
+            let mut tok = tok.as_str();
+            if let Some((before, _)) = tok.split_once('>') {
+                if ["", "1", "&"].contains(&before) {
+                    // stdout goes to a file: a write, not a read
+                    files.clear();
+                    break;
+                }
+                if tok.ends_with('>') {
+                    it.next(); // `2> err.log`
+                }
+                continue;
+            }
+            if tok.starts_with("<<") {
+                if ["<<", "<<-", "<<<"].contains(&tok) {
+                    it.next();
+                }
+                continue;
+            }
+            if tok == "<" {
+                tok = it.next().map(String::as_str).unwrap_or("");
+            } else if let Some(rest) = tok.strip_prefix('<') {
+                tok = rest;
+            } else if name == "sed" && ["-e", "-f", "--expression", "--file"].contains(&tok) {
+                it.next(); // the program, not a file
+                continue;
+            } else if tok.starts_with('-') {
+                continue;
+            }
+            files.push(tok.to_string());
+        }
+        for f in files {
+            if f.is_empty() || expansion.is_match(&f) {
+                continue;
+            }
+            let lower = f.to_lowercase().replace('\\', "/");
+            let seg = lower.rsplit('/').next().unwrap_or("");
+            let Some((_, ext)) = seg.rsplit_once('.') else {
+                continue;
+            };
+            let ext = format!(".{ext}");
+            if !exts.is_some_and(|e| e.contains(&json!(ext)))
+                || BASH_READ_SKIP_EXTS.contains(&ext.as_str())
+            {
+                continue;
+            }
+            let p = f.replace('\\', "/");
+            let p = if cwd_relative(&p, cfg!(windows)) {
+                resolved(&base.join(&p))
+            } else {
+                resolved(Path::new(&p))
+            };
+            if p.is_file() && p.starts_with(&root) && !outs.iter().any(|o| p.starts_with(o)) {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 pub fn cwd_relative(path: &str, windows: bool) -> bool {
     if windows {
@@ -659,6 +874,154 @@ pub fn under_out(target: &str, root: &Path, configured: &str, windows: bool) -> 
     dirs.iter()
         .any(|dir| target.starts_with(dir) || lower(&target).starts_with(lower(dir)))
 }
+/// `_target_matches_manifest` (Graphify 0.9.102): a file newer than
+/// graph.json still matches its saved extraction. The manifest (read up to
+/// 2,000,000 bytes) must list the exact project-relative path, or the exact
+/// absolute one, and every populated AST/semantic hash must equal the
+/// file's MD5; any doubt keeps the file stale.
+pub fn target_matches_manifest(file_path: &str, root: &Path) -> bool {
+    use std::io::Read;
+    let Ok(file) = fs::File::open(out().join("manifest.json")) else {
+        return false;
+    };
+    let mut raw = Vec::new();
+    if file.take(2_000_001).read_to_end(&mut raw).is_err() || raw.len() > 2_000_000 {
+        return false;
+    }
+    let Ok(Value::Object(manifest)) = serde_json::from_slice::<Value>(&raw) else {
+        return false;
+    };
+    let p = crate::detect_ignore::absolute_lexical(Path::new(file_path));
+    let Ok(rel) = p.strip_prefix(root) else {
+        return false;
+    };
+    let rel = crate::paths::nfc(&rel.to_string_lossy().replace('\\', "/"));
+    let Some(Value::Object(entry)) = manifest
+        .get(&rel)
+        .or_else(|| manifest.get(&crate::paths::nfc(&p.to_string_lossy())))
+    else {
+        return false;
+    };
+    let hashes: Vec<&Value> = if entry.contains_key("hash") && !entry.contains_key("ast_hash") {
+        vec![&entry["hash"]]
+    } else {
+        [entry.get("ast_hash"), entry.get("semantic_hash")]
+            .into_iter()
+            .map(|h| h.unwrap_or(&EMPTY))
+            .collect()
+    };
+    if !hashes.iter().all(|h| h.is_string()) {
+        return false;
+    }
+    let hashes: std::collections::BTreeSet<&str> = hashes
+        .iter()
+        .filter_map(|h| h.as_str())
+        .filter(|h| !h.is_empty())
+        .collect();
+    if hashes.len() != 1 {
+        return false;
+    }
+    hashes.into_iter().next() == Some(crate::detect_manifest::md5_file(&p).as_str())
+}
+static EMPTY: Value = Value::String(String::new());
+/// `_search_is_outside_project` (Graphify 0.9.102, #4961): every literal
+/// target of a structured Grep, or of a simple `grep`/`rg` command, is
+/// outside the project. Shell composition, expansion, wrappers and unknown
+/// options stay advisory: this is not a shell interpreter or an access gate.
+pub fn search_is_outside_project(t: &Map<String, Value>) -> bool {
+    let command = t
+        .get("command")
+        .filter(|v| crate::build::truthy(v))
+        .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| crate::python_compat::string(v)))
+        .unwrap_or_default();
+    let paths: Vec<String> = if !command.is_empty() {
+        if command.chars().any(|c| "$`;&|<>\n\\".contains(c)) {
+            return false;
+        }
+        let Ok(tokens) = crate::detect_types::shell_split(&command) else {
+            return false;
+        };
+        let Some(first) = tokens.first() else {
+            return false;
+        };
+        if !["grep", "egrep", "fgrep", "zgrep", "rg", "ripgrep"]
+            .contains(&first.rsplit('/').next().unwrap_or(""))
+        {
+            return false;
+        }
+        let short = regex::Regex::new(r"^-[nriIvVwxlLchHqsoEFGPRUa]+$").unwrap();
+        let mut positional = vec![];
+        let mut explicit_pattern = false;
+        let mut options = true;
+        let mut args = tokens[1..].iter();
+        while let Some(arg) = args.next() {
+            if options && arg == "--" {
+                options = false;
+            } else if options && ["-e", "--regexp", "-f", "--file"].contains(&arg.as_str()) {
+                if args.next().is_none() {
+                    return false;
+                }
+                explicit_pattern = true;
+            } else if options && (arg.starts_with("--regexp=") || arg.starts_with("--file=")) {
+                explicit_pattern = true;
+            } else if options && HINT_VALUE_FLAGS.contains(&arg.as_str()) {
+                if args.next().is_none() {
+                    return false;
+                }
+            } else if options && arg.starts_with("--") {
+                let name = arg.split('=').next().unwrap_or("");
+                if HINT_VALUE_FLAGS.contains(&name) && arg.contains('=') {
+                    continue;
+                }
+                if ![
+                    "--ignore-case",
+                    "--line-number",
+                    "--recursive",
+                    "--fixed-strings",
+                    "--word-regexp",
+                    "--invert-match",
+                ]
+                .contains(&arg.as_str())
+                {
+                    return false;
+                }
+            } else if options && arg.starts_with('-') {
+                if !short.is_match(arg) {
+                    return false;
+                }
+            } else {
+                positional.push(arg.clone());
+            }
+        }
+        if explicit_pattern {
+            positional
+        } else {
+            positional.into_iter().skip(1).collect()
+        }
+    } else {
+        vec![
+            t.get("path")
+                .filter(|v| crate::build::truthy(v))
+                .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| crate::python_compat::string(v)))
+                .unwrap_or_default(),
+        ]
+    };
+    let glob = regex::Regex::new(r"[$`*?\[\]{}~]").unwrap();
+    if paths.is_empty() || paths.iter().any(|p| p.is_empty() || p == "-" || glob.is_match(p)) {
+        return false;
+    }
+    // Bash on Windows may use /c/... or /mnt/c/... paths whose drive is
+    // unknown here; the hint is kept.
+    if !command.is_empty() && cfg!(windows) && paths.iter().any(|p| p.starts_with('/')) {
+        return false;
+    }
+    let root = crate::extractors::resolution::resolved(Path::new(
+        &std::env::var("CLAUDE_PROJECT_DIR").unwrap_or_else(|_| ".".into()),
+    ));
+    paths
+        .iter()
+        .all(|p| !crate::extractors::resolution::resolved(Path::new(p)).starts_with(&root))
+}
 pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     let graph = out().join("graph.json");
     if kind == "gemini" {
@@ -671,9 +1034,41 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     let Some(d) = data.as_object() else {
         return String::new();
     };
+    // Claude Code SessionStart with matcher "compact": reset this session's
+    // nudge budget and restate the graph (Graphify 0.9.103). Other sources
+    // (startup, resume, clear, fork) keep their counters; any error prints
+    // nothing.
+    if kind == "compact" {
+        if d.get("hook_event_name")
+            .is_some_and(|v| v != "SessionStart")
+            || d.get("source").and_then(Value::as_str) != Some("compact")
+        {
+            return String::new();
+        }
+        if reset_hook_session(&payload_text(d, "session_id")).is_err() || !graph.is_file() {
+            return String::new();
+        }
+        return nudge_for_out(crate::cli::program_text(DATA["_COMPACT_CONTEXT"].as_str().unwrap_or("")).into_owned());
+    }
     let input = d.get("tool_input").unwrap_or(data);
     let Some(t) = input.as_object() else {
         return String::new();
+    };
+    // A Bash file read (`cat`, `head`, `sed -n`, ...) is a Read by another
+    // name: it takes the read path with the file as its target, the same
+    // nudge and budget, and is never denied (Graphify 0.9.103). A reader wins
+    // over a search in the same command, since the read nudge names the
+    // file's symbols.
+    let bash_target = (kind == "search"
+        && d.get("tool_name").is_none_or(|v| v.is_null() || v == "Bash"))
+    .then(|| bash_read_target(&payload_text(t, "command"), &payload_text(d, "cwd")))
+    .flatten();
+    let read_input: Map<String, Value>;
+    let (kind, t, bash_read) = if let Some(target) = bash_target {
+        read_input = Map::from_iter([("file_path".to_string(), json!(target.to_string_lossy()))]);
+        ("read", &read_input, true)
+    } else {
+        (kind, t, false)
     };
     let s = |key| {
         t.get(key)
@@ -690,11 +1085,63 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     let emit = |name| crate::cli::program_text(DATA[name].as_str().unwrap_or("")).into_owned();
     if kind == "search" {
         let cmd = s("command");
-        if ((cmd.is_empty() && t.get("pattern").is_some_and(crate::build::truthy))
-            || (!cmd.is_empty() && bash_search(&cmd)))
-            && graph.is_file()
-            && nudge_allowed(d)
-        {
+        // A dedicated Grep is scoped to the project's source targets and,
+        // in strict mode, shares the once-per-session block with Read
+        // (Graphify 0.9.102). Bash searches stay advisory: a compound shell
+        // command has no single reliable target.
+        let is_grep_tool = cmd.is_empty()
+            && t.get("pattern")
+                .and_then(Value::as_str)
+                .is_some_and(|p| !p.is_empty())
+            && d.get("tool_name")
+                .is_none_or(|v| v.is_null() || v == "Grep");
+        let is_bash_search = !cmd.is_empty() && bash_search(&cmd);
+        if !(is_grep_tool || is_bash_search) || !graph.is_file() {
+            return String::new();
+        }
+        if is_grep_tool {
+            let path = match t.get("path") {
+                None => ".".to_string(),
+                Some(Value::String(p)) => p.clone(),
+                Some(_) => return String::new(),
+            };
+            let root = crate::extractors::resolution::resolved(Path::new(
+                &std::env::var("CLAUDE_PROJECT_DIR").unwrap_or_else(|_| ".".into()),
+            ));
+            let mut target = std::path::PathBuf::from(path.replace('\\', "/"));
+            if cwd_relative(&path, cfg!(windows)) {
+                target = root.join(target);
+            }
+            let target = crate::extractors::resolution::resolved(&target);
+            if !target.starts_with(&root) {
+                return String::new();
+            }
+            for output in [out(), root.join(crate::paths::DEFAULT_OUT_DIR)] {
+                let output = if cwd_relative(&output.to_string_lossy(), cfg!(windows)) {
+                    root.join(output)
+                } else {
+                    output
+                };
+                if target.starts_with(crate::extractors::resolution::resolved(&output)) {
+                    return String::new();
+                }
+            }
+            // A single-file target needs the same index evidence as Read; a
+            // folder is the code the graph covers.
+            let indexed =
+                !target.is_file() || target_indexed(&target.to_string_lossy(), &root);
+            if indexed
+                && strict(strict_flag)
+                && !out().join("needs_update").exists()
+                && !query_fresh()
+                && mark_denied(&payload_text(d, "session_id"))
+            {
+                return with_hint(emit("_SEARCH_DENY"), &search_hint_terms(t), None);
+            }
+        }
+        // A search whose every literal target is outside the project gets
+        // no project hint (Graphify 0.9.102, #4961).
+        if !search_is_outside_project(t) && nudge_allowed(d) {
             return with_hint(
                 nudge_for_out(emit("_SEARCH_NUDGE")),
                 &search_hint_terms(t),
@@ -747,11 +1194,16 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
     let Ok(gtime) = graph.metadata().and_then(|m| m.modified()) else {
         return String::new();
     };
+    // A checkout can refresh modification times without changing what was
+    // extracted: a newer file whose content still matches its manifest
+    // hashes is not stale (Graphify 0.9.102). The `needs_update` marker
+    // always softens.
     let stale = out().join("needs_update").exists()
         || (!vals[0].is_empty()
             && fs::metadata(&vals[0])
                 .and_then(|m| m.modified())
-                .is_ok_and(|mtime| mtime > gtime));
+                .is_ok_and(|mtime| mtime > gtime)
+            && !target_matches_manifest(&vals[0], &root));
     if stale {
         return if nudge_allowed(d) {
             nudge_for_out(emit("_READ_NUDGE_STALE"))
@@ -759,7 +1211,9 @@ pub fn run(kind: &str, data: &Value, strict_flag: bool) -> String {
             String::new()
         };
     }
-    if strict(strict_flag)
+    // Strict block: the Read tool only; a Bash read stays advisory.
+    if !bash_read
+        && strict(strict_flag)
         && d.get("tool_name")
             .is_none_or(|v| v.is_null() || v == "Read")
         && !query_fresh()
@@ -793,7 +1247,7 @@ mod tests {
             .as_str()
             .unwrap();
         assert!(
-            context.contains("artifacts/graphicle/graph.json exists"),
+            context.contains("knowledge graph at artifacts/graphicle/graph.json"),
             "{context}"
         );
         assert!(!context.contains(".graphicle/graph.json"), "{context}");
@@ -803,6 +1257,91 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(super::nudge_for_out_with(stale, "/shared/out").contains("/shared/out/graph.json"));
+    }
+
+    /// tests/test_search_hook_scope.py (Graphify 0.9.102, #4961): a search
+    /// whose every literal target is outside the project gets no hint;
+    /// composition, globs and unknown options stay advisory.
+    #[cfg(unix)]
+    #[test]
+    fn searches_outside_the_project_get_no_hint() {
+        if std::env::var_os("CLAUDE_PROJECT_DIR").is_some() {
+            return;
+        }
+        let input = |v: serde_json::Value| v.as_object().unwrap().clone();
+        let outside = super::search_is_outside_project;
+        assert!(outside(&input(serde_json::json!({"command": "grep -rn foo /"}))));
+        assert!(outside(&input(serde_json::json!({"command": "rg -e foo /"}))));
+        assert!(outside(&input(serde_json::json!({"pattern": "foo", "path": "/"}))));
+        for inside in [
+            "grep -rn foo src",
+            "grep -rn foo / | head",
+            "grep -rn foo /*",
+            "grep --context=3 foo",
+            "grep --weird foo /",
+            "find / -name x",
+        ] {
+            assert!(!outside(&input(serde_json::json!({"command": inside}))), "{inside}");
+        }
+        assert!(!outside(&input(serde_json::json!({"pattern": "foo"}))));
+    }
+
+    /// tests/test_hook_guard_token_match.py (Graphify 0.9.101): sed and awk
+    /// that open files count as searches; on a pipe, in place or with no
+    /// file they stay quiet.
+    #[test]
+    fn sed_and_awk_reading_files_count_as_searches() {
+        for cmd in [
+            "sed -n 4085,4145p src/inc.php",
+            "awk 'NR>=10 && /warn/ {print NR}' src/a.py",
+            "sed -n '/def x/,/^$/p' a.py | head",
+            "cd src && awk -F: '{print $1}' a.py",
+        ] {
+            assert!(super::bash_search(cmd), "{cmd}");
+        }
+        for cmd in [
+            "ps aux | awk '{print $2}'",
+            "git log --oneline | sed -n 1,5p",
+            "echo x | sed s/a/b/",
+            "sed -i 's/a/b/' f.txt",
+            "gh pr list | awk -F'\\t' '{print $1}'",
+            "sed -Ei 's/a/b/' f.txt",
+            "sed -ni 's/a/b/p' f.txt",
+            "git log |\n  awk '{print $1}'",
+            "make 2>&1 |& sed -n 1,5p",
+            "awk 'BEGIN { print 1 }'",
+            "sed -n 1,5p",
+        ] {
+            assert!(!super::bash_search(cmd), "{cmd}");
+        }
+    }
+
+    #[test]
+    fn hook_reminders_state_facts_not_commands() {
+        // test_hook_nudge_wording.py (Graphify 0.9.96, #2202): commands in a
+        // tool result read like a prompt injection.
+        let commanding = |text: &str| {
+            let lower = text.to_lowercase();
+            lower.contains("mandatory")
+                || lower.contains("subagent prompt")
+                || text
+                    .split(|c: char| !c.is_alphanumeric())
+                    .any(|w| w.eq_ignore_ascii_case("must"))
+        };
+        for name in ["_SEARCH_NUDGE", "_READ_NUDGE", "_READ_NUDGE_STALE"] {
+            let d: serde_json::Value =
+                serde_json::from_str(super::DATA[name].as_str().unwrap()).unwrap();
+            let text = d["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(!commanding(text), "{name}: {text}");
+        }
+        let d: serde_json::Value =
+            serde_json::from_str(super::DATA["_READ_DENY"].as_str().unwrap()).unwrap();
+        let reason = d["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(!reason.to_lowercase().contains("subagent"), "{reason}");
     }
 
     #[test]

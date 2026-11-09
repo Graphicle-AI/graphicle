@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Headless AST/semantic extraction, cache checkpoints, merge and manifest commit.
 use crate::{
@@ -114,6 +114,63 @@ fn paths_for(data: &Value, key: &str) -> Vec<PathBuf> {
 fn tokens(v: &Value, key: &str) -> i64 {
     v[key].as_i64().unwrap_or(0)
 }
+/// `_record_extract_cost` (Graphify 0.9.96, #1769): add this run's token use
+/// to `cost.json`, the ledger the skill writes. A ledger that does not read
+/// as `{"runs": [...], "total_input_tokens": int, "total_output_tokens":
+/// int}` is left alone rather than replaced with one run.
+pub(crate) fn record_extract_cost(
+    out_dir: &Path,
+    input_tokens: i64,
+    output_tokens: i64,
+    files: i64,
+    stderr: &mut Vec<String>,
+) {
+    let cost_path = out_dir.join("cost.json");
+    let mut cost = json!({"runs": [], "total_input_tokens": 0, "total_output_tokens": 0});
+    if cost_path.exists() {
+        let read = std::fs::read_to_string(&cost_path)
+            .map_err(|e| e.to_string())
+            .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()))
+            .and_then(|mut v| {
+                let Some(o) = v.as_object_mut() else {
+                    return Err("unexpected layout".to_string());
+                };
+                o.entry("runs").or_insert(json!([]));
+                o.entry("total_input_tokens").or_insert(json!(0));
+                o.entry("total_output_tokens").or_insert(json!(0));
+                let int = |k: &str| o[k].as_i64().is_some() && !o[k].is_boolean();
+                if !o["runs"].is_array() || !int("total_input_tokens") || !int("total_output_tokens") {
+                    return Err("unexpected layout".to_string());
+                }
+                Ok(v)
+            });
+        match read {
+            Ok(v) => cost = v,
+            Err(e) => {
+                stderr.push(format!(
+                    "[graphicle extract] warning: could not read {}, not updating it: {e}",
+                    cost_path.display()
+                ));
+                return;
+            }
+        }
+    }
+    cost["runs"].as_array_mut().unwrap().push(json!({
+        "date": crate::python_datetime::DateTime::now().isoformat(),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "files": files,
+    }));
+    for (k, n) in [("total_input_tokens", input_tokens), ("total_output_tokens", output_tokens)] {
+        cost[k] = json!(cost[k].as_i64().unwrap_or(0) + n);
+    }
+    if let Err(e) = crate::paths::write_json_atomic(&cost_path, &cost, Some(2), false) {
+        stderr.push(format!(
+            "[graphicle extract] warning: could not write {}: {e}",
+            cost_path.display()
+        ));
+    }
+}
 fn context(
     existing: &Value,
     root: &Path,
@@ -165,6 +222,11 @@ fn context(
             "_java_ret",
             "_ts_fields",
             "_ts_static_fields",
+            "_py_fixture",
+            "_cpp_qualified",
+            "_py_return_type",
+            "_go_fields",
+            "_go_package_path",
         ] {
             if build::truthy(&n[k]) {
                 c[k] = n[k].clone();
@@ -198,8 +260,13 @@ fn context(
     for e in ar(existing.get("links").unwrap_or(&existing["edges"])) {
         // Import edges come too (0.9.91): a TS field inherited from an
         // unchanged file is typed by that file's imports, as in a full build.
-        if !["contains", "method", "inherits", "imports", "imports_from"]
-            .contains(&e["relation"].as_str().unwrap_or(""))
+        // A `references` edge with context `return_type` comes too
+        // (Graphify 0.9.96, #4726): it types a method result for member
+        // calls in re-extracted files.
+        let return_type = e["relation"] == "references" && e["context"] == "return_type";
+        if !(return_type
+            || ["contains", "method", "inherits", "imports", "imports_from"]
+                .contains(&e["relation"].as_str().unwrap_or("")))
             || !build::is_ast_tier(e)
             || !e["source_file"]
                 .as_str()
@@ -210,6 +277,9 @@ fn context(
         let mut c = json!({});
         for k in ["source", "target", "relation", "source_file"] {
             c[k] = e[k].clone();
+        }
+        if return_type {
+            c["context"] = json!("return_type");
         }
         if e["metadata"]["ruby_superclass_ref"].is_string() {
             c["metadata"] = json!({"ruby_superclass_ref":e["metadata"]["ruby_superclass_ref"]});
@@ -305,6 +375,11 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
     if a.flag("routes") && !dry_run_only {
         crate::watch::write_flag_config(&dir, "routes");
     }
+    // The scope a later hook, update or watch rebuild keeps (Graphify
+    // 0.9.101, #4923).
+    if a.flag("code-only") && !dry_run_only {
+        crate::watch::write_flag_config(&dir, "code_only");
+    }
     if a.flag("routes") || crate::watch::build_flag(&dir, "routes") {
         crate::extractors::routes::ENABLED.store(true, std::sync::atomic::Ordering::Relaxed);
     }
@@ -341,6 +416,54 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         (detection, stored)
     });
     let detection = detection?;
+    // Most of the corpus has no extractor (Graphify 0.9.103, #2942).
+    if let Some(warning) = detection["unclassified_warning"].as_str() {
+        out.line(format!("[graphicle extract] warning: {warning}"));
+    }
+    let total_files = detection["total_files"].as_i64().unwrap_or(0);
+    // Paths the ignore rules skipped, a pruned folder once (Graphify
+    // 0.9.102), so missing source can be traced to a rule.
+    let mut ignored: Vec<&str> = detection["ignored"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    ignored.sort();
+    if !ignored.is_empty() {
+        let examples = ignored
+            .iter()
+            .take(3)
+            .map(|entry| {
+                let mut rel = Path::new(entry)
+                    .strip_prefix(&target)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| entry.replace('\\', "/"));
+                if entry.ends_with(std::path::MAIN_SEPARATOR) && !rel.ends_with('/') {
+                    rel.push('/');
+                }
+                crate::python_compat::repr_string(&rel)
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if ignored.len() > 3 {
+            format!(" (+{} more)", ignored.len() - 3)
+        } else {
+            String::new()
+        };
+        out.line(format!(
+            "[graphicle extract] {} path(s) ignored by ignore rules (pruned directories count once): {examples}{more}",
+            ignored.len()
+        ));
+        out.line(format!(
+            "[graphicle extract] Review ignore rules if source is missing; {}; .graphicleignore and --exclude still apply.",
+            if gitignore {
+                "--no-gitignore bypasses VCS ignore rules only"
+            } else {
+                "VCS ignore rules disabled"
+            }
+        ));
+    }
     let files = detection.get("files").cloned().unwrap_or(json!({}));
     let selection = if incremental {
         &detection["new_files"]
@@ -776,11 +899,22 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
             merged["nodes"] = json!(build::dedupe_nodes(ar(&merged["nodes"]))?);
             merged["edges"] = json!(build::dedupe_edges(ar(&merged["edges"]))?);
             build::disambiguate_file_labels_in_nodes(merged["nodes"].as_array_mut().unwrap());
+            // C# methods display with their owning type, as in the build
+            // (Graphify 0.9.98, #4883).
+            let edges = std::mem::take(&mut merged["edges"]);
+            build::qualify_csharp_method_labels_in_nodes(
+                merged["nodes"].as_array_mut().unwrap(),
+                ar(&edges),
+            );
+            merged["edges"] = edges;
             // The endpoint rules of the clustered build (#2873): an import of an
             // external module gets a typed stub node, and any other edge
             // without two declared endpoints is dropped instead of shipping a
             // phantom (Graphify 0.9.80, #4189).
-            build::finalize_raw_graph_endpoints(&mut merged);
+            let dropped = build::finalize_raw_graph_endpoints(&mut merged);
+            if dropped > 0 {
+                d.stderr.push(build::schema_invalid_edges_warning(dropped));
+            }
             let source = ar(&merged["nodes"])
                 .iter()
                 .map(|n| (n["id"].to_string(), n["source_file"].clone()))
@@ -960,6 +1094,11 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         ));
         crate::par::drop_later((g, comm));
     }
+    // A flagless extract that ingested documents changes the scope back to
+    // a full graph (Graphify 0.9.101, #4923).
+    if !code_only && !semantic.is_empty() && !dry_run_only {
+        crate::watch::set_flag_config(&dir, "code_only", false);
+    }
     crate::install_fs::write(&dir.join(".graphicle_root"), &target.to_string_lossy())?;
     if has_path {
         let stamped = manifest
@@ -1030,6 +1169,13 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
                 tokens(&merged, "output_tokens") as f64
             )
         ));
+        record_extract_cost(
+            &dir,
+            tokens(&merged, "input_tokens"),
+            tokens(&merged, "output_tokens"),
+            total_files,
+            &mut d.stderr,
+        );
     }
     stages.mark("write", &mut d.stderr);
     stages.total(&mut d.stderr);
@@ -1039,6 +1185,36 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    /// Graphify 0.9.96 (#1769): each run is added to cost.json; an existing
+    /// ledger is kept and an unreadable one is not overwritten.
+    #[test]
+    fn extract_runs_are_added_to_the_cost_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let cost_path = dir.path().join("cost.json");
+        let mut stderr = vec![];
+        super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
+        super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
+        let cost: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cost_path).unwrap()).unwrap();
+        assert_eq!(cost["runs"].as_array().unwrap().len(), 2);
+        assert_eq!(cost["runs"][0]["files"], 2);
+        assert!(cost["runs"][0]["date"].as_str().is_some_and(|s| !s.is_empty()));
+        assert_eq!((cost["total_input_tokens"].clone(), cost["total_output_tokens"].clone()), (json!(200), json!(80)));
+        let earlier = json!({"date": "2026-01-01T00:00:00+00:00", "input_tokens": 5000, "output_tokens": 0, "files": 493});
+        std::fs::write(&cost_path, json!({"runs": [earlier], "total_input_tokens": 5000, "total_output_tokens": 0}).to_string()).unwrap();
+        super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
+        let cost: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&cost_path).unwrap()).unwrap();
+        assert_eq!(cost["runs"][0], earlier);
+        assert_eq!(cost["total_input_tokens"], 5100);
+        assert!(stderr.is_empty(), "{stderr:?}");
+        for bad in ["{not json", "[]", "null", "{\"runs\": {}}", "{\"runs\": [], \"total_input_tokens\": \"5\"}", "{\"runs\": [], \"total_input_tokens\": null}"] {
+            std::fs::write(&cost_path, bad).unwrap();
+            super::record_extract_cost(dir.path(), 100, 40, 2, &mut stderr);
+            assert_eq!(std::fs::read_to_string(&cost_path).unwrap(), bad);
+        }
+    }
 
     /// Graphify 0.9.85 (#4101): only a run with omitted files and no
     /// truncated or hollow chunk gets the coverage note.
@@ -1074,5 +1250,42 @@ mod tests {
             assert_eq!(node[key], existing["nodes"][0][key], "{key}");
         }
         assert_eq!(node["metadata"], json!({"python_opaque_bases": ["Base"]}));
+    }
+    /// Graphify 0.9.96 (#4726), 0.9.99, 0.9.101 and 0.9.102: the Python
+    /// return-type, Go field, C++ qualified-owner and Go package-path markers
+    /// survive, and a `references` edge with context `return_type` comes
+    /// along with its context while other `references` edges stay out.
+    #[test]
+    fn resolution_context_keeps_the_0_9_102_markers_and_return_types() {
+        let root = tempfile::tempdir().unwrap();
+        let existing = json!({"nodes": [
+            {"id": "m_f", "label": "f()", "source_file": "m.py", "file_type": "code",
+             "type": "function", "source_location": "L1", "_origin": "ast",
+             "_py_return_type": "Widget", "_py_fixture": "function",
+             "_go_fields": {"db": "DB"}, "_cpp_qualified": "ns::Widget::f",
+             "_go_package_path": "example.com/m"},
+            {"id": "m_widget", "label": "Widget", "source_file": "m.py", "file_type": "code",
+             "type": "class", "source_location": "L5", "_origin": "ast"},
+        ], "links": [
+            {"source": "m_f", "target": "m_widget", "relation": "references",
+             "context": "return_type", "source_file": "m.py", "_origin": "ast"},
+            {"source": "m_f", "target": "m_widget", "relation": "references",
+             "context": "parameter_type", "source_file": "m.py", "_origin": "ast"},
+        ]});
+        let files = json!({"code": ["m.py"]});
+        let (nodes, edges) = super::context(&existing, root.path(), &files, &[]);
+        let node = nodes.iter().find(|n| n["id"] == "m_f").unwrap();
+        for key in [
+            "_py_return_type",
+            "_py_fixture",
+            "_go_fields",
+            "_cpp_qualified",
+            "_go_package_path",
+        ] {
+            assert_eq!(node[key], existing["nodes"][0][key], "{key}");
+        }
+        assert_eq!(edges.len(), 1, "{edges:?}");
+        assert_eq!(edges[0]["relation"], "references");
+        assert_eq!(edges[0]["context"], "return_type");
     }
 }

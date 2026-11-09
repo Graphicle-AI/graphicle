@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/resolution.py
 //! JS/TS module, workspace, package exports and JSONC resolution.
 use super::{base::make_id, resolution_paths::resolve_cached};
@@ -371,7 +371,33 @@ pub fn pnpm_workspace_globs(p: &Path) -> Vec<String> {
             continue;
         }
         if inside && line.starts_with('-') {
-            let v = line[1..].trim().trim_matches(['\'', '"']);
+            // A `# comment` after the glob is dropped (Graphify 0.9.97,
+            // #4681): a quoted value ends at its closing quote, and in an
+            // unquoted one `#` starts a comment at the start or after
+            // whitespace.
+            let value = line[1..].trim();
+            let v = match value.chars().next() {
+                Some(quote @ ('\'' | '"')) => match value[1..].find(quote) {
+                    Some(end) => value[1..1 + end].trim(),
+                    None => continue,
+                },
+                _ => {
+                    let cut = value
+                        .char_indices()
+                        .find(|&(i, c)| {
+                            c == '#'
+                                && (i == 0
+                                    || value[..i]
+                                        .chars()
+                                        .next_back()
+                                        .is_some_and(char::is_whitespace))
+                        })
+                        .map_or(value.len(), |(i, _)| i);
+                    let kept = &value[..cut];
+                    // `\s#`: the whitespace before `#` goes with the comment.
+                    kept.trim()
+                }
+            };
             if !v.is_empty() && !v.starts_with('!') {
                 out.push(v.into());
             }
@@ -410,9 +436,15 @@ pub fn load_workspace_packages(start: &Path) -> BTreeMap<String, PathBuf> {
         let paths: Vec<PathBuf> = if pat == "." || pat == "./" {
             vec![root.clone()]
         } else {
-            glob::glob(&root.join(pat).to_string_lossy())
-                .map(|g| g.flatten().collect())
-                .unwrap_or_default()
+            match glob::glob(&root.join(&pat).to_string_lossy()) {
+                Ok(g) => g.flatten().collect(),
+                Err(e) => {
+                    // A glob the matcher rejects is skipped (Graphify 0.9.97,
+                    // #4681).
+                    log::warn!("skipped workspace glob {pat:?} ({e})");
+                    continue;
+                }
+            }
         };
         for p in paths {
             if let Some(d) = read_json_config(&p.join("package.json"))
@@ -714,7 +746,11 @@ pub fn resolve_js_module_path(raw: &str, start: Option<&Path>) -> Option<PathBuf
         return Some(resolve_js_import_path(Path::new(raw)));
     };
     if raw.starts_with('.') {
-        return Some(resolve_js_import_path(&start.join(raw)));
+        // Strip ?query / #fragment before resolving, as bundlers do
+        // (Graphify 0.9.98, #4860).
+        let specifier = raw.split('#').next().unwrap_or("");
+        let specifier = specifier.split('?').next().unwrap_or("");
+        return Some(resolve_js_import_path(&start.join(specifier)));
     }
     let aliases = load_tsconfig_aliases(start);
     let base = load_tsconfig_base_url(start);

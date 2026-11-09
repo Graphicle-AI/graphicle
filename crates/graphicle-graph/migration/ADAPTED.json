@@ -1,6 +1,6 @@
 {
-  "upstream_version": "0.9.95",
-  "upstream_commit": "92741d162b2094ffc2fed58cfbd8ee823e9da62c",
+  "upstream_version": "0.9.102",
+  "upstream_commit": "59b5ab1151e031fb42e39cfc9a50bf96f2d57ae0",
   "files": {
     "src/affected.rs": [
       "graphify/affected.py"

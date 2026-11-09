@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/export.py
 //! Native graphify/export.py: protected artifacts and graph serialization.
 pub use crate::export_formats::{to_graphml, to_svg};
@@ -398,10 +398,16 @@ pub fn backup_if_protected_at(out: &Path, today: &str, d: &mut Diagnostics) -> O
         return None;
     }
     let backup = out.join(today);
+    // Today's backup is reused only when it holds every artifact present
+    // beside an identical graph.json: a snapshot an earlier copy left
+    // incomplete is copied again (Graphify 0.9.100, #3769).
     if let (Ok(a), Ok(b)) = (
         fs::read(out.join("graph.json")),
         fs::read(backup.join("graph.json")),
     ) && a == b
+        && BACKUP_ARTIFACTS
+            .iter()
+            .all(|name| !out.join(name).exists() || backup.join(name).exists())
     {
         return Some(backup);
     }
@@ -412,10 +418,15 @@ pub fn backup_if_protected_at(out: &Path, today: &str, d: &mut Diagnostics) -> O
         return None;
     }
     let mut copied = 0;
+    let mut failed = vec![];
     for name in BACKUP_ARTIFACTS {
         let src = out.join(name);
         let dst = backup.join(name);
-        if src.exists() && fs::copy(&src, &dst).is_ok() {
+        if src.exists() && fs::copy(&src, &dst).is_err() {
+            failed.push(name.to_string());
+            continue;
+        }
+        if src.exists() {
             if let (Ok(metadata), Ok(file)) = (
                 fs::metadata(&src),
                 fs::File::options().write(true).open(&dst),
@@ -431,6 +442,16 @@ pub fn backup_if_protected_at(out: &Path, today: &str, d: &mut Diagnostics) -> O
             }
             copied += 1;
         }
+    }
+    // A partial snapshot reported as a backup would let a stale graph.json
+    // survive the next overwrite unnoticed (#3769): warn, report no backup,
+    // and still let the write go ahead.
+    if !failed.is_empty() {
+        d.stderr.push(format!(
+            "[graphicle] warning: backup incomplete - could not copy {} -> {today}/ - continuing with overwrite",
+            failed.join(", ")
+        ));
+        return None;
     }
     if copied > 0 {
         let reason = match (semantic, curated) {
@@ -600,9 +621,17 @@ pub fn to_json(
             return Ok(false);
         };
         // A saved semantic node (rationale, document) the new graph lacks is
-        // lost even when AST growth keeps the total up (#4115/#2229).
-        let missing =
-            crate::build::lost_saved_semantic_nodes(&existing, &semantic_check_nodes(graph), &[]);
+        // lost even when AST growth keeps the total up (#4115/#2229); a
+        // saved id folded into a twin, or merged by dedup into a survivor in
+        // the new graph, is not (Graphify 0.9.97-0.9.102, #4778, #4940).
+        let mut folded = std::collections::BTreeMap::new();
+        let missing = crate::build::lost_saved_semantic_nodes_with(
+            &existing,
+            &semantic_check_nodes(graph),
+            &[],
+            Some(&mut folded),
+            Some(graph.dedup_remap()),
+        );
         if !missing.is_empty() {
             let ids = missing
                 .iter()
@@ -613,7 +642,29 @@ pub fn to_json(
             return Ok(false);
         }
         let (n, old) = (graph.nodes.len(), existing.len());
-        if n < old {
+        // A saved semantic node merged into an AST twin that was already
+        // saved is one node, not two (#4389); a twin new to this run does not
+        // offset another node's loss. Dedup merges of saved ids count as
+        // their allowance (#4940).
+        let existing_ids: std::collections::HashSet<String> = existing
+            .iter()
+            .filter(|node| node.is_object())
+            .filter_map(|node| node.get("id").and_then(Value::as_str).map(str::to_owned))
+            .collect();
+        let mut merged = folded.values().filter(|twin| existing_ids.contains(*twin)).count();
+        if !graph.dedup_remap().is_empty() {
+            let new_ids: std::collections::HashSet<String> = graph
+                .nodes
+                .iter()
+                .filter_map(|node| node.id.as_str().map(str::to_owned))
+                .collect();
+            merged += crate::build::dedup_shrink_allowance(
+                &existing_ids,
+                &new_ids,
+                graph.dedup_remap(),
+            );
+        }
+        if n + merged < old {
             d.stderr.push(format!("[graphicle] WARNING: new graph has {n} nodes but existing graph.json has {old} (net -{}). Refusing to overwrite. Possible causes: missing chunk files from a previous session, or fuzzy dedup collapsed same-named symbols across files during an --update on an already-current graph. Run a full rebuild (/graphicle .) to be safe, or pass force=True only if you have verified the reduction is legitimate.",old-n));
             return Ok(false);
         }
@@ -1083,8 +1134,10 @@ pub fn to_cypher(graph: &Graph, output: &Path) -> Result<()> {
             .and_then(Value::as_str)
             .unwrap_or("unknown");
         let ftype = cypher_label(&crate::exporters::graphdb::capitalize(ftype), "Entity");
+        // The label is SET, not matched, so a re-import updates a renamed
+        // node instead of creating a twin (Graphify 0.9.98).
         lines.push(format!(
-            "MERGE (n:{ftype} {{id: '{}', label: '{}'}});",
+            "MERGE (n:{ftype} {{id: '{}'}}) SET n.label = '{}';",
             cypher_escape(id),
             cypher_escape(label)
         ));

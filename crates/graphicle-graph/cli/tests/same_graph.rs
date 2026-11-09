@@ -53,7 +53,10 @@ fn outputs_as(
     let home = tempfile::tempdir().unwrap();
     let source = project.to_string_lossy().into_owned();
     for args in [
-        vec!["extract", &source, "--code-only", "--force"],
+        // The harness starts with a code-only extract, which keeps the graph
+        // code-only (Graphify 0.9.101, #4923): an update builds it here so
+        // the Office document is in it.
+        vec!["update", &source],
         vec!["update", &source],
         vec!["update", &source],
     ] {

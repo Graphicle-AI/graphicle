@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Symbol disambiguation and shortest paths in stored edge direction.
 use crate::{Result, graph::Graph, serve_search::*};
@@ -83,6 +83,189 @@ pub fn python_qualified(g: &Graph, index: &SearchIndex, label: &str) -> Vec<usiz
     }
     vec![]
 }
+/// Owner to member relations a `Type.Member` query walks: `method` for
+/// methods, `defines` for fields and in-class declarations, `contains` for
+/// nested types (Graphify 0.9.99, #4884).
+const TYPE_MEMBER_RELATIONS: [&str; 3] = ["method", "defines", "contains"];
+/// `Type.Member`, `Outer.Inner.Member` or `Type.Member()`.
+static QUALIFIED_MEMBER: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\.([A-Za-z_]\w*)(?:\(\))?$").unwrap()
+});
+/// `_symbol_name`: a node's label folded to its bare name, so the member
+/// `.Build()` reads `build`.
+fn symbol_name(g: &Graph, i: usize) -> String {
+    let nl = norm_label(g, i);
+    let nl = nl.trim();
+    let nl = nl.strip_prefix('.').unwrap_or(nl);
+    nl.strip_suffix("()").unwrap_or(nl).to_owned()
+}
+/// `_split_qualified_member`: the folded `(owner chain, member)` of a
+/// `Type.Member` query, or `None` for another form.
+fn split_qualified_member(label: &str) -> Option<(Vec<String>, String)> {
+    let qualified = QUALIFIED_MEMBER.captures(label.trim())?;
+    let owners = qualified[1]
+        .split('.')
+        .map(|p| fold(p).to_lowercase())
+        .collect();
+    Some((owners, fold(&qualified[2]).to_lowercase()))
+}
+fn named_nodes(g: &Graph, index: &SearchIndex, name: &str) -> Vec<usize> {
+    index
+        .candidates(&[name.to_owned()], 0.1)
+        .unwrap_or_else(|| (0..g.nodes.len()).collect())
+        .into_iter()
+        .filter(|&i| symbol_name(g, i) == name)
+        .collect()
+}
+/// `_membership_neighbors`: the members of `node` (`members`) or the nodes
+/// that own it. Direction comes from the edge's `_src`/`_tgt` markers, else
+/// the stored arc of a directed graph; an undirected edge without markers
+/// says nothing about which end owns the other and is skipped.
+fn membership_neighbors(g: &Graph, node: usize, members: bool) -> Vec<usize> {
+    let mut found: Vec<usize> = vec![];
+    let mut visit = |u: usize, v: usize, e: &crate::graph::Edge| {
+        let relation = e.attributes.get("relation").and_then(Value::as_str);
+        if !relation.is_some_and(|r| TYPE_MEMBER_RELATIONS.contains(&r)) {
+            return;
+        }
+        let (owner, member) = match (e.attributes.get("_src"), e.attributes.get("_tgt")) {
+            (Some(a), Some(b)) => (g.node_index(a), g.node_index(b)),
+            _ if g.is_directed() => (Some(u), Some(v)),
+            _ => return,
+        };
+        let (Some(owner), Some(member)) = (owner, member) else {
+            return;
+        };
+        if (if members { owner } else { member }) != node {
+            return;
+        }
+        let other = if members { member } else { owner };
+        if other != node && !found.contains(&other) {
+            found.push(other);
+        }
+    };
+    let me = &g.nodes[node].id;
+    let mut outs: Vec<usize> = g.neighbor_indices(node, false).collect();
+    outs.dedup();
+    for w in outs {
+        for e in g.edges_between(me, &g.nodes[w].id) {
+            visit(node, w, e);
+        }
+    }
+    if g.is_directed() {
+        let mut ins: Vec<usize> = g.neighbor_indices(node, true).collect();
+        ins.dedup();
+        for w in ins {
+            for e in g.edges_between(&g.nodes[w].id, me) {
+                visit(w, node, e);
+            }
+        }
+    }
+    found
+}
+/// `_enclosed_by`: is `node` nested in types named by `outer`, outermost
+/// first?
+fn enclosed_by(g: &Graph, node: usize, outer: &[String]) -> bool {
+    let Some((last, rest)) = outer.split_last() else {
+        return true;
+    };
+    membership_neighbors(g, node, false)
+        .into_iter()
+        .any(|parent| symbol_name(g, parent) == *last && enclosed_by(g, parent, rest))
+}
+/// `_qualified_member_owners`: nodes named `qualifiers[-1]` that own
+/// members, nested as the rest of the chain says.
+fn qualified_member_owners(g: &Graph, index: &SearchIndex, qualifiers: &[String]) -> Vec<usize> {
+    let Some((last, outer)) = qualifiers.split_last() else {
+        return vec![];
+    };
+    named_nodes(g, index, last)
+        .into_iter()
+        .filter(|&owner| {
+            !membership_neighbors(g, owner, true).is_empty() && enclosed_by(g, owner, outer)
+        })
+        .collect()
+}
+fn members_named(g: &Graph, owners: &[usize], member: &str) -> Vec<usize> {
+    let mut hits: Vec<usize> = vec![];
+    for &owner in owners {
+        for i in membership_neighbors(g, owner, true) {
+            if symbol_name(g, i) == member && !hits.contains(&i) {
+                hits.push(i);
+            }
+        }
+    }
+    hits
+}
+/// `_names_source_file`: is `label` a file name (`utils.py`) or path some
+/// node was extracted from? Case-insensitive, like the source-path tier.
+fn names_source_file(g: &Graph, label: &str) -> bool {
+    let fold_path = |t: &str| fold(&t.trim().replace('\\', "/")).to_lowercase();
+    let query = fold_path(label);
+    let suffix = format!("/{query}");
+    (0..g.nodes.len()).any(|i| {
+        let source = fold_path(&text(field(g, i, "source_file")));
+        !source.is_empty() && (source == query || source.ends_with(&suffix))
+    })
+}
+/// `_resolve_qualified_member` (Graphify 0.9.99, #4884): member nodes named
+/// by `Type.Member` through their declaring type. A file name such as
+/// `config.json` has the same shape and names the file, so it resolves
+/// nothing; neither does a namespace qualifier, since the file, not the
+/// namespace node, owns the type.
+pub fn resolve_qualified_member(g: &Graph, index: &SearchIndex, label: &str) -> Vec<usize> {
+    let Some((qualifiers, member)) = split_qualified_member(label) else {
+        return vec![];
+    };
+    if names_source_file(g, label) {
+        return vec![];
+    }
+    members_named(g, &qualified_member_owners(g, index, &qualifiers), &member)
+}
+/// `_no_member_match_message` (Graphify 0.9.99, #4884): the refusal for a
+/// `Type.Member` endpoint whose type declares no such member, since scoring
+/// it would land on the type. `None` when the query is a node's own id or
+/// label, a file name, or no type of that name owns members. Same-named
+/// members of a type with that bare name are listed for a retry.
+pub fn no_member_match_message(g: &Graph, index: &SearchIndex, label: &str) -> Option<String> {
+    let (qualifiers, member) = split_qualified_member(label)?;
+    let term = tokens(label).join(" ");
+    let nq = fold(label).to_lowercase().trim().to_string();
+    if literal_exact(g, index, &term, &nq) || names_source_file(g, label) {
+        return None;
+    }
+    let bare_owners = qualified_member_owners(g, index, &qualifiers[qualifiers.len() - 1..]);
+    if bare_owners.is_empty() {
+        return None;
+    }
+    let trimmed = label.trim();
+    let trimmed = trimmed.strip_suffix("()").unwrap_or(trimmed);
+    let (owner_text, member_text) = trimmed.rsplit_once('.').unwrap_or(("", trimmed));
+    let sanitize = |t: &str| crate::security::sanitize_label(&Value::String(t.to_owned()));
+    let mut message = format!(
+        "No node matching '{}' found; no type '{}' declares '{}'.",
+        sanitize(label),
+        sanitize(owner_text),
+        sanitize(member_text)
+    );
+    let near = members_named(g, &bare_owners, &member);
+    if !near.is_empty() {
+        let listing = near
+            .iter()
+            .map(|&n| {
+                let shown = [field(g, n, "source_file"), field(g, n, "label")]
+                    .into_iter()
+                    .find(|v| crate::build::truthy(v))
+                    .map(string)
+                    .unwrap_or_else(|| id(g, n));
+                format!("  {shown}\n    id: {}", id(g, n))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        message.push_str(&format!("\n{listing}\nRetry with the full node id."));
+    }
+    Some(message)
+}
 pub fn tiers(g: &Graph, index: &SearchIndex, query: &str) -> [Vec<usize>; 4] {
     let term = tokens(query).join(" ");
     let nq = fold(query).to_lowercase().trim().to_string();
@@ -131,6 +314,54 @@ pub fn tiers(g: &Graph, index: &SearchIndex, query: &str) -> [Vec<usize>; 4] {
             out[2].push(i);
         } else if nl.contains(&term) || lt.contains(&term) || nl.contains(&nq) {
             out[3].push(i);
+        }
+    }
+    // `Type.Member` names a member through its declaring type (Graphify
+    // 0.9.99, #4884). The member's own label is `.Build()`, so no tier above
+    // matched it and scoring picked the type. Tried only once no node's own
+    // id, label or source path matched exactly, so those keep precedence.
+    // Returned as the exact tier, so several members under that name are
+    // refused with their candidates rather than one of them guessed.
+    if out[0].is_empty() && out[1].is_empty() {
+        let members = resolve_qualified_member(g, index, query);
+        if !members.is_empty() {
+            return [vec![], members, vec![], vec![]];
+        }
+    }
+    // The tiers fold case, so in a case-sensitive language `Run` and `run`
+    // tie in the exact tier and every lookup is refused, even one spelled
+    // exactly like one of them. When the tie is only case and exactly one
+    // label is written as queried, it wins; the others stay reachable one
+    // tier down (Graphify 0.9.98).
+    if out[1].len() > 1 {
+        let bare = |s: &str| {
+            let s = s.trim().trim_start_matches('.');
+            s.strip_suffix("()").unwrap_or(s).to_owned()
+        };
+        let wanted = bare(query);
+        let labels: Vec<String> = out[1]
+            .iter()
+            .map(|&i| bare(&or_empty(field(g, i, "label"))))
+            .collect();
+        let same_case: Vec<usize> = out[1]
+            .iter()
+            .zip(&labels)
+            .filter(|(_, l)| **l == wanted)
+            .map(|(&i, _)| i)
+            .collect();
+        if same_case.len() == 1
+            && labels
+                .iter()
+                .all(|l| l.to_lowercase() == wanted.to_lowercase())
+        {
+            let mut demoted: Vec<usize> = out[1]
+                .iter()
+                .copied()
+                .filter(|&i| i != same_case[0])
+                .collect();
+            demoted.append(&mut out[2]);
+            out[2] = demoted;
+            out[1] = same_case;
         }
     }
     if !out[0].is_empty() {
@@ -469,6 +700,12 @@ pub fn resolve_path_endpoint(
             Some(no_scoped_match_message(g, strip(path), strip(symbol))),
         );
     }
+    // Likewise a `Type.Member` endpoint whose type exists but declares no
+    // such member: scoring resolves it to the type, and the route printed to
+    // the type reads as a route to the member (#4884).
+    if let Some(message) = no_member_match_message(g, index, query) {
+        return (None, vec![], Some(message));
+    }
     let terms = query
         .split_whitespace()
         .map(str::to_lowercase)
@@ -696,7 +933,7 @@ fn shortest_path_with(
             }
         }
     }
-    let Some(meeting) = meeting else {
+    if meeting.is_none() {
         let source_label = if cli {
             source.to_string()
         } else {
@@ -723,17 +960,11 @@ fn shortest_path_with(
         } else {
             message
         }));
-    };
-    let mut path = vec![meeting];
-    while *path.last().unwrap() != src {
-        path.push(parents[path.last().unwrap()]);
     }
-    path.reverse();
-    let mut node = meeting;
-    while node != tgt {
-        node = successors[&node];
-        path.push(node);
-    }
+    // Among every shortest route, the one whose weakest hop is weakest, so
+    // the confidence never overstates the connection (Graphify 0.9.99,
+    // #4881).
+    let (path, routes, capped) = weakest_shortest_path(g, adj, src, tgt);
     let hops = path.len() - 1;
     let max = args["max_hops"].as_i64().unwrap_or(8);
     if hops as i64 > max {
@@ -742,20 +973,10 @@ fn shortest_path_with(
         )));
     }
     let mut segments = vec![label(g, src)];
+    let mut hop_datas: Vec<Vec<&crate::record::Attributes>> = Vec::new();
     for pair in path.windows(2) {
-        let (u, v) = (pair[0], pair[1]);
-        let (mut fwd, mut bwd) = (vec![], vec![]);
-        for (a, b) in [(u, v), (v, u)] {
-            for e in g.edges_between(&g.nodes[a].id, &g.nodes[b].id) {
-                if e.attributes.get("_src").unwrap_or(&g.nodes[a].id) == &g.nodes[u].id {
-                    fwd.push(e);
-                } else {
-                    bwd.push(e);
-                }
-            }
-        }
-        let forward = !fwd.is_empty();
-        let data = if forward { fwd } else { bwd };
+        let (v, (forward, data)) = (pair[1], hop_edges(g, pair[0], pair[1]));
+        hop_datas.push(data.iter().map(|e| &e.attributes).collect());
         let terms = |k| {
             data.iter()
                 .filter_map(|e| e.attributes.get(k))
@@ -772,7 +993,17 @@ fn shortest_path_with(
         } else {
             rel
         };
-        let conf = terms("confidence");
+        // Every provenance record of the hop's edges, each with its score
+        // (Graphify 0.9.98-0.9.99, #4881, #4882).
+        let conf = data
+            .iter()
+            .flat_map(|e| crate::build::edge_evidence(&e.attributes))
+            .filter(|e| e.get("confidence").is_some_and(crate::build::truthy))
+            .map(crate::serve_search::confidence_tag)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join("/");
         let conf = if conf.is_empty() {
             conf
         } else {
@@ -789,14 +1020,252 @@ fn shortest_path_with(
     } else {
         format!("{}\n", warnings.join("\n"))
     };
+    // The path's confidence is that of its weakest hop (Graphify 0.9.98,
+    // #4885).
+    let mut summary = path_confidence_line(&hop_datas);
+    if !summary.is_empty() && routes > 1 {
+        let routes = if capped {
+            format!("{MAX_SHORTEST_PATHS}+")
+        } else {
+            routes.to_string()
+        };
+        summary.push_str(&format!(" (weakest of {routes} equal-length routes)"));
+    }
     Ok(PathAnswer {
         text: format!(
-            "{prefix}Shortest path ({hops} hops):\n  {}",
-            segments.join(" ")
+            "{prefix}Shortest path ({hops} hops):\n  {}{}",
+            segments.join(" "),
+            if summary.is_empty() {
+                String::new()
+            } else {
+                format!("\n{summary}")
+            }
         ),
         refusal: None,
         hops: Some(hops),
     })
+}
+/// The rank of a hop in [`path_weakest`]: confidence tier, scoredness,
+/// score and hop index.
+type WeakestRank = (u8, bool, f64, usize);
+/// [`path_weakest`]'s answer: `(rank, hop, relation, confidence or None for
+/// no recognised tag, score)`.
+type Weakest = (WeakestRank, usize, String, Option<String>, Option<f64>);
+/// `_path_weakest` (Graphify 0.9.98-0.9.99, #4885): the weakest hop of a
+/// path, ranked by the weakest evidence it carries (confidence tier, then the
+/// lowest score; a missing score never counts as weaker than a present one,
+/// and EXTRACTED's score is neither ranked nor printed). Returns `(hop,
+/// relation, confidence or None for no recognised tag, score)`.
+fn path_weakest(hop_datas: &[Vec<&crate::record::Attributes>]) -> Option<Weakest> {
+    let empty = crate::record::Attributes::new();
+    let mut weakest: Option<Weakest> = None;
+    for (index, datas) in hop_datas.iter().enumerate() {
+        let hop = index + 1;
+        let datas: Vec<&crate::record::Attributes> = if datas.is_empty() {
+            vec![&empty]
+        } else {
+            datas.clone()
+        };
+        for d in datas {
+            for ev in crate::build::edge_evidence(d) {
+                let conf = ev.get("confidence");
+                let score = match ev.get("confidence_score") {
+                    Some(Value::Number(n)) if conf.and_then(Value::as_str) != Some("EXTRACTED") => {
+                        n.as_f64().filter(|s| s.is_finite())
+                    }
+                    _ => None,
+                };
+                let rank: u8 = match conf.map(string).as_deref() {
+                    Some("EXTRACTED") => 3,
+                    Some("INFERRED") => 2,
+                    Some("AMBIGUOUS") => 1,
+                    _ => 0,
+                };
+                let key = (rank, score.is_none(), score.unwrap_or(0.0), hop);
+                let weaker = weakest
+                    .as_ref()
+                    .is_none_or(|(old, ..)| rank_cmp(&key, old).is_lt());
+                if weaker {
+                    let relation = d
+                        .get("relation")
+                        .filter(|v| crate::build::truthy(v))
+                        .map(string)
+                        .unwrap_or_else(|| "related".into());
+                    let conf = (rank > 0).then(|| conf.map(string).unwrap_or_default());
+                    weakest = Some((key, hop, relation, conf, score));
+                }
+            }
+        }
+    }
+    weakest
+}
+fn rank_cmp(a: &WeakestRank, b: &WeakestRank) -> std::cmp::Ordering {
+    a.0.cmp(&b.0)
+        .then(a.1.cmp(&b.1))
+        .then(a.2.total_cmp(&b.2))
+        .then(a.3.cmp(&b.3))
+}
+/// `_path_confidence_key`: a path's weakest-first sort key; a path with no
+/// confidence evidence at all (`None`) sorts below any tagged one.
+fn path_confidence_key(hop_datas: &[Vec<&crate::record::Attributes>]) -> Option<WeakestRank> {
+    path_weakest(hop_datas).map(|(key, ..)| key)
+}
+/// The edges of one hop `u -> v` and whether they run that way: the
+/// `_src`-marked direction (#2309) as the path renderer reads it, else the
+/// reverse edges (`_path_hop_datas`).
+fn hop_edges(g: &Graph, u: usize, v: usize) -> (bool, Vec<&crate::graph::Edge>) {
+    let (mut fwd, mut bwd) = (vec![], vec![]);
+    for (a, b) in [(u, v), (v, u)] {
+        for e in g.edges_between(&g.nodes[a].id, &g.nodes[b].id) {
+            if e.attributes.get("_src").unwrap_or(&g.nodes[a].id) == &g.nodes[u].id {
+                fwd.push(e);
+            } else {
+                bwd.push(e);
+            }
+        }
+    }
+    if fwd.is_empty() {
+        (false, bwd)
+    } else {
+        (true, fwd)
+    }
+}
+/// Enough equal-length routes to find the weakest among them without letting
+/// a pathological graph enumerate exponentially many (#4881).
+const MAX_SHORTEST_PATHS: usize = 256;
+/// `_weakest_shortest_path`: NetworkX's `all_shortest_paths` over the search
+/// adjacency (`predecessor`, then `_build_paths_from_predecessors`, in their
+/// order), bounded at [`MAX_SHORTEST_PATHS`], and the first route with the
+/// weakest [`path_confidence_key`]. Returns `(route, routes, capped)`; the
+/// caller has already found that a route exists.
+fn weakest_shortest_path(
+    g: &Graph,
+    adj: &[Vec<usize>],
+    src: usize,
+    tgt: usize,
+) -> (Vec<usize>, usize, bool) {
+    // nx.predecessor: breadth first, every same-level parent in visit order.
+    let mut level_of: std::collections::HashMap<usize, usize> =
+        std::collections::HashMap::from([(src, 0)]);
+    let mut pred: std::collections::HashMap<usize, Vec<usize>> =
+        std::collections::HashMap::from([(src, vec![])]);
+    let mut next_level = vec![src];
+    let mut level = 0;
+    while !next_level.is_empty() {
+        level += 1;
+        for v in std::mem::take(&mut next_level) {
+            for &w in &adj[v] {
+                match level_of.get(&w) {
+                    None => {
+                        level_of.insert(w, level);
+                        pred.insert(w, vec![v]);
+                        next_level.push(w);
+                    }
+                    Some(&l) if l == level => pred.entry(w).or_default().push(v),
+                    Some(_) => {}
+                }
+            }
+        }
+    }
+    // _build_paths_from_predecessors({src}, tgt, pred), stopping one past
+    // the cap as upstream does.
+    let mut paths: Vec<Vec<usize>> = vec![];
+    let mut seen = std::collections::HashSet::from([tgt]);
+    let mut stack: Vec<(usize, usize)> = vec![(tgt, 0)];
+    let mut top: isize = 0;
+    while top >= 0 {
+        let t = top as usize;
+        let (node, i) = stack[t];
+        if node == src {
+            paths.push(stack[..=t].iter().rev().map(|(n, _)| *n).collect());
+            if paths.len() > MAX_SHORTEST_PATHS {
+                break;
+            }
+        }
+        let preds = pred.get(&node).map_or(&[][..], Vec::as_slice);
+        if preds.len() > i {
+            stack[t].1 = i + 1;
+            let next = preds[i];
+            if !seen.insert(next) {
+                continue;
+            }
+            top += 1;
+            let t = top as usize;
+            if t == stack.len() {
+                stack.push((next, 0));
+            } else {
+                stack[t] = (next, 0);
+            }
+        } else {
+            seen.remove(&node);
+            top -= 1;
+        }
+    }
+    let capped = paths.len() > MAX_SHORTEST_PATHS;
+    paths.truncate(MAX_SHORTEST_PATHS);
+    let routes = paths.len();
+    let mut best: Option<(Option<WeakestRank>, usize)> = None;
+    for (i, path) in paths.iter().enumerate() {
+        let hop_datas = path
+            .windows(2)
+            .map(|pair| {
+                hop_edges(g, pair[0], pair[1])
+                    .1
+                    .into_iter()
+                    .map(|e| &e.attributes)
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        let key = path_confidence_key(&hop_datas);
+        let weaker = best.as_ref().is_none_or(|(old, _)| match (&key, old) {
+            (None, None) => false,
+            (None, Some(_)) => true,
+            (Some(_), None) => false,
+            (Some(a), Some(b)) => rank_cmp(a, b).is_lt(),
+        });
+        if weaker {
+            best = Some((key, i));
+        }
+    }
+    let chosen = best.map_or(0, |(_, i)| i);
+    (paths.swap_remove(chosen), routes, capped)
+}
+/// `_path_confidence_line`: `Path confidence: <tier> (weakest hop N: rel,
+/// score S)`, or `unknown` when the weakest hop has no recognised tag.
+fn path_confidence_line(hop_datas: &[Vec<&crate::record::Attributes>]) -> String {
+    let Some((_, hop, relation, conf, score)) = path_weakest(hop_datas) else {
+        return String::new();
+    };
+    match conf {
+        None => format!("Path confidence: unknown (hop {hop}: {relation} has no confidence tag)"),
+        Some(conf) => format!(
+            "Path confidence: {conf} (weakest hop {hop}: {relation}{})",
+            score.map(|s| format!(", score {}", format_g(s))).unwrap_or_default()
+        ),
+    }
+}
+/// Python's `format(x, "g")`: six significant digits, trailing zeros
+/// dropped, scientific notation below 1e-4 and from 1e6.
+fn format_g(x: f64) -> String {
+    if x == 0.0 {
+        return if x.is_sign_negative() { "-0" } else { "0" }.into();
+    }
+    let sci = format!("{x:.5e}");
+    let (mantissa, exponent) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let exponent: i32 = exponent.parse().unwrap_or(0);
+    let trim = |s: &str| {
+        if s.contains('.') {
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
+        } else {
+            s.to_string()
+        }
+    };
+    if !(-4..6).contains(&exponent) {
+        let sign = if exponent < 0 { '-' } else { '+' };
+        format!("{}e{sign}{:02}", trim(mantissa), exponent.abs())
+    } else {
+        trim(&format!("{:.*}", (5 - exponent) as usize, x))
+    }
 }
 #[cfg(test)]
 mod tests {

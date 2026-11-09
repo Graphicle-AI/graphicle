@@ -1,11 +1,12 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py, graphify/extractors/objc.py
 //! C++ declarator helper from engine.py, also used by the Objective-C grammar.
 //! This helper does not complete the generic extraction engine.
 use super::base::read_text;
 use tree_sitter::Node;
 pub fn cpp_declarator_name(node: Node<'_>, source: &[u8]) -> Option<String> {
-    if node.kind() == "identifier" {
+    // A class field's declarator too (Graphify 0.9.101, #3215).
+    if matches!(node.kind(), "identifier" | "field_identifier") {
         return Some(read_text(node, source));
     }
     if matches!(
@@ -18,7 +19,10 @@ pub fn cpp_declarator_name(node: Node<'_>, source: &[u8]) -> Option<String> {
                 .find(|n| {
                     matches!(
                         n.kind(),
-                        "identifier" | "pointer_declarator" | "reference_declarator"
+                        "identifier"
+                            | "field_identifier"
+                            | "pointer_declarator"
+                            | "reference_declarator"
                     )
                 })
         });

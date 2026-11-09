@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/pascal_forms.py
 //! Port of graphify/extractors/pascal_forms.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 use super::base::{file_stem, make_id};
@@ -9,8 +9,12 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
 
-static OBJECT: LazyLock<Regex> =
-    LazyLock::new(|| compile(r"^\s*[oO][bB][jJ][eE][cC][tT]\s+\w+\s*:\s*(\w+)"));
+// `inherited` and `inline` component blocks too (Graphify 0.9.98).
+static OBJECT: LazyLock<Regex> = LazyLock::new(|| {
+    compile(
+        r"^\s*(?:[oO][bB][jJ][eE][cC][tT]|[iI][nN][hH][eE][rR][iI][tT][eE][dD]|[iI][nN][lL][iI][nN][eE])\s+\w+\s*:\s*(\w+)",
+    )
+});
 static EVENT: LazyLock<Regex> = LazyLock::new(|| compile(r"^\s*[oO][nN]\w+\s*=\s*(\w+)"));
 static END: LazyLock<Regex> = LazyLock::new(|| compile(r"^\s*[eE][nN][dD]\s*$"));
 

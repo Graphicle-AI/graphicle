@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/affected.py, graphify/global_graph.py, graphify/multigraph_compat.py
 //! Native attributed graph substrate for the translated Graphify modules.
 //! Preserves insertion order, keyed parallel edges and node-link JSON semantics.
@@ -241,8 +241,18 @@ pub struct Graph {
     edge_index: HashTable<u32>,
     adjacency: Vec<Neighbors>,
     incoming: Vec<Neighbors>,
+    /// `{merged-away id: survivor id}` of this build's intentional folds:
+    /// entity dedup (Graphify 0.9.101, #4940) and ghost folds into AST twins
+    /// (0.9.102, #4955). The write guards read it; it is never serialized,
+    /// digested or stored in a snapshot.
+    pub(crate) dedup_remap: std::collections::BTreeMap<String, String>,
 }
 impl Graph {
+    /// The `{merged-away id: survivor id}` folds of the build that made this
+    /// graph (`take_dedup_remap`, Graphify 0.9.101-0.9.102).
+    pub fn dedup_remap(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.dedup_remap
+    }
     pub fn new(directed: bool, multigraph: bool) -> Self {
         Self::with_capacity(directed, multigraph, 0, 0)
     }
@@ -259,6 +269,7 @@ impl Graph {
             edge_index: HashTable::with_capacity(if multigraph { edges } else { 0 }),
             adjacency: Vec::with_capacity(nodes),
             incoming: Vec::with_capacity(nodes),
+            dedup_remap: Default::default(),
         }
     }
     /// Room for `additional` more edges, so that a build that knows how many
@@ -927,6 +938,7 @@ impl Graph {
             edge_index: HashTable::new(),
             adjacency: kept.iter().map(|&u| row(&self.adjacency[u])).collect(),
             incoming: kept.iter().map(|&u| row(&self.incoming[u])).collect(),
+            dedup_remap: self.dedup_remap.clone(),
         };
         graph.reindex_nodes();
         graph.reindex_edges(false)?;
@@ -1341,6 +1353,7 @@ impl Graph {
             edge_index: self.edge_index.clone(),
             adjacency: self.adjacency.clone(),
             incoming: self.incoming.clone(),
+            dedup_remap: Default::default(),
         }
     }
     /// `without_node_attributes` that also keeps only the `key` attribute of
@@ -1394,6 +1407,7 @@ impl Graph {
             edge_index: self.edge_index.clone(),
             adjacency: self.adjacency.clone(),
             incoming: self.incoming.clone(),
+            dedup_remap: Default::default(),
         }
     }
     pub fn to_undirected(&self) -> Result<Self> {

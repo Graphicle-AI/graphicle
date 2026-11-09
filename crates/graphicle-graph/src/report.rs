@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/report.py
 //! Human-readable graph reports. Port of the pinned Graphify report module.
 use crate::{Result, analyze, graph::Graph, path_syntax, python_compat, reflect};
@@ -62,28 +62,12 @@ pub fn portable_root_label(root: &str) -> String {
         .unwrap_or_default();
     if resolved.is_empty() { raw } else { resolved }
 }
+/// The community hub wikilink target, computed as the `_COMMUNITY_*.md`
+/// filename is (`export::obsidian_safe_stem`), so the two never drift apart
+/// (Graphify 0.9.97). Only the export's path-length budget, which needs the
+/// real output folder, is not applied here.
 pub fn safe_community_name(label: &str) -> String {
-    let clean = label
-        .replace("\r\n", " ")
-        .replace(['\r', '\n'], " ")
-        .chars()
-        .filter(|c| !"\\/*?:\"<>|#^[]".contains(*c))
-        .collect::<String>();
-    let mut clean = clean
-        .trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
-        .to_string();
-    let lower = clean.to_lowercase();
-    for suffix in [".md", ".mdx", ".markdown"] {
-        if lower.ends_with(suffix) {
-            clean.truncate(clean.rfind('.').unwrap());
-            break;
-        }
-    }
-    if clean.is_empty() {
-        "unnamed".into()
-    } else {
-        clean
-    }
+    crate::export::obsidian_safe_stem(label, 200)
 }
 pub fn load_learning_for_report(path: &Path) -> Option<Value> {
     (|| -> Result<Option<Value>> {
@@ -315,6 +299,15 @@ pub fn generate(graph: &Graph, r: &Value) -> Result<String> {
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
+        }
+        // The plain count reads as routine even when it is most of the
+        // corpus: say plainly that the graph may be missing a large part of
+        // the codebase (Graphify 0.9.103, #2942).
+        if let Some(warning) = detection
+            .get("unclassified_warning")
+            .filter(|v| truthy(v))
+        {
+            lines.push(format!("- WARNING: {}", s(warning)));
         }
     }
     let min = r["min_community_size"].as_i64().unwrap_or(3);

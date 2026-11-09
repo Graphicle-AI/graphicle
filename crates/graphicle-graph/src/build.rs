@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py
 //! Native graph construction and conservative normalization of extraction output.
 pub use crate::build_global::{distinct_repo_tags, prefix_graph_for_global, prune_repo_from_graph};
@@ -152,7 +152,17 @@ pub fn mint_external_stubs_in_data(data: &mut Value) {
 /// typed stub, every other edge without two declared endpoints is dropped,
 /// and a stub no edge or hyperedge references any more is dropped, as a fresh
 /// build would not have it.
-pub fn finalize_raw_graph_endpoints(data: &mut Value) {
+/// `[graphicle] WARNING` for edges dropped because they still had no
+/// `relation` after alias folding (Graphify 0.9.97, #4809).
+pub fn schema_invalid_edges_warning(dropped: usize) -> String {
+    format!(
+        "[graphicle] WARNING: dropped {dropped} schema-invalid edge(s) missing required field 'relation'."
+    )
+}
+/// Returns the number of edges dropped for having no `relation` once their
+/// aliases are folded (Graphify 0.9.97, #4809); the caller reports it with
+/// [`schema_invalid_edges_warning`].
+pub fn finalize_raw_graph_endpoints(data: &mut Value) -> usize {
     let key = if data.get("links").is_some_and(Value::is_array) {
         "links"
     } else {
@@ -161,7 +171,12 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
     if !data.get("nodes").is_some_and(Value::is_array)
         || !data.get(key).is_some_and(Value::is_array)
     {
-        return;
+        return 0;
+    }
+    // Fold the edge aliases as build_from_json does before validation, so
+    // the relation check below sees `type`/`label` spellings (#4809).
+    for edge in data[key].as_array_mut().unwrap().iter_mut() {
+        crate::build_normalize::fold_edge_aliases(edge);
     }
     let declared_ids = |data: &Value| {
         data["nodes"]
@@ -177,7 +192,7 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
     declared.dedup();
     // Two ids with one normalized spelling: the later in sorted order wins,
     // the same stable choice build_from_json makes (the reference iterates a set).
-    let mut norm_to_id: FxHashMap<String, String> = declared
+    let norm_to_id: FxHashMap<String, String> = declared
         .iter()
         .map(|nid| (ids::normalize_id(nid), nid.clone()))
         .collect();
@@ -192,9 +207,21 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
                 Some((node.get("id")?.as_str()?, node))
             }),
     );
-    for (alias, canonical) in index {
-        norm_to_id.entry(alias).or_insert(canonical);
-    }
+    // Kept apart from norm_to_id and gated on language family, as the
+    // clustered build does (Graphify 0.9.101, #4941).
+    let alias_to_id: FxHashMap<String, String> = index;
+    let node_files: FxHashMap<String, Value> = data["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| {
+            let node = n.as_object()?;
+            Some((
+                node.get("id")?.as_str()?.to_owned(),
+                node.get("source_file").cloned().unwrap_or(Value::Null),
+            ))
+        })
+        .collect();
     let declared: std::collections::HashSet<String> = declared.into_iter().collect();
     // Repoint every endpoint that has a canonical form before stubbing, so an
     // import that names a real file is not frozen onto a stub minted for its
@@ -211,10 +238,22 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
             } else {
                 alias
             };
-            if let Some(endpoint) = object.get(field).and_then(Value::as_str)
-                && !declared.contains(endpoint)
-                && let Some(canonical) = norm_to_id.get(&ids::normalize_id(endpoint))
-            {
+            let Some(endpoint) = object.get(field).and_then(Value::as_str) else {
+                continue;
+            };
+            if declared.contains(endpoint) {
+                continue;
+            }
+            let norm = ids::normalize_id(endpoint);
+            let canonical = norm_to_id.get(&norm).cloned().or_else(|| {
+                alias_to_id
+                    .get(&norm)
+                    .filter(|target| {
+                        alias_lang_compatible(object.get("source_file"), node_files.get(*target))
+                    })
+                    .cloned()
+            });
+            if let Some(canonical) = canonical {
                 object.insert(field.into(), json!(canonical));
             }
         }
@@ -224,11 +263,16 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
     let mut referenced = BTreeSet::new();
     let links = std::mem::take(data[key].as_array_mut().unwrap());
     let mut kept = Vec::with_capacity(links.len());
+    let mut dropped_schema_edges = 0usize;
     for mut edge in links {
         let Some(object) = edge.as_object_mut() else {
             kept.push(edge);
             continue;
         };
+        if !object.contains_key("relation") {
+            dropped_schema_edges += 1;
+            continue;
+        }
         let mut attached = true;
         for (primary, alias) in [("source", "from"), ("target", "to")] {
             let field = if object.contains_key(primary) {
@@ -290,6 +334,23 @@ pub fn finalize_raw_graph_endpoints(data: &mut Value) {
                 || scalar_key(n.get("id").unwrap_or(&Value::Null))
                     .is_some_and(|id| referenced.contains(&id))
         });
+    }
+    dropped_schema_edges
+}
+/// `_alias_lang_compatible` (Graphify 0.9.101, #4941): an old-stem alias
+/// binds an edge endpoint unless the edge's own file and the alias target's
+/// file are both in a known, different language family. The alias index
+/// only guards two same-stem files of one language; a Dart `PunchType`
+/// reference must not bind to an unrelated `PunchType.java`.
+pub fn alias_lang_compatible(edge_source_file: Option<&Value>, alias_source_file: Option<&Value>) -> bool {
+    let family = |value: Option<&Value>| {
+        value
+            .filter(|v| truthy(v))
+            .and_then(|v| crate::extract_merge::family(&python_compat::string(v)))
+    };
+    match (family(edge_source_file), family(alias_source_file)) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
     }
 }
 /// The normalized method name of an AST `.name()` label (#3705).
@@ -363,6 +424,13 @@ fn alias_index<'a, P: Properties + 'a>(
         }
         if attributes.get("_origin").is_some_and(|v| v == "ast") {
             let label = value_string(attributes, "label");
+            // A persisted C# method label carries its owner (Graphify 0.9.98,
+            // #4883): the alias is made from the bare `.Name()` form.
+            let label = crate::extractors::csharp::bare_csharp_method_label(
+                &json!(label.trim_matches(dedup_strings::whitespace)),
+                attributes.get("source_file").unwrap_or(&Value::Null),
+            )
+            .unwrap_or(label);
             if label.starts_with('.') {
                 // #3705: `<file_stem>_<method>` alias for AST `.name()` nodes.
                 let m_alias = format!(
@@ -451,6 +519,57 @@ pub fn disambiguate_file_node_labels(graph: &mut Graph) {
         .collect();
     for (id, label) in file_label_reassignments(&items) {
         if let Some(i) = graph.node_index(&id) {
+            graph.nodes[i]
+                .attributes
+                .insert("label".into(), json!(label));
+        }
+    }
+}
+/// `_qualify_csharp_method_labels` (Graphify 0.9.98, #4883): each C# method
+/// node gets an `Owner.Name()` display label from the source of its `method`
+/// edge. Ids and edges are never changed; an undirected graph's owner side
+/// is the edge's recorded `_src`/`_tgt`; a method with zero or several owners
+/// keeps its bare label. Idempotent.
+pub fn qualify_csharp_method_labels(graph: &mut Graph) {
+    use crate::extractors::csharp::{csharp_method_label_reassignments, is_cs_file};
+    let id_of = |i: usize| graph.nodes[i].id.as_str().map(str::to_owned);
+    let method_edges: Vec<(String, String)> = graph
+        .iter_edges()
+        .filter(|(_, _, e)| e.attributes.get_str("relation") == Some("method"))
+        .filter_map(|(s, t, e)| {
+            let end = |key: &str, i: usize| {
+                e.attributes
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| id_of(i))
+            };
+            Some((end("_src", s)?, end("_tgt", t)?))
+        })
+        .collect();
+    if method_edges.is_empty() {
+        return;
+    }
+    // Only C# nodes can be an owner or a method (`is_cs_file`).
+    let cs_nodes: Vec<(String, Value)> = graph
+        .nodes
+        .iter()
+        .filter_map(|n| {
+            let source_file = n.attributes.get("source_file")?;
+            if !is_cs_file(source_file) {
+                return None;
+            }
+            let id = n.id.as_str()?.to_owned();
+            let label = n.attributes.get("label").cloned().unwrap_or(Value::Null);
+            Some((id, json!({"label": label, "source_file": source_file})))
+        })
+        .collect();
+    let reassigned = csharp_method_label_reassignments(
+        cs_nodes.iter().map(|(id, attrs)| (id.as_str(), attrs)),
+        method_edges.iter().map(|(s, t)| (s.as_str(), t.as_str())),
+    );
+    for (id, label) in reassigned {
+        if let Some(i) = graph.node_index(&json!(id)) {
             graph.nodes[i]
                 .attributes
                 .insert("label".into(), json!(label));
@@ -590,6 +709,112 @@ fn remap_extraction<R: Record, E: EdgeItem<Record = R>>(
 /// Whether a new edge with the same relation as `old` should be dropped:
 /// lower confidence rank, or equal rank while losing a source location or a
 /// lower confidence score.
+/// The fields that say how sure the graph is of an edge and where that came
+/// from. When two edges with one relation collapse, the loser's copy of these
+/// is folded into the winner's `also_seen` list (Graphify 0.9.98, #4881).
+pub const EVIDENCE_KEYS: [&str; 4] = [
+    "confidence",
+    "confidence_score",
+    "source_file",
+    "source_location",
+];
+/// `_evidence`: the provenance fields of one edge or `also_seen` entry,
+/// scalars only, a `confidence_score` as a finite float.
+fn evidence(attrs: &(impl crate::record::Properties + ?Sized)) -> Map<String, Value> {
+    let mut out = Map::new();
+    for key in EVIDENCE_KEYS {
+        let Some(value) = attrs.get(key) else {
+            continue;
+        };
+        if value.is_boolean() || value.is_null() || value.as_str() == Some("") {
+            continue;
+        }
+        if key == "confidence_score" {
+            let score = match value {
+                Value::Number(n) => n.as_f64(),
+                Value::String(s) => s.trim().parse::<f64>().ok(),
+                _ => None,
+            };
+            match score.filter(|s| s.is_finite()) {
+                Some(score) => {
+                    out.insert(key.into(), json!(score));
+                }
+                None => continue,
+            }
+        } else if value.is_string() || value.is_number() {
+            out.insert(key.into(), value.clone());
+        }
+    }
+    out
+}
+/// `_evidence_sort_key`: weakest first, by confidence tier, then score.
+fn evidence_order(a: &Map<String, Value>, b: &Map<String, Value>) -> std::cmp::Ordering {
+    let rank = |ev: &Map<String, Value>| match ev.get("confidence").map(python_compat::string).as_deref() {
+        Some("EXTRACTED") => 3,
+        Some("INFERRED") => 2,
+        Some("AMBIGUOUS") => 1,
+        _ => 0,
+    };
+    let score = |ev: &Map<String, Value>| ev.get("confidence_score").and_then(Value::as_f64);
+    let text = |ev: &Map<String, Value>, k: &str| ev.get(k).map(python_compat::string).unwrap_or_default();
+    rank(a)
+        .cmp(&rank(b))
+        .then_with(|| score(a).is_none().cmp(&score(b).is_none()))
+        .then_with(|| {
+            score(a)
+                .unwrap_or(0.0)
+                .partial_cmp(&score(b).unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| text(a, "source_file").cmp(&text(b, "source_file")))
+        .then_with(|| text(a, "source_location").cmp(&text(b, "source_location")))
+}
+/// `edge_evidence`: every provenance record an edge carries, its own first,
+/// then each `also_seen` entry (Graphify 0.9.98, #4881).
+pub fn edge_evidence(d: &dyn crate::record::Properties) -> Vec<&dyn crate::record::Properties> {
+    let mut out: Vec<&dyn crate::record::Properties> = vec![d];
+    if let Some(also) = d.get("also_seen").and_then(Value::as_array) {
+        out.extend(
+            also.iter()
+                .filter_map(Value::as_object)
+                .map(|m| m as &dyn crate::record::Properties),
+        );
+    }
+    out
+}
+/// `_fold_also_seen`: record `loser`'s provenance on `winner` when the two
+/// collapse (#4881). Entries that repeat the winner's own provenance, or each
+/// other, are dropped, so re-reading a written graph.json is idempotent.
+pub(crate) fn fold_also_seen<R: crate::record::Record>(
+    winner: &mut R,
+    loser: &dyn crate::record::Properties,
+) {
+    let own = evidence(&*winner);
+    let subset = |ev: &Map<String, Value>| ev.iter().all(|(k, v)| own.get(k) == Some(v));
+    let mut kept: Vec<Map<String, Value>> = Vec::new();
+    let mut consider = |ev: Map<String, Value>| {
+        if !ev.is_empty() && !subset(&ev) && !kept.contains(&ev) {
+            kept.push(ev);
+        }
+    };
+    for raw in edge_evidence(&*winner).into_iter().skip(1) {
+        consider(evidence(raw));
+    }
+    let loser_evidence = edge_evidence(loser);
+    consider(evidence(loser_evidence[0]));
+    for raw in loser_evidence.into_iter().skip(1) {
+        consider(evidence(raw));
+    }
+    if kept.is_empty() {
+        winner.take_key("also_seen");
+    } else {
+        kept.sort_by(evidence_order);
+        winner.put(
+            "also_seen",
+            Value::Array(kept.into_iter().map(Value::Object).collect()),
+        );
+    }
+}
 fn same_relation_is_weaker(
     old: &dyn crate::record::Properties,
     new: &dyn crate::record::Properties,
@@ -875,7 +1100,7 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
     }
     drop(profiled);
     let profiled = crate::profile::span("build.core.ghosts_aliases");
-    let norm_to_id = ghosts_and_aliases(&mut graph, dedup)?;
+    let (norm_to_id, alias_to_id) = ghosts_and_aliases(&mut graph, dedup)?;
     drop(profiled);
     let profiled = crate::profile::span("build.core.edges");
     let edges = if consume {
@@ -886,7 +1111,7 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
     add_edges(
         &mut graph,
         edges,
-        &norm_to_id,
+        (&norm_to_id, &alias_to_id),
         directed,
         multigraph,
         root,
@@ -935,13 +1160,19 @@ fn build_core<R: Record, E: EdgeItem<Record = R>>(
     }
     let profiled = crate::profile::span("build.core.file_labels");
     disambiguate_file_node_labels(&mut graph);
+    // Also last, after the method-ghost passes: C# methods display with
+    // their owning type (Graphify 0.9.98, #4883).
+    qualify_csharp_method_labels(&mut graph);
     drop(profiled);
     Ok(graph)
 }
 /// Fold semantic ghosts into the AST nodes they shadow (removing them from
 /// `graph`), and the table edge endpoints resolve through: normalized ids,
 /// ghost ids and file-stem aliases, each to its canonical node id.
-fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String, String>> {
+/// The normalized-id map (ghost remaps included) and, apart from it, the
+/// old-stem alias index (Graphify 0.9.101, #4941).
+type EndpointMaps = (FxHashMap<String, String>, FxHashMap<String, String>);
+fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<EndpointMaps> {
     // Node indices are stable until `remove_nodes_from` below, so the
     // sorted pass can address attributes directly instead of re-hashing ids.
     let mut sorted_nodes = graph
@@ -992,9 +1223,16 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
                     collisions.insert(key.clone());
                 }
                 located.insert(key, nid.clone());
-                if label.starts_with('.') && label.ends_with("()") {
+                // A persisted C# method label carries its owner (Graphify
+                // 0.9.98, #4883): the index keys on the bare `.Name()` form.
+                let m_label = crate::extractors::csharp::bare_csharp_method_label(
+                    &json!(label),
+                    &json!(sf),
+                )
+                .unwrap_or_else(|| label.clone());
+                if m_label.starts_with('.') && m_label.ends_with("()") {
                     ast_methods
-                        .entry((sf.clone(), method_name(&label)))
+                        .entry((sf.clone(), method_name(&m_label)))
                         .or_default()
                         .push(nid.clone());
                 }
@@ -1033,6 +1271,11 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
             {
                 continue;
             }
+            // An independent semantic explanation is no disposable AST twin,
+            // even of the same source file (Graphify 0.9.101, #4896).
+            if has_independent_semantic_evidence(attributes) {
+                continue;
+            }
             ghosts_by_key.insert(key, nid.clone());
         } else if !located.contains_key(&key) {
             // #3705: spec-conformant method ghost that omits the class
@@ -1068,11 +1311,23 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
             .filter(|(_, sf)| crate::build_labels::is_file_node_label_str(&label, sf))
             .map(|(n, _)| n.clone())
             .collect();
-        if matches.len() == 1 {
+        // Only an evidence-free mention of another file folds by label
+        // (Graphify 0.9.101, #4896).
+        let own_file = value_string(attributes, "source_file");
+        if matches.len() == 1
+            && !has_independent_semantic_evidence(attributes)
+            && (own_file.is_empty()
+                || !crate::build_labels::is_file_node_label_str(&label, &own_file))
+        {
             ghosts.insert(nid.clone(), matches.into_iter().next().unwrap());
         }
     }
     graph.remove_nodes_from(&ghosts.keys().map(|s| json!(s)).collect::<Vec<_>>())?;
+    // These folds are intentional (#1145, #3344, #3705): the write guards
+    // read them as merges, not losses (Graphify 0.9.102, #4955).
+    graph
+        .dedup_remap
+        .extend(ghosts.iter().map(|(k, v)| (k.clone(), v.clone())));
     let mut norm_to_id = FxHashMap::<String, String>::default();
     // Stable order resolves the reference's hash-order ambiguity when two IDs
     // have the same normalized spelling; no insertion is allowed to mint a node.
@@ -1093,10 +1348,11 @@ fn ghosts_and_aliases(graph: &mut Graph, dedup: bool) -> Result<FxHashMap<String
             .iter()
             .filter_map(|node| Some((node.id.as_str()?, &node.attributes))),
     );
-    for (alias, canonical) in index {
-        norm_to_id.entry(alias).or_insert(canonical);
-    }
-    Ok(norm_to_id)
+    // Kept apart from norm_to_id, not merged into it: the uniqueness check
+    // of the alias index only guards two same-stem files of one language,
+    // never a same-named node in another language (#4941).
+    let alias_to_id: FxHashMap<String, String> = index;
+    Ok((norm_to_id, alias_to_id))
 }
 /// The fields an edge is ordered by: source, target and relation, an
 /// endpoint read from its alias (`from`, `to`) when absent.
@@ -1170,7 +1426,7 @@ fn indices<K>(keyed: &[(K, usize)]) -> Vec<usize> {
 fn add_edges<R: Record, E: EdgeItem<Record = R>>(
     graph: &mut Graph,
     mut edges: Vec<E>,
-    norm_to_id: &FxHashMap<String, String>,
+    (norm_to_id, alias_to_id): (&FxHashMap<String, String>, &FxHashMap<String, String>),
     directed: bool,
     multigraph: bool,
     root: Option<&Path>,
@@ -1181,6 +1437,7 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
     // once instead of doubling (each doubling copies every slot while the
     // old and the new list are both live).
     graph.reserve_edges(edges.len());
+    let mut dropped_schema_edges = 0usize;
     for i in order {
         // Each edge is taken out of the list once: its attributes move into
         // the graph instead of being copied.
@@ -1207,7 +1464,21 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
         for (endpoint, index) in [(&mut src, &mut u), (&mut tgt, &mut v)] {
             if index.is_none() {
                 let id = endpoint.as_str().ok_or("Expected string edge endpoint")?;
-                if let Some(new) = norm_to_id.get(&ids::normalize_id(id)) {
+                let norm = ids::normalize_id(id);
+                let new = norm_to_id.get(&norm).cloned().or_else(|| {
+                    alias_to_id
+                        .get(&norm)
+                        .filter(|target| {
+                            alias_lang_compatible(
+                                attrs.get("source_file"),
+                                graph
+                                    .node_index(&json!(target))
+                                    .and_then(|i| graph.nodes[i].attributes.get("source_file")),
+                            )
+                        })
+                        .cloned()
+                });
+                if let Some(new) = new {
                     *endpoint = json!(new);
                     *index = graph.node_index(endpoint);
                 }
@@ -1234,6 +1505,13 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
         let (Some(u), Some(v)) = (u, v) else {
             continue;
         };
+        // Relation aliases are folded before validation; a still-missing
+        // relation has no trustworthy default, so the edge is dropped rather
+        // than persisted (Graphify 0.9.97, #4809).
+        if attrs.get("relation").is_none() {
+            dropped_schema_edges += 1;
+            continue;
+        }
         for key in ["source", "target", "target_file", "local_alias"] {
             // The last two are rare: skip hashing the key when absent.
             if attrs.get(key).is_some() {
@@ -1245,6 +1523,9 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
                 let value = json!(numeric_field(value));
                 attrs.put(key, value);
             }
+        }
+        if attrs.get("also_seen").is_some() {
+            fold_also_seen(&mut attrs, &Map::new());
         }
         if !attrs.get("source_file").is_some_and(truthy) {
             let sf = graph.nodes[u]
@@ -1357,12 +1638,33 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
             graph.add_edge(src, tgt, Some(key), attrs)?;
             continue;
         }
+        let mut stamp_reverse_import = false;
         if let Some(existing) = graph.edges_between(&src, &tgt).first() {
             let old = &existing.attributes;
             let reverse = old.get("_src") == Some(&tgt) && old.get("_tgt") == Some(&src);
             if !directed && reverse && old.get("relation") == attrs.get("relation") {
-                continue;
+                // For an import the dropped leg is the other half of a
+                // two-file cycle: the kept edge is stamped so
+                // find_import_cycles still sees it; a type-only or deferred
+                // import closes no cycle (Graphify 0.9.98, #4839).
+                stamp_reverse_import = matches!(relation, "imports_from" | "re_exports")
+                    && !attrs.get("type_only").is_some_and(truthy)
+                    && !attrs.get("deferred").is_some_and(truthy);
+                if !stamp_reverse_import {
+                    continue;
+                }
             }
+        }
+        if stamp_reverse_import {
+            if let Some(old) = graph.edge_attributes_mut(&src, &tgt, None) {
+                old.put("reverse_import", json!(true));
+            }
+            continue;
+        }
+        let mut same_relation = None;
+        if let Some(existing) = graph.edges_between(&src, &tgt).first() {
+            let old = &existing.attributes;
+            let reverse = old.get("_src") == Some(&tgt) && old.get("_tgt") == Some(&src);
             // Different relations in opposite directions only share a pair
             // because the graph is undirected: a type's `method`/`contains`
             // edge beats its member's `calls` edge back (0.9.83, #4256). If
@@ -1386,12 +1688,48 @@ fn add_edges<R: Record, E: EdgeItem<Record = R>>(
             {
                 continue;
             }
-            if old.get("relation") == attrs.get("relation") && same_relation_is_weaker(old, &attrs)
-            {
-                continue;
+            if old.get("relation") == attrs.get("relation") {
+                same_relation = Some(same_relation_is_weaker(old, &attrs));
+                if same_relation == Some(false) {
+                    // The incoming edge wins: it keeps the stored edge's
+                    // provenance in `also_seen` (#4881).
+                    fold_also_seen(&mut attrs, old);
+                }
             }
         }
+        match same_relation {
+            Some(true) => {
+                // The stored edge wins and records the incoming one's
+                // provenance (#4881).
+                if let Some(old) = graph.edge_attributes_mut(&src, &tgt, None) {
+                    fold_also_seen(old, &attrs);
+                }
+                continue;
+            }
+            Some(false) => {
+                // The stored attributes are merged with the incoming ones: a
+                // field only the loser carried (its score, its line) would
+                // otherwise stay on the winner.
+                let stale: Vec<&str> = EVIDENCE_KEYS
+                    .iter()
+                    .copied()
+                    .chain(["also_seen"])
+                    .filter(|k| attrs.get(k).is_none())
+                    .collect();
+                if let Some(old) = graph.edge_attributes_mut(&src, &tgt, None) {
+                    for key in stale {
+                        old.take_key(key);
+                    }
+                }
+            }
+            None => {}
+        }
         graph.add_edge(src, tgt, None, attrs)?;
+    }
+    if dropped_schema_edges > 0 {
+        messages
+            .stderr
+            .push(schema_invalid_edges_warning(dropped_schema_edges));
     }
     Ok(())
 }
@@ -1516,6 +1854,7 @@ fn build_combined<R: Record, E: EdgeItem<Record = R>>(
     let mut combined = Value::Object(combined);
     let root = resolve_root(options.root.as_deref())?;
     let mut dedup_collapsed = 0;
+    let mut dedup_remap = std::collections::BTreeMap::new();
     if options.dedup && !combined["nodes"].as_array().unwrap().is_empty() {
         let profiled = crate::profile::span("build.dedup_prepare");
         coerce_non_string_ids(&mut combined);
@@ -1557,6 +1896,7 @@ fn build_combined<R: Record, E: EdgeItem<Record = R>>(
         )?;
         edges = deduped;
         dedup_collapsed = before_dedup.saturating_sub(result.nodes.len());
+        dedup_remap = result.remap;
         combined["nodes"] = Value::Array(result.nodes);
         combined["hyperedges"] = Value::Array(hyperedges);
         messages.stdout.extend(result.stdout);
@@ -1576,6 +1916,9 @@ fn build_combined<R: Record, E: EdgeItem<Record = R>>(
         true,
         options.dedup,
     )?;
+    // Which ids dedup folded into which survivor, for the write guard
+    // (Graphify 0.9.101, #4940).
+    graph.dedup_remap.extend(dedup_remap);
     // The extract CLI reads this to tell a dedup shrink from a file deletion
     // (#3774); `to_json` never stores it in graph.json.
     if dedup_collapsed > 0 {

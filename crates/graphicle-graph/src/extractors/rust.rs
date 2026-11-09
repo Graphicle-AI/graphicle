@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/rust.py
 //! Rust source extraction with trait members and conservative impl ownership.
 use super::base::{file_stem, is_language_builtin, make_id, read_text};
@@ -189,6 +189,68 @@ pub fn type_last_segment(text: &str) -> String {
 /// `_rust_qualifier_type`: the type a `Type::f()` call is qualified by
 /// (`Foo`, `crate::a::Foo`, `Foo::<T>`, `i32`; `Self` as written), or `None`
 /// for a module path (`fs::read`, `self::helper`) or `<T as Trait>`.
+/// `_RUST_EXPRESSION_MACROS` (Graphify 0.9.101): the standard macros whose
+/// arguments are expressions; a call written inside them is a call. Other
+/// macros (`quote!`, `html!`) mean something else by `name(...)`.
+const EXPRESSION_MACROS: [&str; 25] = [
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "debug_assert",
+    "debug_assert_eq",
+    "debug_assert_ne",
+    "dbg",
+    "eprint",
+    "eprintln",
+    "format",
+    "format_args",
+    "panic",
+    "print",
+    "println",
+    "todo",
+    "unimplemented",
+    "unreachable",
+    "vec",
+    "write",
+    "writeln",
+    "debug",
+    "error",
+    "info",
+    "trace",
+    "warn",
+];
+/// `_rust_macro_arg_calls` (Graphify 0.9.101): the bare `f(...)` calls in a
+/// macro's token tree, by line: an identifier followed by a `(` token tree,
+/// not after `.`, `::`, `fn`, `$` or `#`.
+fn macro_arg_calls(token_tree: Node<'_>, source: &[u8]) -> Vec<(String, usize)> {
+    let mut found = vec![];
+    let mut stack = vec![token_tree];
+    while let Some(tree) = stack.pop() {
+        let kids = children(tree).collect::<Vec<_>>();
+        for (i, child) in kids.iter().enumerate() {
+            if child.kind() == "token_tree" {
+                stack.push(*child);
+                continue;
+            }
+            if child.kind() != "identifier" || i + 1 >= kids.len() {
+                continue;
+            }
+            let next = kids[i + 1];
+            if next.kind() != "token_tree" || next.child(0).is_none_or(|c| c.kind() != "(") {
+                continue;
+            }
+            if i > 0 && matches!(kids[i - 1].kind(), "." | "::" | "fn" | "$" | "#") {
+                continue;
+            }
+            let name = read_text(*child, source);
+            if !name.is_empty() {
+                found.push((name, child.start_position().row + 1));
+            }
+        }
+    }
+    found.sort_by_key(|(_, line)| *line);
+    found
+}
 fn qualifier_type(path: Option<Node<'_>>, source: &[u8]) -> Option<String> {
     let last = type_last_segment(&read_text(path?, source));
     (last.chars().next().is_some_and(char::is_uppercase)
@@ -220,6 +282,16 @@ pub fn use_name(written: &str, path: &str) -> Option<String> {
 /// (`mod item; pub use item::Invoice;`), unless it starts with `::`, which
 /// always names a crate. An inline `mod` block is a scope of its own.
 pub fn use_name_in(written: &str, path: &str, scope_mods: &HashSet<String>) -> Option<String> {
+    use_root_in(written, path, scope_mods).0
+}
+/// [`use_name_in`] and the root the `use` names (Graphify 0.9.96, #4699):
+/// `crate` for a path of this crate, else its first segment (`serde_json`,
+/// or a workspace crate's name).
+fn use_root_in(
+    written: &str,
+    path: &str,
+    scope_mods: &HashSet<String>,
+) -> (Option<String>, String) {
     let head = trim(
         path.trim_start_matches([':', ' '])
             .split("::")
@@ -235,8 +307,14 @@ pub fn use_name_in(written: &str, path: &str, scope_mods: &HashSet<String>) -> O
     let local_mod = !ident.is_empty()
         && scope_mods.contains(ident)
         && !path.trim_start_matches(python_space).starts_with("::");
-    (matches!(head, "crate" | "self" | "super") || local_mod)
-        .then(|| trim(written.split(" as ").next().unwrap_or("")).to_string())
+    if matches!(head, "crate" | "self" | "super") || local_mod {
+        (
+            Some(trim(written.split(" as ").next().unwrap_or("")).to_string()),
+            "crate".into(),
+        )
+    } else {
+        (None, head.to_string())
+    }
 }
 /// Python's `str.isspace`.
 fn python_space(c: char) -> bool {
@@ -461,8 +539,41 @@ struct Extractor<'source, 'tree> {
     declared_types: HashMap<String, HashSet<String>>,
     /// The bare type name each `impl` block names, by its start byte.
     impl_bare: HashMap<usize, String>,
+    /// Where each imported name comes from: `crate`, or the first segment of
+    /// the `use` path (Graphify 0.9.96, #4699). A sourceless stub of such a
+    /// name carries it, so the corpus rewire can scope the binding.
+    use_roots: HashMap<String, BTreeSet<String>>,
+    /// Unique declaration ids, the file id reserved (Graphify 0.9.98, #4854).
+    decl: crate::ids::DeclIdRegistry,
+    /// `mod m { .. }` blocks declared in this file: a `m::f()` binds in-file
+    /// only for one of them (Graphify 0.9.101).
+    inline_mods: HashSet<String>,
+    /// In-file calls written inside macro arguments, added after the parsed
+    /// calls so a parsed call to the same target wins (Graphify 0.9.101).
+    macro_arg_edges: Vec<Value>,
 }
 impl<'tree> Extractor<'_, 'tree> {
+    /// `name_use`: mark the last edge with the name as written (#4439) for a
+    /// path of this crate, record where the bound name comes from, and mark
+    /// a plain `pub use` of another crate's item as a re-export (Graphify
+    /// 0.9.96, #4699).
+    fn name_use(
+        &mut self,
+        written: &str,
+        path: &str,
+        scope_mods: &HashSet<String>,
+        reexport: bool,
+    ) {
+        let bound = trim(written.rsplit(" as ").next().unwrap_or("")).to_string();
+        let (used, root) = use_root_in(written, path, scope_mods);
+        let edge = self.edges.last_mut().unwrap();
+        if let Some(used) = used {
+            edge["_rust_use_name"] = json!(used);
+        } else if reexport && crate::extract_python::is_identifier(&bound) {
+            edge["_rust_pub_use"] = json!({"label": bound, "root": root});
+        }
+        self.use_roots.entry(bound).or_default().insert(root);
+    }
     fn node(&mut self, id: &str, label: &str, line: usize) {
         if self.seen.insert(id.into()) {
             self.nodes.push(json!({"id":id,"label":label,"file_type":"code","source_file":self.path,"source_location":format!("L{line}")}));
@@ -488,7 +599,14 @@ impl<'tree> Extractor<'_, 'tree> {
     /// `impl` blocks name it); every other member is salted with a hash of its
     /// own name. Repeats of one name (`#[cfg]` twins, an `impl` of a local
     /// type) are one member and share a node.
-    fn file_item(&self, plain: String, name: &str) -> String {
+    /// Resolved through the file's declaration registry, so an item whose id
+    /// is the file's gets its own (Graphify 0.9.98, #4854).
+    fn file_item(&mut self, plain: String, name: &str) -> String {
+        let id = self.file_item_salted(plain, name);
+        let seen = &self.seen;
+        self.decl.resolve(&id, name, "type", |id| seen.contains(id))
+    }
+    fn file_item_salted(&self, plain: String, name: &str) -> String {
         let Some(items) = self.file_items.get(&plain) else {
             return plain;
         };
@@ -844,6 +962,12 @@ impl<'tree> Extractor<'_, 'tree> {
                                 .collect::<HashSet<_>>()
                         })
                         .unwrap_or_default();
+                    // A bare `pub use` re-exports the item from the crate its
+                    // path starts with; `pub(crate)` and `pub(super)` do not
+                    // leave this crate (Graphify 0.9.96, #4699).
+                    let reexport = children(node)
+                        .find(|c| c.kind() == "visibility_modifier")
+                        .is_some_and(|v| trim(&read_text(v, self.source)) == "pub");
                     let written = read_text(argument, self.source);
                     let name = use_module(&written);
                     let grouped = matches!(argument.kind(), "use_list" | "scoped_use_list");
@@ -855,9 +979,7 @@ impl<'tree> Extractor<'_, 'tree> {
                             line,
                             Some("import"),
                         );
-                        if let Some(used) = use_name_in(&name, &written, &scope_mods) {
-                            self.edges.last_mut().unwrap()["_rust_use_name"] = json!(used);
-                        }
+                        self.name_use(&name, &written, &scope_mods, reexport);
                         if grouped {
                             // Call evidence as before; resolution drops it later.
                             self.edges.last_mut().unwrap()["_rust_use_group"] = json!(true);
@@ -876,9 +998,7 @@ impl<'tree> Extractor<'_, 'tree> {
                                     line,
                                     Some("import"),
                                 );
-                                if let Some(used) = use_name_in(&name, &binding, &scope_mods) {
-                                    self.edges.last_mut().unwrap()["_rust_use_name"] = json!(used);
-                                }
+                                self.name_use(&name, &binding, &scope_mods, reexport);
                                 self.edges.last_mut().unwrap()["_rust_use_binding"] = json!(true);
                             }
                         }
@@ -923,6 +1043,41 @@ impl<'tree> Extractor<'_, 'tree> {
                 node.start_position().row + 1,
                 Some("call"),
             );
+        }
+        // A call inside an expression macro's arguments is only a token
+        // pattern: bound in-file as INFERRED, or handed to the cross-file pass
+        // (Graphify 0.9.101).
+        if node.kind() == "macro_invocation" {
+            let macro_node = node.child_by_field_name("macro");
+            let invoked = match macro_node {
+                Some(m) if m.kind() == "scoped_identifier" => m.child_by_field_name("name"),
+                other => other,
+            };
+            let args = children(node).find(|c| c.kind() == "token_tree");
+            if let (Some(args), Some(invoked)) = (args, invoked)
+                && EXPRESSION_MACROS.contains(&read_text(invoked, self.source).as_str())
+            {
+                for (callee, line) in macro_arg_calls(args, self.source) {
+                    if callee.chars().next().is_some_and(char::is_uppercase)
+                        || is_language_builtin(&callee)
+                        || RUST_BUILTIN_TYPES.contains(&callee.as_str())
+                        || TRAIT_METHOD_BLOCKLIST.contains(&callee.to_lowercase().as_str())
+                    {
+                        continue;
+                    }
+                    let target = self.labels.get(&callee).cloned();
+                    if target.as_ref().is_some_and(|t| self.type_ids.contains(t)) {
+                        continue;
+                    }
+                    if let Some(target) = target.filter(|t| !t.is_empty()) {
+                        if target != caller {
+                            self.macro_arg_edges.push(json!({"source":caller,"target":target,"relation":"calls","context":"macro_argument_call","confidence":"INFERRED","confidence_score":0.85,"source_file":self.path,"source_location":format!("L{line}"),"weight":1.0}));
+                        }
+                        continue;
+                    }
+                    self.raw_calls.push(json!({"caller_nid":caller,"callee":callee,"is_member_call":false,"source_file":self.path,"source_location":format!("L{line}")}));
+                }
+            }
         }
         if node.kind() == "call_expression" {
             let mut name = None;
@@ -990,6 +1145,19 @@ impl<'tree> Extractor<'_, 'tree> {
                     target
                 } else if member {
                     self.method_labels.get(&name).cloned()
+                } else if scoped {
+                    // `m::f()` names module m: in this file only for
+                    // `self::f()` or an inline `mod m { .. }` declared here
+                    // (Graphify 0.9.101).
+                    let path = node
+                        .child_by_field_name("function")
+                        .and_then(|f| f.child_by_field_name("path"))
+                        .map(|p| read_text(p, self.source))
+                        .unwrap_or_default();
+                    let head = trim(path.rsplit("::").next().unwrap_or(""));
+                    (path == "self" || self.inline_mods.contains(head))
+                        .then(|| self.labels.get(&name).cloned())
+                        .flatten()
                 } else {
                     self.labels.get(&name).cloned()
                 };
@@ -1005,8 +1173,34 @@ impl<'tree> Extractor<'_, 'tree> {
                             Some(if constructor { "constructor" } else { "call" }),
                         );
                     }
-                } else if !scoped && !TRAIT_METHOD_BLOCKLIST.contains(&name.to_lowercase().as_str())
-                {
+                } else if scoped {
+                    // A module-qualified call goes to the cross-file pass with
+                    // its qualifier, unless the `use` binding its first
+                    // segment names another crate (`use std::fs; fs::read()`,
+                    // Graphify 0.9.101).
+                    let qualifier = node
+                        .child_by_field_name("function")
+                        .and_then(|f| f.child_by_field_name("path"))
+                        .map(|p| read_text(p, self.source))
+                        .unwrap_or_default();
+                    let first = trim(
+                        qualifier
+                            .split("::")
+                            .next()
+                            .unwrap_or("")
+                            .split('<')
+                            .next()
+                            .unwrap_or(""),
+                    );
+                    let local = self.use_roots.get(first).is_none_or(|roots| {
+                        roots
+                            .iter()
+                            .all(|r| matches!(r.as_str(), "crate" | "super" | "self"))
+                    });
+                    if local && !qualifier.is_empty() {
+                        self.raw_calls.push(json!({"caller_nid":caller,"callee":name,"is_member_call":false,"is_scoped_call":true,"scope_qualifier":qualifier,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)}));
+                    }
+                } else if !TRAIT_METHOD_BLOCKLIST.contains(&name.to_lowercase().as_str()) {
                     let mut call = json!({"caller_nid":caller,"callee":name,"is_member_call":member,"source_file":self.path,"source_location":format!("L{}",node.start_position().row+1)});
                     if let Some(typ) = self_type.filter(|s| is_self && !s.is_empty()) {
                         call["rust_self_type"] = json!(typ);
@@ -1143,7 +1337,21 @@ pub fn extract_rust(path: &Path) -> Value {
         file_items: HashMap::new(),
         declared_types: HashMap::new(),
         impl_bare: HashMap::new(),
+        use_roots: HashMap::new(),
+        decl: crate::ids::DeclIdRegistry::new([file.as_str()]),
+        inline_mods: HashSet::new(),
+        macro_arg_edges: vec![],
     };
+    let mut mods = vec![tree.root_node()];
+    while let Some(n) = mods.pop() {
+        if n.kind() == "mod_item"
+            && n.child_by_field_name("body").is_some()
+            && let Some(name) = n.child_by_field_name("name")
+        {
+            ex.inline_mods.insert(read_text(name, &source));
+        }
+        mods.extend(children(n));
+    }
     scan_local_types(tree.root_node(), &source, &mut ex.local_types);
     ex.node(&file, &name, 1);
     let mut items: HashMap<String, HashSet<(bool, String)>> = HashMap::new();
@@ -1204,6 +1412,22 @@ pub fn extract_rust(path: &Path) -> Value {
             body.typ.as_deref(),
             body.key.as_deref(),
         );
+    }
+    for edge in std::mem::take(&mut ex.macro_arg_edges) {
+        let pair = (
+            edge["source"].as_str().unwrap_or("").to_string(),
+            edge["target"].as_str().unwrap_or("").to_string(),
+        );
+        if ex.pairs.insert(pair) {
+            ex.edges.push(edge);
+        }
+    }
+    for n in &mut ex.nodes {
+        if n["source_file"].as_str().is_some_and(str::is_empty)
+            && let Some(roots) = n["label"].as_str().and_then(|l| ex.use_roots.get(l))
+        {
+            n["_rust_use_roots"] = json!(roots);
+        }
     }
     ex.edges.retain(|e| {
         e["source"].as_str().is_some_and(|s| ex.seen.contains(s))

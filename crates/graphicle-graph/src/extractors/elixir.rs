@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/elixir.py
 //! Complete translation of Graphify's Elixir tree-sitter extractor.
 use super::base::{file_stem, is_language_builtin, make_id, read_text};
@@ -45,7 +45,6 @@ struct Extractor<'tree, 'source> {
     edges: Vec<Value>,
     seen: HashSet<String>,
     bodies: Vec<(String, Node<'tree>)>,
-    labels: HashMap<String, String>,
     pairs: HashSet<(String, String)>,
     raw_calls: Vec<Value>,
     /// `import`/`use` targets per enclosing module (`None` is the file's top
@@ -422,12 +421,15 @@ impl<'tree> Extractor<'tree, '_> {
                 .insert(id.clone(), parent.map(str::to_string));
             if let Some(parent) = parent.filter(|s| !s.is_empty()) {
                 self.edge(parent, &id, "method", line, None);
-                self.module_defs
-                    .entry((parent.to_string(), name.clone()))
-                    .or_insert_with(|| id.clone());
             } else {
                 self.edge(&self.file.clone(), &id, "contains", line, None);
             }
+            // Keyed by the def's own container, the file for a top-level def,
+            // so a bare call reaches only a def in its scope (Graphify
+            // 0.9.100).
+            self.module_defs
+                .entry((container.clone(), name.clone()))
+                .or_insert_with(|| id.clone());
             if let Some(block) = block {
                 self.bodies.push((id, block));
             } else if let Some(body) = self.do_keyword_body(arguments) {
@@ -532,7 +534,31 @@ impl<'tree> Extractor<'tree, '_> {
             } else if member {
                 None
             } else {
-                self.labels.get(&callee).cloned()
+                // A bare call reaches its own module's def (the file's, for a
+                // top-level caller) first, then each module `import`/`use`
+                // brings into scope; never a same-named def of an unrelated
+                // module in the file (Graphify 0.9.100).
+                let own = self
+                    .enclosing
+                    .get(caller)
+                    .cloned()
+                    .flatten()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| self.file.clone());
+                self.module_defs
+                    .get(&(own, callee.clone()))
+                    .cloned()
+                    .or_else(|| {
+                        self.call_scope_for(caller).iter().find_map(|scope| {
+                            let module = self
+                                .module_names
+                                .iter()
+                                .rev()
+                                .find(|(_, name)| name == scope)
+                                .map(|(id, _)| id.clone())?;
+                            self.module_defs.get(&(module, callee.clone())).cloned()
+                        })
+                    })
             };
             if let Some(target) = target.filter(|s| !s.is_empty() && s.as_str() != caller) {
                 if self.pairs.insert((caller.into(), target.clone())) {
@@ -592,7 +618,6 @@ pub fn extract_elixir(path: &Path) -> Value {
         edges: vec![],
         seen: HashSet::new(),
         bodies: vec![],
-        labels: HashMap::new(),
         pairs: HashSet::new(),
         raw_calls: vec![],
         call_scope: HashMap::new(),
@@ -603,17 +628,6 @@ pub fn extract_elixir(path: &Path) -> Value {
     };
     ex.node(&file, name, 1, false);
     ex.walk(tree.root_node(), None);
-    for node in &ex.nodes {
-        ex.labels.insert(
-            node["label"]
-                .as_str()
-                .unwrap()
-                .trim_matches(['(', ')'])
-                .trim_start_matches('.')
-                .into(),
-            node["id"].as_str().unwrap().into(),
-        );
-    }
     for (caller, body) in ex.bodies.clone() {
         ex.walk_calls(body, &caller);
     }

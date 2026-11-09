@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Native graph query service and MCP stdio boundary.
 use crate::{Result, graph::Graph, paths, security, serve_find, serve_search::*, serve_text::*};
@@ -109,7 +109,7 @@ pub fn neighbor_lines(g: &Graph, i: usize, relation_filter: &str) -> Vec<String>
                     if incoming { "<--" } else { "-->" },
                     label_text(g, nb),
                     sanitize(&relation),
-                    sanitize(&get("confidence"))
+                    sanitize(&crate::serve_search::confidence_tag(&e.attributes))
                 ));
             }
         }
@@ -422,7 +422,9 @@ pub fn call_graph_tool(
             Ok(output)
         }
         "get_node" => {
-            let query = node_query().to_lowercase();
+            // The query keeps its case: an exact spelling settles a tie
+            // that is only case (Graphify 0.9.98).
+            let query = node_query();
             if query.is_empty() {
                 return Ok(
                     "Provide a node label or id (accepted keys: label, node_id, id).".into(),
@@ -475,7 +477,7 @@ pub fn call_graph_tool(
             Ok(lines.join("\n"))
         }
         "get_neighbors" => {
-            let query = node_query().to_lowercase();
+            let query = node_query();
             if query.is_empty() {
                 return Ok(
                     "Provide a node label or id (accepted keys: label, node_id, id).".into(),

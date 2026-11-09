@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/markdown_resolution.py
 //! Port of graphify/markdown_resolution.py; emits only uniquely supported references.
 //!
@@ -308,13 +308,14 @@ pub fn resolve_markdown_mentions_any<P: PerFile, E: Rec>(
             );
         }
         let callee = &names[names.len() - 1];
-        if LANGUAGE_BUILTIN_GLOBALS.contains(&callee.as_str()) {
+        // Only a bare builtin-named mention is skipped: a dotted one such as
+        // `Repository.open` carries qualifier evidence (Graphify 0.9.103).
+        if names.len() == 1 && LANGUAGE_BUILTIN_GLOBALS.contains(&callee.as_str()) {
             return (None, "INFERRED", 0.95);
         }
-        let candidates: Vec<&String> = by_label
-            .get(callee)
-            .into_iter()
-            .flatten()
+        let by_name = by_label.get(callee).into_iter().flatten();
+        let mut candidates: Vec<&String> = by_name
+            .clone()
             .filter(|id| {
                 let found = evidence(id, &nodes_by_id, &parents);
                 names[..names.len() - 1]
@@ -322,6 +323,23 @@ pub fn resolve_markdown_mentions_any<P: PerFile, E: Rec>(
                     .all(|qualifier| found.contains(qualifier))
             })
             .collect();
+        if candidates.is_empty() && truthy(at(call, "ns_qualified")) {
+            // A PSR-4 namespace root (`App\`) has no path segment: when no
+            // candidate accounts for the whole chain, the leading qualifiers a
+            // candidate cannot account for are dropped; a qualifier that does
+            // match keeps discriminating (Graphify 0.9.103, #4610).
+            candidates = by_name
+                .filter(|id| {
+                    let found = evidence(id, &nodes_by_id, &parents);
+                    let wanted = &names[..names.len() - 1];
+                    let first = wanted
+                        .iter()
+                        .position(|q| found.contains(q))
+                        .unwrap_or(wanted.len());
+                    wanted[first..].iter().all(|q| found.contains(q))
+                })
+                .collect();
+        }
         (
             (candidates.len() == 1).then(|| candidates[0].clone()),
             "INFERRED",

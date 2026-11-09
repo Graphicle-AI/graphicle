@@ -16,6 +16,10 @@ Usage: graphicle-graph <command> [options]
     --graph PATH --no-viz --no-label --backend NAME --model NAME
     --max-concurrency N --batch-size N --resolution N --exclude-hubs N
   query "question"       scoped graph context (--dfs, --context C, --budget N)
+    --budget N, --budget=N  cap output at N tokens (default 2000)
+    --depth N, --depth=N    traversal depth 1-6 (default 2)
+                         absent options use the graph project's .graphiclerc
+                         query_budget / query_depth; explicit options win
     --seed X             start at node X (id, label or file path; repeatable)
                          instead of the question's keyword matches
   path "A" "B"           shortest dependency path in stored edge direction

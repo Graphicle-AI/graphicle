@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/install.py
 //! Installer file operations preserve unrelated configuration and user text.
 use crate::{Result, paths};
@@ -120,6 +120,82 @@ pub fn strip_section(path: &Path, marker: &str, boundary: &str) -> Result<bool> 
         write_keep_newline(path, &format!("{cleaned}\n"), newline)?;
     }
     Ok(true)
+}
+/// `_is_graphify_skill_registration`: a `# graphicle` section is the
+/// registration the engine writes when it carries the bullet naming the
+/// skill and its trigger, which a hand-written section has no reason to
+/// repeat (Graphify 0.9.101).
+fn is_engine_registration(section: &[&str]) -> bool {
+    section.iter().any(|line| {
+        line.trim().starts_with("- **graphicle** (`") && line.contains("Trigger: `/graphicle`")
+    })
+}
+/// `_remove_skill_registration(..., only_graphify_written=True)` (Graphify
+/// 0.9.101): remove the global skill registration from the user's
+/// CLAUDE.md or CODEBUDDY.md, which every global uninstall visits, also for
+/// users who never installed the skill there. Only `# graphicle` sections the
+/// engine wrote go; a hand-written one stays, and a file holding both is
+/// left as is. The section is bounded by the next H1, line endings and a BOM
+/// are kept, a symlinked file is edited in place, and the file is deleted
+/// only when nothing else was in it. A file without the heading is never
+/// decoded. Returns the lines to print (`prefix` leads the first).
+pub fn remove_global_registration(target: &Path, prefix: &str) -> Vec<String> {
+    const MARKER: &str = "# graphicle";
+    let Ok(bytes) = fs::read(target) else {
+        return vec![];
+    };
+    if !bytes
+        .windows(MARKER.len())
+        .any(|w| w == MARKER.as_bytes())
+    {
+        return vec![];
+    }
+    let (content, newline) = match read_keep_newline(target) {
+        Ok(read) => read,
+        Err(e) => return vec![format!("{prefix}skipped: {e}")],
+    };
+    let bom = if content.starts_with('\u{feff}') {
+        "\u{feff}"
+    } else {
+        ""
+    };
+    let content = &content[bom.len()..];
+    let lines: Vec<&str> = content.split('\n').collect();
+    let written: Vec<bool> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim() == MARKER)
+        .map(|(start, _)| {
+            let end = (start + 1..lines.len())
+                .find(|&j| lines[j].starts_with("# "))
+                .unwrap_or(lines.len());
+            is_engine_registration(&lines[start + 1..end])
+        })
+        .collect();
+    if !written.iter().any(|&w| w) {
+        return vec![];
+    }
+    if !written.iter().all(|&w| w) {
+        return vec![
+            format!(
+                "{prefix}left as is: {} also has a `{MARKER}` section the engine did not write",
+                target.display()
+            ),
+            format!("  hint: remove the engine's own `{MARKER}` block (the one naming the graphicle skill) by hand"),
+        ];
+    }
+    let Some(cleaned) = remove_section(content, MARKER, "# ") else {
+        return vec![];
+    };
+    let result = if cleaned.is_empty() && bom.is_empty() && !target.is_symlink() {
+        remove(target).map(|_| ())
+    } else {
+        write_keep_newline(target, &format!("{bom}{cleaned}\n"), newline)
+    };
+    match result {
+        Ok(()) => vec![format!("{prefix}skill registration removed")],
+        Err(e) => vec![format!("{prefix}skipped: {e}")],
+    }
 }
 pub fn register_block(path: &Path, block: &str) -> Result<bool> {
     let (old, newline) = if path.exists() {

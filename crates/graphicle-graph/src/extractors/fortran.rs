@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/fortran.py
 //! Fortran definitions, signatures, imports, calls and optional C preprocessing.
 use super::base::{file_stem, make_id, read_text};
@@ -209,9 +209,20 @@ impl<'tree> Extractor<'_, 'tree> {
             && let Some(name) = children(node).find(|n| n.kind() == "identifier")
         {
             let callee = read_text(name, self.source).to_lowercase();
-            let target = make_id([self.stem.as_str(), callee.as_str()]);
-            if node.kind() == "subroutine_call" || (self.seen.contains(&target) && target != scope)
-            {
+            let line = node.start_position().row + 1;
+            // `call FOO` has no array-index reading: a callee another file
+            // defines gets a sourceless stub the corpus rewire collapses onto
+            // its definition (Graphify 0.9.97).
+            let (target, call) = if node.kind() == "subroutine_call" {
+                let target = self.named(&callee, line);
+                let call = target != scope;
+                (target, call)
+            } else {
+                let target = make_id([self.stem.as_str(), callee.as_str()]);
+                let call = self.seen.contains(&target) && target != scope;
+                (target, call)
+            };
+            if call {
                 self.edge(
                     scope,
                     &target,
@@ -266,14 +277,25 @@ impl<'tree> Extractor<'_, 'tree> {
             return;
         }
         if node.kind() == "derived_type_definition" {
-            if let Some(name) = children(node)
-                .find(|n| n.kind() == "derived_type_statement")
-                .and_then(|n| children(n).find(|n| n.kind() == "type_name"))
+            let statement = children(node).find(|n| n.kind() == "derived_type_statement");
+            if let Some(statement) = statement
+                && let Some(name) = children(statement).find(|n| n.kind() == "type_name")
             {
                 let name = read_text(name, self.source).to_lowercase();
                 let id = make_id([self.stem.as_str(), name.as_str()]);
                 self.node(&id, &name, line);
                 self.edge(scope, &id, "defines", line, None);
+                // `type, extends(base) :: derived` (Graphify 0.9.100).
+                if let Some(base) = children(statement)
+                    .find(|n| n.kind() == "base_type_specifier")
+                    .and_then(|b| children(b).find(|n| n.kind() == "identifier"))
+                {
+                    let base = read_text(base, self.source).to_lowercase();
+                    let base = self.named(&base, line);
+                    if base != id {
+                        self.edge(&id, &base, "inherits", line, None);
+                    }
+                }
                 if let Some(procedures) =
                     children(node).find(|n| n.kind() == "derived_type_procedures")
                 {

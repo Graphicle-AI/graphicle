@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cache.py, graphify/extract.py
 //! Port of graphify/cache.py: owned per-run cache state with explicit flush.
 //! The native release has its own AST version; semantic entries retain their
@@ -15,7 +15,19 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 /// Bump when AST cache-key semantics change independently of the package
-/// version; 10 carries the extraction changes of Graphify 0.9.92-0.9.95
+/// version; 11 carries the extraction changes of Graphify 0.9.96-0.9.103
+/// (upstream schemas 26-39; 38 and 39 in 0.9.103: C# preprocessor blanking,
+/// Solidity event, error and library calls, YAML merge order, Markdown
+/// namespace and member mentions; also JS/TS receiver-shadow and `new`
+/// stamps on raw calls and TypeScript import types; earlier: Zig and Dart
+/// records, Python injected fields and
+/// method results, C# owner labels and constructors, Go composite literals,
+/// sibling-file and cross-package receivers, unique declaration ids at
+/// every file-stem mint site, PHP class-constant references, R, Elixir,
+/// Dart, Fortran, Scala and Terraform records, Rust call resolution, C++
+/// alias and split-header owners, Solidity imports, Kotlin, and the
+/// case-preserving cache keys of #4925); 10 carries the extraction changes
+/// of Graphify 0.9.92-0.9.95
 /// (upstream schemas 17-25: pytest fixture markers, Python module-level class
 /// salting, TS `this.field` from any method, Solidity arity and inherited-call
 /// records, Go and Rust case-distinct ids, Kotlin `typealias`, C# `delegate`,
@@ -38,7 +50,7 @@ use std::{
 /// resolved to; 7 invalidated records whose source paths leaked a walked
 /// directory alias when the extraction root was canonicalized (6 added
 /// receiver shadows).
-pub const AST_CACHE_SCHEMA: i64 = 10;
+pub const AST_CACHE_SCHEMA: i64 = 11;
 /// Where an AST entry lists the `target_file` stamps that named an existing
 /// file when it was written; a hit whose target is gone is a miss (#4185).
 pub const CACHED_TARGETS_KEY: &str = "_cached_target_files";
@@ -671,14 +683,12 @@ impl ExtractionCache {
                         .unwrap_or(rel)
                         .to_path_buf()
                 };
-                ps(&rel)
-                    .replace(std::path::MAIN_SEPARATOR, "/")
-                    .to_lowercase()
+                ps(&rel).replace(std::path::MAIN_SEPARATOR, "/")
             } else {
-                abs_key
-                    .replace(std::path::MAIN_SEPARATOR, "/")
-                    .to_lowercase()
+                abs_key.replace(std::path::MAIN_SEPARATOR, "/")
             };
+            // The salt keeps the path's case: case sensitivity belongs to
+            // the volume, not the platform (Graphify 0.9.101, #4925).
             let st = Stat::read(p).ok();
             if let Some(st) = st
                 && let Some(entry) = self.stat_index.get(&abs_key)

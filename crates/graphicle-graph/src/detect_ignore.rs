@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/detect.py
 //! Anchored ignore rules, tracked-file exemptions and reusable path predicates.
 use crate::{
@@ -673,6 +673,9 @@ pub struct IgnoreState {
     pub explicit_cache: MatchCache,
     pub loaded: HashSet<PathBuf>,
     pub gitignore: bool,
+    /// Directories under the root that are linked worktrees of a checkout
+    /// inside the root (Graphify 0.9.101, #4912), memoised per directory.
+    pub linked_boundaries: HashMap<PathBuf, bool>,
 }
 impl IgnoreState {
     pub fn new(
@@ -706,6 +709,7 @@ impl IgnoreState {
             cache: HashMap::new(),
             explicit_cache: HashMap::new(),
             gitignore,
+            linked_boundaries: HashMap::new(),
         })
     }
     pub fn load_directory(&mut self, path: &Path, warnings: &mut EncodingWarnings) -> Result<()> {
@@ -759,6 +763,21 @@ impl IgnoreState {
                 return Ok(true);
             }
             parent.push(part.as_os_str());
+            // A linked worktree of a checkout under the root is excluded as
+            // the scan excludes it, so reconcile evicts its old records
+            // (Graphify 0.9.101, #4912).
+            let linked = match self.linked_boundaries.get(&parent) {
+                Some(&linked) => linked,
+                None => {
+                    let linked = linked_worktree_main_root(&parent)
+                        .is_some_and(|main| resolves_under_root(&main, &self.root));
+                    self.linked_boundaries.insert(parent.clone(), linked);
+                    linked
+                }
+            };
+            if linked {
+                return Ok(true);
+            }
         }
         let mut ancestor = self.root.clone();
         for part in parts.iter().take(parts.len().saturating_sub(1)) {
@@ -770,6 +789,41 @@ impl IgnoreState {
 }
 pub fn auto_follow_symlinks(root: &Path) -> bool {
     fs::read_dir(root).is_ok_and(|entries| entries.flatten().any(|e| e.path().is_symlink()))
+}
+/// `_linked_worktree_main_root` (Graphify 0.9.97, #4683): the main
+/// checkout's root for a linked worktree folder, else `None`. `git worktree
+/// add` gives the linked checkout a `.git` file reading `gitdir:
+/// <main>/.git/worktrees/<name>`, whose `commondir` points back at the shared
+/// `<main>/.git`. A submodule's gitdir has no `commondir`, a bare repository's
+/// shared folder is not named `.git`, and a moved main checkout leaves it
+/// dangling: all three give `None`. No git process is run.
+pub fn linked_worktree_main_root(directory: &Path) -> Option<PathBuf> {
+    let dot_git = directory.join(".git");
+    if !dot_git.is_file() {
+        return None;
+    }
+    let content = fs::read(&dot_git).ok()?;
+    let content = String::from_utf8_lossy(&content);
+    let content = content.trim();
+    let gitdir = content.strip_prefix("gitdir:")?.trim();
+    let mut gd = PathBuf::from(gitdir);
+    if !gd.is_absolute() {
+        gd = fsutil::resolve_missing(&directory.join(gd)).ok()?;
+    }
+    let raw = fs::read(gd.join("commondir")).ok()?;
+    let raw = String::from_utf8_lossy(&raw);
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let mut cd = PathBuf::from(raw);
+    if !cd.is_absolute() {
+        cd = fsutil::resolve_missing(&gd.join(cd)).ok()?;
+    }
+    if cd.file_name()? != ".git" || !cd.is_dir() {
+        return None;
+    }
+    cd.parent().map(Path::to_path_buf)
 }
 pub fn resolves_under_root(path: &Path, root: &Path) -> bool {
     match (fsutil::resolve_missing(path), fsutil::resolve_missing(root)) {

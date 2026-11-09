@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/powershell.py
 //! PowerShell scripts, classes, import commands and data-only manifests.
 use super::base::{file_stem, make_id, read_text};
@@ -10,6 +10,10 @@ use std::{
     sync::LazyLock,
 };
 use tree_sitter::Node;
+/// A module or assembly file extension of `using module|assembly`
+/// (Graphify 0.9.98).
+static USING_EXTENSION: std::sync::LazyLock<regex::Regex> =
+    std::sync::LazyLock::new(|| regex::Regex::new(r"(?i)\.(psm1|psd1|ps1|dll|exe)$").unwrap());
 fn children(node: Node<'_>) -> impl Iterator<Item = Node<'_>> {
     (0..node.child_count()).filter_map(move |i| node.child(i))
 }
@@ -267,25 +271,40 @@ impl<'tree> Extractor<'_, 'tree> {
                 if let Some(name) = child(node, "command_name") {
                     let text = read_text(name, self.source).to_lowercase();
                     if text == "using" {
-                        let tokens: Vec<String> = children(node)
+                        let all: Vec<String> = children(node)
                             .filter(|n| n.kind() == "command_elements")
                             .flat_map(children)
                             .filter(|n| n.kind() == "generic_token")
                             .map(|n| read_text(n, self.source))
+                            .collect();
+                        let kind = all.first().map(|t| t.to_lowercase()).unwrap_or_default();
+                        let tokens = all
+                            .iter()
                             .filter(|s| {
                                 !["namespace", "module", "assembly"]
                                     .contains(&s.to_lowercase().as_str())
                             })
-                            .collect();
+                            .collect::<Vec<_>>();
                         if let Some(last) = tokens.last() {
-                            let name = last.rsplit('.').next().unwrap_or("");
-                            self.edge(
-                                &self.file.clone(),
-                                &make_id([name]),
-                                "imports_from",
-                                line,
-                                None,
-                            );
+                            let name = if kind == "namespace" {
+                                last.rsplit('.').next().unwrap_or("").to_string()
+                            } else {
+                                // `module`/`assembly` name a file or library:
+                                // only a known extension is stripped, so
+                                // `Az.Accounts` keeps its name (Graphify 0.9.98).
+                                let stripped = USING_EXTENSION.replace(last, "");
+                                let base = stripped.rsplit('/').next().unwrap_or("");
+                                base.rsplit('\\').next().unwrap_or("").to_string()
+                            };
+                            if !name.is_empty() {
+                                self.edge(
+                                    &self.file.clone(),
+                                    &make_id([name.as_str()]),
+                                    "imports_from",
+                                    line,
+                                    None,
+                                );
+                            }
                         }
                     } else if text == "import-module" {
                         let mut name = None;

@@ -380,6 +380,29 @@ fn wiki_unchanged_pages_survive_and_renamed_pages_are_pruned() {
     assert!(dir.path().join("index.md").exists());
 }
 
+// Graphify 0.9.97 tests/test_wiki_case_only_relabel.py (#4508): a community
+// relabelled only by case keeps one article, with the new case on disk, on
+// case-sensitive and case-insensitive file systems alike.
+#[test]
+fn wiki_case_only_relabel_keeps_the_article() {
+    let dir = tempfile::tempdir().unwrap();
+    let graph = graph();
+    let communities = json!({"0":["a","b"]});
+    let lower = Map::from_iter([("0".into(), json!("groups"))]);
+    wiki::to_wiki(&graph, &communities, dir.path(), &lower, &Map::new(), &[]).unwrap();
+    assert!(dir.path().join("groups.md").exists());
+    let upper = Map::from_iter([("0".into(), json!("Groups"))]);
+    wiki::to_wiki(&graph, &communities, dir.path(), &upper, &Map::new(), &[]).unwrap();
+    let listed: Vec<String> = fs::read_dir(dir.path())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".md") && n != "index.md")
+        .collect();
+    assert_eq!(listed, ["Groups.md"]);
+    let index = fs::read_to_string(dir.path().join("index.md")).unwrap();
+    assert!(index.contains("Groups.md"), "{index}");
+}
+
 // Upstream PR #3095 (#3032/#3033): index rows link to the slug each article was
 // written under, so identically labelled communities and god nodes stay reachable.
 #[test]

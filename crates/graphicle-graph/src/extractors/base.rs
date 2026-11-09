@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/base.py
 //! Port of graphify/extractors/base.py.
 pub use super::builtins_data::LANGUAGE_BUILTIN_GLOBALS;
@@ -18,6 +18,39 @@ pub fn make_id<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
 
 pub fn is_language_builtin(name: &str) -> bool {
     LANGUAGE_BUILTIN_GLOBALS.binary_search(&name).is_ok()
+}
+/// `_PYTHON_BUILTIN_NAMES` (Graphify 0.9.103, #4989): Python's own builtin
+/// namespace, sorted, fixed rather than read from an interpreter. Apart from
+/// [`LANGUAGE_BUILTIN_GLOBALS`], which gates extraction: this set is read only
+/// once a cross-file candidate is found, to require that the caller's file
+/// import the symbol itself.
+pub const PYTHON_BUILTIN_NAMES: &[&str] = &[
+    "ArithmeticError", "AssertionError", "AttributeError", "BaseException", "BaseExceptionGroup",
+    "BlockingIOError", "BrokenPipeError", "BufferError", "BytesWarning", "ChildProcessError",
+    "ConnectionAbortedError", "ConnectionError", "ConnectionRefusedError", "ConnectionResetError",
+    "DeprecationWarning", "EOFError", "Ellipsis", "EncodingWarning", "EnvironmentError",
+    "Exception", "ExceptionGroup", "False", "FileExistsError", "FileNotFoundError",
+    "FloatingPointError", "FutureWarning", "GeneratorExit", "IOError", "ImportError",
+    "ImportWarning", "IndentationError", "IndexError", "InterruptedError", "IsADirectoryError",
+    "KeyError", "KeyboardInterrupt", "LookupError", "MemoryError", "ModuleNotFoundError",
+    "NameError", "None", "NotADirectoryError", "NotImplemented", "NotImplementedError", "OSError",
+    "OverflowError", "PendingDeprecationWarning", "PermissionError", "ProcessLookupError",
+    "RecursionError", "ReferenceError", "ResourceWarning", "RuntimeError", "RuntimeWarning",
+    "StopAsyncIteration", "StopIteration", "SyntaxError", "SyntaxWarning", "SystemError",
+    "SystemExit", "TabError", "TimeoutError", "True", "TypeError", "UnboundLocalError",
+    "UnicodeDecodeError", "UnicodeEncodeError", "UnicodeError", "UnicodeTranslateError",
+    "UnicodeWarning", "UserWarning", "ValueError", "Warning", "ZeroDivisionError", "abs", "aiter",
+    "all", "anext", "any", "ascii", "bin", "bool", "breakpoint", "bytearray", "bytes", "callable",
+    "chr", "classmethod", "compile", "complex", "copyright", "credits", "delattr", "dict", "dir",
+    "divmod", "enumerate", "eval", "exec", "exit", "filter", "float", "format", "frozenset",
+    "getattr", "globals", "hasattr", "hash", "help", "hex", "id", "input", "int", "isinstance",
+    "issubclass", "iter", "len", "license", "list", "locals", "map", "max", "memoryview", "min",
+    "next", "object", "oct", "open", "ord", "pow", "print", "property", "quit", "range", "repr",
+    "reversed", "round", "set", "setattr", "slice", "sorted", "staticmethod", "str", "sum",
+    "super", "tuple", "type", "vars", "zip",
+];
+pub fn is_python_builtin_name(name: &str) -> bool {
+    PYTHON_BUILTIN_NAMES.binary_search(&name).is_ok()
 }
 
 pub fn file_stem(path: &Path) -> String {

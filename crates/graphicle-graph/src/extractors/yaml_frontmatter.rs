@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/markdown.py, graphify/extractors/yaml_config.py
 //! YAML frontmatter with the reference's YAML-1.1 scalar and merge semantics.
 //! Uses a Rust parser, preserving scalar style before resolving types.
@@ -9,8 +9,8 @@ use regex::Regex;
 use serde_json::{Map, Value, json};
 use std::{collections::HashMap, sync::LazyLock};
 use yaml_rust2::{
-    parser::{Event, EventReceiver, Parser, Tag},
-    scanner::{Scanner, TScalarStyle, Token, TokenType},
+    parser::{Event, MarkedEventReceiver, Parser, Tag},
+    scanner::{Marker, Scanner, TScalarStyle, Token, TokenType},
 };
 
 static INT: LazyLock<Regex> = LazyLock::new(|| {
@@ -30,7 +30,7 @@ static DATE: LazyLock<Regex> = LazyLock::new(|| {
 enum Node {
     Scalar(Value),
     /// A float JSON cannot hold (`.inf`, `-.inf`, `.nan`, `1e999`), kept only
-    /// when the builder allows it ([`parse_all`]); [`expand`] refuses it.
+    /// when the builder allows it ([`parse_all_with_tree`]); [`expand`] refuses it.
     NonFinite(f64),
     Merge,
     Sequence(Vec<usize>, String),
@@ -46,11 +46,19 @@ struct Builder {
     error: Option<String>,
     /// Keep non-finite floats as [`Node::NonFinite`] instead of failing.
     nonfinite: bool,
+    /// Per node: its 1-based start line and, for a scalar, its text as
+    /// written (the composed view of [`Tree`], Graphify 0.9.97).
+    lines: Vec<usize>,
+    texts: Vec<Option<String>>,
+    mark: usize,
+    text: Option<String>,
 }
 impl Builder {
     fn add(&mut self, node: Node, anchor: usize) -> usize {
         let id = self.nodes.len();
         self.nodes.push(node);
+        self.lines.push(self.mark);
+        self.texts.push(self.text.take());
         if anchor > 0 {
             self.anchors.insert(anchor, id);
         }
@@ -73,11 +81,16 @@ fn tag_name(tag: Option<Tag>, default: &str) -> Result<String> {
         _ => Err("Unsupported safe YAML tag".into()),
     }
 }
-impl EventReceiver for Builder {
-    fn on_event(&mut self, event: Event) {
+impl MarkedEventReceiver for Builder {
+    fn on_event(&mut self, event: Event, mark: Marker) {
         if self.error.is_some() {
             return;
         }
+        self.mark = mark.line();
+        self.text = match &event {
+            Event::Scalar(text, ..) => Some(text.clone()),
+            _ => None,
+        };
         let result: Result<()> = (|| {
             match event {
                 Event::Scalar(text, style, anchor, tag) => {
@@ -651,8 +664,110 @@ pub fn nonfinite_key(key: &Value) -> Option<&str> {
         .and_then(|map| map.get(NONFINITE_KEY))
         .and_then(Value::as_str)
 }
-/// `yaml.safe_load_all(text)`: every document of the stream, in order.
-pub fn parse_all(text: &str) -> Result<Vec<Loaded>> {
+/// The composed node tree of a stream (`yaml.compose_all`, Graphify 0.9.97,
+/// #4784): keys as written (`on`, not the YAML 1.1 boolean) with their own
+/// lines, which construction discards. Aliases are the nodes they name.
+pub struct Tree {
+    nodes: Vec<Node>,
+    lines: Vec<usize>,
+    texts: Vec<Option<String>>,
+    /// The root node of each document.
+    pub roots: Vec<usize>,
+}
+/// What a [`Tree`] node is to a walk.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TreeKind {
+    Map,
+    Seq,
+    Scalar,
+}
+impl Tree {
+    fn resolve(&self, mut id: usize) -> usize {
+        for _ in 0..=128 {
+            match self.nodes[id] {
+                Node::Alias(target) => id = target,
+                _ => return id,
+            }
+        }
+        id
+    }
+    pub fn kind(&self, id: usize) -> TreeKind {
+        match self.nodes[self.resolve(id)] {
+            Node::Mapping(..) => TreeKind::Map,
+            Node::Sequence(..) => TreeKind::Seq,
+            _ => TreeKind::Scalar,
+        }
+    }
+    /// The 1-based line a node starts on.
+    pub fn line(&self, id: usize) -> usize {
+        self.lines[self.resolve(id)]
+    }
+    /// The items of a sequence node.
+    pub fn items(&self, id: usize) -> Vec<usize> {
+        match &self.nodes[self.resolve(id)] {
+            Node::Sequence(children, _) => children.clone(),
+            _ => vec![],
+        }
+    }
+    /// `_mapping_pairs`: `(key text, key line, value node)` of a mapping, in
+    /// the order the constructed dict would hold them. A `<<` merge gives its
+    /// mappings' pairs first; a repeated key keeps its first position and
+    /// takes the last value and line; a non-scalar key is skipped.
+    pub fn pairs(&self, id: usize) -> Vec<(String, usize, usize)> {
+        self.pairs_at(id, 0)
+    }
+    fn pairs_at(&self, id: usize, depth: usize) -> Vec<(String, usize, usize)> {
+        let Node::Mapping(children, _) = &self.nodes[self.resolve(id)] else {
+            return vec![];
+        };
+        if depth > 128 {
+            return vec![];
+        }
+        let mut merged = vec![];
+        let mut explicit = vec![];
+        for pair in children.chunks_exact(2) {
+            let key = self.resolve(pair[0]);
+            match &self.nodes[key] {
+                Node::Merge => {
+                    let value = self.resolve(pair[1]);
+                    let sources = match &self.nodes[value] {
+                        Node::Sequence(items, _) => items.clone(),
+                        _ => vec![value],
+                    };
+                    // An earlier map of a `<<: [*a, *b]` sequence wins, as
+                    // PyYAML's flatten_mapping (Graphify 0.9.103): with the
+                    // last write winning below, the sources go last to first.
+                    for source in sources.into_iter().rev() {
+                        if self.kind(source) == TreeKind::Map {
+                            merged.extend(self.pairs_at(source, depth + 1));
+                        }
+                    }
+                }
+                Node::Scalar(_) | Node::NonFinite(_) => {
+                    if let Some(text) = &self.texts[key] {
+                        explicit.push((text.clone(), self.lines[key], pair[1]));
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut out: Vec<(String, usize, usize)> = vec![];
+        let mut at: HashMap<String, usize> = HashMap::new();
+        for (text, line, value) in merged.into_iter().chain(explicit) {
+            match at.get(&text) {
+                Some(&i) => out[i] = (text, line, value),
+                None => {
+                    at.insert(text.clone(), out.len());
+                    out.push((text, line, value));
+                }
+            }
+        }
+        out
+    }
+}
+/// `yaml.safe_load_all(text)`: every document of the stream, in order, and
+/// the stream's composed [`Tree`], document for document.
+pub fn parse_all_with_tree(text: &str) -> Result<(Vec<Loaded>, Tree)> {
     let text = repair_flow_indentation(text, FLOW_REPAIR_READ_LIMIT)?;
     let text = text.as_ref();
     let mut builder = Builder {
@@ -665,11 +780,18 @@ pub fn parse_all(text: &str) -> Result<Vec<Loaded>> {
     if let Some(error) = builder.error {
         return Err((error).into());
     }
-    builder
+    let docs = builder
         .roots
         .iter()
         .map(|&root| expand_loaded(&builder.nodes, root, 0))
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    let tree = Tree {
+        nodes: builder.nodes,
+        lines: builder.lines,
+        texts: builder.texts,
+        roots: builder.roots,
+    };
+    Ok((docs, tree))
 }
 
 #[cfg(test)]

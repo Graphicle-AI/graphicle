@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extract.py
 //! File wrappers, source normalization and rationale extraction from extract.py.
 use crate::{
@@ -357,6 +357,140 @@ pub fn js_rationale(path: &Path, r: &mut Value) {
         }
     }
 }
+static TS_TYPED_TAG: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(r"(?-u)([A-Za-z_$][A-Za-z0-9_$]*)(<\s*\{[^{}]*\}\s*\[\s*\]\s*>)")
+        .unwrap()
+});
+static TS_QUALIFIED_IMPORT_TYPE: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(
+        r#"(?-u)\bimport\s*\(\s*['"][^'"\r\n]+['"]\s*\)\s*\.([A-Za-z_$][A-Za-z0-9_$]*)"#,
+    )
+    .unwrap()
+});
+fn ts_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'$'
+}
+/// Whether `source[at..]` is ASCII whitespace then `next`.
+fn followed_by(source: &[u8], at: usize, next: u8) -> bool {
+    source[at..]
+        .iter()
+        .find(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c))
+        .is_some_and(|b| *b == next)
+}
+/// `_TS_QUALIFIED_IMPORT_TYPE_RE` matches: `(start, name start)` of each
+/// `import("m").Name` followed by `<`.
+fn ts_qualified_import_types(source: &[u8]) -> Vec<(usize, usize)> {
+    TS_QUALIFIED_IMPORT_TYPE
+        .captures_iter(source)
+        .filter_map(|c| {
+            let (whole, name) = (c.get(0)?, c.get(1)?);
+            followed_by(source, name.end(), b'<').then_some((whole.start(), name.start()))
+        })
+        .collect()
+}
+/// `_normalize_ts_tag_and_import_annotations` (Graphify 0.9.102): a typed
+/// tagged template with an object-array type (`` tag<{a: T}[]>`...` ``) and an
+/// import-qualified generic annotation (`import("m").Name<T>`) are valid
+/// TypeScript the grammar can lose later declarations over. Only confirmed
+/// type syntax is blanked, in place, so lines and byte offsets stay.
+pub fn normalize_ts_tag_and_import_annotations(source: &[u8], tsx: bool) -> Option<Vec<u8>> {
+    let tags = TS_TYPED_TAG
+        .captures_iter(source)
+        .filter_map(|c| {
+            let (tag, types) = (c.get(1)?, c.get(2)?);
+            (tag.start() == 0 || !ts_ident_byte(source[tag.start() - 1]))
+                .then_some(())
+                .filter(|_| followed_by(source, types.end(), b'`'))
+                .map(|_| (tag.start(), types.start(), types.end()))
+        })
+        .collect::<Vec<_>>();
+    let imports = ts_qualified_import_types(source);
+    if tags.is_empty() && imports.is_empty() {
+        return None;
+    }
+    let mut parser = tree_sitter::Parser::new();
+    parser
+        .set_language(
+            &if tsx {
+                tree_sitter_typescript::LANGUAGE_TSX
+            } else {
+                tree_sitter_typescript::LANGUAGE_TYPESCRIPT
+            }
+            .into(),
+        )
+        .ok()?;
+    let original = parser.parse(source, None)?;
+    let root = original.root_node();
+    if !root.has_error() {
+        return None;
+    }
+    // A missing token at the template's backtick tells the grammar failure
+    // from a correctly parsed expression.
+    let missing = walk(root)
+        .into_iter()
+        .filter(|n| n.is_missing())
+        .map(|n| n.start_byte())
+        .collect::<Vec<_>>();
+    let code = |at: usize| {
+        root.descendant_for_byte_range(at, at + 1)
+            .is_none_or(is_code)
+    };
+    // (start, end, anchor, is a tag)
+    let mut candidates = vec![];
+    for (tag, start, end) in tags {
+        if let Some(backtick) = source[end..]
+            .iter()
+            .position(|b| *b == b'`')
+            .map(|i| end + i)
+            && missing.iter().any(|&pos| end <= pos && pos <= backtick)
+            && code(tag)
+        {
+            candidates.push((start, end, tag, true));
+        }
+    }
+    for (start, name) in imports {
+        if code(start) {
+            candidates.push((start, name, name, false));
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+    let mut masked = source.to_vec();
+    for &(start, end, _, _) in &candidates {
+        for b in &mut masked[start..end] {
+            if !matches!(*b, b'\r' | b'\n') {
+                *b = b' ';
+            }
+        }
+    }
+    let recovered = parser.parse(&masked, None)?;
+    let mut result = source.to_vec();
+    let mut accepted = false;
+    for (start, end, anchor, tag) in candidates {
+        let mut node = recovered
+            .root_node()
+            .descendant_for_byte_range(anchor, anchor + 1);
+        while let Some(n) = node {
+            if !tag && n.kind() == "type_annotation" {
+                result[start..end].copy_from_slice(&masked[start..end]);
+                accepted = true;
+                break;
+            }
+            if tag && n.kind() == "call_expression" {
+                if n.child_by_field_name("arguments")
+                    .is_some_and(|a| a.kind() == "template_string")
+                {
+                    result[start..end].copy_from_slice(&masked[start..end]);
+                    accepted = true;
+                }
+                break;
+            }
+            node = n.parent();
+        }
+    }
+    accepted.then_some(result)
+}
 fn is_code(mut n: Node<'_>) -> bool {
     let mut substitution = false;
     loop {
@@ -391,12 +525,56 @@ pub fn normalize_ts_export_type_star(source: &[u8]) -> Option<Vec<u8>> {
     }
     masked
 }
+/// `_TS_IMPORT_CALL_RE`: `import("m")` with a literal specifier.
+static TS_IMPORT_CALL: LazyLock<Option<regex::bytes::Regex>> = LazyLock::new(|| {
+    regex::bytes::Regex::new(r#"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"#).ok()
+});
+/// Start offsets of the `import("m")` calls in `source` that `normalized` (an
+/// in-place repair of it) blanked: import types, not executable imports
+/// (Graphify 0.9.103, #4992).
+fn blanked_import_calls(source: &[u8], normalized: &[u8]) -> Vec<usize> {
+    let Some(re) = TS_IMPORT_CALL.as_ref() else {
+        return vec![];
+    };
+    re.find_iter(source)
+        .map(|m| m.start())
+        .filter(|&start| normalized.get(start..start + 6) != Some(b"import".as_slice()))
+        .collect()
+}
+/// Start offsets of the `import("m")` calls of a TypeScript file that sit
+/// in a type context of its parse (`js_import_is_type_only`, Graphify
+/// 0.9.103, #4992).
+fn ts_type_only_import_calls(source: &[u8], tsx: bool) -> Vec<usize> {
+    let Some(re) = TS_IMPORT_CALL.as_ref() else {
+        return vec![];
+    };
+    let starts: Vec<usize> = re.find_iter(source).map(|m| m.start()).collect();
+    if starts.is_empty() {
+        return starts;
+    }
+    let mut parser = tree_sitter::Parser::new();
+    let language = if tsx {
+        tree_sitter_typescript::LANGUAGE_TSX
+    } else {
+        tree_sitter_typescript::LANGUAGE_TYPESCRIPT
+    };
+    if parser.set_language(&language.into()).is_err() {
+        return vec![];
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        return vec![];
+    };
+    let root = tree.root_node();
+    starts
+        .into_iter()
+        .filter(|&start| {
+            root.descendant_for_byte_range(start, start + 1)
+                .is_some_and(crate::extractors::engine_scope::js_import_is_type_only)
+        })
+        .collect()
+}
 pub fn normalize_ts_import_types(source: &[u8], tsx: bool) -> Option<Vec<u8>> {
-    // Compiled once per process rather than per file.
-    static RE: LazyLock<Option<regex::bytes::Regex>> = LazyLock::new(|| {
-        regex::bytes::Regex::new(r#"\bimport\s*\(\s*['\"][^'\"\r\n]+['\"]\s*\)"#).ok()
-    });
-    let re = RE.as_ref()?;
+    let re = TS_IMPORT_CALL.as_ref()?;
     let matches = re.find_iter(source).collect::<Vec<_>>();
     if matches.is_empty() {
         return None;
@@ -673,10 +851,41 @@ fn rescued_import(path: &Path, r: &mut Value, raw: &str, relation: &str) {
     }
     arr(r, "edges").push(e);
 }
-pub fn rescue_dynamic(path: &Path, r: &mut Value) {
+pub fn rescue_dynamic(path: &Path, r: &mut Value, type_only_imports: &BTreeSet<usize>) {
     let Ok(src) = read_source_text(path, false) else {
         return;
     };
+    // The byte offsets in the read text (CRLF translated) of the `import`
+    // types the TS repair blanked: not executable imports (Graphify 0.9.102).
+    let mut type_only = BTreeSet::new();
+    // An `import(...)` in a TypeScript type context of the original parse is
+    // an import type too (Graphify 0.9.103, #4992).
+    let mut type_only_imports = std::borrow::Cow::Borrowed(type_only_imports);
+    let ext = effective_suffix(path).to_lowercase();
+    if [".ts", ".tsx", ".mts", ".cts"].contains(&ext.as_str())
+        && src.contains("import")
+        && let Ok(raw) = read_source_bytes(path, false)
+    {
+        let found = ts_type_only_import_calls(&raw, ext == ".tsx");
+        if !found.is_empty() {
+            type_only_imports.to_mut().extend(found);
+        }
+    }
+    if !type_only_imports.is_empty()
+        && let Ok(raw) = read_source_bytes(path, false)
+    {
+        let (mut cursor, mut position) = (0, 0);
+        for &offset in type_only_imports.iter() {
+            if offset < cursor || raw.get(offset..offset + 6) != Some(b"import".as_slice()) {
+                continue;
+            }
+            let segment = &raw[cursor..offset];
+            let crlf = segment.windows(2).filter(|w| *w == b"\r\n").count();
+            position += segment.len() - crlf;
+            type_only.insert(position);
+            cursor = offset;
+        }
+    }
     static RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r#"\bimport\s*\(\s*(?:'([^'\n]+)'|"([^"\n]+)"|`([^`$\n]+)`)\s*\)"#)
             .unwrap()
@@ -698,6 +907,9 @@ pub fn rescue_dynamic(path: &Path, r: &mut Value) {
     let mut seen = BTreeSet::new();
     for cap in re.captures_iter(&src) {
         let start = cap.get(0).unwrap().start();
+        if type_only.contains(&start) {
+            continue;
+        }
         if src[src[..start].rfind('\n').map(|i| i + 1).unwrap_or(0)..start].contains("//") {
             continue;
         }
@@ -817,6 +1029,288 @@ fn csharp_string_opener(source: &[u8], i: usize) -> (usize, usize, bool, bool) {
     }
     let run = source[j..].iter().take_while(|&&b| b == b'"').count();
     (j, run, interpolated, verbatim)
+}
+/// A byte blanked: every byte but CR and LF becomes a space, so lines and
+/// columns stay (Graphify 0.9.103).
+fn csharp_blank_byte(b: u8) -> u8 {
+    if matches!(b, b'\n' | b'\r') { b } else { b' ' }
+}
+/// `_csharp_token_end` (Graphify 0.9.103): the end (exclusive) of the
+/// comment, char or string literal opening at `i`, or `i` when none does. A
+/// line-bounded token (a `//` comment, a char literal, a regular string)
+/// stops before its newline. The holes of an interpolated string are walked
+/// as code, so a quote inside `{...}` does not end the string.
+fn csharp_token_end(source: &[u8], i: usize) -> usize {
+    let n = source.len();
+    let at = |j: usize| source.get(j).copied();
+    if source[i..].starts_with(b"//") {
+        return find_bytes(source, b"\n", i).unwrap_or(n);
+    }
+    if source[i..].starts_with(b"/*") {
+        return find_bytes(source, b"*/", i + 2).map_or(n, |end| end + 2);
+    }
+    if at(i) == Some(b'\'') {
+        let mut j = i + 1;
+        while j < n && !matches!(source[j], b'\'' | b'\n') {
+            j += if source[j] == b'\\' { 2 } else { 1 };
+        }
+        return if at(j) == Some(b'\'') { j + 1 } else { j.min(n) };
+    }
+    let (quote, run, interpolated, verbatim) = csharp_string_opener(source, i);
+    if run == 0 {
+        return i;
+    }
+    if run >= 3 {
+        let quotes = vec![b'"'; run];
+        return find_bytes(source, &quotes, quote + run).map_or(n, |end| end + run);
+    }
+    if run == 2 {
+        return quote + 2;
+    }
+    let mut j = quote + 1;
+    while j < n {
+        let ch = source[j];
+        if verbatim && source[j..].starts_with(b"\"\"") {
+            j += 2;
+        } else if ch == b'\\' && !verbatim {
+            j += 2;
+        } else if ch == b'"' {
+            return j + 1;
+        } else if ch == b'\n' && !verbatim {
+            return j;
+        } else if interpolated && source[j..].starts_with(b"{{") {
+            j += 2;
+        } else if interpolated && ch == b'{' {
+            let mut depth = 1i64;
+            j += 1;
+            while j < n && depth != 0 {
+                let end = csharp_token_end(source, j);
+                if end > j {
+                    j = end;
+                    continue;
+                }
+                match source[j] {
+                    b'{' => depth += 1,
+                    b'}' => depth -= 1,
+                    _ => {}
+                }
+                j += 1;
+            }
+        } else {
+            j += 1;
+        }
+    }
+    n
+}
+/// `_csharp_branch_balanced`: `{}` and `()` of `src` each net to zero,
+/// comments and literals skipped.
+fn csharp_branch_balanced(src: &[u8]) -> bool {
+    let (mut brace, mut paren) = (0i64, 0i64);
+    let mut j = 0;
+    while j < src.len() {
+        let tok = csharp_token_end(src, j);
+        if tok > j {
+            j = tok;
+            continue;
+        }
+        match src[j] {
+            b'{' => brace += 1,
+            b'}' => brace -= 1,
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            _ => {}
+        }
+        j += 1;
+    }
+    brace == 0 && paren == 0
+}
+/// `_CSHARP_NOT_A_TYPE`: statement words that precede a name without
+/// declaring it.
+const CSHARP_NOT_A_TYPE: &[&[u8]] = &[
+    b"return", b"new", b"await", b"throw", b"if", b"while", b"for", b"foreach", b"switch",
+    b"case", b"using", b"lock", b"catch", b"when", b"is", b"as", b"in", b"out", b"ref",
+    b"else", b"yield", b"nameof", b"typeof", b"sizeof", b"default", b"var", b"goto", b"fixed",
+    b"checked", b"unchecked", b"and", b"or", b"not",
+];
+static CSHARP_MEMBER_DECL: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+    regex::bytes::Regex::new(
+        r"(?-u)([A-Za-z_][A-Za-z0-9_]*|[>\]?*])\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^<>(){};]*>)?\s*(\(|\{|=>)",
+    )
+    .unwrap()
+});
+/// `_csharp_branch_member_sigs`: `(name, arity)` of the members a branch
+/// declares at its own brace depth. A heuristic, not a parse: a name after a
+/// type-like token and before `(` (arity = top-level commas + 1, 0 for `()`)
+/// or `{`/`=>` (a property or type, arity -1). Both branches of a group sit
+/// at one place in the file, so a shared signature is one member declared
+/// twice.
+fn csharp_branch_member_sigs(src: &[u8]) -> BTreeSet<(Vec<u8>, i64)> {
+    // Comments and literals are masked so they never look like code.
+    let mut code = src.to_vec();
+    let mut j = 0;
+    while j < src.len() {
+        let tok = csharp_token_end(src, j);
+        if tok > j {
+            for b in &mut code[j..tok] {
+                *b = csharp_blank_byte(*b);
+            }
+            j = tok;
+        } else {
+            j += 1;
+        }
+    }
+    let mut depth_at = Vec::with_capacity(code.len());
+    let mut d = 0i64;
+    for &ch in &code {
+        depth_at.push(d);
+        match ch {
+            b'{' => d += 1,
+            b'}' => d -= 1,
+            _ => {}
+        }
+    }
+    let mut sigs = BTreeSet::new();
+    for m in CSHARP_MEMBER_DECL.captures_iter(&code) {
+        let (kind, name, open) = (m.get(1).unwrap(), m.get(2).unwrap(), m.get(3).unwrap());
+        if depth_at[name.start()] != 0 || CSHARP_NOT_A_TYPE.contains(&kind.as_bytes()) {
+            continue;
+        }
+        let name = name.as_bytes().to_vec();
+        if open.as_bytes() != b"(" {
+            sigs.insert((name, -1));
+            continue;
+        }
+        let mut k = open.end();
+        let (mut level, mut angle, mut commas, mut empty) = (1i64, 0i64, 0i64, true);
+        while k < code.len() && level != 0 {
+            let c = code[k];
+            match c {
+                b'(' | b'[' | b'{' => level += 1,
+                b')' | b']' | b'}' => level -= 1,
+                b'<' => angle += 1,
+                b'>' => angle = (angle - 1).max(0),
+                b',' if level == 1 && angle == 0 => commas += 1,
+                _ => {}
+            }
+            if level != 0 && !matches!(c, b' ' | b'\t' | b'\n' | b'\r' | 0x0b | 0x0c) {
+                empty = false;
+            }
+            k += 1;
+        }
+        sigs.insert((name, if empty { 0 } else { commas + 1 }));
+    }
+    sigs
+}
+/// `_blank_csharp_preprocessor` (Graphify 0.9.103): C# preprocessor
+/// directives and the `#if` branches that derail the parse, blanked, or
+/// `None` when the file has no directive. tree-sitter-c-sharp parses every
+/// branch in place, and its recovery around a directive can close the
+/// enclosing class early, so later members lose their type owner, their
+/// field typing and their calls.
+///
+/// Every directive line (`#if`, `#elif`, `#else`, `#endif`, and `#region`,
+/// `#pragma`, `#nullable`, `#define`, ...) is blanked. The first branch of
+/// each `#if` group is kept; a later `#elif`/`#else` branch is kept too
+/// (#2631) unless its `{}` or `()` do not net to zero on their own, or it
+/// declares a member (name and arity) a kept branch of the group declares.
+/// Nested groups are decided first. Length preserving: removed bytes become
+/// spaces and CR/LF stay, so every byte keeps its line and column. A `#` line
+/// inside a comment or a multi-line string is no directive.
+pub fn blank_csharp_preprocessor(source: &[u8]) -> Option<Vec<u8>> {
+    let n = source.len();
+    // (line start, line end, keyword) of every directive line.
+    let mut directives: Vec<(usize, usize, &[u8])> = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let mut p = i;
+        while p < n && matches!(source[p], b' ' | b'\t' | 0x0b | 0x0c) {
+            p += 1;
+        }
+        if source.get(p) == Some(&b'#') {
+            let end = find_bytes(source, b"\n", p).unwrap_or(n);
+            let mut k = p + 1;
+            while k < end && matches!(source[k], b' ' | b'\t') {
+                k += 1;
+            }
+            let mut w = k;
+            while w < end && source[w].is_ascii_alphabetic() {
+                w += 1;
+            }
+            directives.push((i, end, &source[k..w]));
+            i = end + 1;
+            continue;
+        }
+        // The line walked as code; a comment or string may run past its end.
+        let mut j = p;
+        while j < n {
+            let ch = source[j];
+            if ch == b'\n' {
+                break;
+            }
+            let end = csharp_token_end(source, j);
+            if end > j {
+                j = end;
+            } else if matches!(ch, b'$' | b'@') {
+                j = (j + 1).max(csharp_string_opener(source, j).0);
+            } else {
+                j += 1;
+            }
+        }
+        i = j + 1;
+    }
+    if directives.is_empty() {
+        return None;
+    }
+    let mut out = source.to_vec();
+    let blank = |out: &mut Vec<u8>, start: usize, end: usize| {
+        for (o, &b) in out[start..end].iter_mut().zip(&source[start..end]) {
+            *o = csharp_blank_byte(b);
+        }
+    };
+    // Decides the branches of one closed group: `heads` are the (start, end)
+    // of its `#if` and each `#elif`/`#else`.
+    let close = |out: &mut Vec<u8>, heads: &[(usize, usize)], endif_start: usize| {
+        let bodies: Vec<(usize, usize)> = (0..heads.len())
+            .map(|k| (heads[k].1, heads.get(k + 1).map_or(endif_start, |h| h.0)))
+            .collect();
+        let mut kept: Vec<usize> = Vec::new();
+        for (k, &(start, end)) in bodies.iter().enumerate() {
+            let keep = k == 0 || {
+                let body = &out[start..end];
+                csharp_branch_balanced(body) && {
+                    let sigs = csharp_branch_member_sigs(body);
+                    !kept.iter().any(|&o| {
+                        let (s, e) = bodies[o];
+                        !sigs.is_disjoint(&csharp_branch_member_sigs(&out[s..e]))
+                    })
+                }
+            };
+            if keep {
+                kept.push(k);
+            } else {
+                blank(out, start, end);
+            }
+        }
+    };
+    let mut stack: Vec<Vec<(usize, usize)>> = Vec::new();
+    for &(start, end, word) in &directives {
+        blank(&mut out, start, end);
+        match word {
+            b"if" => stack.push(vec![(start, end)]),
+            b"elif" | b"else" if !stack.is_empty() => stack.last_mut().unwrap().push((start, end)),
+            b"endif" => {
+                if let Some(heads) = stack.pop() {
+                    close(&mut out, &heads, start);
+                }
+            }
+            _ => {}
+        }
+    }
+    // An unterminated `#if` runs to the end of the file.
+    while let Some(heads) = stack.pop() {
+        close(&mut out, &heads, n);
+    }
+    Some(out)
 }
 fn find_bytes(haystack: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     haystack
@@ -1261,6 +1755,8 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
     let mut lang = language.as_str();
     // The text an SFC/template wrapper read for its own regex passes.
     let mut text = None;
+    // Byte offsets of `import("m")` types the TS repair blanked (0.9.102).
+    let mut type_only_imports: BTreeSet<usize> = BTreeSet::new();
     let read_error =
         |e: std::io::Error| json!({"nodes":[],"edges":[],"error":io_compat::read_error(&e, path)});
     if language == "JS" {
@@ -1276,6 +1772,29 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
             && let Ok(s) = read_source_bytes(path, true)
         {
             source = normalize_ts(&s, lang == "TSX");
+            // An `import("m")` the import-type repair blanked is an import
+            // type, no executable import (Graphify 0.9.103, #4992). The
+            // repairs blank in place, so offsets match the original.
+            if let Some(normalized) = &source {
+                type_only_imports.extend(blanked_import_calls(&s, normalized));
+            }
+            // Typed tagged templates and import-qualified annotations
+            // (Graphify 0.9.102); a blanked `import("m")` type is no
+            // executable import for the dynamic-import rescue.
+            let working = source.as_deref().unwrap_or(&s);
+            if let Some(normalized) =
+                normalize_ts_tag_and_import_annotations(working, lang == "TSX")
+            {
+                type_only_imports.extend(
+                    ts_qualified_import_types(working)
+                        .into_iter()
+                        .map(|(start, _)| start)
+                        .filter(|&start| {
+                            normalized.get(start..start + 6) != Some(b"import".as_slice())
+                        }),
+                );
+                source = Some(normalized);
+            }
         }
     } else if language == "CPP" {
         if let Ok(s) = read_source_bytes(path, true) {
@@ -1288,9 +1807,12 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
             source = php_blank_unparsed_casts(&s);
         }
     } else if language == "CSHARP" {
-        // Upstream hands the raw bytes to the verbatim-string repair (#3376).
+        // Upstream hands the raw bytes to the preprocessor blanking
+        // (Graphify 0.9.103) and then to the verbatim-string repair (#3376).
         if let Ok(s) = crate::extractors::parse_cache::read(path) {
-            source = normalize_csharp_verbatim_interpolation(&s);
+            let blanked = blank_csharp_preprocessor(&s[..]);
+            source = normalize_csharp_verbatim_interpolation(blanked.as_deref().unwrap_or(&s[..]))
+                .or(blanked);
         }
     } else if language == "VUE" {
         let Ok(src) = read_source_text(path, true) else {
@@ -1366,7 +1888,7 @@ pub fn extract_language(path: &Path, language: &str) -> Value {
         }
         "JS" if r.get("error").is_none() => {
             js_rationale(path, &mut r);
-            rescue_dynamic(path, &mut r);
+            rescue_dynamic(path, &mut r, &type_only_imports);
         }
         "CPP" => cpp_string_tests(path, &mut r),
         "GROOVY"

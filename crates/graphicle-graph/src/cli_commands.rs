@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 use crate::{
     Result, build,
@@ -17,6 +17,11 @@ use std::{
     },
     time::{Duration, Instant},
 };
+/// `query` usage, printed for a lone `--help` (Graphify 0.9.97, #4830).
+pub const QUERY_USAGE: &str =
+    "query \"<question>\" [--dfs] [--context C] [--seed X] [--budget N] [--depth N] [--graph PATH]";
+/// `explain` usage, printed for a lone `--help` (Graphify 0.9.97).
+pub const EXPLAIN_USAGE: &str = "explain \"<node>\" [--all] [--graph PATH]";
 /// `retrieve <question> [--graph PATH] [--budget N] [--root DIR] [--include-tests] [--json [--explain]]`.
 pub fn retrieve(a: &Args, out: &mut Output) -> Result<()> {
     let question = a.require(
@@ -84,9 +89,35 @@ fn query_loaded(
     let gp = gp.to_path_buf();
     match command {
         "query" => {
-            a.require(0, "query <question> [--seed X] [--graph PATH]")?;
+            a.require(0, QUERY_USAGE)?;
             let mode = if a.flag("dfs") { "dfs" } else { "bfs" };
-            let budget = a.number("budget", 2000)?;
+            // `--depth` (1-6) and the project's `.graphiclerc` defaults
+            // `query_budget`/`query_depth`; explicit options win (Graphify
+            // 0.9.102).
+            let depth = match a.get("depth") {
+                None => None,
+                Some(raw) => Some(
+                    raw.trim()
+                        .parse::<i64>()
+                        .ok()
+                        .filter(|d| (1..=6).contains(d))
+                        .ok_or_else(|| "--depth must be an integer from 1 to 6".to_string())?,
+                ),
+            };
+            let budget = a.get("budget").map(|_| a.number("budget", 2000)).transpose()?;
+            let graph_root = graph_root_for(&gp);
+            let settings = match crate::rcfile::load_rc_file(&graph_root) {
+                Ok(settings) => settings,
+                Err(e) => {
+                    out.warn(format!(
+                        "warning: ignoring project settings in {}: {e}",
+                        graph_root.join(crate::rcfile::RC_FILENAME).display()
+                    ));
+                    Default::default()
+                }
+            };
+            let budget = budget.or(settings.query_budget).unwrap_or(2000);
+            let depth = depth.or(settings.query_depth).unwrap_or(2);
             let seeds = a.all("seed");
             let start = Instant::now();
             let result = crate::serve_text::query_text(
@@ -95,17 +126,17 @@ fn query_loaded(
                 q,
                 crate::serve_text::QueryOptions {
                     mode,
-                    depth: 2,
+                    depth,
                     budget,
                     filters: &a.all("context"),
                     path: gp.to_str(),
                     seeds: Some(&seeds),
                     // The root `affected` derives (#2706): <root>/.graphicle/graph.json.
-                    seed_root: graph_root_for(&gp),
+                    seed_root: Some(&graph_root),
                 },
             )?;
             crate::querylog::log_query(
-                &json!({"kind":"query","question":q,"corpus":gp,"result":result,"duration_ms":start.elapsed().as_secs_f64()*1000.0,"extra":{"mode":mode,"depth":2,"token_budget":budget,"seeds":(!seeds.is_empty()).then_some(&seeds)}}),
+                &json!({"kind":"query","question":q,"corpus":gp,"result":result,"duration_ms":start.elapsed().as_secs_f64()*1000.0,"extra":{"mode":mode,"depth":depth,"token_budget":budget,"seeds":(!seeds.is_empty()).then_some(&seeds)}}),
             );
             crate::cli_guard::touch_query(&gp);
             out.line(&result);
@@ -158,7 +189,7 @@ fn query_loaded(
             }
         }
         "explain" => {
-            a.require(0, "explain <node> [--all] [--graph PATH]")?;
+            a.require(0, EXPLAIN_USAGE)?;
             let show_all = a.flag("all");
             let i = match crate::serve_find::resolve(&g, index, q) {
                 Ok(i) => i,
@@ -225,10 +256,13 @@ fn query_loaded(
             for incoming in [false, true] {
                 for nb in search::neighbors(&g, i, incoming) {
                     let (u, v) = if incoming { (nb, i) } else { (i, nb) };
-                    let e = build::edge_data(&g, &g.nodes[u].id, &g.nodes[v].id)?.clone();
-                    let src = e.get("_src").unwrap_or(&g.nodes[u].id);
-                    let forward = src == &g.nodes[i].id;
-                    connections.push((forward, nb, e));
+                    // One connection per parallel edge (Graphify 0.9.100).
+                    for e in build::edge_datas(&g, &g.nodes[u].id, &g.nodes[v].id)? {
+                        let e = e.clone();
+                        let src = e.get("_src").unwrap_or(&g.nodes[u].id);
+                        let forward = src == &g.nodes[i].id;
+                        connections.push((forward, nb, e));
+                    }
                 }
             }
             if !connections.is_empty() {
@@ -252,7 +286,8 @@ fn query_loaded(
                         if *forward { "-->" } else { "<--" },
                         search::label(&g, *nb),
                         text("relation"),
-                        text("confidence")
+                        // With its score (Graphify 0.9.99, #4882).
+                        crate::serve_search::confidence_tag(e)
                     ));
                 }
                 if connections.len() > shown {
@@ -296,6 +331,24 @@ fn query_loaded(
             a.require(0, "affected <node> [--graph PATH]")?;
             let g = crate::serve_socket::shared_graph(&gp)?;
             let root = graph_root_for(&gp);
+            let root = Some(root.as_path());
+            // An unresolvable seed sets the documented exit code, as
+            // `explain` does: 3 for an ambiguous name, 4 for no match
+            // (Graphify 0.9.100, #4792).
+            if crate::affected::resolve_seed(&g, q, root)?.is_none() {
+                let trimmed = q.trim_end_matches(['/', '\\']);
+                let normalized = if trimmed.is_empty() { q } else { trimmed };
+                let index = crate::serve_search::SearchIndex::new(&g);
+                let rivals = crate::serve_find::ambiguity(&g, &index, normalized);
+                if rivals.is_empty() {
+                    out.warn(format!("No unique node match for {q}"));
+                    out.exit_code = crate::cli::EXIT_NOT_FOUND;
+                } else {
+                    out.warn(crate::serve_find::ambiguity_message(&g, q, &rivals));
+                    out.exit_code = crate::cli::EXIT_AMBIGUOUS;
+                }
+                return Ok(());
+            }
             let mut rels = a.all("relation");
             if rels.is_empty() {
                 rels = crate::affected::DEFAULT_AFFECTED_RELATIONS
@@ -337,18 +390,51 @@ fn query_loaded(
     }
     Ok(())
 }
-/// The analysed repository root of a graph file: `<root>/.graphicle/graph.json`,
-/// else the file's own directory (Graphify 0.9.88 `_graph_root_for`, as
-/// `affected` derived it, #2706).
-fn graph_root_for(gp: &Path) -> Option<&Path> {
-    if gp.parent().is_some_and(|p| {
-        p.file_name()
-            .is_some_and(|n| n == paths::OUT_DIR_NAME.as_str())
-    }) {
-        gp.parent().and_then(Path::parent)
-    } else {
-        gp.parent()
+/// `_graph_root_for` (Graphify 0.9.102): the project of a graph file, never
+/// read through the working directory. An absolute `.graphicle_root` marker
+/// beside it that names a folder wins (shared output); otherwise an exact,
+/// relative output-folder suffix without `..` is stripped
+/// (`<root>/.graphicle/graph.json`), else the file's own folder.
+fn graph_root_for(gp: &Path) -> std::path::PathBuf {
+    let parent = gp.parent().unwrap_or(Path::new(""));
+    if let Ok(bytes) = std::fs::read(parent.join(".graphicle_root"))
+        && let Ok(text) = std::str::from_utf8(bytes.strip_prefix(b"\xef\xbb\xbf").unwrap_or(&bytes))
+    {
+        let text = text.trim();
+        if !text.is_empty() {
+            let root = Path::new(text);
+            if root.is_absolute()
+                && let Ok(resolved) = crate::fsutil::resolve_missing(root)
+                && resolved.is_dir()
+            {
+                return resolved;
+            }
+        }
     }
+    let output = Path::new(paths::OUT_DIR.as_str());
+    let parts: Vec<_> = output
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    if !parts.is_empty()
+        && !output.is_absolute()
+        && !parts
+            .iter()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        let mine: Vec<_> = parent
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .collect();
+        if mine.len() >= parts.len() && mine[mine.len() - parts.len()..] == parts[..] {
+            let mut root = parent;
+            for _ in 0..parts.len() {
+                root = root.parent().unwrap_or(Path::new(""));
+            }
+            return root.to_path_buf();
+        }
+    }
+    parent.to_path_buf()
 }
 pub fn install(command: &str, a: &Args, out: &mut Output) -> Result<()> {
     let generic = ["install", "uninstall"].contains(&command);
@@ -502,12 +588,17 @@ pub fn update(a: &Args, out: &mut Output) -> Result<()> {
         return Err(format!("path not found: {}", path.display()).into());
     }
     out.line(format!(
-        "Re-extracting code files in {} (no LLM needed)...",
+        "Updating code graph in {} (no LLM needed)...",
         path.display()
     ));
+    // Graphify 0.9.102 (#4740): re-extract only the files whose content
+    // differs from the manifest, once the early stop has found something
+    // changed; `--force` and a manifest the baseline cannot vouch for keep
+    // the full rebuild (see `watch::RebuildOptions::incremental`).
     let r = crate::watch::rebuild(
         &path,
         &crate::watch::RebuildOptions {
+            incremental: true,
             force: crate::cli::force(a),
             no_cluster: a.flag("no-cluster"),
             follow_symlinks: a.flag("follow-symlinks"),

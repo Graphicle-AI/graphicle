@@ -1,8 +1,8 @@
 # Graphicle graph engine
 
-The Graphicle graph engine is a native Rust port of Graphify **0.9.95** (see
+The Graphicle graph engine is a native Rust port of Graphify **0.9.102** (see
 [NOTICE](NOTICE)), pinned to the release tag
-`92741d162b2094ffc2fed58cfbd8ee823e9da62c`. The application includes the extraction
+`59b5ab1151e031fb42e39cfc9a50bf96f2d57ae0`. The application includes the extraction
 pipeline, CLI, incremental updates, watcher, MCP server, hooks, assistant
 installer, exports and public library API. Python is used only for development
 comparisons; native operations do not fall back to the Python application.
@@ -210,10 +210,12 @@ limits, its `docs/evidence/upstream-tests-known-differences.md` lists the
 upstream tests that fail against the engine, with the reason for each, and its
 `docs/evidence/upstream-tests-not-run.md` lists the test files the checks do
 not run, with the reason for each.
-[migration/STATUS.md](migration/STATUS.md), [AUDIT.json](migration/AUDIT.json)
-and the [file ledger](migration/FILES.json) record the 24 October run against
-0.9.95: the ledger lists every file of the pinned Graphify 0.9.95 archive with
-its SHA-256 and marks each of the 96 application modules verified. The
+[migration/STATUS.md](migration/STATUS.md) and [AUDIT.json](migration/AUDIT.json)
+record the 24 October run against 0.9.95, which marked each of its 96
+application modules verified. The engine now follows Graphify 0.9.102: the
+[file ledger](migration/FILES.json) lists every file of the pinned 0.9.102
+archive with its SHA-256, and its 97 application modules stay pending until
+the comparison checks run against that release. The
 repository's `docs/evidence/` folder summarizes the 13 October qualification
 against 0.9.88 and the 14 October run of the widened checks.
 
@@ -246,7 +248,7 @@ the tree-sitter 0.25.10 runtime, the one Python Graphify parses with, so
 `serve` defaults to MCP stdio; `--transport streamable-http` selects HTTP with
 host, port, API-key, session and path options. `install` and `uninstall`
 configure supported assistant platforms. `--help` lists the commands that
-come from Graphify 0.9.95, including labeling, query and navigation, global
+come from Graphify 0.9.102, including labeling, query and navigation, global
 graphs, merge workflows and exports; the additions below are documented here
 and in the repository's README.
 

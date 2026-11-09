@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cargo_introspect.py
 //! Port of graphify/cargo_introspect.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 //! Reads manifests only; does not execute Cargo or project build scripts.
@@ -15,6 +15,15 @@ pub fn load_toml(path: &Path) -> Result<toml::Value> {
     toml::from_str(text)
         .map_err(|error| format!("TOMLDecodeError: {error}"))
         .map_err(crate::Error::from)
+}
+
+/// `package_name` (Graphify 0.9.96, #4699): a `Cargo.toml`'s `[package]
+/// name` as Rust spells it in a path (`-` -> `_`). `None` when the manifest
+/// has no package name or cannot be read or parsed: no name is no crate.
+pub fn package_name(manifest: &Path) -> Option<String> {
+    let data = load_toml(manifest).ok()?;
+    let name = data.get("package")?.get("name")?.as_str()?;
+    (!name.is_empty()).then(|| name.replace('-', "_"))
 }
 
 pub fn member_manifest_paths(root: &Path, data: &toml::Value) -> Result<Vec<PathBuf>> {

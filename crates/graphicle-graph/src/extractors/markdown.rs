@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/markdown.py
 //! Port of graphify/extractors/markdown.py at the pinned Graphify commit.
 use super::{base::file_stem, markdown_data};
@@ -35,7 +35,36 @@ static CODE: LazyLock<FancyRegex> = LazyLock::new(|| fancy(r"(?<!`)(`+)(?!`)(.+?
 static REF: LazyLock<FancyRegex> = LazyLock::new(|| {
     fancy(r#"^\s{0,3}\[[^\]]+\]:\s*(?:<([^<>\n]+)>(?=\s*(?:["'(]|$))|<?([^\s>]+)>?)"#)
 });
-static HEADING: LazyLock<Regex> = LazyLock::new(|| regex_compat::compile(r"^(#{1,6})\s+(.+)"));
+// An ATX heading per CommonMark (Graphify 0.9.97, #4790): up to three
+// spaces of indent, 1-6 `#`, whitespace and the text; a closing run of `#`
+// after whitespace is not part of the text (`## Setup ##` is "Setup", while
+// `## C#` keeps its `#`).
+static HEADING: LazyLock<Regex> =
+    LazyLock::new(|| regex_compat::compile(r"^ {0,3}(#{1,6})[ \t]+(.+)$"));
+static HEADING_CLOSE: LazyLock<Regex> =
+    LazyLock::new(|| regex_compat::compile(r"(?:^|[ \t]+)#+[ \t]*$"));
+// A fenced code block line (Graphify 0.9.97, #4787): a run of 3+ backticks
+// or tildes, then the rest of the line.
+static FENCE: LazyLock<Regex> = LazyLock::new(|| regex_compat::compile(r"^\s*(`{3,}|~{3,})(.*)$"));
+/// `_fence_open`: `(fence char, run length)` when `line` opens a fenced
+/// block. A backtick fence's info string holds no backtick, so a line that
+/// starts with an inline code span is prose.
+fn fence_open(line: &str) -> Option<(char, usize)> {
+    let c = FENCE.captures(line)?;
+    let (run, rest) = (&c[1], &c[2]);
+    let mark = run.chars().next()?;
+    if mark == '`' && rest.contains('`') {
+        return None;
+    }
+    Some((mark, run.len()))
+}
+/// `_fence_closes`: a run of the opener's character, at least as long, with
+/// nothing but whitespace after it.
+fn fence_closes(line: &str, fence: (char, usize)) -> bool {
+    FENCE.captures(line).is_some_and(|c| {
+        c[1].starts_with(fence.0) && c[1].len() >= fence.1 && strip(&c[2]).is_empty()
+    })
+}
 static PATH_MENTION: LazyLock<Regex> = LazyLock::new(|| {
     regex_compat::compile(
         r"^([A-Za-z0-9_./\-]+\.[A-Za-z0-9]+)::([A-Za-z_]\w*(?:::[A-Za-z_]\w*)*)(?:\(\))?$",
@@ -43,6 +72,16 @@ static PATH_MENTION: LazyLock<Regex> = LazyLock::new(|| {
 });
 static BARE_MENTION: LazyLock<Regex> =
     LazyLock::new(|| regex_compat::compile(r"^(?:[A-Za-z_]\w*\.)*([A-Za-z_]\w*)(?:\(\))?$"));
+/// `_MD_NS_MENTION_RE` (Graphify 0.9.103, #4610): the namespace and member
+/// chains other languages' docs write, `App\Services\Mailer` (PHP) and
+/// `Mailer::send()` (PHP, Rust, C++): plain identifiers joined by `\` or `::`.
+static NS_MENTION: LazyLock<Regex> = LazyLock::new(|| {
+    regex_compat::compile(r"^[A-Za-z_]\w*(?:(?:::|\\)[A-Za-z_]\w*)+(?:\(\))?$")
+});
+/// `_MD_NS_NON_SYMBOL_RE`: `Foo::CONST` names a constant and `Foo::class` a
+/// keyword; neither has a node to land on.
+static NS_NON_SYMBOL: LazyLock<Regex> =
+    LazyLock::new(|| regex_compat::compile(r"^(?:class|[A-Z][A-Z0-9_]*)$"));
 static FLAT: LazyLock<Regex> =
     LazyLock::new(|| regex_compat::compile(r"^([A-Za-z0-9_][A-Za-z0-9_\-. ]*):\s*(.*)$"));
 
@@ -383,23 +422,39 @@ pub fn code_span_mention(span: &str) -> Option<(Option<String>, Vec<String>)> {
             c[2].split("::").map(str::to_owned).collect(),
         ));
     }
-    let c = BARE_MENTION.captures(text)?;
-    if text.contains('.') {
-        let ext = format!(".{}", &c[1]);
-        if markdown_data::CODE_EXTENSIONS.contains(&ext.as_str())
-            || markdown_data::DOC_EXTENSIONS.contains(&ext.as_str())
-        {
+    if let Some(c) = BARE_MENTION.captures(text) {
+        if text.contains('.') {
+            let ext = format!(".{}", &c[1]);
+            if markdown_data::CODE_EXTENSIONS.contains(&ext.as_str())
+                || markdown_data::DOC_EXTENSIONS.contains(&ext.as_str())
+            {
+                return None;
+            }
+            return Some((
+                None,
+                text.trim_end_matches(['(', ')'])
+                    .split('.')
+                    .map(str::to_owned)
+                    .collect(),
+            ));
+        }
+        return Some((None, vec![c[1].into()]));
+    }
+    // `App\Services\Mailer` and `Mailer::send()`: split on `\` and `::` the
+    // way the dotted form splits on `.` (Graphify 0.9.103, #4610).
+    if NS_MENTION.is_match(text) {
+        let body = text.strip_suffix("()").unwrap_or(text);
+        let parts: Vec<String> = body
+            .split("::")
+            .flat_map(|part| part.split('\\'))
+            .map(str::to_owned)
+            .collect();
+        if parts.last().is_some_and(|last| NS_NON_SYMBOL.is_match(last)) {
             return None;
         }
-        return Some((
-            None,
-            text.trim_end_matches(['(', ')'])
-                .split('.')
-                .map(str::to_owned)
-                .collect(),
-        ));
+        return Some((None, parts));
     }
-    Some((None, vec![c[1].into()]))
+    None
 }
 
 struct Extraction {
@@ -483,6 +538,13 @@ impl Extraction {
                 if names.len() > 1 {
                     call["qualifiers"] = json!(&names[..names.len() - 1]);
                 }
+                // A `\`/`::` chain's namespace root may map to the scan
+                // directory (PSR-4 `App\`) with no path segment: the resolver
+                // may drop leading qualifiers no candidate accounts for
+                // (Graphify 0.9.103, #4610).
+                if call.get("path").is_none() && NS_MENTION.is_match(strip(span)) {
+                    call["ns_qualified"] = json!(true);
+                }
                 self.calls.push(call);
             }
         }
@@ -525,14 +587,18 @@ pub fn extract_markdown(path: &Path) -> crate::Result<Value> {
     // Same-page heading anchors are resolved after the walk: the heading a
     // `[[#Setup]]` names may be declared further down (upstream PR #3450).
     let mut pending_anchors: Vec<(String, usize, String)> = Vec::new();
-    let mut in_code = false;
+    // The open fence, by CommonMark rules (Graphify 0.9.97, #4787).
+    let mut fence: Option<(char, usize)> = None;
     for (offset, text) in lines.into_iter().enumerate() {
         let line = offset + 1;
-        if strip(text).starts_with("```") {
-            in_code = !in_code;
+        if let Some(open) = fence {
+            if fence_closes(text, open) {
+                fence = None;
+            }
             continue;
         }
-        if in_code {
+        if let Some(open) = fence_open(text) {
+            fence = Some(open);
             continue;
         }
         // Each backtracking pattern needs a literal the line may not have: an
@@ -568,9 +634,12 @@ pub fn extract_markdown(path: &Path) -> crate::Result<Value> {
         if offset < body_start {
             continue;
         }
-        if let Some(c) = HEADING.captures(text) {
-            let level = c[1].len();
-            let title = strip(&c[2]);
+        let heading = HEADING.captures(text).and_then(|c| {
+            let title = HEADING_CLOSE.replace(strip(&c[2]), "").into_owned();
+            (!title.is_empty()).then(|| (c[1].len(), title))
+        });
+        if let Some((level, title)) = heading {
+            let title = title.as_str();
             let mut id = make_id([stem.as_str(), title]);
             if out.ids.contains(&id) {
                 id = make_id([stem.as_str(), title, &line.to_string()]);

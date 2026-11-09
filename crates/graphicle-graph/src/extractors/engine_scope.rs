@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py
 //! Binding and receiver scopes from graphify/extractors/engine.py.
 use super::{base::read_text, engine_types::*, models::LanguageConfig};
@@ -260,6 +260,17 @@ fn upper_initial(s: &str) -> bool {
 /// Python class bindings of one scope: `name -> Some(Class)` when every
 /// binding names that one class, `None` when the name is bound otherwise.
 pub type PythonBindings = BTreeMap<String, Option<String>>;
+/// Python locals bound to a member-call result (`task = svc.make()`), by the
+/// exact byte span of that call (Graphify 0.9.96): the corpus resolver types
+/// them from the resolved method's return annotation.
+pub type PythonFactories = BTreeMap<String, [usize; 2]>;
+/// One binding of [`python_local_class_bindings`]: a class, or the span of
+/// the member call whose result the name holds.
+#[derive(Clone, PartialEq)]
+enum PyBound {
+    Class(String),
+    Site([usize; 2]),
+}
 /// `_python_self_attr` (0.9.80, #2860): `X` when `node` is `self.X`.
 pub fn python_self_attr(node: Option<Node<'_>>, source: &[u8]) -> Option<String> {
     let node = node.filter(|n| n.kind_name() == "attribute")?;
@@ -271,8 +282,13 @@ pub fn python_self_attr(node: Option<Node<'_>>, source: &[u8]) -> Option<String>
 /// `self.attr = ...` in a method body. The class is the annotation
 /// (`self.attr: T = ...`) or the bare class of `self.attr = Ctor(...)`, and
 /// None for any other value so the caller can poison the field;
-/// `self.attr = None` binds nothing.
-pub fn python_self_attr_bindings(body: Node<'_>, source: &[u8]) -> Vec<(String, Option<String>)> {
+/// `self.attr = None` binds nothing. An unchanged typed parameter or local
+/// carries its class through `self.attr = value` (Graphify 0.9.96).
+pub fn python_self_attr_bindings(
+    body: Node<'_>,
+    source: &[u8],
+    local_types: Option<&PythonBindings>,
+) -> Vec<(String, Option<String>)> {
     let mut out = vec![];
     let mut stack = named(body);
     while let Some(node) = stack.pop() {
@@ -290,11 +306,18 @@ pub fn python_self_attr_bindings(body: Node<'_>, source: &[u8]) -> Vec<(String, 
             continue;
         };
         let mut value = node.child_by_field_name("type");
+        let mut bound_type = None;
         if value.is_none()
             && let Some(right) = node.child_by_field_name("right")
         {
             if right.kind_name() == "none" {
                 continue;
+            }
+            if right.kind_name() == "identifier" {
+                bound_type = local_types
+                    .and_then(|types| types.get(&read_text(right, source)))
+                    .cloned()
+                    .flatten();
             }
             value = if right.kind_name() == "call" {
                 right.child_by_field_name("function")
@@ -302,7 +325,10 @@ pub fn python_self_attr_bindings(body: Node<'_>, source: &[u8]) -> Vec<(String, 
                 None
             };
         }
-        let name = value.map(|v| read_text(v, source)).unwrap_or_default();
+        let name = value
+            .map(|v| read_text(v, source))
+            .or(bound_type)
+            .unwrap_or_default();
         let typed = crate::extract_python::is_identifier(&name) && upper_initial(&name);
         // Only a whole-target assignment types the field; every element of a
         // tuple unpacking is poisoned.
@@ -321,11 +347,16 @@ pub fn python_self_attr_bindings(body: Node<'_>, source: &[u8]) -> Vec<(String, 
 /// constructor call or a `with Ctor(...) as name`. The table is
 /// flow-insensitive, so a name bound to anything else anywhere in the
 /// function maps to None; names bound inside a lambda or a nested class body
-/// are poisoned, never typed.
-pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindings {
+/// are poisoned, never typed. A local assigned a member-call result
+/// (`task = svc.make()`) is kept apart, by that call's byte span, under the
+/// same poison rules (Graphify 0.9.96).
+pub fn python_local_class_bindings(
+    body: Node<'_>,
+    source: &[u8],
+) -> (PythonBindings, PythonFactories) {
     struct Scan<'s> {
         source: &'s [u8],
-        bindings: PythonBindings,
+        bindings: BTreeMap<String, Option<PyBound>>,
         poison_only: bool,
     }
     impl Scan<'_> {
@@ -333,6 +364,9 @@ pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindi
             read_text(n, self.source)
         }
         fn bind(&mut self, name: String, class: Option<String>) {
+            self.bind_to(name, class.map(PyBound::Class));
+        }
+        fn bind_to(&mut self, name: String, class: Option<PyBound>) {
             match class {
                 Some(class)
                     if !self.poison_only
@@ -408,11 +442,16 @@ pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindi
                                 } else if let Some(right) =
                                     right.filter(|r| r.kind_name() == "call")
                                 {
-                                    let class = python_class_ref(
-                                        right.child_by_field_name("function"),
-                                        self.source,
-                                    );
-                                    self.bind(name, class);
+                                    let function = right.child_by_field_name("function");
+                                    let class = python_class_ref(function, self.source);
+                                    if class.is_none()
+                                        && function.is_some_and(|f| f.kind_name() == "attribute")
+                                    {
+                                        let site = [right.start_byte(), right.end_byte()];
+                                        self.bind_to(name, Some(PyBound::Site(site)));
+                                    } else {
+                                        self.bind(name, class);
+                                    }
                                 } else {
                                     self.bindings.insert(name, None);
                                 }
@@ -463,7 +502,7 @@ pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindi
     }
     let mut scan = Scan {
         source,
-        bindings: PythonBindings::new(),
+        bindings: BTreeMap::new(),
         poison_only: false,
     };
     let params = body
@@ -494,7 +533,20 @@ pub fn python_local_class_bindings(body: Node<'_>, source: &[u8]) -> PythonBindi
         }
     }
     scan.visit(body);
-    scan.bindings
+    let mut factories = PythonFactories::new();
+    let bindings = scan
+        .bindings
+        .into_iter()
+        .map(|(name, bound)| match bound {
+            Some(PyBound::Class(class)) => (name, Some(class)),
+            Some(PyBound::Site(site)) => {
+                factories.insert(name.clone(), site);
+                (name, None)
+            }
+            None => (name, None),
+        })
+        .collect();
+    (bindings, factories)
 }
 /// `_python_is_property` (0.9.87, #4337): `@property`, `@cached_property` or
 /// `@x.getter`; reading the attribute runs the function.
@@ -743,6 +795,85 @@ pub fn js_direct_lexical_names(n: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     }
     out
 }
+/// `_js_receiver_shadowed` (Graphify 0.9.102, #4963): a member call's
+/// receiver is looked up through every lexical ancestor of the call, so an
+/// inner function traced on its own still sees an outer rebinding. The
+/// names each scope binds are kept by node, as upstream's
+/// `bindings_by_scope`.
+#[derive(Default)]
+pub struct JsReceiverBindings(BTreeMap<usize, BTreeSet<String>>);
+
+impl JsReceiverBindings {
+    pub fn shadowed(&mut self, n: Node<'_>, name: Option<&str>, source: &[u8]) -> bool {
+        let Some(name) = name.filter(|name| !name.is_empty()) else {
+            return false;
+        };
+        let mut scope = n.parent();
+        while let Some(s) = scope {
+            let bound = self
+                .0
+                .entry(s.id())
+                .or_insert_with(|| js_scope_bindings(s, source));
+            if bound.contains(name) {
+                return true;
+            }
+            scope = s.parent();
+        }
+        false
+    }
+}
+
+fn js_scope_bindings(scope: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    let kind = scope.kind_name();
+    let mut bound = BTreeSet::new();
+    if set("_JS_SCOPE_BOUNDARY").contains(kind) {
+        bound.extend(js_local_bound_names(scope, source));
+        if !matches!(kind, "method_definition" | "arrow_function")
+            && let Some(own) = scope.child_by_field_name("name")
+        {
+            bound.insert(read_text(own, source));
+        }
+    }
+    if matches!(kind, "program" | "statement_block" | "for_statement") {
+        bound.extend(js_direct_lexical_names(scope, source));
+        for child in named(scope) {
+            if matches!(
+                child.kind_name(),
+                "function_declaration"
+                    | "generator_function_declaration"
+                    | "class_declaration"
+                    | "abstract_class_declaration"
+            ) && let Some(declared) = child.child_by_field_name("name")
+            {
+                bound.insert(read_text(declared, source));
+            }
+        }
+    }
+    if matches!(kind, "catch_clause" | "for_in_statement") {
+        let field = if kind == "catch_clause" { "parameter" } else { "left" };
+        if let Some(pattern) = scope.child_by_field_name(field) {
+            js_collect_pattern_idents(pattern, source, &mut bound);
+        }
+    }
+    bound
+}
+/// `_js_import_is_type_only` (Graphify 0.9.103, #4992): an `import(...)`
+/// call inside an unambiguous TypeScript type context (an annotation, a type
+/// alias, `typeof`, an interface, a constraint or a type default) is an
+/// import type, not a runtime dependency. The search stops at a statement
+/// block or the program.
+pub fn js_import_is_type_only(node: Node<'_>) -> bool {
+    let mut node = Some(node);
+    while let Some(n) = node {
+        match n.kind() {
+            "type_annotation" | "type_alias_declaration" | "type_query"
+            | "interface_declaration" | "constraint" | "default_type" => return true,
+            "statement_block" | "program" => break,
+            _ => node = n.parent(),
+        }
+    }
+    false
+}
 pub fn js_module_bound_names(root: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     js_bind_walk(root, source, &mut out, true);
@@ -791,6 +922,158 @@ pub fn get_cpp_func_name(n: Node<'_>, source: &[u8]) -> Option<String> {
         return get_cpp_func_name(decl, source);
     }
     first_child(n, &["identifier"]).map(|n| read_text(n, source))
+}
+/// `_cpp_parameter_types` (Graphify 0.9.101, #3215): `param -> Class` from
+/// the enclosing function's parameter list, by the rules of
+/// [`cpp_local_var_types`]; an entry is never overwritten.
+pub fn cpp_parameter_types(body: Node<'_>, source: &[u8], table: &mut BTreeMap<String, String>) {
+    let mut function = body.parent();
+    while let Some(f) = function.filter(|f| f.kind_name() != "function_definition") {
+        function = f.parent();
+    }
+    let mut declarator = function.and_then(|f| f.child_by_field_name("declarator"));
+    while let Some(d) = declarator.filter(|d| d.kind_name() != "function_declarator") {
+        declarator = d.child_by_field_name("declarator");
+    }
+    let Some(params) = declarator.and_then(|d| d.child_by_field_name("parameters")) else {
+        return;
+    };
+    for p in children(params) {
+        if p.kind_name() != "parameter_declaration" {
+            continue;
+        }
+        let Some(ty) = p
+            .child_by_field_name("type")
+            .filter(|t| matches!(t.kind_name(), "type_identifier" | "qualified_identifier"))
+        else {
+            continue;
+        };
+        let text = read_text(ty, source);
+        let type_name = text.rsplit("::").next().unwrap_or("").trim().to_string();
+        let Some(var) = p
+            .child_by_field_name("declarator")
+            .and_then(|d| super::engine_declarator::cpp_declarator_name(d, source))
+        else {
+            continue;
+        };
+        if !var.is_empty()
+            && type_name.chars().next().is_some_and(char::is_uppercase)
+            && !table.contains_key(&var)
+        {
+            table.insert(var, type_name);
+        }
+    }
+}
+/// `_cpp_field_types` (Graphify 0.9.101, #3215): `field -> Class` from the
+/// class and struct member declarations of the file; a field name declared
+/// with two types maps to `""`, ambiguous.
+pub fn cpp_field_types(root: Node<'_>, source: &[u8], table: &mut BTreeMap<String, String>) {
+    let mut stack = vec![root];
+    while let Some(n) = stack.pop() {
+        if n.kind_name() == "field_declaration"
+            && let Some(ty) = n
+                .child_by_field_name("type")
+                .filter(|t| matches!(t.kind_name(), "type_identifier" | "qualified_identifier"))
+        {
+            let text = read_text(ty, source);
+            let type_name = text.rsplit("::").next().unwrap_or("").trim().to_string();
+            if let Some(var) = n
+                .child_by_field_name("declarator")
+                .and_then(|d| super::engine_declarator::cpp_declarator_name(d, source))
+                .filter(|v| !v.is_empty())
+                && type_name.chars().next().is_some_and(char::is_uppercase)
+            {
+                let kept = match table.get(&var) {
+                    Some(previous) if *previous != type_name => String::new(),
+                    _ => type_name,
+                };
+                table.insert(var, kept);
+            }
+        }
+        stack.extend(children(n));
+    }
+}
+/// `_cpp_qualified_name` (Graphify 0.9.101): the literal enclosing
+/// namespace and type identity of a declaration; an anonymous scope makes it
+/// unknown (`""`).
+pub fn cpp_qualified_name(node: Node<'_>, name: &str, source: &[u8]) -> String {
+    let mut parents = vec![];
+    let mut parent = node.parent();
+    while let Some(p) = parent {
+        if matches!(
+            p.kind_name(),
+            "namespace_definition" | "class_specifier" | "struct_specifier"
+        ) {
+            let Some(part) = p.child_by_field_name("name") else {
+                return String::new();
+            };
+            parents.push(read_text(part, source));
+        }
+        parent = p.parent();
+    }
+    parents.reverse();
+    parents.push(name.to_string());
+    parents.join("::")
+}
+/// `_cpp_local_binding_ranges` (Graphify 0.9.101): the byte ranges in which
+/// each named local or parameter of a C++ function is in scope; a call of
+/// such a name is a local callable value, not a corpus function.
+pub fn cpp_local_binding_ranges(
+    body: Node<'_>,
+    source: &[u8],
+) -> BTreeMap<String, Vec<(usize, usize)>> {
+    const SCOPES: [&str; 8] = [
+        "compound_statement",
+        "for_statement",
+        "for_range_loop",
+        "if_statement",
+        "switch_statement",
+        "catch_clause",
+        "function_definition",
+        "lambda_expression",
+    ];
+    let mut ranges: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
+    let mut stack = vec![body];
+    if let Some(declarator) = body
+        .parent()
+        .filter(|f| f.kind_name() == "function_definition")
+        .and_then(|f| f.child_by_field_name("declarator"))
+    {
+        stack.push(declarator);
+    }
+    while let Some(node) = stack.pop() {
+        if matches!(
+            node.kind_name(),
+            "class_specifier" | "struct_specifier" | "function_definition"
+        ) {
+            continue;
+        }
+        if matches!(
+            node.kind_name(),
+            "declaration" | "parameter_declaration" | "optional_parameter_declaration"
+        ) {
+            let mut scope = node.parent();
+            while let Some(s) = scope.filter(|s| !SCOPES.contains(&s.kind_name())) {
+                scope = s.parent();
+            }
+            if let Some(scope) = scope {
+                let mut cursor = node.walk();
+                for declarator in node.children_by_field_name("declarator", &mut cursor) {
+                    if let Some(name) =
+                        super::engine_declarator::cpp_declarator_name(declarator, source)
+                            .filter(|n| !n.is_empty())
+                    {
+                        ranges
+                            .entry(name)
+                            .or_default()
+                            .push((declarator.start_byte(), scope.end_byte()));
+                    }
+                }
+            }
+        }
+        stack.extend(named(node));
+    }
+    ranges
 }
 pub fn cpp_local_var_types(body: Node<'_>, source: &[u8], table: &mut BTreeMap<String, String>) {
     let mut stack = vec![body];
@@ -1955,6 +2238,28 @@ pub fn js_value_is_require(value: Node<'_>, source: &[u8]) -> bool {
         .and_then(|call| call.child_by_field_name("function"))
         .is_some_and(|function| read_text(function, source) == "require")
 }
+/// `_js_require_resolves_locally` (Graphify 0.9.96, #4688): the string
+/// argument of a `require(...)` binding resolves to a file in the corpus. A
+/// require of an external package has no file to redirect `new X()` or
+/// `extends X` to, so its binding node stays.
+pub fn js_require_resolves_locally(value: Node<'_>, source: &[u8], path: &str) -> bool {
+    let Some(args) =
+        find_require_call(Some(value)).and_then(|c| c.child_by_field_name("arguments"))
+    else {
+        return false;
+    };
+    let raw = children(args)
+        .into_iter()
+        .filter(|a| a.kind_name() == "string")
+        .map(|a| {
+            read_text(a, source)
+                .trim_matches(['\'', '"', '`', ' '])
+                .to_string()
+        })
+        .find(|raw| !raw.is_empty());
+    raw.and_then(|raw| super::resolution_js::resolve_js_import_target(&raw, path))
+        .is_some_and(|(_, resolved)| resolved.is_some())
+}
 pub fn find_require_call(node: Option<Node<'_>>) -> Option<Node<'_>> {
     let n = node?;
     if n.kind_name() == "call_expression"
@@ -2171,6 +2476,10 @@ const PYTHON_DYNAMIC_NAMESPACE_NAMES: [&str; 7] = [
 pub struct PythonReceiverShadow {
     dynamic_binding: bool,
     scopes: BTreeMap<usize, ShadowFacts>,
+    /// A module-instance query (Graphify 0.9.102): the exact module-level
+    /// declaration and assignment nodes it proved, by name; every other
+    /// binding still shadows.
+    module_bindings: Option<BTreeMap<String, BTreeSet<usize>>>,
 }
 
 impl PythonReceiverShadow {
@@ -2195,9 +2504,20 @@ impl PythonReceiverShadow {
         Self {
             dynamic_binding,
             scopes: BTreeMap::new(),
+            module_bindings: None,
         }
     }
 
+    /// [`Self::new`] for a proved module instance: the bindings it allows.
+    pub fn with_module_bindings(
+        root: Node<'_>,
+        source: &[u8],
+        bindings: BTreeMap<String, BTreeSet<usize>>,
+    ) -> Self {
+        let mut shadow = Self::new(root, source);
+        shadow.module_bindings = Some(bindings);
+        shadow
+    }
     pub fn is_shadowed(&mut self, call: Node<'_>, receiver: &str, source: &[u8]) -> bool {
         let mut found_module = false;
         let mut node = Some(call);
@@ -2208,17 +2528,29 @@ impl PythonReceiverShadow {
                 "module" | "function_definition" | "class_definition" | "lambda"
             ) {
                 let dynamic_binding = self.dynamic_binding;
-                let (bound, plain_imports, unsafe_scope) = self
-                    .scopes
-                    .entry(current.id())
-                    .or_insert_with(|| python_shadow_facts(current, source, dynamic_binding));
+                let allowed = self.module_bindings.as_ref();
+                let (bound, plain_imports, unsafe_scope) =
+                    self.scopes.entry(current.id()).or_insert_with(|| {
+                        python_shadow_facts(current, source, dynamic_binding, allowed)
+                    });
                 if *unsafe_scope || bound.contains(receiver) {
                     return true;
                 }
                 if kind == "module" {
                     found_module = true;
-                    if plain_imports.get(receiver) != Some(&1) {
-                        return true;
+                    match allowed {
+                        Some(allowed) => {
+                            if !allowed.contains_key(receiver)
+                                || plain_imports.get(receiver).is_some_and(|&n| n > 0)
+                            {
+                                return true;
+                            }
+                        }
+                        None => {
+                            if plain_imports.get(receiver) != Some(&1) {
+                                return true;
+                            }
+                        }
                     }
                 }
             }
@@ -2228,11 +2560,17 @@ impl PythonReceiverShadow {
     }
 }
 
-fn python_shadow_facts(scope: Node<'_>, source: &[u8], dynamic_binding: bool) -> ShadowFacts {
+fn python_shadow_facts(
+    scope: Node<'_>,
+    source: &[u8],
+    dynamic_binding: bool,
+    allowed: Option<&BTreeMap<String, BTreeSet<usize>>>,
+) -> ShadowFacts {
     let module = scope.kind_name() == "module";
     let mut scan = ShadowScan {
         source,
         scope,
+        allowed,
         bound: BTreeSet::new(),
         plain_imports: BTreeMap::new(),
         unsafe_scope: scope.has_error()
@@ -2260,12 +2598,26 @@ fn python_shadow_facts(scope: Node<'_>, source: &[u8], dynamic_binding: bool) ->
 struct ShadowScan<'a, 't> {
     source: &'a [u8],
     scope: Node<'t>,
+    allowed: Option<&'a BTreeMap<String, BTreeSet<usize>>>,
     bound: BTreeSet<String>,
     plain_imports: BTreeMap<String, usize>,
     unsafe_scope: bool,
 }
 
 impl ShadowScan<'_, '_> {
+    /// Bind `names` at `node`, except a module-level binding a module-instance
+    /// query proved (Graphify 0.9.102).
+    fn bind_names(&mut self, node: Node<'_>, names: impl IntoIterator<Item = String>) {
+        for name in names {
+            let proved = self.scope.kind_name() == "module"
+                && self
+                    .allowed
+                    .is_some_and(|a| a.get(&name).is_some_and(|ids| ids.contains(&node.id())));
+            if !proved {
+                self.bound.insert(name);
+            }
+        }
+    }
     fn walk(&mut self, node: Node<'_>) {
         for child in named(node) {
             let kind = child.kind_name();
@@ -2273,7 +2625,8 @@ impl ShadowScan<'_, '_> {
                 "function_definition" | "class_definition" => {
                     match child.child_by_field_name("name") {
                         Some(name) => {
-                            self.bound.insert(read_text(name, self.source));
+                            let name = read_text(name, self.source);
+                            self.bind_names(child, [name]);
                         }
                         None => self.unsafe_scope = true,
                     }
@@ -2296,12 +2649,20 @@ impl ShadowScan<'_, '_> {
                                 *self.plain_imports.entry(name).or_default() += 1;
                             }
                         }
-                        Some(names) => self.bound.extend(names),
+                        Some(names) => self.bind_names(child, names),
                     }
                     continue;
                 }
                 "assignment" | "augmented_assignment" | "for_statement" | "for_in_clause" => {
-                    self.require_targets(child.child_by_field_name("left"))
+                    let mut assigned = BTreeSet::new();
+                    if !python_target_names(
+                        child.child_by_field_name("left"),
+                        self.source,
+                        &mut assigned,
+                    ) {
+                        self.unsafe_scope = true;
+                    }
+                    self.bind_names(child, assigned);
                 }
                 "type_alias_statement" => {
                     let name = child
@@ -2352,6 +2713,102 @@ impl ShadowScan<'_, '_> {
     }
 }
 
+/// `_python_module_instance_types` (Graphify 0.9.102): module-level
+/// `name = Ctor(...)` bindings whose constructor is a class declared or
+/// imported once before the assignment, with neither name rebound anywhere
+/// else; `receiver -> (class name, its shadow checker)`.
+pub fn python_module_instance_types(
+    root: Node<'_>,
+    source: &[u8],
+) -> BTreeMap<String, (String, PythonReceiverShadow)> {
+    let mut declarations: BTreeMap<String, Vec<(String, Node<'_>)>> = BTreeMap::new();
+    let mut assignments = vec![];
+    for statement in named(root) {
+        match statement.kind_name() {
+            "class_definition" => {
+                if let Some(name) = statement.child_by_field_name("name") {
+                    let name = read_text(name, source);
+                    declarations
+                        .entry(name.clone())
+                        .or_default()
+                        .push((name, statement));
+                }
+            }
+            "import_from_statement" => {
+                let mut cursor = statement.walk();
+                for item in statement.children_by_field_name("name", &mut cursor) {
+                    let (name, local) = if item.kind_name() == "aliased_import" {
+                        (
+                            item.child_by_field_name("name")
+                                .map(|n| read_text(n, source)),
+                            item.child_by_field_name("alias")
+                                .map(|n| read_text(n, source)),
+                        )
+                    } else {
+                        let text = read_text(item, source);
+                        (Some(text.clone()), Some(text))
+                    };
+                    if let (Some(name), Some(local)) = (name, local)
+                        && crate::extract_python::is_identifier(&name)
+                        && crate::extract_python::is_identifier(&local)
+                    {
+                        declarations
+                            .entry(local)
+                            .or_default()
+                            .push((name, statement));
+                    }
+                }
+            }
+            "expression_statement" => assignments.extend(
+                named(statement)
+                    .into_iter()
+                    .filter(|c| c.kind_name() == "assignment"),
+            ),
+            _ => {}
+        }
+    }
+    let mut instances = BTreeMap::new();
+    for assignment in assignments {
+        let (Some(left), Some(right)) = (
+            assignment.child_by_field_name("left"),
+            assignment.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        if left.kind_name() != "identifier" || right.kind_name() != "call" {
+            continue;
+        }
+        let Some(function) = right
+            .child_by_field_name("function")
+            .filter(|f| f.kind_name() == "identifier")
+        else {
+            continue;
+        };
+        let (receiver, constructor) = (read_text(left, source), read_text(function, source));
+        let Some([(class, declaration)]) = declarations.get(&constructor).map(Vec::as_slice) else {
+            continue;
+        };
+        if declaration.start_byte() >= assignment.start_byte() {
+            continue;
+        }
+        let mut allowed: BTreeMap<String, BTreeSet<usize>> = BTreeMap::new();
+        allowed
+            .entry(constructor.clone())
+            .or_default()
+            .insert(declaration.id());
+        allowed
+            .entry(receiver.clone())
+            .or_default()
+            .insert(assignment.id());
+        let mut shadow = PythonReceiverShadow::with_module_bindings(root, source, allowed);
+        if !shadow.is_shadowed(assignment, &constructor, source)
+            && !shadow.is_shadowed(assignment, &receiver, source)
+        {
+            instances.insert(receiver, (class.clone(), shadow));
+        }
+    }
+    instances
+}
 fn python_target_names(
     node: Option<Node<'_>>,
     source: &[u8],

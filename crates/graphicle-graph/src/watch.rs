@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/watch.py
 //! Incremental rebuilds, conservative reconciliation, and filesystem watching.
 use crate::extractors::resolution::resolved;
@@ -166,6 +166,26 @@ pub fn queue_pending_full(out: &Path) -> Result<()> {
 pub fn drain_pending_full(out: &Path) -> bool {
     fs::remove_file(out.join(PENDING_FULL_FILENAME)).is_ok()
 }
+/// The marker a derived incremental request leaves when it cannot run.
+const PENDING_INCREMENTAL_FILENAME: &str = ".pending_incremental";
+/// `_queue_pending_incremental` (Graphify 0.9.102): an incremental request
+/// names no paths (it derives its change set from the manifest inside the
+/// lock), and `.pending_full` would upgrade the holder that drains it to a
+/// full rebuild; this marker asks for an incremental pass.
+pub fn queue_pending_incremental(out: &Path) -> Result<()> {
+    fs::create_dir_all(out).map_err(crate::Error::from)?;
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(out.join(PENDING_INCREMENTAL_FILENAME))
+        .map(drop)
+        .map_err(crate::Error::from)
+}
+/// `_drain_pending_incremental`: consume the incremental marker; true when
+/// one was queued.
+pub fn drain_pending_incremental(out: &Path) -> bool {
+    fs::remove_file(out.join(PENDING_INCREMENTAL_FILENAME)).is_ok()
+}
 pub fn merge_changed(groups: &[Vec<PathBuf>]) -> Vec<PathBuf> {
     let mut seen = BTreeSet::new();
     groups
@@ -216,8 +236,12 @@ pub fn build_docs(out: &Path) -> bool {
     build_flag(out, "docs")
 }
 pub fn write_flag_config(out: &Path, key: &str) {
+    set_flag_config(out, key, true)
+}
+/// Record `key` as `value` in the build configuration.
+pub fn set_flag_config(out: &Path, key: &str, value: bool) {
     let mut config = read_config(out);
-    config[key] = json!(true);
+    config[key] = json!(value);
     let _ = fs::create_dir_all(out);
     let _ = paths::write_json_atomic(&out.join(".graphicle_build.json"), &config, None, false);
 }
@@ -834,6 +858,13 @@ pub fn check_shrink_with(
                 }
             },
             ids: &|| after.iter().map(|n| n["id"].to_string()).collect(),
+            stripped: &|| {
+                if has_saved_semantic(old) {
+                    stripped_semantic_provenance(&old.saved, after)
+                } else {
+                    vec![]
+                }
+            },
         },
         deletions,
         rebuilt,
@@ -856,6 +887,61 @@ struct ShrinkCandidate<'a> {
     nodes: usize,
     lost: &'a dyn Fn(&[String]) -> Vec<Value>,
     ids: &'a dyn Fn() -> BTreeSet<String>,
+    /// Ids of saved, independently evidenced semantic nodes still present
+    /// whose provenance fields the candidate emptied.
+    stripped: &'a dyn Fn() -> Vec<String>,
+}
+/// The provenance half of `_check_shrink` (Graphify 0.9.101, #4896): a saved
+/// semantic node with independent evidence whose id survives but whose
+/// rationale, source URL, author, contributor, capture time or metadata the
+/// candidate emptied (an AST extractor minted the same id) is lost data.
+fn stripped_semantic_provenance(saved: &[Value], new: &[Value]) -> Vec<String> {
+    let protected = saved
+        .iter()
+        .filter(|n| {
+            !build::is_ast_tier(n)
+                && n.as_object()
+                    .is_some_and(crate::build_normalize::has_independent_semantic_evidence)
+        })
+        .collect::<Vec<_>>();
+    if protected.is_empty() {
+        return vec![];
+    }
+    let by_id: std::collections::HashMap<&str, &Value> = new
+        .iter()
+        .filter_map(|n| Some((n.get("id")?.as_str()?, n)))
+        .collect();
+    let empty = |v: Option<&Value>| match v {
+        None | Some(Value::Null) => true,
+        Some(Value::String(s)) => s.is_empty(),
+        Some(Value::Array(a)) => a.is_empty(),
+        Some(Value::Object(o)) => o.is_empty(),
+        Some(_) => false,
+    };
+    const FIELDS: [&str; 6] = [
+        "rationale",
+        "source_url",
+        "author",
+        "contributor",
+        "captured_at",
+        "metadata",
+    ];
+    protected
+        .into_iter()
+        .filter(|old| {
+            let Some(fresh) = old
+                .get("id")
+                .and_then(Value::as_str)
+                .and_then(|id| by_id.get(id))
+            else {
+                return false; // a missing id is the lost-node check's
+            };
+            FIELDS
+                .iter()
+                .any(|f| !empty(old.get(*f)) && empty(fresh.get(*f)))
+        })
+        .map(|old| crate::python_compat::string(old.get("id").unwrap_or(&Value::Null)))
+        .collect()
 }
 /// [`check_shrink_with`] over what it reads of the candidate.
 #[allow(clippy::too_many_arguments)]
@@ -886,6 +972,15 @@ fn shrink_allowed(
         if new.nodes < old.nodes.len() {
             messages.push(shrink_warning(new.nodes, old.nodes.len()));
         }
+        return false;
+    }
+    let stripped = (new.stripped)();
+    if !stripped.is_empty() {
+        messages.push(format!(
+            "[graphicle] WARNING: Refusing to overwrite — saved semantic provenance field(s) stripped from {} node(s): {}.",
+            stripped.len(),
+            stripped.iter().take(10).cloned().collect::<Vec<_>>().join(", ")
+        ));
         return false;
     }
     if new.nodes >= old.nodes.len() {
@@ -1093,6 +1188,12 @@ fn html_groups<T>(nodes: &[T], view: impl Fn(&T) -> [&Value; 3]) -> HtmlGroups {
 #[serde(default)]
 pub struct RebuildOptions {
     pub changed_paths: Option<Vec<PathBuf>>,
+    /// Derive the change set from the manifest instead of `changed_paths`
+    /// (`update`, Graphify 0.9.102, #4740). It applies only when
+    /// `changed_paths` is `None` and `force` is false; a missing, unreadable
+    /// or empty manifest, or one [`crate::watch_gate::base_matches`] cannot
+    /// vouch for, keeps the full rebuild.
+    pub incremental: bool,
     pub follow_symlinks: bool,
     pub force: bool,
     pub no_cluster: bool,
@@ -1104,6 +1205,7 @@ impl Default for RebuildOptions {
     fn default() -> Self {
         Self {
             changed_paths: None,
+            incremental: false,
             follow_symlinks: false,
             force: false,
             no_cluster: false,
@@ -1146,9 +1248,19 @@ fn rebuild_unwarmed(path: &Path, options: &RebuildOptions) -> Result<RebuildResu
         // running. Queue before trying the lock so a lost race still records
         // the work: incremental requests append their paths to
         // `.pending_changes`, full requests leave `.pending_full` (#4274).
+        //
+        // Three request kinds, three records: explicit paths go to
+        // `.pending_changes`, a full request leaves `.pending_full`, and a
+        // derived incremental request (`update`) leaves `.pending_incremental`
+        // (Graphify 0.9.102): it names no paths, and a full marker would
+        // upgrade the holder that drains it.
         let mut queued = false;
         if !options.block_on_lock {
             match &options.changed_paths {
+                None if options.incremental => {
+                    queue_pending_incremental(&out)?;
+                    queued = true;
+                }
                 None => {
                     queue_pending_full(&out)?;
                     queued = true;
@@ -1176,8 +1288,17 @@ fn rebuild_unwarmed(path: &Path, options: &RebuildOptions) -> Result<RebuildResu
         // Drain what earlier contenders queued (and what was just queued
         // here). A queued full request upgrades this run to a full rebuild,
         // which supersedes the incremental work queued before it starts.
-        let full = drain_pending_full(&out) || options.changed_paths.is_none();
+        //
+        // An incremental request is not a full one although it also has no
+        // paths: it derives its change set from the whole scan against the
+        // manifest, so a drained path hint adds nothing and is not passed
+        // (it would replace the derivation). A queued incremental request is
+        // honoured even when this caller asked for none (Graphify 0.9.102).
+        let queued_full = drain_pending_full(&out);
+        let queued_incremental = drain_pending_incremental(&out);
         let pending = drain_pending(&out);
+        let incremental = options.incremental || queued_incremental;
+        let full = queued_full || (options.changed_paths.is_none() && !incremental);
         opts.changed_paths = if full {
             None
         } else {
@@ -1186,17 +1307,20 @@ fn rebuild_unwarmed(path: &Path, options: &RebuildOptions) -> Result<RebuildResu
                 .as_ref()
                 .map(|a| merge_changed(&[a.clone(), pending]))
         };
+        opts.incremental = incremental && !queued_full;
         opts.acquire_lock = false;
         let mut result = rebuild_inner(path, &out, &opts)?;
         // Late arrivals: even a full rebuild only saw files as they were when
         // it walked the corpus. Bounded so a storm of commits quiesces.
         for _ in 0..20 {
             let late_full = drain_pending_full(&out);
+            let late_incremental = drain_pending_incremental(&out);
             let late = drain_pending(&out);
-            if !late_full && late.is_empty() {
+            if !late_full && late.is_empty() && !late_incremental {
                 break;
             }
-            opts.changed_paths = (!late_full).then_some(late);
+            opts.changed_paths = (!late_full && !late_incremental).then_some(late);
+            opts.incremental = (options.incremental || late_incremental) && !late_full;
             let r = rebuild_inner(path, &out, &opts)?;
             result.success &= r.success;
             result.changed |= r.changed;
@@ -1467,6 +1591,7 @@ impl Candidate {
                     nodes: nodes.len(),
                     lost: &|_| vec![],
                     ids: &|| nodes.iter().map(|n| n.id.to_string()).collect(),
+                    stripped: &|| vec![],
                 },
                 deletions,
                 rebuilt,
@@ -1747,6 +1872,21 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         (Ok(_), true) => Err("--force"),
         (Err(changed), _) => Err(*changed),
     };
+    // The baseline an incremental `update` checks, noted after any rebuild
+    // that stamps the manifest, an incremental one included.
+    let base_state = match &state {
+        Ok(state) => Some(state.clone()),
+        Err(_) => crate::watch_gate::State::current(
+            path,
+            &watch_root,
+            &project_root,
+            out,
+            o,
+            &excludes,
+            gitignore,
+        )
+        .ok(),
+    };
     let state = state.ok();
     let mut scanned = None;
     let changed = match pending {
@@ -1803,6 +1943,114 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         (detected, existing, join(ignoring))
     });
     let detected = detected?;
+    // Most of the corpus has no extractor (Graphify 0.9.103, #2942).
+    if let Some(warning) = detected["unclassified_warning"].as_str() {
+        result
+            .messages
+            .push(format!("[graphicle watch] warning: {warning}"));
+    }
+    // `update` (Graphify 0.9.102, #4740): the manifest records the content
+    // hash of every file the last rebuild extracted, so the change set is
+    // read off it instead of re-extracting the whole corpus; files that left
+    // the disk join it, files still on disk but out of the scan are left to
+    // the corpus sweep. The early stop above was tried first: it needs no
+    // manifest and vouches for the whole graph. Without a manifest, or when
+    // the engine build, the settings, the configuration above the root or
+    // the manifest's writer changed since the last rebuild, this stays the
+    // full rebuild, and so does `--force`. A derived rebuild that finds
+    // nothing to change records the early stop only when a record vouched
+    // for the graph it started from (`watch_gate::record_vouches`). An empty
+    // change set takes the full update, which can record it. Files whose
+    // content failed last time and have not changed since are not counted
+    // as changed (`watch_gate::base_failed`).
+    let mut derived = None;
+    // Files whose content failed last time, with their stats then: the
+    // manifest stamps none of them, and one that has not changed fails again.
+    let prior_failed = crate::watch_gate::base_failed(out);
+    let absolute = |p: &str| {
+        let p = Path::new(p);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            project_root.join(p)
+        }
+    };
+    // Whether the graph read is one a record vouched for: an incremental
+    // update of it that finds nothing to change may record the early stop.
+    let mut vouched = true;
+    if o.incremental && o.changed_paths.is_none() && !o.force {
+        let baseline = base_state
+            .as_ref()
+            .ok_or("no update baseline")
+            .and_then(|state| crate::watch_gate::base_matches(out, state));
+        let manifest = crate::detect_manifest::load_manifest(&out.join("manifest.json"), Some(&watch_root));
+        match baseline {
+            Ok(()) if crate::cache_paths::truth(&manifest) => {
+                let split = crate::detect_manifest::incremental_from_full(
+                    detected.clone(),
+                    &manifest,
+                    "ast",
+                    Some(&watch_root),
+                )?;
+                let mut changed: Vec<PathBuf> = split["new_files"]
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|buckets| buckets.values())
+                    .flat_map(|bucket| bucket.as_array().into_iter().flatten())
+                    .filter_map(Value::as_str)
+                    .map(PathBuf::from)
+                    .collect();
+                changed.extend(
+                    items(&split, "deleted_files")
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(PathBuf::from),
+                );
+                changed.retain(|p| {
+                    let p = absolute(&p.to_string_lossy());
+                    let key = p.to_string_lossy().into_owned();
+                    prior_failed.get(&key).is_none_or(|stat| {
+                        crate::watch_gate::FileStat::of(&p).as_ref() != Some(stat)
+                    })
+                });
+                let scanned: usize = detected["files"]
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|buckets| buckets.values())
+                    .map(|bucket| bucket.as_array().map_or(0, Vec::len))
+                    .sum();
+                if changed.is_empty() {
+                    // Nothing differs from the manifest: the full update runs,
+                    // finds nothing to change and records the early stop, so
+                    // the next update stops before scanning extraction at all
+                    // (Graphicle's early stop, kept beside #4740).
+                    if timer.enabled {
+                        eprintln!(
+                            "[graphicle timing] full update: none of the {scanned} scanned files differ from the manifest"
+                        );
+                    }
+                } else {
+                    result.messages.push(format!(
+                        "Incremental: re-extracting {} of {scanned} scanned files that changed since the last build.",
+                        changed.len()
+                    ));
+                    derived = Some(changed);
+                    vouched = crate::watch_gate::record_vouches(out, &graph_seen);
+                    if !vouched {
+                        // Nothing can be recorded: a stale record must not
+                        // outlive this update either.
+                        crate::watch_gate::forget(out);
+                    }
+                }
+            }
+            Ok(()) => {}
+            Err(why) => {
+                if timer.enabled {
+                    eprintln!("[graphicle timing] full update: {why}");
+                }
+            }
+        }
+    }
     // The scanned files' stats before anything is extracted: a file that
     // changes while this rebuild runs keeps it from being recorded.
     let snapshot = state
@@ -1816,8 +2064,25 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         .filter_map(Value::as_str)
         .map(PathBuf::from)
         .collect::<Vec<_>>();
-    let docs = items(&detected["files"], "document")
+    // A document that detect() reclassified as a paper (Markdown notes quoting
+    // an arXiv abstract) gets the same quick-scan when it has an AST
+    // extractor; PDFs and plain .txt have none, so the filter keeps them out
+    // (Graphify 0.9.96, #4750).
+    // A `--code-only` graph opted out of documents, so its rebuilds skip
+    // the quick-scan; document nodes already in it are kept untouched
+    // (Graphify 0.9.101, #4923).
+    let code_only = build_flag(out, "code_only");
+    let (document_files, paper_files) = if code_only {
+        (vec![], vec![])
+    } else {
+        (
+            items(&detected["files"], "document"),
+            items(&detected["files"], "paper"),
+        )
+    };
+    let docs = document_files
         .iter()
+        .chain(paper_files.iter())
         .filter_map(Value::as_str)
         .map(PathBuf::from)
         .filter(|p| extract::get_extractor(p).is_some())
@@ -1851,7 +2116,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     // stored route's path from another file, can move routes declared in
     // unchanged files; such a change set rebuilds every file, as `update`
     // does (see `extractors::routes`).
-    let changed_paths = o.changed_paths.as_ref().filter(|changed| {
+    let changed_paths = o.changed_paths.as_ref().or(derived.as_ref()).filter(|changed| {
         if !crate::extractors::routes::enabled() || !graph_path.exists() {
             return true;
         }
@@ -1932,7 +2197,11 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         for n in items_ref(&existing, "nodes") {
             if text(n, "id").is_empty()
                 || !build::is_ast_tier(n)
-                || !live.contains(&sp.identity(&text(n, "source_file")))
+                // Anchored as `live` is (Graphify 0.9.102, #4740): a copied
+                // checkout's root marker named the old location, every stored
+                // node read as absent and the changed batch lost its
+                // cross-file edges.
+                || !live.contains(&sp.absolute_identity(&text(n, "source_file"), &project_root))
             {
                 continue;
             }
@@ -1957,6 +2226,11 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 "_java_ret",
                 "_ts_fields",
                 "_ts_static_fields",
+                "_py_fixture",
+                "_cpp_qualified",
+                "_py_return_type",
+                "_go_fields",
+                "_go_package_path",
             ] {
                 if build::truthy(&n[k]) {
                     c[k] = n[k].clone();
@@ -1995,16 +2269,25 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         ) {
             // Import edges come too (0.9.91): a TS field inherited from an
             // unchanged file is typed by that file's imports, as in a full build.
-            if !["contains", "method", "inherits", "imports", "imports_from"]
-                .contains(&text(e, "relation").as_str())
+            // A `references` edge with context `return_type` comes too
+            // (Graphify 0.9.96, #4726): it types a method result for member
+            // calls in re-extracted files.
+            let return_type =
+                text(e, "relation") == "references" && text(e, "context") == "return_type";
+            if !(return_type
+                || ["contains", "method", "inherits", "imports", "imports_from"]
+                    .contains(&text(e, "relation").as_str()))
                 || !build::is_ast_tier(e)
-                || !live.contains(&sp.identity(&text(e, "source_file")))
+                || !live.contains(&sp.absolute_identity(&text(e, "source_file"), &project_root))
             {
                 continue;
             }
             let mut c = json!({});
             for k in ["source", "target", "relation", "source_file"] {
                 c[k] = e[k].clone();
+            }
+            if return_type {
+                c["context"] = json!("return_type");
             }
             if e["metadata"]["ruby_superclass_ref"].is_string() {
                 c["metadata"] = json!({"ruby_superclass_ref":e["metadata"]["ruby_superclass_ref"]});
@@ -2095,6 +2378,27 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         .filter_map(Value::as_str)
         .collect::<BTreeSet<_>>();
     let retryable = failed.iter().any(|f| !content_failed.contains(f.as_str()));
+    // The baseline's content-failed files: this extraction's, and for an
+    // incremental update the earlier ones it did not re-extract.
+    let mut failed_now: BTreeMap<String, crate::watch_gate::FileStat> = BTreeMap::new();
+    if let Some(changed) = &derived {
+        let redone: BTreeSet<String> = changed
+            .iter()
+            .map(|p| absolute(&p.to_string_lossy()).to_string_lossy().into_owned())
+            .collect();
+        failed_now.extend(
+            prior_failed
+                .iter()
+                .filter(|(path, _)| !redone.contains(*path))
+                .map(|(path, stat)| (path.clone(), stat.clone())),
+        );
+    }
+    for path in content_failed.iter().copied() {
+        let path = absolute(path);
+        if let Some(stat) = crate::watch_gate::FileStat::of(&path) {
+            failed_now.insert(path.to_string_lossy().into_owned(), stat);
+        }
+    }
     // An error loading the ignore rules surfaces here, after extraction.
     ignore_states?;
     if graph_path.exists()
@@ -2143,6 +2447,9 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         let mut nodes = build::dedupe_nodes(items_ref(&extraction, "nodes"))?;
         build::disambiguate_file_labels_in_nodes(&mut nodes);
         let links = build::dedupe_edges(items_ref(&extraction, "edges"))?;
+        // C# methods display with their owning type, as in the build
+        // (Graphify 0.9.98, #4883).
+        build::qualify_csharp_method_labels_in_nodes(&mut nodes, &links);
         let mut candidate = serde_json::Map::new();
         for (k, v) in extraction.as_object().into_iter().flatten() {
             if !matches!(k.as_str(), "edges" | "nodes")
@@ -2165,7 +2472,12 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         let mut candidate = Value::Object(candidate);
         // The raw merged extraction gets build_from_json's endpoint rules:
         // import stubs, normalization twins, no dangling edge (#4189).
-        build::finalize_raw_graph_endpoints(&mut candidate);
+        let dropped = build::finalize_raw_graph_endpoints(&mut candidate);
+        if dropped > 0 {
+            result
+                .messages
+                .push(build::schema_invalid_edges_warning(dropped));
+        }
         if legacy_layout
             || canonical_graph_key(&existing, false) != canonical_graph_key(&candidate, false)
         {
@@ -2201,6 +2513,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         fs::write(out.join(".graphicle_root"), root_marker_value(path)?)
             .map_err(crate::Error::from)?;
         stamp_manifest(out, &detected, &watch_root, &failed)?;
+        crate::watch_gate::note_base(out, base_state.as_ref(), &failed_now);
         let manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         result.success = true;
         result.nodes = items_ref(&candidate, "nodes").len();
@@ -2213,6 +2526,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 graph: graph_seen,
                 manifest: manifest_seen,
                 retryable,
+                vouched,
             };
             let made =
                 crate::watch_gate::record(out, state, &detected, &seen, result.nodes, result.edges);
@@ -2240,6 +2554,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     timer.mark("topology_compare");
     if topology_unchanged {
         stamp_manifest(out, &detected, &watch_root, &failed)?;
+        crate::watch_gate::note_base(out, base_state.as_ref(), &failed_now);
         let manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         reconcile_stored_html(out, &graph_path, &mut result.messages);
         result.success = true;
@@ -2251,6 +2566,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                 graph: graph_seen,
                 manifest: manifest_seen,
                 retryable,
+                vouched,
             };
             let made =
                 crate::watch_gate::record(out, state, &detected, &seen, result.nodes, result.edges);
@@ -2316,7 +2632,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     let (gods, surprises, questions) = (gods?, surprises?, questions?);
     let report = crate::report::generate(
         &graph,
-        &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([]))},"token_cost":{"input":0,"output":0},"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
+        &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([])),"unclassified_warning":detected.get("unclassified_warning").cloned().unwrap_or(Value::Null)},"token_cost":{"input":0,"output":0},"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
     )?;
     timer.mark("report");
     // A randomly named file in the output folder, created exclusively, then
@@ -2431,6 +2747,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         fs::write(out.join(".graphicle_root"), root_marker_value(path)?)
             .map_err(crate::Error::from)?;
         stamp_manifest(out, &detected, &watch_root, &failed)?;
+        crate::watch_gate::note_base(out, base_state.as_ref(), &failed_now);
         manifest_seen = crate::watch_gate::FileStat::of(&out.join("manifest.json"));
         timer.mark("manifest");
         if let Some(warm) = warm {
@@ -2479,6 +2796,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             graph: graph_seen,
             manifest: manifest_seen,
             retryable,
+            vouched,
         };
         let made =
             crate::watch_gate::record(out, state, &detected, &seen, graph_nodes, graph_edges);
@@ -2684,7 +3002,14 @@ pub fn watch(
             let config_event = std::mem::take(&mut config_changed);
             announce(&format!("{} file(s) changed", batch.len()));
             if config_event || batch_triggers_rebuild(&batch) {
-                match rebuild(path, &RebuildOptions::default()) {
+                // Each rebuild is bounded by GRAPHICLE_REBUILD_TIMEOUT, as
+                // the hook rebuild is (Graphify 0.9.96, #2173).
+                let timeout = crate::hooks_runtime::RebuildTimeout::arm("watch");
+                let rebuilt = match timeout {
+                    Ok(_guard) => rebuild(path, &RebuildOptions::default()),
+                    Err(e) => Err(e),
+                };
+                match rebuilt {
                     Ok(r) => {
                         for m in r.messages {
                             announce(&m);

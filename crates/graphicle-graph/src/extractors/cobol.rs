@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/cobol.py
 //! Port of graphify/extractors/cobol.py as of Graphify 0.9.69 (4139885a).
 //!
@@ -17,6 +17,8 @@ use std::{
 
 const NAME: &str = r"[A-Z0-9][A-Z0-9-]*";
 
+static END_PROGRAM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bEND\s+PROGRAM\b").unwrap());
 static PROGRAM: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"(?i)\bPROGRAM-ID\s*\.\s*({NAME})")).unwrap());
 static PARAGRAPH: LazyLock<Regex> =
@@ -264,6 +266,10 @@ pub fn extract_cobol(path: &Path) -> Value {
     let mut in_exec = false;
     let mut paragraphs: HashMap<(String, String), String> = HashMap::new();
     let mut pending_performs: Vec<(String, String, String, usize)> = Vec::new();
+    // Each PROGRAM-ID pushes the program it is nested under and END PROGRAM
+    // pops back to it, so code after a contained program's end belongs to
+    // the enclosing one again (Graphify 0.9.97).
+    let mut program_stack: Vec<String> = Vec::new();
 
     for (line, code) in &lines {
         let line = *line;
@@ -282,7 +288,16 @@ pub fn extract_cobol(path: &Path) -> Value {
             continue;
         }
 
+        if END_PROGRAM.is_match(&upper) {
+            if let Some(outer) = program_stack.pop() {
+                current_program = outer;
+                current_scope = current_program.clone();
+                in_procedure = true;
+            }
+            continue;
+        }
         if let Some(program) = PROGRAM.captures(&upper) {
+            program_stack.push(current_program.clone());
             let name = program[1].to_uppercase();
             let nid = make_id([file_id.as_str(), "program", name.to_lowercase().as_str()]);
             current_program = ex.add_node(&nid, &name, line, "program", true);

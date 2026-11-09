@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/hooks.py
 //! Native Git hook installation, detached rebuilds, and merge-driver setup.
 pub use crate::hooks_runtime::{changed_files, dispatch, launch, run_worker, unquote_git_path};
@@ -472,14 +472,16 @@ fn script_for(kind: HookKind, pinned: &str, viz: Option<i64>, program: &str) -> 
     // In the standard layout the top is the parent of the common .git dir;
     // GIT_WORK_TREE and --separate-git-dir layouts keep git's own answer.
     // GIT_DIR is rewritten to its absolute form so git still finds it.
+    // `CDPATH=` keeps an exported CDPATH from making `cd` print the directory
+    // into the captures (Graphify 0.9.103, #4977).
     format!(
         r#"{marker}
 # Rebuild the knowledge graph using the {program} executable.
 (
 {export}{event}[ "${{GRAPHICLE_SKIP_HOOK:-0}}" = "1" ] && exit 0
 _GCL_GITDIR=$(git rev-parse --git-dir 2>/dev/null) || exit 0
-{skips}_GCL_GITDIR=$(cd "$_GCL_GITDIR" 2>/dev/null && pwd)
-_GCL_COMMONDIR=$(cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
+{skips}_GCL_GITDIR=$(CDPATH= cd "$_GCL_GITDIR" 2>/dev/null && pwd)
+_GCL_COMMONDIR=$(CDPATH= cd "$(git rev-parse --git-common-dir 2>/dev/null)" 2>/dev/null && pwd)
 [ -n "$_GCL_COMMONDIR" ] && [ "$_GCL_GITDIR" != "$_GCL_COMMONDIR" ] && exit 0
 if [ -z "${{GIT_WORK_TREE:-}}" ] && [ "${{_GCL_COMMONDIR##*/}}" = ".git" ]; then
     _GCL_TOP=${{_GCL_COMMONDIR%/*}}

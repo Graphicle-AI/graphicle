@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.95 (92741d16), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/cli.py
 //! Native command routing; JSON Lines remains available for embedding clients.
 use crate::{Result, build, paths};
@@ -513,6 +513,20 @@ fn run_into(args: &[String], out: &mut Output) -> Result<()> {
     // value (see crate::archived).
     if command == "watch" {
         crate::archived::check_watch(&args[1..])?;
+    }
+    // A lone `--help`/`-h` after `query` or `explain` asks for usage, not a
+    // one-word question (Graphify 0.9.97, #4830); a longer question that
+    // contains one still runs as written.
+    if args.len() == 2 && ["--help", "-h"].contains(&args[1].as_str()) {
+        let usage = match command {
+            "query" => Some(crate::cli_commands::QUERY_USAGE),
+            "explain" => Some(crate::cli_commands::EXPLAIN_USAGE),
+            _ => None,
+        };
+        if let Some(usage) = usage {
+            out.line(format!("Usage: {} {usage}", program()));
+            return Ok(());
+        }
     }
     let literal = match command {
         "query" | "explain" | "affected" | "retrieve" => 1,

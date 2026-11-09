@@ -77,7 +77,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::{Path, PathBuf},
 };
 
@@ -191,6 +191,7 @@ impl FileStat {
 
 /// What a rebuild's output depends on besides the scanned files: the
 /// engine build, the settings and the files above the root.
+#[derive(Clone)]
 pub struct State {
     build: String,
     settings: String,
@@ -336,6 +337,8 @@ fn settings(
             crate::extractors::rst::enabled(),
             crate::extractors::routes::enabled(),
         ),
+        // The scope a `--code-only` graph keeps (Graphify 0.9.101, #4923).
+        crate::watch::build_flag(out, "code_only"),
         content(&watch_root.join(rcfile::RC_FILENAME)),
         env,
     ))
@@ -665,6 +668,26 @@ pub struct Seen<'a> {
     /// Whether a file failed to extract in a way a retry may pass: any
     /// failure its content does not decide (`extract::CONTENT_FAILURE`).
     pub retryable: bool,
+    /// Whether the graph the rebuild started from stands for a full rebuild:
+    /// always for a full rebuild; for an incremental `update` (Graphify
+    /// 0.9.102, #4740) only when a record vouched for that graph
+    /// ([`record_vouches`]).
+    pub vouched: bool,
+}
+
+/// Whether a record, valid or stale, vouches for graph.json as it was read
+/// (`graph`): the last full rebuild found nothing to change in it and no
+/// command wrote it since. An incremental update of that graph that finds
+/// nothing to change leaves the same graph a full rebuild would, so it may
+/// record too.
+pub fn record_vouches(out: &Path, graph: &Option<FileStat>) -> bool {
+    let Some(graph) = graph else {
+        return false;
+    };
+    std::fs::read_to_string(out.join(STATE_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Record>(&text).ok())
+        .is_some_and(|record| record.schema == SCHEMA && &record.graph == graph)
 }
 
 /// Record a full rebuild of `detected` that found nothing to change, with
@@ -701,6 +724,9 @@ fn write_record(
     let manifest = seen.manifest.clone().ok_or("manifest.json not written")?;
     if seen.retryable {
         return Err("a file failed to extract and may pass on a retry");
+    }
+    if !seen.vouched {
+        return Err("an incremental update of a graph no record vouches for");
     }
     if FileStat::of(&out.join("graph.json")).as_ref() != Some(&graph) {
         return Err("graph.json changed since it was read");
@@ -976,6 +1002,7 @@ mod tests {
                 graph: graph_seen,
                 manifest: manifest_seen,
                 retryable,
+                vouched: true,
             };
             let made = record(&out, &state, &detected, &seen, 1, 0);
             assert_eq!(made.is_ok(), recorded());
@@ -1046,6 +1073,7 @@ mod tests {
                 graph: FileStat::of(&out.join("graph.json")),
                 manifest: FileStat::of(&out.join("manifest.json")),
                 retryable: false,
+                vouched: true,
             };
             record(&out, &state, &detected, &seen, 1, 0)
         };
@@ -1098,6 +1126,7 @@ mod tests {
             graph: FileStat::of(&out.join("graph.json")),
             manifest: FileStat::of(&out.join("manifest.json")),
             retryable: false,
+            vouched: true,
         };
         assert_eq!(record(&out, &state, &detected, &seen, 0, 0), Ok(()));
         let check = || {
@@ -1122,4 +1151,87 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(check(), Err("file stats"));
     }
+}
+
+/// The baseline of the incremental `update` (Graphify 0.9.102, #4740): the
+/// engine build, settings and files above the root of the rebuild that last
+/// wrote manifest.json, with manifest.json's stats then. `update` re-extracts
+/// only the files whose content differs from the manifest when this matches:
+/// another engine build, other settings, other configuration above the root
+/// or a manifest another command wrote take the full rebuild, since the
+/// manifest then says nothing about what extraction would produce.
+pub const BASE_FILE: &str = ".graphicle_update_base.json";
+
+#[derive(Serialize, Deserialize, PartialEq, Eq)]
+struct Base {
+    schema: u32,
+    build: String,
+    settings: String,
+    above: String,
+    manifest: FileStat,
+    /// The files whose content failed to extract (a parse error, a size
+    /// limit), with their stats then. The manifest stamps none of them, so
+    /// without this each would count as changed on every update; one that
+    /// still has these stats fails the same way again.
+    #[serde(default)]
+    failed: BTreeMap<String, FileStat>,
+}
+
+/// The content-failed files the baseline lists, with their stats then
+/// (empty without a baseline).
+pub fn base_failed(out: &Path) -> BTreeMap<String, FileStat> {
+    std::fs::read_to_string(out.join(BASE_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Base>(&text).ok())
+        .map(|base| base.failed)
+        .unwrap_or_default()
+}
+
+/// Note the baseline after a rebuild stamped manifest.json, or remove it
+/// when the rebuild has no [`State`] (`--precise`, a workspace above the
+/// root) or the manifest cannot be read. `failed` lists the files whose
+/// content failed ([`base_failed`]).
+pub fn note_base(out: &Path, state: Option<&State>, failed: &BTreeMap<String, FileStat>) {
+    let manifest = FileStat::of(&out.join("manifest.json"));
+    let (Some(state), Some(manifest)) = (state, manifest) else {
+        let _ = std::fs::remove_file(out.join(BASE_FILE));
+        return;
+    };
+    let base = Base {
+        schema: SCHEMA,
+        build: state.build.clone(),
+        settings: state.settings.clone(),
+        above: state.above.clone(),
+        manifest,
+        failed: failed.clone(),
+    };
+    let written = serde_json::to_string(&base)
+        .ok()
+        .is_some_and(|text| paths::write_text_atomic(&out.join(BASE_FILE), &(text + "\n")).is_ok());
+    if !written {
+        let _ = std::fs::remove_file(out.join(BASE_FILE));
+    }
+}
+
+/// Whether the manifest can stand for what a full rebuild would extract
+/// (see [`BASE_FILE`]); the error says why not.
+pub fn base_matches(out: &Path, state: &State) -> Result<(), Changed> {
+    let text = std::fs::read_to_string(out.join(BASE_FILE)).map_err(|_| "no update baseline")?;
+    let base: Base = serde_json::from_str(&text).map_err(|_| "an unreadable update baseline")?;
+    if base.schema != SCHEMA {
+        return Err("another baseline layout");
+    }
+    if base.build != state.build {
+        return Err("another engine build");
+    }
+    if base.settings != state.settings {
+        return Err("other settings");
+    }
+    if base.above != state.above {
+        return Err("other configuration above the root");
+    }
+    if FileStat::of(&out.join("manifest.json")).as_ref() != Some(&base.manifest) {
+        return Err("manifest.json written by another command");
+    }
+    Ok(())
 }

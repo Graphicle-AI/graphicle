@@ -124,8 +124,9 @@ fn a_provider_extra_body_opts_out_of_the_native_call() {
         plan["value"]["ollama_native"]["url"], "http://127.0.0.1:11004/api/chat",
         "{plan}"
     );
-    // num_ctx = prompt estimate (len/4 + 400) + max tokens (8192) + 2000.
-    assert_eq!(plan["value"]["body"]["options"]["num_ctx"], 10592, "{plan}");
+    // num_ctx = measured prompt estimate (user message and system prompt,
+    // none here; Graphify 0.9.96) + max tokens (8192) + 2000.
+    assert_eq!(plan["value"]["body"]["options"]["num_ctx"], 10192, "{plan}");
 }
 
 fn git(dir: &Path, args: &[&str]) {
