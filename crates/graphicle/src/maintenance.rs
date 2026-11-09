@@ -354,7 +354,11 @@ impl Store {
             source
                 .sqlite_connection()
                 .ok_or_else(|| Error::bad("Not a SQLite store"))?
-                .backup(rusqlite::MAIN_DB, path, None)
+                .backup(
+                    rusqlite::MAIN_DB,
+                    path,
+                    None::<fn(rusqlite::backup::Progress)>,
+                )
                 .map_err(crate::db::Error::from)?;
             // Opened as every SQLite release opened it: the data folder may
             // be reached through a link.

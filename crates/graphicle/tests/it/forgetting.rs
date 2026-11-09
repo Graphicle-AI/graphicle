@@ -205,7 +205,11 @@ impl Fixture {
                 .unwrap()
                 .sqlite_connection()
                 .unwrap()
-                .backup(rusqlite::MAIN_DB, dir.path().join("reviews.sqlite3"), None)
+                .backup(
+                    rusqlite::MAIN_DB,
+                    dir.path().join("reviews.sqlite3"),
+                    None::<fn(rusqlite::backup::Progress)>,
+                )
                 .unwrap();
             Store::open(dir.path()).unwrap()
         } else {

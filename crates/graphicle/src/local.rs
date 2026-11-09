@@ -1540,7 +1540,11 @@ fn restore_sqlite(backup: &std::path::Path, directory: &std::path::Path) -> Resu
     #[cfg(unix)]
     options.mode(0o600);
     options.open(&destination)?;
-    if let Err(error) = source.backup(rusqlite::MAIN_DB, &destination, None) {
+    if let Err(error) = source.backup(
+        rusqlite::MAIN_DB,
+        &destination,
+        None::<fn(rusqlite::backup::Progress)>,
+    ) {
         let _ = std::fs::remove_file(&destination);
         return Err(crate::db::Error::from(error).into());
     }
