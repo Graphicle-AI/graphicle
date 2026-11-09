@@ -1074,9 +1074,8 @@ fn csharp_token_end(source: &[u8], i: usize) -> usize {
     let mut j = quote + 1;
     while j < n {
         let ch = source[j];
-        if verbatim && source[j..].starts_with(b"\"\"") {
-            j += 2;
-        } else if ch == b'\\' && !verbatim {
+        // A doubled quote in a verbatim string, or an escape in a regular one.
+        if (verbatim && source[j..].starts_with(b"\"\"")) || (ch == b'\\' && !verbatim) {
             j += 2;
         } else if ch == b'"' {
             return j + 1;

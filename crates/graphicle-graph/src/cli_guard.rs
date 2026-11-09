@@ -455,12 +455,11 @@ pub fn reset_hook_session(session: &str) -> std::io::Result<()> {
     .unwrap();
     for entry in fs::read_dir(&dir)? {
         let entry = entry?;
-        if own.is_match(&entry.file_name().to_string_lossy()) {
-            if let Err(e) = fs::remove_file(entry.path())
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                return Err(e);
-            }
+        if own.is_match(&entry.file_name().to_string_lossy())
+            && let Err(e) = fs::remove_file(entry.path())
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e);
         }
     }
     Ok(())
