@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__main__.py, graphify/serve.py
 //! Native graph query service and MCP stdio boundary.
 use crate::{Result, graph::Graph, paths, security, serve_find, serve_search::*, serve_text::*};

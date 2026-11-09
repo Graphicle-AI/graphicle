@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/csharp.py
 //! Native HTML5 unescaping compatible with CPython 3.12 html.unescape.
 //! Tables/rules originate in CPython; retained PSF license is in licenses/.

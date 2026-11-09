@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/r.py
 //! Port of graphify/extractors/r.py (Graphify 0.9.69, #3715): functions,
 //! R6/Reference/ggproto/S4 classes and methods, `library`/`require` packages

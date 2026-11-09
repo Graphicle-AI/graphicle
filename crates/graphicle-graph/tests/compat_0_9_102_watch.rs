@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: tests/test_watch.py, tests/test_update_incremental.py,
 // tests/test_update_lock_contention.py, tests/test_update_no_change_gate.py
 //! Watch, update and incremental changes ported from Graphify 0.9.96-0.9.102

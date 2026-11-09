@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py
 //! Native graph construction and conservative normalization of extraction output.
 pub use crate::build_global::{distinct_repo_tags, prefix_graph_for_global, prune_repo_from_graph};

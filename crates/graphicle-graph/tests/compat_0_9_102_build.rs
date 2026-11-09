@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: tests/test_dedup.py, tests/test_build.py,
 // tests/test_build_merge_ghost_fold_4955.py,
 // tests/test_shrink_guard_dedup_merge_4940.py, tests/test_edge_also_seen.py,

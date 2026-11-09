@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/pg_introspect.py
 //! PostgreSQL catalog → DDL → native SQL extraction. The optional `postgres`
 //! feature uses libpq directly, preserving its DSN, environment and TLS support.

@@ -290,7 +290,7 @@ Local models through Ollama or any OpenAI-compatible server work ([configuration
 <details>
 <summary><b>Is Graphicle a fork of Graphify?</b></summary>
 
-The code-graph engine is a Rust port of Graphify, credited in its file headers and in [NOTICE](NOTICE). It follows Graphify 0.9.102, and later Graphify releases are ported in later versions; [the parity checks](docs/benchmarks.md#parity-with-graphify) compare it with that release.
+The code-graph engine is a Rust port of Graphify, credited in its file headers and in [NOTICE](NOTICE). It follows Graphify 0.9.103, and later Graphify releases are ported in later versions; [the parity checks](docs/benchmarks.md#parity-with-graphify) compare it with that release.
 The memory, the memory tools, the app and session capture are not part of Graphify. Coming from Graphify? `graphicle setup` offers to switch a repository,
 backs up each file and never deletes `graphify-out/` ([Moving from Graphify](docs/migrate-from-graphify.md)).
 </details>

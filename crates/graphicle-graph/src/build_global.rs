@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/build.py, graphify/global_graph.py
 //! build.py global-store dependencies. The rest of build.py remains on the migration ledger.
 use crate::{

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/exporters/graphdb.py, graphify/exporters/html.py
 use crate::{Result, cluster::Communities, graph::Graph, python_compat, python_json};
 use serde_json::Value;

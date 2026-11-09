@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/dm.py
 //! DreamMaker source, DMI PNG metadata, DMM map dictionaries and DMF controls.
 use super::base::{file_stem, make_id, read_text};

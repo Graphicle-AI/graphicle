@@ -8,8 +8,9 @@ the graph engine (crates/graphicle-graph/), the memory library
 (crates/graphicle-memory/) and the SDKs (sdk/).
 
 This product includes software adapted from Graphify
-(https://github.com/Graphify-Labs/graphify): release 0.9.102, commit
-59b5ab1151e031fb42e39cfc9a50bf96f2d57ae0, and the earlier pinned revisions
+(https://github.com/Graphify-Labs/graphify): release 0.9.103, commit
+16218bfc80d4ca2799734d045039f7ed1a5fa9fb, and the earlier pinned revisions
+59b5ab1151e031fb42e39cfc9a50bf96f2d57ae0 (release 0.9.102),
 92741d162b2094ffc2fed58cfbd8ee823e9da62c (release 0.9.95),
 10130e79ed9caf8f60d998073e097531eaa1a395 (release 0.9.91),
 a9860f70dc3cc2e9c2d8cb923484cfa0592b9067 (release 0.9.88),

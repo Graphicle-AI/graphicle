@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/cache.py, graphify/extract.py
 //! Port of graphify/cache.py: owned per-run cache state with explicit flush.
 //! The native release has its own AST version; semantic entries retain their

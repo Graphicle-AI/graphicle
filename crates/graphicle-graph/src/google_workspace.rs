@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/google_workspace.py
 //! Google Drive shortcut metadata and the optional `gws` export integration.
 use crate::{Result, fsutil, io_compat, process, python_compat};

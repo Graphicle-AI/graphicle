@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/tree_html.py
 //! Port of graphify/tree_html.py. Its browser code is retained verbatim in
 //! assets/tree.html.template; hierarchy construction and rendering are native.

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: tests/test_prs.py, tests/test_cli_export.py,
 // tests/test_hyperedge_member_shapes.py, tests/test_dedup.py,
 // tests/test_query_cli.py, tests/test_explain_cli.py, tests/test_cli_help.py,

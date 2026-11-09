@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/transcribe.py
 //! Port of graphify/transcribe.py. Native orchestration, Whisper and media IO.
 use crate::{Result, build::Diagnostics, dedup_strings::whitespace, paths};

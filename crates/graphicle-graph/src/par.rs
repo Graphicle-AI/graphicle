@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/rcfile.py
 //! Order-preserving parallel map for per-file work (hashing, classification,
 //! cache reads). Results come back in input order, so callers that apply side

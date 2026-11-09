@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/__init__.py
 //! Registry from graphify/extractors/__init__.py. Entries retain the actual
 //! native function pointers; the call adapter only unifies return signatures.

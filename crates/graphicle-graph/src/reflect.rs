@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/reflect.py
 //! Deterministic work-memory aggregation from graphify/reflect.py. Derived
 //! lessons and source fingerprints remain separate from the structural graph.

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/csharp_dispatch.py
 //! The `.cs` gate over [`crate::interface_dispatch`] (Graphify 0bd22d4).
 pub use crate::interface_dispatch::{DISPATCH_RELATION, method_label};

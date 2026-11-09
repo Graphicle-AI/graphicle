@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102, Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/go_dispatch.py
 //! Member-level interface dispatch for Go. Go types satisfy an interface
 //! implicitly, so the `implements` pairs are inferred from method sets and

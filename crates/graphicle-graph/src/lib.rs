@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/__init__.py, graphify/__main__.py
 //! Graphicle graph engine: code and document knowledge graphs. It ports a
 //! pinned Graphify release (see NOTICE.md); migration coverage is explicit.
@@ -189,8 +189,8 @@ pub use wiki::to_wiki;
 /// This package's version: `--version`, the MCP server version and the
 /// stamp beside installed skills.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const UPSTREAM_COMMIT: &str = "59b5ab1151e031fb42e39cfc9a50bf96f2d57ae0";
-pub const UPSTREAM_VERSION: &str = "0.9.102";
+pub const UPSTREAM_COMMIT: &str = "16218bfc80d4ca2799734d045039f7ed1a5fa9fb";
+pub const UPSTREAM_VERSION: &str = "0.9.103";
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub fn dispatch(request: &Value) -> Result<Value> {

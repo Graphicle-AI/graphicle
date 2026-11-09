@@ -5,8 +5,8 @@ Apache License, Version 2.0 (`LICENSE`); `NOTICE` carries the notices that
 Apache-2.0 section 4(d) requires. This file describes each adapted source and
 where its licence text is kept.
 
-This package ports Graphify 0.9.102, commit
-`59b5ab1151e031fb42e39cfc9a50bf96f2d57ae0`.
+This package ports Graphify 0.9.103, commit
+`16218bfc80d4ca2799734d045039f7ed1a5fa9fb`.
 Original authors and notices are retained in `licenses/`.
 Adapted implementation files identify the corresponding upstream file.
 

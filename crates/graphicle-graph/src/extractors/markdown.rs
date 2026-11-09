@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/markdown.py
 //! Port of graphify/extractors/markdown.py at the pinned Graphify commit.
 use super::{base::file_stem, markdown_data};

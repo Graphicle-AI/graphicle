@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/hooks.py
 //! Native Git hook installation, detached rebuilds, and merge-driver setup.
 pub use crate::hooks_runtime::{changed_files, dispatch, launch, run_worker, unquote_git_path};

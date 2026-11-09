@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/extractors/engine.py, graphify/extractors/objc.py
 //! C++ declarator helper from engine.py, also used by the Objective-C grammar.
 //! This helper does not complete the generic extraction engine.

@@ -1,4 +1,4 @@
-// Adapted from Graphify 0.9.102 (59b5ab11), Apache-2.0; see NOTICE.md.
+// Adapted from Graphify 0.9.103 (16218bfc), Apache-2.0; see NOTICE.md.
 // Upstream: graphify/affected.py
 //! Native translation of graphify/affected.py: reverse dependency traversal.
 use crate::{Result, graph::Graph, path_syntax, python_compat::string, unicode15::CASEFOLD};
