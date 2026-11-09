@@ -57,11 +57,11 @@ fn completed_engine_reports_coverage_and_rejects_unknown_operations() {
     let info = dispatch(json!({"operation":"graph.info"})).unwrap();
     let based_on = &info["based_on"];
     assert_eq!(based_on["complete_port"], true);
-    assert_eq!(based_on["application_modules"], 96);
-    assert_eq!(based_on["upstream_version"], "0.9.95");
+    assert_eq!(based_on["application_modules"], 97);
+    assert_eq!(based_on["upstream_version"], "0.9.103");
     assert_eq!(
         based_on["upstream_commit"],
-        "92741d162b2094ffc2fed58cfbd8ee823e9da62c"
+        "16218bfc80d4ca2799734d045039f7ed1a5fa9fb"
     );
     assert_eq!(
         dispatch(json!({"operation":"graph.not_implemented"}))
