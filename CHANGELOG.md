@@ -159,8 +159,13 @@ comparison is still the one of 0.1.11 against Graphify 0.9.100.
 - Before a protected graph is overwritten, the daily backup is reused
   only when it holds every artifact beside the graph (#3769).
 
-### README
+### Repository
 
+- A root `Dockerfile` builds the MCP server image that registries such as
+  Glama run: it installs the latest released Linux build, prepares an
+  empty data folder and starts `graphicle mcp` over stdio. Since 0.1.14,
+  `graphicle mcp` refuses to start without a data folder, so such a build
+  could not list the server's tools.
 - The README no longer mentions the hackathon or shows the excalidraw
   flow picture; [docs/flow.md](docs/flow.md) still describes the flow.
 
