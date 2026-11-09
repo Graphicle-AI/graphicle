@@ -561,8 +561,9 @@ fn solidity_free_functions_and_their_calls_are_extracted() {
     assert!(edge_labels(&result, "calls").contains(&pair("quarter()", "halve()")));
 }
 
-// Free functions are contained by the file, callable, and member calls from
-// them (`Lib.f()`) are left as raw calls for cross-file resolution.
+// Free functions are contained by the file, callable, and qualified calls from
+// them (`Lib.f()`) are parked for the Solidity pass, which binds them through
+// a library the file declares or imports (Graphify 0.9.103).
 #[test]
 fn solidity_free_function_shape_and_member_calls() {
     let fx = Fixture::new();
@@ -590,7 +591,9 @@ fn solidity_free_function_shape_and_member_calls() {
     assert_eq!(raw.len(), 1);
     assert_eq!(raw[0]["callee"], "f");
     assert_eq!(ids[raw[0]["caller_nid"].as_str().unwrap()], "a()");
-    assert_eq!(raw[0]["is_member_call"], true);
+    assert_eq!(raw[0]["solidity_call"], "qualified");
+    assert_eq!(raw[0]["qualifier"], "Lib");
+    assert_eq!(raw[0]["arity"], 1);
     // Overloads are told apart by arity, so both `b` calls resolve.
     let calls = r["edges"]
         .as_array()
