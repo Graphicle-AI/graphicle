@@ -3,6 +3,167 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.15 - 2026-11-10
+
+Every crate is at 0.1.15, and `graphicle --version` prints
+`graphicle 0.1.15 (core)`. The Python and TypeScript SDKs are at 0.1.15 too.
+
+The code-graph engine takes in the changes of Graphify 0.9.96 to 0.9.103
+(16218bfc); 0.1.14 followed 0.9.95. The port ledger is pinned to 0.9.103,
+and its module-by-module comparison against that release has not been run
+yet: `migration/FILES.json` lists the 97 application modules as pending.
+No speed or graph-size figures are claimed for this release; the published
+comparison is still the one of 0.1.11 against Graphify 0.9.100.
+
+### After upgrading
+
+- The AST cache schema goes from 10 to 11 for the new extraction rules,
+  and cache keys now keep the case of a path on every platform. The first
+  `update` after upgrading extracts every file again; later ones use the
+  cache as before.
+- To get the new Claude Code hook that restores the nudge budget after a
+  compaction (below), run `graphicle graph install --platform claude`
+  again.
+
+### Updates: only the files that changed
+
+- `update` re-extracts only the files whose content differs from the
+  manifest, plus those that left the disk (Graphify 0.9.102, #4740). An
+  explicit path list wins; `--force`, or a missing or empty manifest, keep
+  the full rebuild.
+- An incremental update needs a baseline: a rebuild that stamps the
+  manifest also records the engine build, the settings and the
+  configuration above the root in `.graphicle_update_base.json`. Another
+  engine build, other settings or a manifest another command wrote take
+  the full rebuild.
+- The early stop of 0.1.13 runs first and is unchanged. An update whose
+  manifest shows no changed file takes the full update, which records the
+  early stop; an incremental update that finds nothing to change records
+  it too when a record vouched for the graph it started from.
+- A contended incremental request leaves `.pending_incremental` for the
+  next holder instead of being dropped or turned into a full rebuild.
+- The resolution context handed to re-extracted files keeps the newer
+  resolver markers of unchanged files, so a member call on a method's
+  result, a Go struct field or a C++ qualified name in a changed file
+  still resolves through an unchanged one.
+- A code-only graph (`extract --code-only`) stays code-only through hook,
+  `update` and `watch` rebuilds (#4923).
+
+### Extraction
+
+- **Python:** member calls bind the method they spell (#4734); a local
+  bound to a method's result is typed from its return annotation (#4726);
+  imports resolve across namespace packages under `src/` (#4933); a
+  dispatch table of `module.func` values links each function as an
+  `indirect_call` (#1566); a call on a module-level instance resolves
+  through its class; a builtin-named call (such as `NotImplementedError`)
+  binds a project symbol only when the file imports it (#4989); a call
+  inside `_main` is credited to `_main`, not `main` (#4994).
+- **JavaScript and TypeScript:** nested functions stay scoped; CommonJS
+  `require` and `module.exports` forms are imports and exports, so
+  `class A extends X` reaches a required class (#4688); a member call
+  through a default-imported object binds the object's method (#4963);
+  relative imports with `?query` or `#fragment` resolve (#4860); an
+  `import(...)` in a type position is no runtime dependency (#4992); a
+  temporary parse repairs typed tagged templates and import-qualified
+  generics the grammar fails on.
+- **Go:** calls in package-level `var` initialisers belong to the file
+  (#2360); method values passed as arguments and reached through
+  receiver fields are `indirect_call` edges (#1566); struct fields
+  declared in a sibling file type `s.field.M()` (#3368); receiver
+  bindings are lexical, a `pkg.T` receiver binds only to the `T` at the
+  imported path, and calls through an interface method reach the types
+  that satisfy it (#4962).
+- **Rust:** a `use` is scoped to the crate it names (#4699, #4712); a
+  module-qualified call binds only to a free function of the caller's
+  crate at the path the qualifier names; calls inside macro arguments
+  bind.
+- **C++:** member-call receivers are typed from parameters and fields as
+  well as locals, and names typed two ways are dropped as ambiguous
+  (#3215); qualified out-of-line definitions bind only to the class the
+  file includes.
+- **C#:** methods are labelled `Owner.Name()` in the graph (#4883);
+  preprocessor directives are blanked before parsing and derailing
+  `#if` branches are dropped, so later members keep their owner.
+- **Solidity:** `emit`, `revert` and `require(c, Err(..))` link to the
+  event or error, and `Lib.f()` calls bind through the library, contract
+  or interface the file declares or imports.
+- **Java and Kotlin** share one package and type index, so imports,
+  inheritance and calls cross the two languages (#4874); Kotlin
+  overloads are one target and `init` blocks belong to their class
+  (#4935).
+- **PHP:** `Scope::MEMBER` in initialisers and defaults references the
+  class it names (#4648); Markdown code spans recognise
+  `App\Services\Mailer` and `Mailer::send()` (#4610).
+- **YAML** keys keep their written spelling (`on:` stays `on`, #4784),
+  and in a `<<: [*a, *b]` merge the earlier map wins, as the YAML merge
+  spec says.
+- Smaller fixes for Zig, Dart, Robot, VB.NET, Razor, COBOL, Blade,
+  Pascal, SystemVerilog, CommonMark, Fortran, OCaml, PowerShell, Common
+  Lisp, Scala 3, R, Elixir, Terraform and pnpm workspaces.
+- A declaration whose id would equal its file's id gets a unique one, and
+  a reference never resolves to the file's own id (#4854).
+- `detect` warns when at least 20 files, and at least a fifth of those
+  seen, have no extractor (#2942).
+
+### Graph build and queries
+
+- When two edges with one relation collapse, the weaker copy is kept in
+  the winner's `also_seen` list (#4881); a two-file import cycle is
+  stamped so `find_import_cycles` still sees it (#4839).
+- `path` ends with the path's confidence, the tier of its weakest hop,
+  and reports the weakest of equally short routes, so the confidence
+  never overstates the connection (#4881, #4885). A `Type.Member` query
+  resolves to the member (#4884).
+- `query` weighs tests, documents and configuration files lower unless
+  the question asks about them, answers file by file, and takes
+  `--depth N` (1 to 6); `.graphiclerc` can set `query_budget` and
+  `query_depth`.
+- `affected` and `query --seed` resolve `path::Symbol` and dotted Python
+  names as `explain` does, and `affected` exits 3 for an ambiguous name
+  and 4 for no match (#4792).
+- A semantic node with evidence of its own (rationale, source URL,
+  author) keeps its id when a fresh AST node collides with it, and the
+  write guard refuses a graph that empties such a node's provenance
+  (#4896, #4927). Folds into AST twins are no longer counted as losses
+  (#4778, #4940, #4955).
+- A file split into slices is checkpointed only once every slice has
+  returned (#4943); a linked worktree whose main checkout is inside the
+  scan root is excluded, and its old records are evicted (#4683, #4912).
+- The tree view caps every directory's children while keeping full
+  totals (#4766); `extract` reports what the ignore rules skipped;
+  `explain` and the wiki list every parallel relation.
+- Credential redaction covers more shapes: tokens glued to identifiers,
+  whole PEM private-key blocks, Slack refresh tokens, short JWTs and URL
+  user info.
+
+### Hooks, installs and models
+
+- A Claude Code install also registers a `SessionStart` hook for
+  compactions that restores the per-session nudge budget, since the model
+  loses the earlier nudges while the session id stays.
+- Bash file reads (`cat`, `head`, `sed -n` and the like) of a graphed code
+  file get the read nudge; they are never denied.
+- Hooks keep working under an exported `CDPATH` (#4977); a file whose
+  content still matches its manifest row is not flagged stale by its
+  modification time; strict mode also covers the first `Grep` of a
+  session.
+- A global OpenCode install writes its plugin to `~/.config/opencode`
+  (#3398); a project install for Pi writes `.pi/skills` (#5011); a
+  user-scope Gemini install writes `~/.gemini/skills` on every system
+  (#2800); a global uninstall removes the skill registration it added to
+  `CLAUDE.md` or `CODEBUDDY.md`, never a hand-written section.
+- The Claude extraction backend marks its system prompt cacheable
+  (`GRAPHICLE_CLAUDE_PROMPT_CACHE=0` turns it off; #4835); cached tokens
+  still count in `cost.json`.
+- Before a protected graph is overwritten, the daily backup is reused
+  only when it holds every artifact beside the graph (#3769).
+
+### README
+
+- The README no longer mentions the hackathon or shows the excalidraw
+  flow picture; [docs/flow.md](docs/flow.md) still describes the flow.
+
 ## 0.1.14 - 2026-11-08
 
 Every crate is at 0.1.14, and `graphicle --version` prints
