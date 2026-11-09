@@ -69,11 +69,13 @@ $$;
 
 -- SQLite's json_each over an array or object: one row per element, in
 -- order, with its key (the index for an array), its value as SQL text and
--- its json_type.
+-- its json_type. The column "json" is quoted: since PostgreSQL 17, JSON is a
+-- keyword, and a keyword of its kind can't name a parameter or a returned
+-- column unquoted. Queries read it as before (j.json, or json).
 DROP FUNCTION IF EXISTS json_each(text, text);
 DROP FUNCTION IF EXISTS json_each(text);
 CREATE OR REPLACE FUNCTION json_each(doc text)
-RETURNS TABLE(key text, value text, type text, json text)
+RETURNS TABLE(key text, value text, type text, "json" text)
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   WITH d AS (SELECT graphicle_json(doc) AS j)
   SELECT (a.n - 1)::text, graphicle_json_sql(a.v), graphicle_json_type(a.v), a.v::text
@@ -85,7 +87,7 @@ LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
 $$;
 
 CREATE OR REPLACE FUNCTION json_each(doc text, path text)
-RETURNS TABLE(key text, value text, type text, json text)
+RETURNS TABLE(key text, value text, type text, "json" text)
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT * FROM json_each(CASE WHEN path = '$' THEN doc ELSE (graphicle_json(doc) #> graphicle_json_path(path))::text END)
 $$;
@@ -137,7 +139,7 @@ $$;
 -- SQLite's json(), json_set() and json_remove(), for statements that edit a
 -- JSON text column in place. A text value is set as a JSON string, a
 -- number as a JSON number, and json(text) as the JSON it holds.
-CREATE OR REPLACE FUNCTION json(doc text) RETURNS jsonb
+CREATE OR REPLACE FUNCTION "json"(doc text) RETURNS jsonb
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$ SELECT (doc::jsonb) $$;
 
 CREATE OR REPLACE FUNCTION json_set(doc text, path text, value jsonb) RETURNS text
