@@ -324,10 +324,11 @@ fn build_tree_caps_directories_with_full_hidden_totals() {
 #[test]
 fn build_tree_directory_cap_preserves_file_symbol_behavior() {
     use graphicle::tree_html::build_tree;
-    let graph = json!({"nodes": ["gamma", "Beta", "_private", "Alpha"]
+    let nodes: Vec<_> = ["gamma", "Beta", "_private", "Alpha"]
         .iter()
         .map(|n| json!({"id": n, "label": n, "source_file": "pkg/a.py"}))
-        .collect::<Vec<_>>()});
+        .collect();
+    let graph = json!({ "nodes": nodes });
     let tree = build_tree(&graph, Some("pkg"), 2, None).unwrap();
     let file = &tree["children"][0];
     assert_eq!(names(file), ["(+2 more)", "Alpha", "Beta"]);
