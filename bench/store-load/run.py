@@ -184,9 +184,9 @@ def file_size(path: Path) -> int:
         return 0
 
 
-def pct(values: list[float], q: float) -> float:
+def pct(values: list[float], q: float) -> float | None:
     if not values:
-        return float("nan")
+        return None
     values = sorted(values)
     k = (len(values) - 1) * q
     lo, hi = int(k), min(int(k) + 1, len(values) - 1)
@@ -587,15 +587,15 @@ def main() -> int:
         lat = [c[1] for c in rows if c[4]]
         span = (max(c[0] + c[1] for c in rows) - min(c[0] for c in rows)) if rows else 0
         by_phase[phase] = {"calls": len(rows), "failed": sum(1 for c in rows if not c[4]),
-                           "p50_ms": round(pct(lat, .5) * 1000, 1), "p95_ms": round(pct(lat, .95) * 1000, 1),
-                           "p99_ms": round(pct(lat, .99) * 1000, 1),
+                           "p50_ms": _percentile_ms(lat, .5), "p95_ms": _percentile_ms(lat, .95),
+                           "p99_ms": _percentile_ms(lat, .99),
                            "reads_per_s": round(len(rows) / span, 1) if span else 0}
     tools_summary = {}
     for name in sorted({c[2] for c in calls}):
         lat = [c[1] for c in calls if c[2] == name and c[4]]
         tools_summary[name] = {"calls": sum(1 for c in calls if c[2] == name),
                                "failed": sum(1 for c in calls if c[2] == name and not c[4]),
-                               "p50_ms": round(pct(lat, .5) * 1000, 1), "p99_ms": round(pct(lat, .99) * 1000, 1)}
+                               "p50_ms": _percentile_ms(lat, .5), "p99_ms": _percentile_ms(lat, .99)}
     failures = {}
     for c in calls:
         if not c[4]:
@@ -621,7 +621,7 @@ def main() -> int:
         w.writerow(["t", "seconds", "tool", "status", "ok", "phase"])
         for c in calls:
             w.writerow([round(c[0] - t0, 3), round(c[1], 4), c[2], c[3], int(c[4]), c[5]])
-    (a.out / "run.json").write_text(json.dumps(record, indent=1))
+    (a.out / "run.json").write_text(json.dumps(record, indent=1, allow_nan=False))
     print(json.dumps({k: record[k] for k in ("label", "index", "reads", "peak_rss_mib", "wal_peak_mib", "wal_end_mib",
                                              "store_end_mib", "fsyncs", "failures")}, indent=1))
     return 0
@@ -637,6 +637,11 @@ def _tail_json(path: Path):
         return {"status": graph.get("status") or value.get("state"), "nodes": graph.get("nodes"),
                 "edges": graph.get("edges"), "files": value.get("files")}
     return None
+
+
+def _percentile_ms(values: list[float], q: float) -> float | None:
+    value = pct(values, q)
+    return None if value is None else round(value * 1000, 1)
 
 
 if __name__ == "__main__":
