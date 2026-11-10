@@ -757,6 +757,7 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         && code.is_empty()
         && semantic.is_empty()
         && ar(&detection["deleted_files"]).is_empty()
+        && ar(&detection["excluded_files"]).is_empty()
         && ar(&pg["nodes"]).is_empty()
         && ar(&pg["edges"]).is_empty()
         && ar(&cargo["nodes"]).is_empty()
