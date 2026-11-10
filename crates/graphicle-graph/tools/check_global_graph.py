@@ -3,6 +3,7 @@
 import ast
 import contextlib
 import datetime
+import hashlib
 import io
 import json
 import os
@@ -109,6 +110,9 @@ try:
         compare("graph_mutations",{"graph":data(graph),"errors":[],"edge_count":graph.number_of_edges()},actual,initial=initial,actions=actions)
     with tempfile.TemporaryDirectory(prefix="graphify-global-parity-") as tmp:
         root=Path(tmp);py_store=root/"python";rs_store=root/"rust"
+        hash_probe=root/"hash-probe.bin"
+        hash_probe.write_bytes(b"x" * (256 * 1024))
+        compare("store_actions",hashlib.sha256(hash_probe.read_bytes()).hexdigest()[:16],result("global.hash",path=str(hash_probe)))
         def store_paths(directory):return {"_GLOBAL_DIR":directory,"_GLOBAL_GRAPH":directory/"global-graph.json","_GLOBAL_MANIFEST":directory/"global-manifest.json"}
         with patch.multiple(reference,**store_paths(py_store)):
             for step in range(120):
