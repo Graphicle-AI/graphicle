@@ -149,5 +149,14 @@
       "behavior": "Invalidate pinned and LRU graph contexts when learning sidecars are created, changed or deleted.",
       "native_regression": "learning_sidecar_invalidates_both_pinned_and_lru_contexts"
     }
+  ],
+  "graphify/mcp_ingest.py": [
+    {
+      "kind": "native_regression",
+      "reviewed_utc": "2026-11-10",
+      "behavior": "Index VS Code's documented `.vscode/mcp.json` root `servers` map alongside the existing `mcpServers` and `mcp.servers` forms. Graphicle's MCP setup docs specify this shape; the native extractor regression exercises the documented file path through dispatch.",
+      "native_regression": "mcp_ingest::tests::vscode_servers_map_is_extracted_through_the_file_dispatch",
+      "oracle_adaptation": "None; this is a deliberate product compatibility extension for the documented VS Code configuration shape."
+    }
   ]
 }

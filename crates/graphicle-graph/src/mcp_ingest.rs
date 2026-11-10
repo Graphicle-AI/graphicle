@@ -182,9 +182,13 @@ pub fn extract_mcp_config(path: &Path) -> Value {
                 .and_then(Value::as_object)
                 .and_then(|m| m.get("servers"))
                 .and_then(Value::as_object)
-        });
+        })
+        // VS Code stores MCP entries under a root `servers` map in
+        // `.vscode/mcp.json` (docs/mcp.md). Keep the existing client formats
+        // above as the precedence when a file contains more than one shape.
+        .or_else(|| doc.get("servers").and_then(Value::as_object));
     let Some(servers) = servers else {
-        return refused("mcp_ingest: no mcpServers map");
+        return refused("mcp_ingest: no recognized MCP servers map");
     };
     let source_file = fsutil::path_string(path);
     let file_id = make_id([source_file.as_str()]);
@@ -213,4 +217,28 @@ pub fn extract_mcp_config(path: &Path) -> Value {
         output.emit_server(name, spec.as_object().unwrap(), &file_id, &stem);
     }
     json!({"nodes":output.nodes,"edges":output.edges})
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn vscode_servers_map_is_extracted_through_the_file_dispatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".vscode").join("mcp.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            r#"{"servers":{"graphicle":{"type":"stdio","command":"graphicle","args":["graph","serve","/tmp/project/.graphicle/graph.json"]}}}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            crate::extract::get_extractor(&path).as_deref(),
+            Some("mcp_config")
+        );
+        let result = crate::extract::extract_file(&path, Some(dir.path()));
+        assert!(result["nodes"].as_array().unwrap().iter().any(|node| {
+            node["metadata"]["mcp_kind"] == "mcp_server" && node["label"] == "graphicle"
+        }));
+    }
 }
