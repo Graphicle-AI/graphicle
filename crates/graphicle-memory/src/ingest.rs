@@ -146,6 +146,7 @@ pub fn chunks(request: &Value) -> Result<Value> {
             if emitted >= max_passages {
                 capped = true;
                 omitted_documents += 1;
+                left_out.push(index);
                 break;
             }
             kept[index].push(row);
