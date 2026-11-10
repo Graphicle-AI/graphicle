@@ -145,7 +145,7 @@ impl Store {
         let mut result = self.authorized(workspace,token,permission,|db,p| {
             let repository=repo(db,p,string(args,"repository_id",100)?)?;let identifier=s(&repository,"id");
             match operation {
-                "sync.abort"=>{db.execute("UPDATE repo_syncs SET state='aborted' WHERE repository_id=? AND id=? AND state IN ('pending','preparing')",params![identifier,string(args,"sync_id",100)?])?;Ok(json!({"aborted":true}))},
+                "sync.abort"=>{let aborted=db.execute("UPDATE repo_syncs SET state='aborted' WHERE repository_id=? AND id=? AND state IN ('pending','preparing')",params![identifier,string(args,"sync_id",100)?])? > 0;Ok(json!({"aborted":aborted}))},
                 "learning.refresh.propose"=>memory::propose_refresh(db,&repository,p,args),
                 "memory.state"=>{
                     let memories=memory::list(db,&repository,p,true)?;let old=memories.iter().find(|m|m["id"]==args["memory_id"]).ok_or_else(||Error::bad("Memory unavailable"))?;

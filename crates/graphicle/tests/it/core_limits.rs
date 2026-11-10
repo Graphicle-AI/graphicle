@@ -343,7 +343,8 @@ fn a_manifest_in_parts_commits_nothing_until_the_commit_and_retries_are_idempote
         json!({"manifest":[entry(0)],"manifest_complete":false,"expected_snapshot":""}),
     )
     .unwrap();
-    f.store
+    let aborted = f
+        .store
         .project_mutate(
             workspace,
             key,
@@ -351,6 +352,29 @@ fn a_manifest_in_parts_commits_nothing_until_the_commit_and_retries_are_idempote
             &json!({"repository_id":repository,"sync_id":first["sync_id"]}),
         )
         .unwrap();
+    assert_eq!(aborted["aborted"], true);
+    assert_eq!(
+        f.store
+            .project_mutate(
+                workspace,
+                key,
+                "sync.abort",
+                &json!({"repository_id":repository,"sync_id":first["sync_id"]}),
+            )
+            .unwrap()["aborted"],
+        false
+    );
+    assert_eq!(
+        f.store
+            .project_mutate(
+                workspace,
+                key,
+                "sync.abort",
+                &json!({"repository_id":repository,"sync_id":"missing-sync"}),
+            )
+            .unwrap()["aborted"],
+        false
+    );
     assert!(
         call(
             "prepare",
