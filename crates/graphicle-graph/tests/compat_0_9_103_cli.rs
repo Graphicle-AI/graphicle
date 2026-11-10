@@ -4,8 +4,11 @@
 //! the upstream tests named in each comment.
 use graphicle::install::Options;
 use serde_json::{Value, json};
-use std::{fs, path::Path, process::Command};
+#[cfg(unix)]
+use std::process::Command;
+use std::{fs, path::Path};
 
+#[cfg(unix)]
 fn git(repo: &Path, args: &[&str]) {
     let out = Command::new("git")
         .arg("-C")
