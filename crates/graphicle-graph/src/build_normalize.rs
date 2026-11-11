@@ -965,6 +965,14 @@ pub fn deduplicate_by_label(
                 nid.chars().count() < oldid.chars().count()
             };
             if win {
+                // Earlier duplicates may already point at this canonical ID.
+                // If it is replaced again, keep every alias aimed at the final
+                // winner rather than the now-removed intermediate ID.
+                for target in remap.values_mut() {
+                    if target == oldid {
+                        *target = nid.to_owned();
+                    }
+                }
                 remap.insert(oldid.into(), nid.into());
                 canonical[i] = n.clone();
             } else {
@@ -1091,5 +1099,31 @@ mod suffix_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod deduplicate_by_label_tests {
+    use super::deduplicate_by_label;
+    use serde_json::json;
+
+    #[test]
+    fn edge_aliases_follow_repeatedly_replaced_canonical_id() {
+        let nodes = vec![
+            json!({"id": "long_identifier", "label": "Same"}),
+            json!({"id": "mid", "label": "Same"}),
+            json!({"id": "x", "label": "Same"}),
+            json!({"id": "other", "label": "Other"}),
+        ];
+        let edges = vec![
+            json!({"source": "long_identifier", "target": "other"}),
+            json!({"source": "mid", "target": "other"}),
+        ];
+
+        let (nodes, edges, _) = deduplicate_by_label(&nodes, &edges).unwrap();
+
+        assert!(nodes.iter().any(|node| node["id"] == "x"));
+        assert!(edges.iter().all(|edge| edge["source"] == "x"));
+        assert!(edges.iter().all(|edge| edge["target"] == "other"));
     }
 }
