@@ -188,7 +188,7 @@ pub fn extract_mcp_config(path: &Path) -> Value {
         // above as the precedence when a file contains more than one shape.
         .or_else(|| doc.get("servers").and_then(Value::as_object));
     let Some(servers) = servers else {
-        return refused("mcp_ingest: no recognized MCP servers map");
+        return refused("mcp_ingest: no mcpServers map");
     };
     let source_file = fsutil::path_string(path);
     let file_id = make_id([source_file.as_str()]);
