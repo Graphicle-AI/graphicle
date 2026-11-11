@@ -12,7 +12,9 @@ from pathlib import Path
 
 def phase(reads: dict, name: str) -> str:
     p = reads.get(name, {})
-    text = f"{p.get('p50_ms', 0):.0f} / {p.get('p99_ms', 0):.0f} ms, {p.get('reads_per_s', 0):.1f}/s"
+    p50, p99 = p.get("p50_ms"), p.get("p99_ms")
+    latency = f"{p50:.0f} / {p99:.0f}" if p50 is not None and p99 is not None else "n/a / n/a"
+    text = f"{latency} ms, {p.get('reads_per_s', 0):.1f}/s"
     if p.get("failed"):
         text += f", **{p['failed']} of {p['calls']} failed**"
     elif name == "indexing":
