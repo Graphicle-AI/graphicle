@@ -4,6 +4,9 @@
 //! blobs are verified and atomically replaced, and deleted paths disappear
 //! before extraction. The lock stays alive for the entire graph build. A busy
 //! cache uses an isolated temporary tree instead of racing another process.
+//! A lock held only for a moment (a child process started while the last
+//! build had the lock file open keeps a copy of it until it execs) is tried
+//! again for up to [`LOCK_RETRY`] before the cache counts as busy.
 use crate::db::{Connection, params};
 use crate::{Error, Result, store::path};
 use serde::Serialize;
@@ -13,7 +16,29 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
+
+/// How long `prepare` keeps trying a held cache lock before it builds an
+/// isolated tree. A build holds the lock far longer than this.
+const LOCK_RETRY: Duration = Duration::from_millis(250);
+
+/// Lock `lock` without blocking for more than [`LOCK_RETRY`]: whether it
+/// is now held by this process.
+fn try_lock_briefly(lock: &File) -> bool {
+    let deadline = Instant::now() + LOCK_RETRY;
+    let mut wait = Duration::from_millis(1);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return true,
+            Err(fs::TryLockError::WouldBlock) if Instant::now() + wait <= deadline => {
+                std::thread::sleep(wait);
+                wait = (wait * 2).min(Duration::from_millis(25));
+            }
+            Err(_) => return false,
+        }
+    }
+}
 use tempfile::TempDir;
 
 #[derive(Debug, Default, Serialize)]
@@ -167,7 +192,7 @@ pub fn prepare(
                 .read(true)
                 .write(true)
                 .open(lock_path)?;
-            if lock.try_lock().is_err() {
+            if !try_lock_briefly(&lock) {
                 return Ok(None);
             }
             fs::create_dir_all(&root)?;
@@ -301,6 +326,32 @@ mod tests {
             .unwrap();
         fs::remove_file(cache.path().join("sources/a.py")).unwrap();
         assert!(prepare(&db, "repo", &sources, Some(cache.path())).is_err());
+    }
+
+    #[test]
+    fn a_lock_held_for_a_moment_still_gets_the_cache() {
+        let _flock = crate::fork_guard::flock_sensitive();
+        let db = database();
+        let cache = TempDir::new().unwrap();
+        let sources = heads(&db, &[("a.py", "value = 1\n")]);
+        // Another open file description holds the lock, as a child that
+        // copied the descriptor does until it execs, and lets go at once.
+        let held = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(cache.path().join("sources.lock"))
+            .unwrap();
+        held.lock().unwrap();
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            drop(held);
+        });
+        let tree = prepare(&db, "repo", &sources, Some(cache.path())).unwrap();
+        release.join().unwrap();
+        assert!(tree.report.cached);
+        assert_eq!(tree.path(), cache.path().join("sources"));
     }
 
     #[cfg(unix)]
