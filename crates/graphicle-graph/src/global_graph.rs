@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use sha2::Digest;
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -303,8 +304,18 @@ fn load_graph_with_arcs(path: &Path, limit: u64) -> Result<Graph> {
     Graph::from_node_link_owned_with_arcs(data, "links")
 }
 pub fn file_hash(path: &Path) -> Result<String> {
-    let digest = sha2::Sha256::digest(fs::read(path).map_err(crate::Error::from)?);
-    Ok(format!("{digest:x}")[..16].to_string())
+    let mut file = fs::File::open(path).map_err(crate::Error::from)?;
+    let mut hash = sha2::Sha256::new();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(bytes) => hash.update(&buffer[..bytes]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(crate::Error::from(error)),
+        }
+    }
+    Ok(format!("{:x}", hash.finalize())[..16].to_string())
 }
 
 pub fn dispatch(request: &Value) -> Result<Value> {
@@ -377,4 +388,20 @@ pub fn dispatch(request: &Value) -> Result<Value> {
         _ => return Err("Unknown global-store operation".into()),
     };
     Ok(json!({"value":value,"warnings":store.warnings}))
+}
+
+#[cfg(test)]
+mod hash_tests {
+    use super::*;
+
+    #[test]
+    fn file_hash_matches_sha256_for_multi_chunk_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("graph.json");
+        let contents = vec![b'x'; 256 * 1024];
+        fs::write(&path, &contents).unwrap();
+        let expected = format!("{:x}", sha2::Sha256::digest(&contents))[..16].to_string();
+
+        assert_eq!(file_hash(&path).unwrap(), expected);
+    }
 }
