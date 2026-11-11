@@ -19,9 +19,10 @@ checks; nothing in it changes stored data.
 
 ### PostgreSQL
 
-- PostgreSQL 17 and 18 can hold a store: since 17, `JSON` is a keyword and
-  the store's `json()` function and `json_each`'s `json` column are now
-  quoted where they are created (#22, by @andreimerlescu).
+- PostgreSQL 17 and 18 can hold a store: since 17, `JSON` (a keyword since
+  16) can no longer name a function or a parameter unquoted, so the store's
+  `json()` function and `json_each`'s `json` column are now quoted where
+  they are created (#22, by @andreimerlescu).
 - A connection the server ended (a server restart, `pg_terminate_backend`)
   no longer panics with "Cannot start a runtime from within a runtime" when
   `graphicle serve` or another async caller drops it; the store goes on
@@ -35,7 +36,9 @@ checks; nothing in it changes stored data.
 - The MCP config extractor reads VS Code's `.vscode/mcp.json`, whose
   servers are under a root `servers` map (#25, by @dajiaohuang).
 - `chunks` counts a document of which only some passages were kept as left
-  out in its coverage report (#24, by @dajiaohuang).
+  out in its coverage report (#24, by @dajiaohuang). With `prefer: newest`,
+  a document the passage bound cuts is both kept and left out, so
+  `omitted_documents_are` is then `earliest_listed`, where it was `oldest`.
 - `sync.abort` reports `"aborted": false` when the sync was not pending or
   preparing, or does not exist (#27, by @dajiaohuang).
 - The global graph hashes its input files in 64 KiB chunks instead of
