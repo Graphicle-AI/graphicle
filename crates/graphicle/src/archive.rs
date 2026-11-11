@@ -21,7 +21,7 @@
 
 use crate::db::{Connection, Database, Settings};
 use crate::{Error, Result};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -588,6 +588,7 @@ pub fn read(
         return Err(invalid());
     }
     let mut tables = 0usize;
+    let mut rows = 0u64;
     loop {
         // The trailer is not hashed: read it raw.
         if read_line_bounded(&mut input, &mut line)? == 0 {
@@ -596,7 +597,12 @@ pub fn read(
         let value: Value = serde_json::from_str(&line).map_err(|_| invalid())?;
         if value["end"] == true {
             let digest = format!("{:x}", hasher.finalize());
-            if value["sha256"] != digest.as_str() || value["tables"] != tables {
+            let mut trailing = [0u8; 1];
+            if value["sha256"] != digest.as_str()
+                || value["tables"] != tables
+                || value["rows"].as_u64() != Some(rows)
+                || input.read(&mut trailing)? != 0
+            {
                 return Err(invalid());
             }
             return Ok(
@@ -627,10 +633,14 @@ pub fn read(
             hasher: &mut hasher,
             left: 0,
             done: false,
+            rows: 0,
         };
         table(&section, &mut chunks)?;
         // Whatever the consumer left unread is read (and hashed) here.
         std::io::copy(&mut chunks, &mut std::io::sink())?;
+        let table_rows = chunks.rows;
+        drop(chunks);
+        rows = rows.checked_add(table_rows).ok_or_else(invalid)?;
         tables += 1;
     }
 }
@@ -641,6 +651,7 @@ struct Chunks<'a> {
     hasher: &'a mut Sha256,
     left: usize,
     done: bool,
+    rows: u64,
 }
 
 impl Read for Chunks<'_> {
@@ -669,6 +680,11 @@ impl Read for Chunks<'_> {
         let n = self.left.min(out.len());
         self.input.read_exact(&mut out[..n])?;
         self.hasher.update(&out[..n]);
+        let row_breaks = out[..n].iter().filter(|byte| **byte == b'\n').count() as u64;
+        self.rows = self
+            .rows
+            .checked_add(row_breaks)
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "too many rows"))?;
         self.left -= n;
         Ok(n)
     }
@@ -856,4 +872,61 @@ pub fn retain_tables(path: &Path, keep: impl Fn(&str) -> bool) -> Result<()> {
         .collect();
     replace(&scratch.connect()?, path, Some(&only))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn archive(rows: u64, payload: &[u8], trailing: &[u8]) -> tempfile::NamedTempFile {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(MAGIC.as_bytes());
+        bytes.extend_from_slice(
+            format!(
+                "{}\n",
+                json!({"format":FORMAT,"version":"0.1.14","created_at":"2026-11-11T00:00:00Z"})
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(
+            format!(
+                "{}\n",
+                json!({"table":"sample","columns":["value"],"types":["text"]})
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(format!("{}\n", payload.len()).as_bytes());
+        bytes.extend_from_slice(payload);
+        bytes.extend_from_slice(b"0\n");
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        bytes.extend_from_slice(
+            format!(
+                "{}\n",
+                json!({"end":true,"tables":1,"rows":rows,"sha256":digest})
+            )
+            .as_bytes(),
+        );
+        bytes.extend_from_slice(trailing);
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), bytes).unwrap();
+        file
+    }
+
+    #[test]
+    fn verify_rejects_bytes_after_the_trailer() {
+        let file = archive(1, b"row\n", b"unexpected");
+        assert!(verify(file.path()).is_err());
+    }
+
+    #[test]
+    fn verify_checks_the_trailer_row_count() {
+        let file = archive(2, b"row\n", b"");
+        assert!(verify(file.path()).is_err());
+    }
+
+    #[test]
+    fn verify_accepts_an_exact_archive() {
+        let file = archive(1, b"row\n", b"");
+        assert!(verify(file.path()).is_ok());
+    }
 }
