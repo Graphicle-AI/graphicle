@@ -3,6 +3,58 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.16 - 2026-11-11
+
+Every crate is at 0.1.16, and `graphicle --version` prints
+`graphicle 0.1.16 (core)`. The Python and TypeScript SDKs are at 0.1.16 too.
+This release collects fixes from contributors and from the 0.1.15 release
+checks; nothing in it changes stored data.
+
+### Security
+
+- The reference comparison environment of the graph engine
+  (`crates/graphicle-graph/tools/reference-requirements.txt`) pins pypdf
+  6.21.4 instead of 6.21.2, for its security advisories. pypdf is used only
+  by that comparison environment, never by Graphicle itself.
+
+### PostgreSQL
+
+- PostgreSQL 17 and 18 can hold a store: since 17, `JSON` is a keyword and
+  the store's `json()` function and `json_each`'s `json` column are now
+  quoted where they are created (#22, by @andreimerlescu).
+- A connection the server ended (a server restart, `pg_terminate_backend`)
+  no longer panics with "Cannot start a runtime from within a runtime" when
+  `graphicle serve` or another async caller drops it; the store goes on
+  with a new connection.
+
+### Fixes
+
+- `graphicle-graph extract --no-cluster` with a new `--exclude` writes the
+  graph without the excluded files instead of leaving the outputs untouched
+  (#26, by @dajiaohuang).
+- The MCP config extractor reads VS Code's `.vscode/mcp.json`, whose
+  servers are under a root `servers` map (#25, by @dajiaohuang).
+- `chunks` counts a document of which only some passages were kept as left
+  out in its coverage report (#24, by @dajiaohuang).
+- `sync.abort` reports `"aborted": false` when the sync was not pending or
+  preparing, or does not exist (#27, by @dajiaohuang).
+- The global graph hashes its input files in 64 KiB chunks instead of
+  reading each whole file into memory (#28, by @dajiaohuang).
+- The store-load benchmark writes valid JSON (`null`) for the percentiles
+  of a phase with no samples (#23, by @dajiaohuang).
+- A graph build reuses its source cache when the cache lock is held only
+  for a moment (a child process that copied the lock file's descriptor
+  holds it until it starts its program): it tries again for up to 250 ms
+  before building an isolated temporary tree.
+
+### Known issues
+
+- On macOS, the test of the SQLite write-ahead-log limit
+  (`sqlite_wal::the_write_ahead_log_stays_bounded_under_constant_reads`)
+  can fail: the first checkpoint finds readers, and the log grows past the
+  test's margin during the 8-second pause that follows. Its message now
+  says how many checkpoints found readers.
+
 ## 0.1.15 - 2026-11-10
 
 Every crate is at 0.1.15, and `graphicle --version` prints

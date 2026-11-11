@@ -116,6 +116,12 @@ fn checkpoints() -> u64 {
         .unwrap_or(0)
 }
 
+fn busy_checkpoints() -> u64 {
+    graphicle_runtime::db::wal_report()["wal_checkpoints_busy"]
+        .as_u64()
+        .unwrap_or(0)
+}
+
 #[test]
 fn the_write_ahead_log_stays_bounded_under_constant_reads() {
     if graphicle_runtime::db::postgres_configured() {
@@ -127,10 +133,12 @@ fn the_write_ahead_log_stays_bounded_under_constant_reads() {
     let limit: u64 = 4 << 20;
     let unbounded = largest_log(None, commits);
     let before = checkpoints();
+    let busy_before = busy_checkpoints();
     let bounded = largest_log(Some(limit), commits);
     let ran = checkpoints() - before;
+    let busy = busy_checkpoints() - busy_before;
     eprintln!(
-        "largest log: {unbounded} bytes without the limit, {bounded} with a {limit}-byte limit ({ran} checkpoints)"
+        "largest log: {unbounded} bytes without the limit, {bounded} with a {limit}-byte limit ({ran} checkpoints, {busy} of them found readers)"
     );
     // Without the limit the log keeps what was written: SQLite's own
     // checkpoint never restarts it while the relay holds a snapshot.
@@ -145,6 +153,6 @@ fn the_write_ahead_log_stays_bounded_under_constant_reads() {
     assert!(ran > 0, "no checkpoint ran");
     assert!(
         bounded <= limit + (6 << 20),
-        "the log passed its limit: {bounded} bytes"
+        "the log passed its limit: {bounded} bytes ({ran} checkpoints, {busy} of them found readers)"
     );
 }
