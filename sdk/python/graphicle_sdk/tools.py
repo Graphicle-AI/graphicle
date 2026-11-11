@@ -123,7 +123,9 @@ class Tools:
             listed = self._rpc("tools/list") or {}
             definitions = []
             for tool in listed.get("tools") or []:
-                if not (self.include_write or (tool.get("annotations") or {}).get("readOnlyHint", True)):
+                # The service treats anything without an explicit read-only hint as a write.
+                # Fail closed here too: an extension tool may omit annotations.
+                if not self.include_write and (tool.get("annotations") or {}).get("readOnlyHint") is not True:
                     continue
                 if not self.cross_project:
                     if tool.get("name") in _WORKSPACE_TOOLS:
