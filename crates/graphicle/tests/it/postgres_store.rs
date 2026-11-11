@@ -54,6 +54,36 @@ fn assert_safe(refused: &str) {
     }
 }
 
+/// A connection whose server session ended (a server restart, an
+/// administrator's `pg_terminate_backend`) is dropped on an async runtime's
+/// thread without a panic, and the store goes on with a new session. The
+/// pool discards the closed client, and closing a synchronous client blocks
+/// on its own runtime: before, that drop panicked ("Cannot start a runtime
+/// from within a runtime") in every `#[tokio::test]` and handler holding
+/// a connection when the server restarted.
+#[tokio::test]
+async fn a_connection_the_server_ended_is_dropped_on_an_async_thread() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    let connection = store.connect().unwrap();
+    assert!(
+        connection
+            .execute_batch("SELECT pg_terminate_backend(pg_backend_pid())")
+            .is_err()
+    );
+    assert!(connection.execute_batch("SELECT 1").is_err());
+    drop(connection);
+    let one: i64 = store
+        .connect()
+        .unwrap()
+        .query_row("SELECT 1", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(one, 1);
+}
+
 /// An empty `postgres.json` (a process stopped between creating it and
 /// writing it) is refused by every opener and never filled by one: before,
 /// two openers could each fill it and use a schema of their own.

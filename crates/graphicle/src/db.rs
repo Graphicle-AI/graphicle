@@ -3342,11 +3342,22 @@ impl Drop for Connection {
     fn drop(&mut self) {
         // Never hand a connection with an open transaction back to the pool.
         // A rollback that fails leaves a closed client, which the pool
-        // discards (`Manager::has_broken`).
-        if self.in_transaction.get()
-            && let Some(session) = self.session.get_mut().as_mut()
+        // discards (`Manager::has_broken`). The rollback and a discarded
+        // client's close both block on the client's own runtime, which
+        // panics on an async runtime's thread (a `#[tokio::test]`, a
+        // handler): both run through [`blocking`]. An open session without
+        // a transaction goes back to the pool here: that touches no client,
+        // and a synchronous client cannot close between calls.
+        let rollback = self.in_transaction.get();
+        if let Some(mut session) = self.session.get_mut().take()
+            && (rollback || session.client.is_closed())
         {
-            let _ = session.client.batch_execute("ROLLBACK");
+            blocking(move || {
+                if rollback {
+                    let _ = session.client.batch_execute("ROLLBACK");
+                }
+                drop(session);
+            });
         }
     }
 }
