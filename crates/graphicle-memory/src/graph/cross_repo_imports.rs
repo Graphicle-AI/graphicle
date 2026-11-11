@@ -1690,14 +1690,10 @@ fn go_imports(text: &str) -> Vec<ImportSpec> {
     let mut aliases: Vec<(String, usize)> = Vec::new();
     let parse_entry = |entry: &str| -> Option<(Option<String>, String)> {
         let entry = entry.split("//").next().unwrap_or("").trim();
-        let (alias, path) = match entry.find('"') {
-            Some(at) => {
-                let alias = entry[..at].trim();
-                let path = entry[at..].trim_matches('"');
-                ((!alias.is_empty()).then(|| alias.to_string()), path)
-            }
-            None => return None,
-        };
+        let at = entry.find('"')?;
+        let alias = entry[..at].trim();
+        let path = entry[at..].trim_matches('"');
+        let alias = (!alias.is_empty()).then(|| alias.to_string());
         (!path.is_empty()).then(|| (alias, path.to_string()))
     };
     for (index, raw) in text.lines().enumerate() {

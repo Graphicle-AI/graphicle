@@ -880,6 +880,33 @@ fn equal_times_at_the_passage_bound_keep_the_latest_listed_documents() {
     assert_eq!(kept["omitted_documents_are"], "earliest_listed");
 }
 
+#[test]
+fn a_partially_kept_newest_document_counts_as_left_out_for_coverage() {
+    let content = "user: note about the current migration\n".repeat(40);
+    let document = json!({
+        "id":"newest",
+        "title":"newest",
+        "sha256":text::sha256(content.as_bytes()),
+        "content":content,
+        "recorded_at":"2026-03-01T00:00:00Z"
+    });
+    let result = dispatch(json!({
+        "operation":"chunks",
+        "scope":"partial-test",
+        "documents":[document],
+        "max_passages":1,
+        "characters":32,
+        "tokens":16,
+        "prefer":"newest"
+    }))
+    .unwrap();
+
+    assert_eq!(result["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(result["rows"][0]["origin"], "newest");
+    assert_eq!(result["omitted_documents"], 1);
+    assert_eq!(result["omitted_documents_are"], "earliest_listed");
+}
+
 /// P-CAP: one request may ask for 40,000 passages (it was 20,000), and the
 /// passage-bound consumers follow the constant.
 #[test]
