@@ -47,11 +47,13 @@ episode.
 allowance. `project.export_memories()` remains available at the request limit.
 The service's `/docs` and `/v1/openapi.json` describe the versioned transport.
 
-For async applications, `AsyncClient` exposes the same public methods using
-worker threads. `LocalServer` manages a private native service for local use and
-tests; `Memory` offers the Memory facade (add, search, get, update, delete,
-history and reset over stored sessions), with its behaviour documented in its
-module. `Tools` adapts the service's MCP tools to model tool schemas.
+For async applications, `AsyncClient` makes the same public instance methods
+awaitable using worker threads. Construct it synchronously; for example,
+`AsyncClient.from_session(...)` is a synchronous local session-file factory.
+`LocalServer` manages a private native service for local use and tests; `Memory`
+offers the Memory facade (add, search, get, update, delete, history and reset
+over stored sessions), with its behaviour documented in its module. `Tools`
+adapts the service's MCP tools to model tool schemas.
 
 Requests do not follow credential-bearing redirects or automatically retry
 mutations. A timed-out write may have completed; inspect current state before

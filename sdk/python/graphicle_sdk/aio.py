@@ -1,5 +1,5 @@
-"""Asynchronous use of the SDK. Each call runs the blocking method in a worker thread
-(``asyncio.to_thread``), so the SDK stays standard-library only.
+"""Asynchronous use of the SDK. Each public instance call runs the blocking method
+in a worker thread (``asyncio.to_thread``), so the SDK stays standard-library only.
 
 ::
 
@@ -16,9 +16,11 @@
 
     asyncio.run(main())
 
-Every public method of :class:`~graphicle_sdk.Client`, :class:`~graphicle_sdk.Project`,
-:class:`~graphicle_sdk.Memory` and :class:`~graphicle_sdk.Tools` has an awaitable counterpart with the
-same arguments and result. Results that are SDK objects come back wrapped, so
+Every public instance method of :class:`~graphicle_sdk.Client`, :class:`~graphicle_sdk.Project`,
+:class:`~graphicle_sdk.Memory` and :class:`~graphicle_sdk.Tools` has an awaitable counterpart with
+the same arguments and result. Constructors and class factories stay synchronous;
+in particular, ``AsyncClient.from_session(...)`` returns the client directly.
+Results that are SDK objects come back wrapped, so
 ``await client.project(...)`` is an :class:`AsyncProject`; other attributes (``id``, ``url``,
 ``namespace`` ...) are read directly, and ``.sync`` is the wrapped object. Calls may run
 concurrently; the service serializes writes, and a :class:`~graphicle_sdk.Memory` caches project and
