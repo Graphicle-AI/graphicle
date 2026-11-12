@@ -57,6 +57,22 @@ pub fn backup_once(path: &Path) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
     let bytes = std::fs::read(path)?;
+    write_backup(&backup, mode_of(&meta), |file| file.write_all(&bytes))?;
+    Ok(Some(backup))
+}
+
+/// Publish a complete backup atomically. A stopped or failed write leaves
+/// only a temporary file, never the final name that makes `backup_once`
+/// believe the original has already been saved.
+fn write_backup(
+    backup: &Path,
+    mode: u32,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> Result<()> {
+    let parent = backup
+        .parent()
+        .ok_or_else(|| Error::bad("Backup has no parent directory"))?;
+    let temporary = parent.join(format!(".graphicle-backup-{}", crate::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -64,12 +80,25 @@ pub fn backup_once(path: &Path) -> Result<Option<PathBuf>> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let mut file = options.open(&backup)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    drop(file);
-    set_mode(&backup, mode_of(&meta))?;
-    Ok(Some(backup))
+    let published = (|| -> Result<()> {
+        let mut file = options.open(&temporary)?;
+        write(&mut file)?;
+        file.sync_all()?;
+        drop(file);
+        set_mode(&temporary, mode)?;
+        match std::fs::hard_link(&temporary, backup) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    })();
+    let removed = std::fs::remove_file(&temporary);
+    if let Err(error) = published {
+        let _ = removed;
+        return Err(error);
+    }
+    removed?;
+    Ok(())
 }
 
 /// [`backup_once`], and when the backup is new and lies in a Git working
@@ -722,6 +751,23 @@ mod tests {
         #[cfg(unix)]
         assert_eq!(mode_of(&std::fs::metadata(&file).unwrap()), 0o640);
         assert!(!backup.exists());
+    }
+
+    #[test]
+    fn an_interrupted_backup_write_does_not_publish_a_partial_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("settings.json.graphicle-bak");
+        let result = write_backup(&backup, 0o600, |file| {
+            file.write_all(b"partial")?;
+            Err(std::io::Error::new(
+                std::io::ErrorKind::WriteZero,
+                "simulated interrupted write",
+            ))
+        });
+
+        assert!(result.is_err());
+        assert!(!backup.exists(), "an incomplete copy is not a backup");
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
     }
 
     #[test]
