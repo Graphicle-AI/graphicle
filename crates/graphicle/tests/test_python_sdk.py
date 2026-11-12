@@ -320,6 +320,28 @@ def test_delete_all_forgets_every_session_of_the_scope(memory):
         memory.delete_all()
 
 
+def test_memory_enumeration_ignores_other_connectors_with_memory_shaped_ids(memory):
+    [session] = memory.add("I keep this session.", user_id="erin")["results"]
+    project = memory.project_for(user_id="erin")
+    other = project.connector("unrelated-documents")
+    unrelated_id = f"{project.id}.0123456789abcdef0123456789abcdef"
+    project.import_documents(other, [{
+        "id": unrelated_id,
+        "title": "An unrelated source",
+        "content": "Keep this document; it is not a Memory session.",
+        "metadata": {"user_id": "erin"},
+    }])
+
+    assert [item["id"] for item in memory.get_all(user_id="erin")["results"]] == [session["id"]]
+
+    deleted = memory.delete_all(user_id="erin")
+    assert deleted["deleted"] == 1
+    assert memory.get(session["id"]) is None
+    assert project.read_document(f"connector:{other}:{unrelated_id}")["content"] == (
+        "Keep this document; it is not a Memory session."
+    )
+
+
 def test_reset_deletes_only_this_namespace(local, memory):
     other = Memory(local.client, namespace=f"o{uuid.uuid4().hex[:10]}")
     other.add(CAT, user_id="hana")
