@@ -264,6 +264,15 @@ pub fn citations(text: &str) -> Vec<Citation> {
     let mut found: Vec<Citation> = Vec::new();
     for capture in CITATION.captures_iter(text) {
         let path = capture[1].trim_start_matches("./").to_string();
+        // A standalone numeric token such as `1.2:3` is a version, not a
+        // path:line citation. Numeric file names inside a directory remain valid.
+        if !path.contains('/')
+            && path
+                .chars()
+                .all(|character| character.is_ascii_digit() || character == '.')
+        {
+            continue;
+        }
         let Ok(line) = capture[2].parse::<usize>() else {
             continue;
         };
@@ -941,7 +950,7 @@ mod tests {
     #[test]
     fn citations_are_found_once_each_in_order() {
         let text = "The check is in `pkg/a/x.go:42` and pkg/a/x.go:50-60; see also ./cmd/main.go:7, \
-                    pkg/a/x.go:42 again, and version 1.2:3 is not a file. README.md:1";
+                    pkg/a/x.go:42 again, and version 1.2:3 is not a file. pkg/1.2:4 is a path. README.md:1";
         let found = citations(text);
         assert_eq!(
             found,
@@ -962,9 +971,9 @@ mod tests {
                     end: 7
                 },
                 Citation {
-                    path: "1.2".into(),
-                    line: 3,
-                    end: 3
+                    path: "pkg/1.2".into(),
+                    line: 4,
+                    end: 4
                 },
                 Citation {
                     path: "README.md".into(),
