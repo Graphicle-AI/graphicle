@@ -490,7 +490,7 @@ const TABLES: &[(&str, &str, &str, &[&str])] = &[
 ];
 
 /// Per-repository size report: row counts and *content bytes* per table
-/// (the sum of the text columns' lengths plus 8 bytes per integer column —
+/// (the sum of the listed text columns' lengths plus a fixed 16 bytes per row —
 /// an approximation of what the rows carry, not SQLite page usage, which
 /// includes indexes and free space and is only available per database),
 /// episode count, and the latest `impact.report` wall-clock time.
