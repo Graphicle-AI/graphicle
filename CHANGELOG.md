@@ -3,6 +3,55 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.17 - 2026-11-13
+
+Every crate is at 0.1.17, and `graphicle --version` prints
+`graphicle 0.1.17 (core)`. The Python and TypeScript SDKs are at 0.1.17 too.
+This release collects fixes from contributors; nothing in it changes stored
+data.
+
+### Behaviour changes
+
+- Python SDK: `Tools` leaves out a tool that does not declare
+  `readOnlyHint: true` unless `include_write=True`, as the service already
+  treats such a tool as a write. Before, a tool with no annotations was
+  offered as read-only (#31, by @dajiaohuang).
+- An existing Qdrant collection must use cosine distance, the distance
+  Graphicle ranks with; one with another distance is refused with a message
+  instead of returning a wrong ranking (#39, by @dajiaohuang).
+
+### Fixes
+
+- Backup archives: `verify` and `restore` refuse an archive whose trailer
+  row count differs from its rows, or that has bytes after the trailer
+  (#30, by @dajiaohuang).
+- An agent file's backup is written to a temporary file and published by a
+  hard link, so a stopped write never leaves a partial backup under the
+  backup's name (#35, by @dajiaohuang). The folder holding the agent file
+  must support hard links, as local disks do.
+- PostgreSQL: `sslmode=verify-full` and `verify-ca` are read as `require`
+  without changing other connection settings, such as a password that
+  contains the same text (#41, by @dajiaohuang).
+- The workflow status of a job older than the 100 most recent is found by
+  its id (#42, by @dajiaohuang).
+- A standalone version such as `1.2:3` in an answer is not read as a
+  file citation; `pkg/1.2:4` still is (#40, by @dajiaohuang).
+- Label deduplication in the graph engine points every edge of a
+  duplicate at the final surviving node when a node is replaced twice
+  (#29, by @dajiaohuang). Graphify 0.9.103 keeps such edges on the removed
+  node; the difference is recorded in the upstream review.
+- Python SDK `Memory`: `get_all`, `delete_all` and lookups by id consider
+  only Memory session documents, never another connector's document with a
+  session-shaped id (#34, by @dajiaohuang).
+- The memory library's code key includes its enabled features, so builds
+  with different features no longer share a key (#36, by @dajiaohuang).
+
+### Documentation
+
+- The Python SDK describes which `Tools` may reach other projects (#33) and
+  that `AsyncClient` factories stay synchronous (#37); the size report's
+  byte estimate is described as it is computed (#38), all by @dajiaohuang.
+
 ## 0.1.16 - 2026-11-11
 
 Every crate is at 0.1.16, and `graphicle --version` prints
