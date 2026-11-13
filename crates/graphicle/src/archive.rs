@@ -638,9 +638,7 @@ pub fn read(
         table(&section, &mut chunks)?;
         // Whatever the consumer left unread is read (and hashed) here.
         std::io::copy(&mut chunks, &mut std::io::sink())?;
-        let table_rows = chunks.rows;
-        drop(chunks);
-        rows = rows.checked_add(table_rows).ok_or_else(invalid)?;
+        rows = rows.checked_add(chunks.rows).ok_or_else(invalid)?;
         tables += 1;
     }
 }
