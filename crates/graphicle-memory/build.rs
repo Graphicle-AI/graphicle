@@ -43,6 +43,15 @@ fn source_code() -> String {
             .unwrap_or_default()
             .as_bytes(),
     );
+    let mut features: Vec<String> = std::env::vars()
+        .filter_map(|(name, _)| name.strip_prefix("CARGO_FEATURE_").map(str::to_owned))
+        .collect();
+    features.sort();
+    feed(b"\0features\0");
+    for feature in features {
+        feed(feature.as_bytes());
+        feed(&[0]);
+    }
     for path in files {
         feed(
             path.strip_prefix(&root)
