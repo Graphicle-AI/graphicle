@@ -386,6 +386,12 @@ class Memory:
         prefix, dot, digest = parts[2].rpartition(".")
         return parts[2] if dot and prefix == project.id and _DIGEST.fullmatch(digest) else None
 
+    @staticmethod
+    def _is_session_document(document: Mapping[str, Any]) -> bool:
+        metadata = document.get("metadata")
+        return (isinstance(metadata, Mapping) and metadata.get("schema") == SCHEMA
+                and any(key in metadata for key in SCOPES))
+
     def _sessions(self, project: Project) -> List[str]:
         return [row["id"] for row in project.sources() if self._session_id(project, row["id"])]
 
@@ -418,8 +424,13 @@ class Memory:
                 connectors = self._connector_ids(project)
             except GraphiclePermissionError:
                 # May read but not list connectors: find the session among the readable sources.
-                return next(((project, source) for source in self._sessions(project)
-                             if source.endswith(":" + memory_id)), None)
+                for source in self._sessions(project):
+                    if not source.endswith(":" + memory_id):
+                        continue
+                    document = self._optional_read(project, source, line_count=1)
+                    if document is not None and self._is_session_document(document):
+                        return project, source
+                return None
             except GraphicleError as error:
                 if error.status == 400:  # no such project
                     return None
@@ -636,6 +647,8 @@ class Memory:
                     if error.status in (400, 409):  # removed or changed since it was listed
                         continue
                     raise
+                if not self._is_session_document(document):
+                    continue
                 if self._matches(document.get("metadata") or {}, scope, conditions):
                     results.append(self._item(document, source_id.split(":", 2)[2], document["content"]))
                     if len(results) >= wanted:
@@ -712,9 +725,11 @@ class Memory:
             chosen: Dict[str, List[str]] = {}
             if project is not None:
                 for source_id in self._sessions(project):
+                    window = self._optional_read(project, source_id, line_count=1)
+                    if window is None or not self._is_session_document(window):
+                        continue
                     if len(scope) > 1:  # narrower than the project: check each session's scope
-                        window = self._optional_read(project, source_id, line_count=1)
-                        if window is None or not self._matches(window.get("metadata") or {}, scope, {}):
+                        if not self._matches(window.get("metadata") or {}, scope, {}):
                             continue
                     _, connector, memory_id = source_id.split(":", 2)
                     chosen.setdefault(connector, []).append(memory_id)
