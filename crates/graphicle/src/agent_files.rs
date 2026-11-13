@@ -72,7 +72,10 @@ fn write_backup(
     let parent = backup
         .parent()
         .ok_or_else(|| Error::bad("Backup has no parent directory"))?;
-    let temporary = parent.join(format!(".graphicle-backup-{}", crate::id()));
+    // Named with the backup suffix: a copy left by a stopped process stays
+    // under the protections every backup has (the repository's exclude
+    // block, the folder sync's skip list, `graphicle disconnect`'s list).
+    let temporary = parent.join(format!(".graphicle-backup-{}{BACKUP_SUFFIX}", crate::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -89,10 +92,17 @@ fn write_backup(
         match std::fs::hard_link(&temporary, backup) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            // A filesystem without hard links (FAT, exFAT, some network
+            // shares): publish by rename, atomic too. Only another Graphicle
+            // could create the name in between, with the same original.
+            Err(_) if !backup.exists() => Ok(std::fs::rename(&temporary, backup)?),
             Err(error) => Err(error.into()),
         }
     })();
-    let removed = std::fs::remove_file(&temporary);
+    let removed = match std::fs::remove_file(&temporary) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    };
     if let Err(error) = published {
         let _ = removed;
         return Err(error);
