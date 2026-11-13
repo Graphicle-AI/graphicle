@@ -1439,10 +1439,7 @@ impl Settings {
     /// libpq's `sslmode=verify-full` and `verify-ca` are accepted and read
     /// as `require`: a certificate is always checked against its host name.
     fn config(&self) -> Result<(postgres::Config, bool)> {
-        let url = self
-            .url
-            .replace("sslmode=verify-full", "sslmode=require")
-            .replace("sslmode=verify-ca", "sslmode=require");
+        let url = normalize_verify_ssl_mode(&self.url);
         let mut config: postgres::Config = url
             .parse()
             .map_err(|e: postgres::Error| Error::Connect(redact(&e.to_string(), &self.url)))?;
@@ -1454,6 +1451,108 @@ impl Settings {
         }
         Ok((config, tls))
     }
+}
+
+/// `tokio-postgres` only accepts `disable`, `prefer`, or `require`, while
+/// Graphicle supplies certificate and host verification itself. Normalize
+/// libpq's stronger modes to `require` without changing matching text in
+/// other connection parameters such as a password.
+fn normalize_verify_ssl_mode(address: &str) -> String {
+    if address.starts_with("postgresql://") || address.starts_with("postgres://") {
+        let Some(query_start) = address.find('?').map(|i| i + 1) else {
+            return address.to_string();
+        };
+        let query_end = address[query_start..]
+            .find('#')
+            .map_or(address.len(), |i| query_start + i);
+        let mut replacements = Vec::new();
+        let mut segment_start = query_start;
+        while segment_start < query_end {
+            let segment_end = address[segment_start..query_end]
+                .find('&')
+                .map_or(query_end, |i| segment_start + i);
+            let segment = &address[segment_start..segment_end];
+            if let Some((key, value)) = segment.split_once('=')
+                && key == "sslmode"
+                && matches!(value, "verify-full" | "verify-ca")
+            {
+                let value_start = segment_start + key.len() + 1;
+                replacements.push(value_start..segment_end);
+            }
+            segment_start = segment_end + 1;
+        }
+        let mut normalized = address.to_string();
+        for range in replacements.into_iter().rev() {
+            normalized.replace_range(range, "require");
+        }
+        return normalized;
+    }
+
+    let bytes = address.as_bytes();
+    let mut normalized = String::with_capacity(address.len());
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        let token_start = cursor;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        normalized.push_str(&address[token_start..cursor]);
+        if cursor == bytes.len() {
+            break;
+        }
+
+        let key_start = cursor;
+        while cursor < bytes.len() && bytes[cursor] != b'=' && !bytes[cursor].is_ascii_whitespace()
+        {
+            cursor += 1;
+        }
+        if cursor == bytes.len() || bytes[cursor] != b'=' {
+            while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            normalized.push_str(&address[key_start..cursor]);
+            continue;
+        }
+
+        let key_end = cursor;
+        cursor += 1;
+        let quote = bytes
+            .get(cursor)
+            .copied()
+            .filter(|b| *b == b'\'' || *b == b'"');
+        let content_start = if quote.is_some() { cursor + 1 } else { cursor };
+        if let Some(quote) = quote {
+            cursor += 1;
+            while cursor < bytes.len() {
+                if bytes[cursor] == b'\\' {
+                    cursor = (cursor + 2).min(bytes.len());
+                } else if bytes[cursor] == quote {
+                    break;
+                } else {
+                    cursor += 1;
+                }
+            }
+        } else {
+            while cursor < bytes.len() && !bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+        }
+        let content_end = cursor;
+        if quote.is_some() && cursor < bytes.len() {
+            cursor += 1;
+        }
+
+        let key = &address[key_start..key_end];
+        let value = &address[content_start..content_end];
+        if key == "sslmode" && matches!(value, "verify-full" | "verify-ca") {
+            normalized.push_str(&address[key_start..content_start]);
+            normalized.push_str("require");
+            normalized.push_str(&address[content_end..cursor]);
+        } else {
+            normalized.push_str(&address[key_start..cursor]);
+        }
+    }
+    normalized
 }
 
 /// The password for `config` from the libpq password file (`PGPASSFILE`,
@@ -3910,6 +4009,21 @@ mod tests {
             config.get_ssl_mode(),
             postgres::config::SslMode::Require
         ));
+    }
+
+    #[test]
+    fn verify_full_does_not_rewrite_password_contents() {
+        let password = "contains sslmode=verify-full";
+        let settings = Settings {
+            url: format!("host=db.example.com password='{password}' sslmode=verify-full dbname=g"),
+            pool: 2,
+            allow_plaintext: false,
+            root_cert: None,
+            statement_timeout: DEFAULT_STATEMENT_TIMEOUT,
+        };
+        let (config, tls) = settings.config().unwrap();
+        assert!(tls);
+        assert_eq!(config.get_password(), Some(password.as_bytes()));
     }
 
     #[test]
