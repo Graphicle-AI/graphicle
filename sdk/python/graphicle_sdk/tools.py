@@ -79,8 +79,11 @@ def _field(value: Any, name: str) -> Any:
 class Tools:
     """The MCP tools of one project, for function-calling models.
 
-    They read this project only; ``cross_project=True`` gives the model the workspace
-    connection's tools instead, with this project as the default (see the module docstring).
+    Most tools on a project connection read this project. Published graph and graph-history
+    tools may accept ``repo`` and read any other project the capability can access. To confine
+    those tools to one project, use a capability without access to other projects. With
+    ``cross_project=True``, definitions and calls use the workspace connection instead (see the
+    module docstring).
     Definitions are read once and cached; :meth:`definitions` with ``refresh=True`` reads them
     again (for example after the service was restarted with MCP learning enabled).
     """
@@ -117,8 +120,9 @@ class Tools:
     def definitions(self, *, refresh: bool = False) -> List[Dict[str, Any]]:
         """The published MCP tool definitions (``name``, ``description``, ``inputSchema``,
         ``annotations``); read-only tools only unless ``include_write``. Without
-        ``cross_project``, nothing that reaches another project: no ``list_projects`` or
-        ``workspace_map``, and no ``repo`` on ``recall_project`` or ``read_project_source``."""
+        ``cross_project``, workspace listing tools are omitted and ``repo`` is removed from
+        ``recall_project`` and ``read_project_source``. Graph and graph-history tools may still
+        publish ``repo``; access to those projects is controlled by the capability."""
         if self._definitions is None or refresh:
             listed = self._rpc("tools/list") or {}
             definitions = []
@@ -174,10 +178,12 @@ class Tools:
 
         Raises ``ValueError`` for a tool this project does not publish or for arguments that name
         the project or workspace (without ``cross_project``, also ``repo`` on ``recall_project``
-        and ``read_project_source`` and a ``scope`` other than ``"project"``), and
-        :class:`GraphicleError` when the service refuses the call. With ``cross_project``, a
-        call that names no project with ``repo`` reads this one, and ``recall_project`` then
-        searches the workspace from it.
+        and ``read_project_source`` and a ``scope`` other than ``"project"``). Published graph
+        and graph-history tools may accept ``repo`` to reach another project the capability can
+        access; use a capability limited to this project for strict confinement. The method raises
+        :class:`GraphicleError` when the service refuses the call. With ``cross_project``, a call
+        that names no project with ``repo`` reads this one, and ``recall_project`` then searches
+        the workspace from it.
         """
         published = self.names()
         if name not in published:
