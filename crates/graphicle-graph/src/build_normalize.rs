@@ -965,14 +965,6 @@ pub fn deduplicate_by_label(
                 nid.chars().count() < oldid.chars().count()
             };
             if win {
-                // Earlier duplicates may already point at this canonical ID.
-                // If it is replaced again, keep every alias aimed at the final
-                // winner rather than the now-removed intermediate ID.
-                for target in remap.values_mut() {
-                    if target == oldid {
-                        *target = nid.to_owned();
-                    }
-                }
                 remap.insert(oldid.into(), nid.into());
                 canonical[i] = n.clone();
             } else {
@@ -985,6 +977,22 @@ pub fn deduplicate_by_label(
     }
     if remap.is_empty() {
         return Ok((nodes.to_vec(), edges.to_vec(), Vec::new()));
+    }
+    // A canonical node replaced later leaves earlier aliases on an id that
+    // is no longer a node: aim every alias at the end of its chain, once,
+    // after the pass (a scan per replacement was quadratic in duplicates).
+    // A chain only grows by a strictly better id, so it is short; the hop
+    // bound also stops on a node listed twice under the same id.
+    let keys: Vec<String> = remap.keys().cloned().collect();
+    for key in keys {
+        let mut target = remap[&key].clone();
+        for _ in 0..remap.len() {
+            match remap.get(&target) {
+                Some(next) if *next != target => target = next.clone(),
+                _ => break,
+            }
+        }
+        remap.insert(key, target);
     }
     let mut out = Vec::new();
     for edge in edges {
