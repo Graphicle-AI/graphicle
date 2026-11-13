@@ -556,9 +556,8 @@ mod tests {
         let db = db();
         // 100,001 dependents of one file, in multi-row inserts both SQLite
         // and PostgreSQL run (no `printf`, which PostgreSQL lacks).
-        let row = |n: u32| {
-            format!("('w','chunk','chunk-{n:06}','file','f','2026-11-12T00:00:00Z')")
-        };
+        let row =
+            |n: u32| format!("('w','chunk','chunk-{n:06}','file','f','2026-11-12T00:00:00Z')");
         for start in (1..=100_001).step_by(1000) {
             let rows = (start..(start + 1000).min(100_002))
                 .map(row)
