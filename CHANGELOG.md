@@ -3,7 +3,13 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## Unreleased
+## 0.1.18 - 2026-11-13
+
+Every crate is at 0.1.18, and `graphicle --version` prints
+`graphicle 0.1.18 (core)`. The Python and TypeScript SDKs are at 0.1.18 too.
+This release adds OpenCode, makes updates of large graphs faster and reports
+incomplete dependency invalidation. No migration runs, and graphs are not
+rebuilt: an update writes the same graph and report as 0.1.17.
 
 ### Added
 
@@ -17,6 +23,35 @@ library (`graphicle-memory`) and the `graphicle` program.
   engine's OpenCode skill and plugin stay a separate install:
   `graphicle graph install --platform opencode` (#43, requested by
   @rfrezino).
+- `GRAPHICLE_PROFILE=1` also times an update's read of the stored graph,
+  its manifest load and its split of changed files.
+
+### Fixes
+
+- Invalidation: a walk that reaches the 100,000-artifact limit used to stop
+  without a sign, leaving the rest of the dependents fresh. The change still
+  goes through, and the source now carries an `invalidation_incomplete`
+  marker that `freshness` and repository freshness count; the next walk from
+  that source that finishes clears it, and forgetting the document removes
+  it (#32, by @dajiaohuang).
+
+### Performance
+
+- Updates of large graphs: matching each new community to the previous
+  run's, which keeps community ids stable, counts overlaps from each node's
+  communities instead of comparing every pair of communities, with the same
+  result. On Kubernetes v1.37.1 (437,234 nodes, about 22,000 communities,
+  4 vCPUs) the clustering step of an update went from about 22 s to 10 s.
+- An update no longer loads the whole graph to learn that its HTML view
+  cannot render (more communities than the view's node limit); it decides
+  from the counts it already holds, with the same message. On the same
+  Kubernetes graph that step went from 6.4 s to 1.5 s.
+
+### Documentation
+
+- The README leads with what Graphicle does, a quick start, and Graphicle
+  0.1.17 against Graphify 0.9.108 on Kubernetes; `docs/benchmarks.md` has
+  the method and every measurement.
 
 ## 0.1.17 - 2026-11-13
 
