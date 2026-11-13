@@ -6,7 +6,7 @@
 //! marks every dependent stale in `gf_stale`.  Readers report the workspace-wide
 //! [`Freshness`] so callers can see when an answer may rest on outdated artifacts.
 use crate::db::{Connection, OptionalExtension, params};
-use crate::{Error, Result, now};
+use crate::{Result, now};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -26,6 +26,12 @@ pub const PRINCIPAL: &str = "principal";
 pub const SOURCE: &str = "source";
 /// One anchored document chunk of the semantic overlay (`gf_anchor_edges`).
 pub const ANCHOR: &str = "anchor";
+/// A source whose last dependency walk stopped at [`WALK_LIMIT`]: some of its
+/// dependents may be outdated without a marker of their own. The marker's id
+/// is the source's id (a file's carries its repository), so [`freshness`]
+/// and [`repository_freshness`] count it; the next walk from the same source
+/// that finishes clears it.
+pub const INCOMPLETE: &str = "invalidation_incomplete";
 
 /// Upper bound on the number of artifacts marked in one transitive walk.
 const WALK_LIMIT: usize = 100_000;
@@ -130,15 +136,27 @@ pub fn invalidate_source(
                 continue;
             }
             if marked.len() >= WALK_LIMIT {
-                return Err(Error::conflict(format!(
-                    "Dependency invalidation exceeds the {WALK_LIMIT}-artifact limit; the operation was not completed"
-                )));
+                // The change itself goes on (a sync commit, a deleted
+                // document): failing it would stop every later sync of the
+                // project. The walk stops here, and the source says so.
+                mark_stale(
+                    db,
+                    workspace,
+                    INCOMPLETE,
+                    source.1,
+                    &format!(
+                        "{reason}: the dependency walk from {} stopped at the {WALK_LIMIT}-artifact limit",
+                        source.0
+                    ),
+                )?;
+                return Ok(marked);
             }
             mark_stale(db, workspace, &dependent.0, &dependent.1, reason)?;
             marked.push(dependent.clone());
             queue.push_back(dependent);
         }
     }
+    clear_stale(db, workspace, INCOMPLETE, source.1)?;
     Ok(marked)
 }
 
@@ -547,8 +565,24 @@ mod tests {
         )
         .unwrap();
 
-        let error = invalidate_source(&db, "w", (FILE, "f"), "edited").unwrap_err();
-        assert!(error.message.contains("100000-artifact limit"));
+        // The change goes on: the walk stops at the limit and the source is
+        // marked, so freshness does not report the store as fresh.
+        let marked = invalidate_source(&db, "w", (FILE, "f"), "edited").unwrap();
+        assert_eq!(marked.len(), WALK_LIMIT);
+        assert!(is_stale(&db, "w", INCOMPLETE, "f").unwrap());
+        let fresh = freshness(&db, "w").unwrap();
+        assert!(!fresh.is_fresh());
+        assert_eq!(fresh.by_kind.get(INCOMPLETE), Some(&1));
+
+        // A later walk from the same source that finishes clears the marker.
+        db.execute(
+            "DELETE FROM gf_dependencies WHERE workspace='w' AND dependent_id>'chunk-050000'",
+            [],
+        )
+        .unwrap();
+        let marked = invalidate_source(&db, "w", (FILE, "f"), "edited again").unwrap();
+        assert_eq!(marked.len(), 50_000);
+        assert!(!is_stale(&db, "w", INCOMPLETE, "f").unwrap());
     }
 
     #[test]
