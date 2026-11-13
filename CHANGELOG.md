@@ -7,8 +7,9 @@ library (`graphicle-memory`) and the `graphicle` program.
 
 Every crate is at 0.1.17, and `graphicle --version` prints
 `graphicle 0.1.17 (core)`. The Python and TypeScript SDKs are at 0.1.17 too.
-This release collects fixes from contributors; nothing in it changes stored
-data.
+This release collects fixes from contributors. No migration runs; graphs
+and the memory library's derived data are rebuilt where the label
+deduplication fix or the new code key changes them.
 
 ### Behaviour changes
 
@@ -27,8 +28,10 @@ data.
   (#30, by @dajiaohuang).
 - An agent file's backup is written to a temporary file and published by a
   hard link, so a stopped write never leaves a partial backup under the
-  backup's name (#35, by @dajiaohuang). The folder holding the agent file
-  must support hard links, as local disks do.
+  backup's name (#35, by @dajiaohuang); on a filesystem without hard
+  links it is published by rename. A temporary copy left by a stopped
+  process ends in `.graphicle-bak`, so it is kept out of Git and of folder
+  syncs like every backup.
 - PostgreSQL: `sslmode=verify-full` and `verify-ca` are read as `require`
   without changing other connection settings, such as a password that
   contains the same text (#41, by @dajiaohuang).
@@ -38,11 +41,12 @@ data.
   file citation; `pkg/1.2:4` still is (#40, by @dajiaohuang).
 - Label deduplication in the graph engine points every edge of a
   duplicate at the final surviving node when a node is replaced twice
-  (#29, by @dajiaohuang). Graphify 0.9.103 keeps such edges on the removed
-  node; the difference is recorded in the upstream review.
-- Python SDK `Memory`: `get_all`, `delete_all` and lookups by id consider
-  only Memory session documents, never another connector's document with a
-  session-shaped id (#34, by @dajiaohuang).
+  (#29, by @dajiaohuang), resolving each chain once after the pass.
+  Graphify 0.9.103 keeps such edges on the removed node; the difference is
+  recorded in the upstream review.
+- Python SDK `Memory`: `get_all`, `delete_all` and lookups by id leave out
+  documents without Memory's session schema, such as another connector's
+  document with a session-shaped id (#34, by @dajiaohuang).
 - The memory library's code key includes its enabled features, so builds
   with different features no longer share a key (#36, by @dajiaohuang).
 
