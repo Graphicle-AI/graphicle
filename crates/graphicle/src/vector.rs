@@ -84,6 +84,20 @@ fn config(db: &crate::db::Connection, repository: &str) -> Result<Value> {
     decode(&mut row, "config")?;
     Ok(row["config"].clone())
 }
+fn validate_collection(collection: &Value, size: u64) -> Result<()> {
+    let vectors = &collection["result"]["config"]["params"]["vectors"];
+    if vectors["size"].as_u64() != Some(size) {
+        return Err(Error::bad(
+            "Qdrant collection dimensions differ from the embedding model",
+        ));
+    }
+    if vectors["distance"] != "Cosine" {
+        return Err(Error::bad(
+            "Qdrant collection distance must be Cosine for Graphicle vector ranking",
+        ));
+    }
+    Ok(())
+}
 pub(crate) async fn clear_projection(
     store: &Store,
     client: &reqwest::Client,
@@ -167,10 +181,8 @@ pub async fn publish(
             Some(json!({"vectors":{"size":size,"distance":"Cosine"}})),
         )
         .await?;
-    } else if exists["result"]["config"]["params"]["vectors"]["size"] != size {
-        return Err(Error::bad(
-            "Qdrant collection dimensions differ from the embedding model",
-        ));
+    } else {
+        validate_collection(&exists, size)?;
     }
     let generation = crate::id();
     let model_key = string(args, "model_key", 64)?;
@@ -268,4 +280,19 @@ pub async fn ranking(
         .map(|p| p["payload"]["identity"].clone())
         .collect::<Vec<_>>();
     Ok(json!({"semantic":ranked}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn existing_collection_must_match_dimensions_and_cosine_distance() {
+        let collection = |size, distance| json!({"result":{"config":{"params":{"vectors":{"size":size,"distance":distance}}}}});
+
+        assert!(validate_collection(&collection(3, "Cosine"), 3).is_ok());
+        assert!(validate_collection(&collection(3, "Dot"), 3).is_err());
+        assert!(validate_collection(&collection(3, "Euclid"), 3).is_err());
+        assert!(validate_collection(&collection(4, "Cosine"), 3).is_err());
+    }
 }
