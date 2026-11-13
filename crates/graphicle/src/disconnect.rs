@@ -51,7 +51,7 @@ pub fn disconnect_report(
     let client = match options.client.as_deref() {
         Some(word) => Some(agent_detect::parse(word).ok_or_else(|| {
             Error::bad(format!(
-                "Unknown client {word}: choose claude-code, codex, cursor, vscode, claude (Claude Desktop) or muse (Muse Code)"
+                "Unknown client {word}: choose claude-code, codex, cursor, vscode, claude (Claude Desktop), muse (Muse Code) or opencode (OpenCode)"
             ))
         })?),
         None => None,
@@ -304,6 +304,16 @@ fn scan_user(
         ("cursor", env.cursor_config(), "mcpServers"),
         ("claude", env.claude_desktop_config(), "mcpServers"),
         ("muse", env.muse_config(), agent_setup::MUSE_GROUP),
+        (
+            "opencode",
+            env.opencode_config(),
+            agent_setup::OPENCODE_GROUPS[0],
+        ),
+        (
+            "opencode",
+            env.opencode_config(),
+            agent_setup::OPENCODE_GROUPS[1],
+        ),
     ] {
         let (true, Some(file)) = (wanted(name), file) else {
             continue;
@@ -367,6 +377,16 @@ fn other_stores(env: &Environment, client: Option<&str>, data: &Path) -> Vec<Val
         ("cursor", env.cursor_config(), "mcpServers"),
         ("claude", env.claude_desktop_config(), "mcpServers"),
         ("muse", env.muse_config(), agent_setup::MUSE_GROUP),
+        (
+            "opencode",
+            env.opencode_config(),
+            agent_setup::OPENCODE_GROUPS[0],
+        ),
+        (
+            "opencode",
+            env.opencode_config(),
+            agent_setup::OPENCODE_GROUPS[1],
+        ),
     ] {
         let (true, Some(file)) = (wanted(name), file) else {
             continue;
@@ -440,17 +460,21 @@ fn undo_file(path: &Path, targets: &[Target], all: bool, data: &Path) -> Result<
                 let group = change.group.as_deref().unwrap_or("mcpServers");
                 let entry = change.entry.as_deref().unwrap_or_default();
                 let done = match change.kind.as_str() {
+                    // OpenCode's entry goes from both of its groups.
                     "mcp" => {
-                        let gone = agent_setup::remove_entry(
-                            &mut document,
-                            group,
-                            entry,
-                            data,
-                            change.project.as_deref(),
-                        );
-                        if gone {
-                            text =
-                                text.and_then(|text| crate::json_edit::remove(&text, group, entry));
+                        let mut gone = false;
+                        for group in agent_setup::entry_groups(change.client.as_deref(), group) {
+                            if agent_setup::remove_entry(
+                                &mut document,
+                                group,
+                                entry,
+                                data,
+                                change.project.as_deref(),
+                            ) {
+                                gone = true;
+                                text = text
+                                    .and_then(|text| crate::json_edit::remove(&text, group, entry));
+                            }
                         }
                         gone.then(|| format!("removed the {entry} entry"))
                     }

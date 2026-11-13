@@ -1287,6 +1287,7 @@ impl ClientEntry {
             "cursor" => "Cursor",
             "claude" => "Claude Desktop",
             "codex" => "Codex",
+            "opencode" => "OpenCode",
             _ => "client",
         }
     }
@@ -1342,7 +1343,8 @@ fn read_json(path: &Path) -> Option<Value> {
 
 /// The JSON client files `connect` writes, with the object that holds the
 /// entries: Claude Code (`.mcp.json`) and VS Code (`.vscode/mcp.json`) in
-/// `folder`, and Cursor and Claude Desktop under `home`.
+/// `folder`, and Cursor, Claude Desktop and OpenCode (`$XDG_CONFIG_HOME`,
+/// else under `home`; once for each of its groups) under `home`.
 fn client_files(folder: Option<&Path>, home: &Path) -> Vec<(&'static str, PathBuf, &'static str)> {
     let mut files: Vec<(&'static str, PathBuf, &'static str)> = Vec::new();
     if let Some(folder) = folder {
@@ -1351,6 +1353,18 @@ fn client_files(folder: Option<&Path>, home: &Path) -> Vec<(&'static str, PathBu
     }
     files.push(("cursor", home.join(".cursor/mcp.json"), "mcpServers"));
     files.push(("claude", claude_desktop_file(home), "mcpServers"));
+    let opencode = crate::agent_detect::Environment {
+        home: Some(home.to_path_buf()),
+        xdg_config_home: std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from),
+        ..Default::default()
+    }
+    .opencode_config()
+    .unwrap_or_else(|| home.join(".config/opencode/opencode.json"));
+    for group in crate::agent_setup::OPENCODE_GROUPS {
+        files.push(("opencode", opencode.clone(), group));
+    }
     files
 }
 
@@ -1406,14 +1420,12 @@ pub fn client_entries(
         let Some(document) = read_json(&file) else {
             continue;
         };
-        for (name, server) in document[group].as_object().into_iter().flatten() {
-            let command = s(server, "command").to_string();
-            let args: Vec<String> = server["args"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|arg| arg.as_str().map(str::to_string))
-                .collect();
+        let servers = crate::json_edit::group(&document, group).and_then(Value::as_object);
+        for (name, server) in servers.into_iter().flatten() {
+            // OpenCode's entries hold one `command` list.
+            let (command, args) = crate::agent_files::command_line(server);
+            let command = command.to_string();
+            let args: Vec<String> = args.into_iter().map(str::to_string).collect();
             seen.push((file.clone(), name.clone()));
             add(client, &file, name, command, args);
         }
@@ -1431,6 +1443,8 @@ pub fn client_entries(
         .into_iter()
         .map(|(client, file, _)| (client, file))
         .collect();
+    // OpenCode's file is listed once for each of its groups.
+    files.dedup_by(|a, b| a.1 == b.1);
     files.push(("codex", codex.clone()));
     for (client, file) in files {
         let readable = !file.exists() || read_json(&file).is_some() || file == codex;
@@ -1469,8 +1483,12 @@ pub fn unreadable_client_files(
     home: &Path,
     recorded: &[crate::agent_files::Change],
 ) -> Vec<(&'static str, PathBuf, String)> {
-    let mut found = Vec::new();
+    let mut found: Vec<(&'static str, PathBuf, String)> = Vec::new();
     for (client, file, _) in client_files(folder, home) {
+        // OpenCode's file is listed once for each of its groups.
+        if found.iter().any(|(_, known, _)| *known == file) {
+            continue;
+        }
         let Ok(text) = std::fs::read_to_string(&file) else {
             continue;
         };
@@ -4054,7 +4072,7 @@ pub fn status_text(view: &Overview, style: Style) -> String {
     if view.clients.is_empty() && view.unreadable.is_empty() {
         let _ = writeln!(
             out,
-            "{}none connected (graphicle connect <client> adds one: claude-code, codex, cursor, vscode or claude)",
+            "{}none connected (graphicle connect <client> adds one: claude-code, codex, cursor, vscode, claude or opencode)",
             label("Agents")
         );
     }
@@ -4976,7 +4994,7 @@ fn checks(options: &Doctor<'_>) -> Vec<Check> {
                         "no coding agent is connected to this data folder",
                     )
                     .with_fix(if project_folder.is_some() {
-                        "graphicle connect <client> (claude-code, codex, cursor, vscode or claude)"
+                        "graphicle connect <client> (claude-code, codex, cursor, vscode, claude or opencode)"
                     } else {
                         "graphicle setup"
                     }),
