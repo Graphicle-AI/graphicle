@@ -158,5 +158,14 @@
       "native_regression": "mcp_ingest::tests::vscode_servers_map_is_extracted_through_the_file_dispatch",
       "oracle_adaptation": "None; this is a deliberate product compatibility extension for the documented VS Code configuration shape."
     }
+  ],
+  "graphify/build.py": [
+    {
+      "kind": "native_regression",
+      "reviewed_utc": "2026-11-13",
+      "behavior": "deduplicate_by_label re-aims every earlier alias at the final surviving node when a canonical node is itself replaced later in the same pass. Graphify 0.9.103 (build.py, deduplicate_by_label) keeps the alias on the intermediate id, which is no longer a node, so edges from that duplicate point at a missing node.",
+      "native_regression": "build_normalize::deduplicate_by_label_tests::edge_aliases_follow_repeatedly_replaced_canonical_id",
+      "oracle_adaptation": "None; a deliberate fix of a reference defect (pull request #29). A comparison case with a canonical node replaced twice differs from the reference by design."
+    }
   ]
 }
