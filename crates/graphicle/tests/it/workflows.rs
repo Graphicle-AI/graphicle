@@ -313,6 +313,38 @@ impl Fixture {
             .unwrap()
     }
 }
+
+#[tokio::test]
+async fn workflow_status_by_id_finds_jobs_older_than_the_list_window() {
+    let f = Fixture::new();
+    f.sync(&[("rules.md", "Shipping requires the access check.")]);
+    let remote = mock(vec![], None).await;
+    let mut oldest = String::new();
+    for i in 0..101 {
+        let job = f
+            .store
+            .enqueue(
+                &f.workspace,
+                &f.key,
+                &f.args(json!({"kind":"basic","question":format!("status window {i}")})),
+                &remote.config,
+            )
+            .unwrap();
+        if i == 0 {
+            oldest = job["id"].as_str().unwrap().to_owned();
+        }
+        f.store
+            .cancel_job(&f.workspace, &f.key, &f.args(json!({"job_id":job["id"]})))
+            .unwrap();
+    }
+
+    let status = f.status(&oldest);
+    assert_eq!(
+        status["id"], oldest,
+        "individual job lookup must not use the list limit"
+    );
+}
+
 #[derive(Clone)]
 struct ModelState {
     responses: Arc<Mutex<Vec<Value>>>,
