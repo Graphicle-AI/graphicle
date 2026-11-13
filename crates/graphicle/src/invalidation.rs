@@ -554,16 +554,21 @@ mod tests {
     #[test]
     fn over_limit_invalidation_is_not_reported_as_complete() {
         let db = db();
-        db.execute_batch(
-            "WITH RECURSIVE numbered(n) AS (
-                 SELECT 1
-                 UNION ALL SELECT n + 1 FROM numbered WHERE n < 100001
-             )
-             INSERT INTO gf_dependencies(workspace,dependent_kind,dependent_id,source_kind,source_id,recorded_at)
-             SELECT 'w','chunk',printf('chunk-%06d',n),'file','f','2026-11-12T00:00:00Z'
-             FROM numbered;",
-        )
-        .unwrap();
+        // 100,001 dependents of one file, in multi-row inserts both SQLite
+        // and PostgreSQL run (no `printf`, which PostgreSQL lacks).
+        let row = |n: u32| {
+            format!("('w','chunk','chunk-{n:06}','file','f','2026-11-12T00:00:00Z')")
+        };
+        for start in (1..=100_001).step_by(1000) {
+            let rows = (start..(start + 1000).min(100_002))
+                .map(row)
+                .collect::<Vec<_>>()
+                .join(",");
+            db.execute_batch(&format!(
+                "INSERT INTO gf_dependencies(workspace,dependent_kind,dependent_id,source_kind,source_id,recorded_at) VALUES {rows}"
+            ))
+            .unwrap();
+        }
 
         // The change goes on: the walk stops at the limit and the source is
         // marked, so freshness does not report the store as fresh.
