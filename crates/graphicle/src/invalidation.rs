@@ -168,7 +168,12 @@ pub fn invalidate_source(
             queue.push_back(dependent);
         }
     }
-    clear_stale(db, workspace, INCOMPLETE, &incomplete_id(source.0, source.1))?;
+    clear_stale(
+        db,
+        workspace,
+        INCOMPLETE,
+        &incomplete_id(source.0, source.1),
+    )?;
     Ok(marked)
 }
 
