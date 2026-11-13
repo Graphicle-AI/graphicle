@@ -97,7 +97,7 @@ graphicle disconnect claude-code        # removes what connect wrote
 
 `graphicle setup` does all of this in one step, in the folder it runs in:
 it syncs the folder, connects the agent clients it finds (Claude Code, Codex,
-Cursor, VS Code, Claude Desktop; asked on a terminal, else `--yes` or
+Cursor, VS Code, Claude Desktop, Muse Code, OpenCode; asked on a terminal, else `--yes` or
 `--clients`), turns on session capture for Claude Code and Codex, adds a
 Graphicle section to AGENTS.md (and to CLAUDE.md when it exists), and adds
 Git hooks that keep the project fresh. It lists every file it changes, backs
@@ -110,7 +110,8 @@ finds.
 `connect` connects the project of the folder it runs in (or `--project`: an
 id, a key or a folder). Claude Code and VS Code get an entry in the folder
 that finds the project from the folder the client starts in; Claude Desktop,
-Cursor and Codex get an entry named `graphicle-<project name>`. It keeps
+Cursor, Codex, Muse Code and OpenCode get an entry named
+`graphicle-<project name>`. It keeps
 unrelated client configuration and refuses to replace a different existing
 entry of that name without `--replace`. Codex connections use the installed
 client's MCP command. Reload the client afterwards. MCP reads

@@ -17,7 +17,7 @@
 <p align="center">
   Graphicle maps your repository into a code graph, remembers your project's docs, decisions and past agent sessions,
   and gives your coding agent cited excerpts from both: the exact files and lines. It runs on your machine: no API key needed, no account, <a href="#privacy-and-local-first">no telemetry</a>.<br>
-  <sub>Works with Claude Code · Cursor · Codex · VS Code · Claude Desktop · any MCP client</sub>
+  <sub>Works with Claude Code · Cursor · Codex · VS Code · Claude Desktop · OpenCode · any MCP client</sub>
 </p>
 
 <p align="center">
@@ -157,6 +157,7 @@ then run `graphicle setup --yes` in this repository and list every file it chang
 | VS Code | `.vscode/mcp.json` in the repository | |
 | Claude Desktop | `claude_desktop_config.json` in Claude's settings folder | |
 | Muse Code | `~/.config/muse/settings.json` ([Muse Code](docs/muse-code.md)) | hooks in the plugin, a preview: `graphicle connect muse --hooks` |
+| OpenCode | `~/.config/opencode/opencode.json` (or `.jsonc`) | |
 | Any other MCP client | a short JSON entry ([MCP](docs/mcp.md)) | |
 
 ## How it works

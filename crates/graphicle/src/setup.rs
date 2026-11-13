@@ -527,7 +527,7 @@ fn parse_clients(list: &str, detected: &[Found]) -> Result<Vec<&'static str>> {
             .or_else(|| agent_detect::parse(word))
             .ok_or_else(|| {
                 Error::bad(format!(
-                    "Unknown client {word}: choose claude-code, codex, cursor, vscode or claude (Claude Desktop)"
+                    "Unknown client {word}: choose claude-code, codex, cursor, vscode, claude (Claude Desktop), muse (Muse Code) or opencode (OpenCode)"
                 ))
             })?;
         if !chosen.contains(&client) {
@@ -549,7 +549,7 @@ fn choose_clients(
     if detected.is_empty() {
         return Ok((
             Vec::new(),
-            Some("No supported agent client was found (Claude Code, Codex, Cursor, VS Code, Claude Desktop); connect one later with graphicle connect <client>".into()),
+            Some("No supported agent client was found (Claude Code, Codex, Cursor, VS Code, Claude Desktop, Muse Code, OpenCode); connect one later with graphicle connect <client>".into()),
         ));
     }
     if options.yes {
@@ -633,6 +633,10 @@ fn client_report(client: &str, result: &Value) -> Value {
     }
     if let Some(note) = result.get("note") {
         report["note"] = note.clone();
+    }
+    // OpenCode: the command that adds the graph engine's skill and plugin.
+    if let Some(skill) = result.get("skill") {
+        report["skill"] = skill.clone();
     }
     // Muse Code: its plugin, or why its settings entry was written instead.
     if let Some(plugin) = result.get("plugin") {
@@ -1456,6 +1460,10 @@ pub fn render_setup(report: &Value) -> String {
                 }
             }
         }
+        // OpenCode: the graph engine's skill and plugin, a separate install.
+        if let Some(skill) = client["skill"].as_str() {
+            line(format!("                {:<15} {skill}", ""));
+        }
     }
     // Each entry runs the one MCP server; Claude Code's, its five
     // essential tools unless --tools says otherwise.
@@ -1805,7 +1813,7 @@ pub fn connect_found(store: &Store, options: &ConnectFound) -> Result<()> {
     let detected = agent_detect::detect(&env);
     if detected.is_empty() {
         return Err(Error::bad(
-            "No supported agent client was found (Claude Code, Codex, Cursor, VS Code, Claude Desktop); name one: graphicle connect claude-code",
+            "No supported agent client was found (Claude Code, Codex, Cursor, VS Code, Claude Desktop, Muse Code, OpenCode); name one: graphicle connect claude-code",
         ));
     }
     let chosen = if ui.interactive {
@@ -1930,6 +1938,9 @@ fn render_connect(result: &Value, cwd: &Path, env: &Environment) -> String {
     }
     if result["tools"] == "essentials" {
         out.push_str("  tools: query_graph, get_node, get_neighbors, recall_project, read_project_source (--tools all for every tool)\n");
+    }
+    if let Some(skill) = result["skill"].as_str() {
+        out.push_str(&format!("  {skill}\n"));
     }
     if let Some(note) = result["note"].as_str() {
         out.push_str(&format!("  {note}\n"));

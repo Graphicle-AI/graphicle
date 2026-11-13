@@ -420,19 +420,66 @@ fn insert(text: &str, object: &Object, name: &str, value: &Value, parent_indent:
     }
 }
 
+/// The keys of a group, from the root: `mcpServers`, or OpenCode 2's
+/// `mcp.servers` (the `servers` object inside `mcp`).
+fn path(group: &str) -> Vec<&str> {
+    group.split('.').collect()
+}
+
+/// The value at `group` ([`path`]) of a document.
+pub fn group<'a>(document: &'a Value, group: &str) -> Option<&'a Value> {
+    path(group)
+        .into_iter()
+        .try_fold(document, |value, key| value.get(key))
+}
+
+/// The value at `group` of a document, to change.
+pub fn group_mut<'a>(document: &'a mut Value, group: &str) -> Option<&'a mut Value> {
+    path(group)
+        .into_iter()
+        .try_fold(document, |value, key| value.get_mut(key))
+}
+
+/// The object at `group` of a document, made (with the objects that hold
+/// it) when missing; `None` when something on the way is not an object.
+pub fn group_object<'a>(
+    document: &'a mut Value,
+    group: &str,
+) -> Option<&'a mut serde_json::Map<String, Value>> {
+    let mut at = document;
+    for key in path(group) {
+        at = at
+            .as_object_mut()?
+            .entry(key.to_string())
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    }
+    at.as_object_mut()
+}
+
 /// `text` with `text[group][name]` set to `value`, every other byte kept;
-/// `group` is a member of the root object, added when missing. `None` when
-/// the text cannot be edited in place.
+/// `group` ([`path`]) is added when missing. `None` when the text cannot be
+/// edited in place.
 pub fn set(text: &str, group: &str, name: &str, value: &Value) -> Option<String> {
-    let root = root(text)?;
+    let keys = path(group);
+    let mut servers = root(text)?;
     let unit = unit(text);
-    let Some(member) = root.members.iter().find(|member| member.key == group) else {
-        let mut holder = serde_json::Map::new();
-        holder.insert(name.to_string(), value.clone());
-        return Some(insert(text, &root, group, &Value::Object(holder), ""));
-    };
-    let servers = object(text, member.value.0)?;
-    let group_indent = line_indent(text, member.start).unwrap_or_default();
+    // The indentation of the line of the member that holds `servers`.
+    let mut group_indent = "";
+    for (depth, key) in keys.iter().enumerate() {
+        let Some(member) = servers.members.iter().find(|member| member.key == *key) else {
+            let mut holder = serde_json::Map::new();
+            holder.insert(name.to_string(), value.clone());
+            let mut holder = Value::Object(holder);
+            for inner in keys[depth + 1..].iter().rev() {
+                let mut outer = serde_json::Map::new();
+                outer.insert((*inner).to_string(), holder);
+                holder = Value::Object(outer);
+            }
+            return Some(insert(text, &servers, key, &holder, group_indent));
+        };
+        group_indent = line_indent(text, member.start).unwrap_or_default();
+        servers = object(text, member.value.0)?;
+    }
     match servers.members.iter().find(|entry| entry.key == name) {
         Some(entry) => {
             let compact = line_indent(text, entry.start).is_none();
@@ -491,17 +538,34 @@ fn without(text: &str, object: &Object, index: usize) -> String {
 }
 
 /// `text` without `text[group][name]`, every other byte kept; `group` goes
-/// too when that empties it. `None` when the member is not there or the
-/// text cannot be edited in place.
+/// too when that empties it (and each object holding it that it empties).
+/// `None` when the member is not there or the text cannot be edited in
+/// place.
 pub fn remove(text: &str, group: &str, name: &str) -> Option<String> {
-    let root = root(text)?;
-    let at = root.members.iter().position(|member| member.key == group)?;
-    let servers = object(text, root.members[at].value.0)?;
-    let index = servers.members.iter().position(|entry| entry.key == name)?;
-    if servers.members.len() == 1 {
-        return Some(without(text, &root, at));
+    // Each object on the way, with the index of the member followed.
+    let mut chain: Vec<(Object, usize)> = Vec::new();
+    let mut servers = root(text)?;
+    for key in path(group) {
+        let at = servers
+            .members
+            .iter()
+            .position(|member| member.key == key)?;
+        let inner = object(text, servers.members[at].value.0)?;
+        chain.push((servers, at));
+        servers = inner;
     }
-    Some(without(text, &servers, index))
+    let index = servers.members.iter().position(|entry| entry.key == name)?;
+    if servers.members.len() > 1 {
+        return Some(without(text, &servers, index));
+    }
+    // The member was its object's only one: the member holding that object
+    // goes instead, and so on up to the root.
+    while let Some((holder, at)) = chain.pop() {
+        if holder.members.len() > 1 || chain.is_empty() {
+            return Some(without(text, &holder, at));
+        }
+    }
+    None
 }
 
 /// `value` as a whole file in the style of `like` (the file it replaces):
@@ -634,6 +698,46 @@ mod tests {
         assert_eq!(
             comments("// a\n{\"x\": \"// not\", /* b */ \"y\": 1}"),
             ["// a", "/* b */"]
+        );
+    }
+
+    /// OpenCode 2's `mcp.servers`: the objects on the way are added when
+    /// missing and go again with the last entry; comments stay.
+    #[test]
+    fn nested_groups_come_and_go() {
+        let bare = "{\n  \"$schema\": \"https://opencode.ai/config.json\"\n}\n";
+        let added = set(bare, "mcp.servers", "graphicle", &entry()).unwrap();
+        assert!(
+            added.starts_with("{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"mcp\": {\n    \"servers\": {\n      \"graphicle\": {\n"),
+            "{added}"
+        );
+        let value = parse(&added).unwrap();
+        assert_eq!(value["mcp"]["servers"]["graphicle"], entry());
+        assert_eq!(group(&value, "mcp.servers"), Some(&value["mcp"]["servers"]));
+        assert_eq!(remove(&added, "mcp.servers", "graphicle").unwrap(), bare);
+        // `mcp` holds something else: only `servers` goes with the entry.
+        let other = "{\n  // mine\n  \"mcp\": {\n    \"timeout\": 5\n  }\n}\n";
+        let added = set(other, "mcp.servers", "graphicle", &entry()).unwrap();
+        assert_eq!(
+            parse(&added).unwrap()["mcp"],
+            json!({"timeout":5,"servers":{"graphicle":entry()}})
+        );
+        assert!(added.starts_with("{\n  // mine\n"), "{added}");
+        assert_eq!(remove(&added, "mcp.servers", "graphicle").unwrap(), other);
+        // Beside another server: only the entry goes.
+        let servers = "{\"mcp\":{\"servers\":{\"docs\":{\"command\":[\"node\"]}}}}";
+        let added = set(servers, "mcp.servers", "graphicle", &entry()).unwrap();
+        assert_eq!(remove(&added, "mcp.servers", "graphicle").unwrap(), servers);
+        assert!(remove(servers, "mcp.servers", "graphicle").is_none());
+        let mut document = json!({"mcp":{"timeout":5}});
+        group_object(&mut document, "mcp.servers")
+            .unwrap()
+            .insert("x".into(), json!(1));
+        assert_eq!(document, json!({"mcp":{"timeout":5,"servers":{"x":1}}}));
+        assert!(group_object(&mut json!({"mcp":true}), "mcp.servers").is_none());
+        assert_eq!(
+            group_mut(&mut document, "mcp.servers.x"),
+            Some(&mut json!(1))
         );
     }
 

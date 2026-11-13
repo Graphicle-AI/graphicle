@@ -23,7 +23,7 @@ graphicle uninstall              # disconnect everywhere, then show how to remov
 ```
 
 The agent names are `claude-code`, `codex`, `cursor`, `vscode`, `claude`
-(Claude Desktop) and `muse` (Muse Code). `setup --clients` also takes the numbers setup shows on a
+(Claude Desktop), `muse` (Muse Code) and `opencode` (OpenCode). `setup --clients` also takes the numbers setup shows on a
 terminal. Restart or reload an agent after you connect or disconnect
 it. `graphicle status` lists the connected agents and whether each entry still
 works.
@@ -140,7 +140,8 @@ for example `graphicle-my-app`. When another project already has that name
 for example `graphicle-api-1a2b3c4d`, and each keeps its own. Agents with a settings file per folder (Claude
 Code and VS Code) get one entry named `graphicle` that finds the project from
 the folder they start in. Agents with one settings file for your user account
-(Codex, Cursor, Claude Desktop and Muse Code) get one entry per project.
+(Codex, Cursor, Claude Desktop, Muse Code and OpenCode) get one entry per
+project.
 
 ## Claude Code
 
@@ -245,6 +246,29 @@ the folder they start in. Agents with one settings file for your user account
   plugin (`muse plugins remove graphicle`).
 - [Graphicle with Muse Code](muse-code.md) has the details: what each hook
   adds, how the context keeps the prompt cache, and session memory.
+
+## OpenCode
+
+| What | Where | Written by |
+|---|---|---|
+| MCP server `graphicle-<project>` | `~/.config/opencode/opencode.json` (`$XDG_CONFIG_HOME/opencode/` when that is set; `opencode.jsonc` when that is the file there) | setup, `connect opencode` |
+
+- Setup finds OpenCode by that folder or the `opencode` program on your
+  `PATH`. The entry goes in your global configuration, not a project's
+  `opencode.json`, because it names this machine's paths.
+- The entry is a local server whose `command` list runs Graphicle. OpenCode
+  2 keeps servers under `mcp.servers`; OpenCode 1.x keeps them directly
+  under `mcp`, with `"enabled": true`, and 2.x still reads that shape.
+  Graphicle writes 2.x's shape when the file already has `mcp.servers` or
+  `opencode --version` reports 2 or later, unless the file's `mcp` already
+  holds 1.x servers; otherwise it writes 1.x's shape.
+- Comments and trailing commas in the file are kept: Graphicle changes only
+  its own entry's lines. If it cannot do that, it leaves the file alone and
+  prints the entry to add by hand.
+- The graph engine's OpenCode skill and plugin are a separate install:
+  `graphicle graph install --platform opencode`.
+- Undo: `graphicle disconnect opencode` removes the entry from both places,
+  or delete it by hand.
 
 ## Claude Code and Codex on Meta's models
 

@@ -3,6 +3,21 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## Unreleased
+
+### Added
+
+- OpenCode: `graphicle setup` finds OpenCode (its `~/.config/opencode`
+  folder or the `opencode` program), and `graphicle connect opencode` and
+  `graphicle disconnect opencode` add and remove the project's MCP server in
+  OpenCode's global `opencode.json` (or `opencode.jsonc`, comments kept). The
+  entry takes OpenCode 2's shape (`mcp.servers`) when the file already uses
+  it or `opencode --version` reports 2 or later, else OpenCode 1.x's (`mcp`,
+  which 2.x still reads); `disconnect` removes it from both. The graph
+  engine's OpenCode skill and plugin stay a separate install:
+  `graphicle graph install --platform opencode` (#43, requested by
+  @rfrezino).
+
 ## 0.1.17 - 2026-11-13
 
 Every crate is at 0.1.17, and `graphicle --version` prints
