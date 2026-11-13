@@ -6,7 +6,7 @@
 //! marks every dependent stale in `gf_stale`.  Readers report the workspace-wide
 //! [`Freshness`] so callers can see when an answer may rest on outdated artifacts.
 use crate::db::{Connection, OptionalExtension, params};
-use crate::{Result, now};
+use crate::{Error, Result, now};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -129,11 +129,13 @@ pub fn invalidate_source(
             if !seen.insert(dependent.clone()) {
                 continue;
             }
+            if marked.len() >= WALK_LIMIT {
+                return Err(Error::conflict(format!(
+                    "Dependency invalidation exceeds the {WALK_LIMIT}-artifact limit; the operation was not completed"
+                )));
+            }
             mark_stale(db, workspace, &dependent.0, &dependent.1, reason)?;
             marked.push(dependent.clone());
-            if marked.len() >= WALK_LIMIT {
-                return Ok(marked);
-            }
             queue.push_back(dependent);
         }
     }
@@ -529,6 +531,24 @@ mod tests {
         assert!(clear_stale(&db, "w", SUMMARY, "s1").unwrap());
         assert_eq!(freshness(&db, "w").unwrap().stale_count, 3);
         assert!(freshness(&db, "other").unwrap().is_fresh());
+    }
+
+    #[test]
+    fn over_limit_invalidation_is_not_reported_as_complete() {
+        let db = db();
+        db.execute_batch(
+            "WITH RECURSIVE numbered(n) AS (
+                 SELECT 1
+                 UNION ALL SELECT n + 1 FROM numbered WHERE n < 100001
+             )
+             INSERT INTO gf_dependencies(workspace,dependent_kind,dependent_id,source_kind,source_id,recorded_at)
+             SELECT 'w','chunk',printf('chunk-%06d',n),'file','f','2026-11-12T00:00:00Z'
+             FROM numbered;",
+        )
+        .unwrap();
+
+        let error = invalidate_source(&db, "w", (FILE, "f"), "edited").unwrap_err();
+        assert!(error.message.contains("100000-artifact limit"));
     }
 
     #[test]
