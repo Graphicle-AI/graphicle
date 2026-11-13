@@ -1214,9 +1214,13 @@ impl Store {
             let mut documents:Option<Vec<Value>>=None;
             let mut sources:Option<String>=None;
             let mut reviewed:Option<String>=None;
-            for mut row in rows(db,"SELECT id,kind,state,payload,principal_hash,attempt,result,error,created_at,updated_at FROM am_jobs WHERE repository_id=? ORDER BY created_at DESC LIMIT 100",[s(&repository,"id")])? {
+            // The list is a recent window; an ID lookup must search outside it.
+            let jobs = match args["job_id"].as_str() {
+                Some(job_id) => rows(db,"SELECT id,kind,state,payload,principal_hash,attempt,result,error,created_at,updated_at FROM am_jobs WHERE repository_id=? AND id=?",[s(&repository,"id"),job_id])?,
+                None => rows(db,"SELECT id,kind,state,payload,principal_hash,attempt,result,error,created_at,updated_at FROM am_jobs WHERE repository_id=? ORDER BY created_at DESC LIMIT 100",[s(&repository,"id")])?,
+            };
+            for mut row in jobs {
                 if p.role!="owner" && s(&row,"principal_hash")!=p.hash {continue;}
-                if args["job_id"].as_str().is_some_and(|j|s(&row,"id")!=j) {continue;}
                 decode(&mut row,"result")?;decode(&mut row,"payload")?;
                 // Work this program cannot run waits for one that can.
                 if ["queued","retry"].contains(&s(&row,"state")) && let Some(reason)=unavailable(db,s(&repository,"id"),s(&row,"kind"),&row["payload"])? {row["waiting_for"]=json!(reason);}
