@@ -188,6 +188,13 @@ fn connector_deletion_returns_a_verified_receipt_covering_derived_state() {
     ]));
     let source = format!("connector:{connector}:plan");
     derive(&f, &source);
+    // The document's walk once stopped at the dependency limit: its marker
+    // goes with the document.
+    let (marker, t) = (format!("document:{source}"), graphicle_runtime::now());
+    f.sql(
+        "INSERT INTO gf_stale VALUES(?1,'invalidation_incomplete',?2,'edited',?3)",
+        graphicle_runtime::params![f.workspace, marker, t],
+    );
     let deleted = f.delete_connector(&connector);
     assert_eq!(deleted["derived_records_removed"], 1);
     assert!(
@@ -200,8 +207,9 @@ fn connector_deletion_returns_a_verified_receipt_covering_derived_state() {
     assert_eq!(receipt["complete"], true);
     assert_eq!(receipt["external_cleanup"], json!([]));
     let removed = &receipt["removed"]["rows"];
-    // Edges: the anchor's, the embedding's and the saved memory's. Only the
-    // embedding's stale marker names the source; the anchor's is cleared by id.
+    // Edges: the anchor's, the embedding's and the saved memory's. The
+    // embedding's stale marker and the walk's names the source; the anchor's
+    // is cleared by id.
     for (kind, expected) in [
         ("documents", 2),
         ("memories", 1),
@@ -211,7 +219,7 @@ fn connector_deletion_returns_a_verified_receipt_covering_derived_state() {
         ("vectors", 1),
         ("hints", 1),
         ("dependency_edges", 3),
-        ("stale_markers", 1),
+        ("stale_markers", 2),
         ("connector", 1),
     ] {
         assert_eq!(removed[kind], expected, "{kind}: {removed}");

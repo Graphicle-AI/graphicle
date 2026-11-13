@@ -31,9 +31,10 @@ rebuilt: an update writes the same graph and report as 0.1.17.
 - Invalidation: a walk that reaches the 100,000-artifact limit used to stop
   without a sign, leaving the rest of the dependents fresh. The change still
   goes through, and the source now carries an `invalidation_incomplete`
-  marker that `freshness` and repository freshness count; the next walk from
-  that source that finishes clears it, and forgetting the document removes
-  it (#32, by @dajiaohuang).
+  marker that `freshness` and every repository's freshness count, as they
+  count an outdated answer. The marker stays until a walk from that source
+  finishes, or until the document or project is removed, so a source with
+  more than 100,000 dependents keeps it (#32, by @dajiaohuang).
 
 ### Performance
 

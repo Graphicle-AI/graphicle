@@ -28,10 +28,22 @@ pub const SOURCE: &str = "source";
 pub const ANCHOR: &str = "anchor";
 /// A source whose last dependency walk stopped at [`WALK_LIMIT`]: some of its
 /// dependents may be outdated without a marker of their own. The marker's id
-/// is the source's id (a file's carries its repository), so [`freshness`]
-/// and [`repository_freshness`] count it; the next walk from the same source
-/// that finishes clears it.
+/// is [`incomplete_id`] of the source; [`freshness`] counts it, and so does
+/// [`repository_freshness`] of every repository, as an outdated answer or
+/// memory is. The next walk from the same source that finishes clears it.
 pub const INCOMPLETE: &str = "invalidation_incomplete";
+
+/// The id of an [`INCOMPLETE`] marker: a file's own id (which carries its
+/// repository, so a project's purge removes it), else `<kind>:<id>`, so that
+/// walks from different kinds of source with the same id (a connector
+/// document and its permission source) keep separate markers.
+pub fn incomplete_id(kind: &str, id: &str) -> String {
+    if kind == FILE {
+        id.to_string()
+    } else {
+        format!("{kind}:{id}")
+    }
+}
 
 /// Upper bound on the number of artifacts marked in one transitive walk.
 const WALK_LIMIT: usize = 100_000;
@@ -143,7 +155,7 @@ pub fn invalidate_source(
                     db,
                     workspace,
                     INCOMPLETE,
-                    source.1,
+                    &incomplete_id(source.0, source.1),
                     &format!(
                         "{reason}: the dependency walk from {} stopped at the {WALK_LIMIT}-artifact limit",
                         source.0
@@ -156,7 +168,7 @@ pub fn invalidate_source(
             queue.push_back(dependent);
         }
     }
-    clear_stale(db, workspace, INCOMPLETE, source.1)?;
+    clear_stale(db, workspace, INCOMPLETE, &incomplete_id(source.0, source.1))?;
     Ok(marked)
 }
 
@@ -227,7 +239,7 @@ pub fn repository_freshness(
 ) -> Result<Freshness> {
     let pattern = format!("{}:%", repository.replace('%', "\\%").replace('_', "\\_"));
     let mut statement = db.prepare(
-        "SELECT kind,count(*),min(since) FROM gf_stale WHERE workspace=? AND (id LIKE ? ESCAPE '\\' OR kind IN ('answer','memory','principal')) GROUP BY kind",
+        "SELECT kind,count(*),min(since) FROM gf_stale WHERE workspace=? AND (id LIKE ? ESCAPE '\\' OR kind IN ('answer','memory','principal','invalidation_incomplete')) GROUP BY kind",
     )?;
     let mut freshness = Freshness::default();
     for row in statement.query_map(params![workspace, pattern], |r| {
@@ -587,6 +599,26 @@ mod tests {
         let marked = invalidate_source(&db, "w", (FILE, "f"), "edited again").unwrap();
         assert_eq!(marked.len(), 50_000);
         assert!(!is_stale(&db, "w", INCOMPLETE, "f").unwrap());
+    }
+
+    #[test]
+    fn incomplete_markers_are_kept_per_kind_of_source() {
+        let db = db();
+        let document = connector_document_id("c", "d");
+        let marker = incomplete_id(DOCUMENT, &document);
+        // A document walk that stopped at the limit.
+        mark_stale(&db, "w", INCOMPLETE, &marker, "edited").unwrap();
+        // Every repository's freshness counts it.
+        let repo = repository_freshness(&db, "w", "r1").unwrap();
+        assert_eq!(repo.by_kind.get(INCOMPLETE), Some(&1));
+        // A finished walk from the permission source with the same id leaves
+        // the document's marker alone.
+        invalidate_source(&db, "w", (SOURCE, &document), "acl").unwrap();
+        assert!(is_stale(&db, "w", INCOMPLETE, &marker).unwrap());
+        // A finished walk from the document clears it.
+        invalidate_source(&db, "w", (DOCUMENT, &document), "edited again").unwrap();
+        assert!(!is_stale(&db, "w", INCOMPLETE, &marker).unwrap());
+        assert_eq!(incomplete_id(FILE, "r1:a.rs"), "r1:a.rs");
     }
 
     #[test]
