@@ -1105,6 +1105,22 @@ fn reconcile_html_with(
         HtmlSource::Owned(data) => html_groups(items_ref(data, "nodes"), record_view),
         HtmlSource::Stored { nodes, .. } => html_groups(nodes, NodeFacts::view),
     };
+    // A graph above the limit renders as the aggregated view, one node per
+    // community, which is itself refused above the limit: say so without
+    // loading the whole graph first (6 s on a 437K-node graph). Same message
+    // and outcome as the render's own refusal.
+    let node_count = match &source {
+        HtmlSource::Borrowed(data) => items_ref(data, "nodes").len(),
+        HtmlSource::Owned(data) => items_ref(data, "nodes").len(),
+        HtmlSource::Stored { nodes, .. } => nodes.len(),
+    };
+    if node_count as i64 > limit && communities.len() as i64 > limit {
+        messages.push(format!(
+            "graph.html regeneration will be retried: {}",
+            crate::exporters::html::too_large(communities.len(), limit)
+        ));
+        return None;
+    }
     let render = || -> Result<bool> {
         let g = match source {
             HtmlSource::Borrowed(data) => paths::load_node_link_graph(data)?,
