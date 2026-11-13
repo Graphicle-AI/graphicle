@@ -1933,11 +1933,13 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
         // only (`watch_gate::record`).
         let loading = scope.spawn(|| {
             let seen = crate::watch_gate::FileStat::of(&graph_path);
+            let profiled = crate::profile::span("detect.read_stored_graph");
             let existing = if graph_path.exists() {
                 read_graph(&graph_path)
             } else {
                 Ok(json!({}))
             };
+            drop(profiled);
             (seen, existing)
         });
         let ignoring = scope.spawn(|| {
@@ -1999,10 +2001,13 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
             .as_ref()
             .ok_or("no update baseline")
             .and_then(|state| crate::watch_gate::base_matches(out, state));
+        let profiled = crate::profile::span("detect.load_manifest");
         let manifest =
             crate::detect_manifest::load_manifest(&out.join("manifest.json"), Some(&watch_root));
+        drop(profiled);
         match baseline {
             Ok(()) if crate::cache_paths::truth(&manifest) => {
+                let _profiled = crate::profile::span("detect.incremental_split");
                 let split = crate::detect_manifest::incremental_from_full(
                     detected.clone(),
                     &manifest,
