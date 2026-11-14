@@ -1995,8 +1995,12 @@ fn node_satisfies(constraint: &str, version: &Version) -> VersionCheck {
     let mut any_checked = false;
     for range in constraint.split("||") {
         match node_range_satisfies(range, version) {
-            Some(true) => return VersionCheck::Satisfied,
-            Some(false) => any_checked = true,
+            Some(satisfied) => {
+                any_checked = true;
+                if satisfied && node_range_allows_prerelease(range, version) {
+                    return VersionCheck::Satisfied;
+                }
+            }
             None => {}
         }
     }
@@ -2005,6 +2009,20 @@ fn node_satisfies(constraint: &str, version: &Version) -> VersionCheck {
     } else {
         VersionCheck::Unchecked
     }
+}
+
+/// npm excludes prerelease versions from a comparator set unless that set
+/// contains a prerelease comparator for the same major/minor/patch tuple.
+fn node_range_allows_prerelease(range: &str, version: &Version) -> bool {
+    if version.pre.is_none() {
+        return true;
+    }
+    range.split_whitespace().any(|clause| {
+        let (_, value) = split_op(clause);
+        Version::parse(value).is_some_and(|bound| {
+            bound.pre.is_some() && (0..3).all(|index| version.part(index) == bound.part(index))
+        })
+    })
 }
 
 fn go_satisfies(required: &str, version: &Version) -> VersionCheck {
@@ -3178,6 +3196,40 @@ mod tests {
         let report = link(&b, "ts-b", None, &b_manifests, &[index], &loader(&sources));
         assert!(report.edges.iter().all(|e| e.version_status == "unchecked"));
         assert!(!report.edges.is_empty());
+    }
+
+    #[test]
+    fn node_prerelease_ranges_require_a_matching_comparator_tuple() {
+        let (a, mut a_manifests) = ts_lib();
+        a_manifests[0].text = a_manifests[0].text.replace("1.4.2", "1.3.0-beta.1");
+        let index = exports(&a, "ts-a", None, &a_manifests);
+
+        let (b, b_manifests, sources) = ts_app("^1.2.0");
+        let report = link(
+            &b,
+            "ts-b",
+            None,
+            &b_manifests,
+            &[index.clone()],
+            &loader(&sources),
+        );
+        assert!(report.edges.is_empty(), "{:?}", report.edges);
+        assert!(
+            report
+                .unresolved
+                .iter()
+                .any(|item| item.reason == REASON_VERSION)
+        );
+
+        let (b, b_manifests, sources) = ts_app("^1.3.0-beta.0");
+        let report = link(&b, "ts-b", None, &b_manifests, &[index], &loader(&sources));
+        assert!(!report.edges.is_empty());
+        assert!(
+            report
+                .edges
+                .iter()
+                .all(|edge| edge.version_status == "satisfied")
+        );
     }
 
     // ── Go ──
