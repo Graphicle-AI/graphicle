@@ -3,7 +3,7 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## 0.1.18 - 2026-11-13
+## 0.1.18 - 2026-11-16
 
 Every crate is at 0.1.18, and `graphicle --version` prints
 `graphicle 0.1.18 (core)`. The Python and TypeScript SDKs are at 0.1.18 too.
