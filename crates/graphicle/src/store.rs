@@ -146,13 +146,46 @@ pub struct Store {
     #[allow(dead_code)]
     copying: Option<Arc<crate::db::CopyLock>>,
 }
+#[path = "memory_scope.rs"]
+pub mod scope;
+
+/// Who a request authenticated as. Built only here ([`authenticate_hash`],
+/// [`Principal::shared`]): its memory scope is private, so nothing outside
+/// this module can give a request another credential's namespace.
 #[derive(Clone)]
 pub struct Principal {
     pub workspace: String,
     pub credential: String,
     pub hash: String,
     pub role: String,
+    scope: scope::MemoryScope,
+    self_review: bool,
 }
+impl Principal {
+    /// A principal of shared memory (the owner, a credential without a
+    /// namespace, a test or extension that builds one). No public
+    /// constructor makes a namespaced principal: only authentication does.
+    pub fn shared(workspace: &str, credential: &str, hash: &str, role: &str) -> Self {
+        Self {
+            workspace: workspace.into(),
+            credential: credential.into(),
+            hash: hash.into(),
+            role: role.into(),
+            scope: scope::MemoryScope::shared(),
+            self_review: false,
+        }
+    }
+    /// The memory this request reads and writes.
+    pub fn memory_scope(&self) -> &scope::MemoryScope {
+        &self.scope
+    }
+    /// The owner set `self_review` on this credential's namespace: its own
+    /// credentials (with `propose`) approve its drafts.
+    pub fn self_review(&self) -> bool {
+        self.self_review && self.scope.is_private()
+    }
+}
+
 /// The roles a workspace credential may have in Core, besides the owner
 /// capability. An installed extension may define more
 /// (`Extension::role_permits`).
@@ -523,6 +556,20 @@ fn run_migrations(db: &Connection) -> Result<()> {
     crate::graph_delta::migrate(db)?;
     db.execute_batch(include_str!("product_schema.sql"))?;
     crate::work_state::migrate(db)?;
+    // Memory namespaces: a nullable `memory_namespace` on credentials and on
+    // every table of agent-written memory and its caches (NULL: shared, as
+    // before), indexed with the column that ties a row to its project.
+    ensure_column(db, "credentials", "memory_namespace", "TEXT")?;
+    for &(table, parent) in crate::memory_scope::TABLES {
+        if table_exists(db, table)? {
+            ensure_column(db, table, "memory_namespace", "TEXT")?;
+            // Constant names, never a client's.
+            db.execute_batch(&format!(
+                "CREATE INDEX IF NOT EXISTS {table}_namespace_lookup ON {table}({parent},memory_namespace)"
+            ))?;
+        }
+    }
+    crate::memory_scope::migrate(db)?;
     // Each folder's freshness record.
     crate::fresh::migrate(db)?;
     // Documents' mention links to code symbols.
@@ -696,7 +743,24 @@ impl Store {
                 &graphicle_memory::text::sha256(token.as_bytes()),
                 permission,
             )?;
-            f(db, &principal)
+            let result = f(db, &principal)?;
+            // `stats` reports when a namespace was last read and written: a
+            // call that only needs `read` (recall over the write path, which
+            // counts what it served) is a read.
+            if let Some(namespace) = principal.memory_scope().bind() {
+                let column = if permission == "read" {
+                    "last_read_at"
+                } else {
+                    "last_write_at"
+                };
+                db.execute(
+                    &format!(
+                        "UPDATE am_memory_namespaces SET {column}=? WHERE workspace_id=? AND name=?"
+                    ),
+                    params![now(), workspace, namespace],
+                )?;
+            }
+            Ok(result)
         })
     }
     /// `authorized` for operations that only read: a read-only snapshot.
@@ -710,15 +774,28 @@ impl Store {
         if token.len() > 512 {
             return Err(Error::denied());
         }
-        self.read(|db| {
+        let mut namespace: Option<String> = None;
+        let result = self.read(|db| {
             let principal = authorize_hash(
                 db,
                 workspace,
                 &graphicle_memory::text::sha256(token.as_bytes()),
                 permission,
             )?;
-            f(db, &principal)
-        })
+            let value = f(db, &principal)?;
+            namespace = principal.memory_scope().bind().map(str::to_owned);
+            Ok(value)
+        })?;
+        if let Some(namespace) = namespace {
+            // The timestamp is best-effort; it must never turn a successful
+            // memory read into an error due to a competing telemetry writer.
+            let _=self.counter(|db| {
+                db.execute("UPDATE am_memory_namespaces SET last_read_at=? WHERE workspace_id=? AND name=?",
+                    params![now(),workspace,namespace])?;
+                Ok(())
+            });
+        }
+        Ok(result)
     }
     pub fn create_workspace(&self, name: &str) -> Result<Value> {
         string(&json!({"name":name}), "name", 100)?;
@@ -753,10 +830,37 @@ impl Store {
                 extensions.grant_role(db,workspace,role)?;
             }
             let label=string(args,"label",100)?; let token=format!("{}{}",id(),id()); let identifier=id();
+            let namespace = args.get("memory_namespace").filter(|v| !v.is_null())
+                .map(|v| v.as_str().ok_or_else(||Error::bad("memory_namespace must be a string")))
+                .transpose()?;
+            let namespace = namespace.map(scope::Namespace::parse).transpose().map_err(Error::bad)?;
+            let namespace = namespace.as_ref().map(scope::Namespace::as_str);
+            let requested_review = match args.get("self_review") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_bool().ok_or_else(||Error::bad("self_review must be a boolean"))?),
+            };
+            if namespace.is_none() && requested_review == Some(true) {
+                return Err(Error::bad("self_review requires a private memory_namespace"));
+            }
+            let mut self_review = false;
+            if let Some(namespace) = namespace {
+                if let Some(existing) = one(db,
+                    "SELECT self_review FROM am_memory_namespaces WHERE workspace_id=? AND name=?",
+                    params![workspace,namespace])? {
+                    self_review = existing["self_review"] == 1;
+                    if requested_review.is_some_and(|wanted| wanted != self_review) {
+                        return Err(Error::conflict("Namespace self_review policy is immutable"));
+                    }
+                } else {
+                    self_review = requested_review.unwrap_or(false);
+                    db.execute("INSERT INTO am_memory_namespaces(workspace_id,name,self_review,created_at) VALUES(?,?,?,?)",
+                        params![workspace,namespace,i64::from(self_review),now()])?;
+                }
+            }
             let expiry=args.get("expires_at").and_then(Value::as_str);
             if let Some(value)=expiry && graphicle_memory::temporal::instant(value).map_err(Error::bad)?<=chrono::Utc::now().fixed_offset() {return Err(Error::bad("Expiry must be in the future"));}
-            db.execute("INSERT INTO credentials VALUES (?,?,?,?,?,?,?,NULL)",params![identifier,workspace,graphicle_memory::text::sha256(token.as_bytes()),role,label,now(),expiry])?;
-            Ok(json!({"id":identifier,"capability":token,"role":role,"label":label,"expires_at":expiry}))
+            db.execute("INSERT INTO credentials(id,workspace_id,capability_hash,role,label,created_at,expires_at,revoked_at,memory_namespace) VALUES (?,?,?,?,?,?,?,NULL,?)",params![identifier,workspace,graphicle_memory::text::sha256(token.as_bytes()),role,label,now(),expiry,namespace])?;
+            Ok(json!({"id":identifier,"capability":token,"role":role,"label":label,"expires_at":expiry,"memory_namespace":namespace,"self_review":self_review}))
         })
     }
     pub fn revoke(&self, workspace: &str, token: &str, credential: &str) -> Result<Value> {
@@ -1477,16 +1581,15 @@ pub fn authenticate_hash(db: &Connection, workspace: &str, hash: &str) -> Result
         .optional()?
         .ok_or_else(Error::denied)?;
     let principal = if owner.as_bytes().ct_eq(hash.as_bytes()).into() {
-        Principal {
-            workspace: workspace.into(),
-            hash: hash.into(),
-            credential: "owner".into(),
-            role: "owner".into(),
-        }
+        Principal::shared(workspace, "owner", hash, "owner")
     } else {
         let row = match one(
             db,
-            "SELECT id,role,expires_at,revoked_at,capability_hash FROM credentials WHERE workspace_id=? AND capability_hash=?",
+            "SELECT c.id,c.role,c.expires_at,c.revoked_at,c.capability_hash,
+                    c.memory_namespace, n.self_review FROM credentials c
+             LEFT JOIN am_memory_namespaces n
+                    ON n.workspace_id=c.workspace_id AND n.name=c.memory_namespace
+             WHERE c.workspace_id=? AND c.capability_hash=?",
             params![workspace, hash],
         )? {
             Some(row) => row,
@@ -1520,6 +1623,15 @@ pub fn authenticate_hash(db: &Connection, workspace: &str, hash: &str) -> Result
             hash: s(&row, "capability_hash").into(),
             credential: s(&row, "id").into(),
             role: s(&row, "role").into(),
+            scope: match row["memory_namespace"].as_str() {
+                None => scope::MemoryScope::shared(),
+                // A stored name that no longer parses is refused, never read
+                // as shared.
+                Some(name) => scope::MemoryScope::private(
+                    scope::Namespace::parse(name).map_err(|_| Error::denied())?,
+                ),
+            },
+            self_review: row["self_review"] == 1 || row["self_review"] == true,
         }
     };
     Ok(principal)
@@ -1543,6 +1655,9 @@ pub fn authorize_hash(
 /// [`Principal::permits`] says, and a role the core does not define only as
 /// the installed extension that defines it says (`Extension::role_permits`).
 pub fn role_grants(db: &Connection, p: &Principal, permission: &str) -> Result<bool> {
+    if permission == "approve" && p.self_review() && p.permits("propose") {
+        return Ok(true);
+    }
     if p.permits(permission) {
         return Ok(true);
     }
@@ -1630,9 +1745,45 @@ pub fn heads(db: &Connection, repository: &str) -> Result<BTreeMap<String, Strin
     .collect())
 }
 pub fn event(db: &Connection, repository: &str, kind: &str, value: Value) -> Result<()> {
+    event_in(db, repository, None, kind, value)
+}
+/// An event about memory of `scope` (its ids are that namespace's): stamped
+/// with the namespace, so a namespace's export and delete take it along.
+pub fn event_scoped(
+    db: &Connection,
+    repository: &str,
+    scope: &scope::MemoryScope,
+    kind: &str,
+    value: Value,
+) -> Result<()> {
+    event_in(db, repository, scope.bind(), kind, value)
+}
+/// An event of a job, stamped with the namespace the job was queued in.
+pub fn job_event(
+    db: &Connection,
+    repository: &str,
+    job: &str,
+    kind: &str,
+    value: Value,
+) -> Result<()> {
     db.execute(
-        "INSERT INTO repo_events(repository_id,kind,data,created_at) VALUES(?,?,?,?)",
-        params![repository, kind, value.to_string(), now()],
+        "INSERT INTO repo_events(repository_id,kind,data,created_at,memory_namespace) VALUES(?,?,?,?,(SELECT memory_namespace FROM am_jobs WHERE id=?))",
+        params![repository, kind, value.to_string(), now(), job],
+    )?;
+    Ok(())
+}
+/// Only for this module and [`crate::memory`]'s private save path, which
+/// already hold a namespace that came from a [`scope::MemoryScope`].
+pub(crate) fn event_in(
+    db: &Connection,
+    repository: &str,
+    namespace: Option<&str>,
+    kind: &str,
+    value: Value,
+) -> Result<()> {
+    db.execute(
+        "INSERT INTO repo_events(repository_id,kind,data,created_at,memory_namespace) VALUES(?,?,?,?,?)",
+        params![repository, kind, value.to_string(), now(),namespace],
     )?;
     Ok(())
 }

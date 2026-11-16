@@ -298,10 +298,7 @@ fn dispatch_streamed(bytes: &[u8]) -> Option<Result<Value>> {
         };
         let loaded = match graph {
             GraphSlot::Missing => None,
-            GraphSlot::Raw(raw) => match graph::Graph::from_node_link_json(raw.get(), edges_key) {
-                Some(graph) => Some(graph),
-                None => return None,
-            },
+            GraphSlot::Raw(raw) => Some(graph::Graph::from_node_link_json(raw.get(), edges_key)?),
             GraphSlot::Dynamic(_) | GraphSlot::Streamed(_) => return None,
         };
         return Some(session::dispatch(&request, loaded));

@@ -497,7 +497,7 @@ pub fn snapshot(db: &Connection, repository: &Value, p: &Principal) -> Result<Sn
     })?;
     // One read of the sources serves the memory listing too.
     let memories = crate::phase::phase("snapshot_memories", || {
-        memory::list_of(db, repository, &documents, true)
+        memory::list_of_scoped(db, repository, &documents, true, p.memory_scope())
     })?;
     let graph = crate::phase::phase("snapshot_graph", || source_graph(db, repository, p))?;
     let state = digest(
@@ -2479,7 +2479,7 @@ pub fn project_packet(
     })?;
     let mut dense_report = json!({"status":"disabled"});
     let mut dense_calls = 0;
-    if let Some(profile) = embedding {
+    if let Some(profile) = embedding.filter(|_| p.memory_scope().is_shared()) {
         let (candidates, _) = match &shared {
             Some(passages) => candidates_from(&snap, passages.clone(), snap.memories.iter())?,
             None => candidates(&snap)?,
@@ -2611,7 +2611,9 @@ pub fn project_packet(
     };
     let lookup = crate::doc_links::Lookup::new(db, s(repository, "id"))
         .with_folder(crate::folders::current_folder(db, s(repository, "id"))?);
-    if crate::observer::KeyMode::parse(args.get("note_keys"))?.is_some() {
+    if p.memory_scope().is_shared()
+        && crate::observer::KeyMode::parse(args.get("note_keys"))?.is_some()
+    {
         rankings[crate::observer::NOTE_KEYS] = json!(crate::observer::notes_for(
             db,
             s(repository, "id"),
@@ -3061,12 +3063,7 @@ mod tests {
             .collect();
         let snapshot = synthetic(documents, vec![]);
         let db = crate::db::Connection::open_in_memory().unwrap();
-        let principal = crate::store::Principal {
-            workspace: "w".into(),
-            credential: "c".into(),
-            hash: "h".into(),
-            role: "owner".into(),
-        };
+        let principal = crate::store::Principal::shared("w", "c", "h", "owner");
         let args = json!({"question":"note 50000","graph_retrieval":true});
         let graph =
             crate::graph::for_query(&db, &snapshot.repository, &principal, &snapshot, &args)
@@ -3224,12 +3221,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = crate::store::Store::open(dir.path()).unwrap();
         let db = store.connect().unwrap();
-        let principal = crate::store::Principal {
-            workspace: "w".into(),
-            credential: "c".into(),
-            hash: "h".into(),
-            role: "owner".into(),
-        };
+        let principal = crate::store::Principal::shared("w", "c", "h", "owner");
         let args = json!({"question":"refresh token","graph_retrieval":true});
         let graph =
             crate::graph::for_query(&db, &snapshot.repository, &principal, &snapshot, &args)

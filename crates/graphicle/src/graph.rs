@@ -96,8 +96,8 @@ fn build(
     let facts = claims::current(db, repository, principal)?;
     let links = rows(
         db,
-        "SELECT * FROM am_entity_links WHERE repository_id=?",
-        [s(repository, "id")],
+        "SELECT * FROM am_entity_links WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![s(repository, "id"), principal.memory_scope().bind()],
     )?;
     let mut timeline = Vec::new();
     for fact in &facts {
@@ -121,8 +121,12 @@ fn build(
                 if !nodes.contains_key(&entity_id)
                     && let Some(mut e) = one(
                         db,
-                        "SELECT * FROM am_entities WHERE repository_id=? AND id=?",
-                        params![s(repository, "id"), s(link, field)],
+                        "SELECT * FROM am_entities WHERE repository_id=? AND id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+                        params![
+                            s(repository, "id"),
+                            s(link, field),
+                            principal.memory_scope().bind()
+                        ],
                     )?
                 {
                     decode(&mut e, "data")?;

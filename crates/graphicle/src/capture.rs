@@ -1247,6 +1247,7 @@ impl Store {
                     db,
                     s(&repository, "id"),
                     chrono::Utc::now().timestamp_millis(),
+                    p.memory_scope(),
                 )?;
                 let mut reviewed = Vec::new();
                 let mut stale = 0usize;

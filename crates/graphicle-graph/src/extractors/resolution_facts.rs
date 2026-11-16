@@ -1749,7 +1749,7 @@ pub fn resolve_python_namespace_dir(
     if let Some(p) = namespace(root.join(&rel)) {
         return Some(p);
     }
-    if let Some(p) = projected_python_module(module, root).and_then(&namespace) {
+    if let Some(p) = projected_python_module(module, root).and_then(namespace) {
         return Some(p);
     }
     for dir in current.parent().into_iter().flat_map(Path::ancestors) {

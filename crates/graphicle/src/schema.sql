@@ -31,7 +31,13 @@
                 CREATE TABLE IF NOT EXISTS credentials (
                     id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
                     capability_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL, label TEXT NOT NULL,
-                    created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT);
+                    created_at TEXT NOT NULL, expires_at TEXT, revoked_at TEXT,
+                    memory_namespace TEXT);
+                CREATE TABLE IF NOT EXISTS am_memory_namespaces (
+                    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL, self_review INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL, last_read_at TEXT, last_write_at TEXT,
+                    PRIMARY KEY(workspace_id,name));
                 INSERT INTO source_heads (workspace_id,name,role,source_id)
                     SELECT s.workspace_id,s.name,s.role,s.id FROM sources s
                     WHERE s.version=(SELECT max(latest.version) FROM sources latest
@@ -100,11 +106,11 @@
                     id TEXT PRIMARY KEY, repository_id TEXT NOT NULL REFERENCES repo_projects(id) ON DELETE CASCADE,
                     kind TEXT NOT NULL, revision INTEGER NOT NULL, state TEXT NOT NULL,
                     title TEXT NOT NULL, body TEXT NOT NULL, data TEXT NOT NULL,
-                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, memory_namespace TEXT);
                 CREATE TABLE IF NOT EXISTS repo_memory_revisions (
                     memory_id TEXT NOT NULL REFERENCES repo_memories(id) ON DELETE CASCADE,
                     revision INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL,
-                    PRIMARY KEY(memory_id,revision));
+                    memory_namespace TEXT, PRIMARY KEY(memory_id,revision));
                 CREATE INDEX IF NOT EXISTS repo_runs_lookup ON repo_runs(repository_id,session_key,state);
                 CREATE INDEX IF NOT EXISTS repo_memories_lookup ON repo_memories(repository_id,kind,state);
             

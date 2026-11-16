@@ -195,7 +195,7 @@ fn counts(db: &Connection, p: &Principal, repository: &Value) -> Result<Value> {
         .iter()
         .filter(|d| d["source_kind"] == "repository_file")
         .count();
-    let memories = memory::list_of(db, repository, &documents, false)?;
+    let memories = memory::list_of_scoped(db, repository, &documents, false, p.memory_scope())?;
     let memory_symbols: u64 = memories
         .iter()
         .map(|m| m["symbol_links"]["links"].as_u64().unwrap_or(0))

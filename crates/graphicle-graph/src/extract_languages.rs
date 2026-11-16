@@ -151,10 +151,9 @@ fn textwrap_shorten(flat: &str, width: usize, placeholder: char) -> String {
             break;
         }
     }
-    if chunks.last().is_some_and(|c| c.len() > width) {
+    if let Some(chunk) = chunks.pop_if(|c| c.len() > width) {
         // _handle_long_word with break_long_words=True, break_on_hyphens=True
         let space_left = if width < 1 { 1 } else { width - cur_len };
-        let chunk = chunks.pop().unwrap();
         let mut end = space_left.min(chunk.len());
         if chunk.len() > space_left
             && let Some(h) = chunk[..space_left].iter().rposition(|c| *c == '-')

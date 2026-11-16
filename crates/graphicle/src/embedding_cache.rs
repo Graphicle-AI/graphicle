@@ -213,9 +213,12 @@ fn decode(blob: &[u8]) -> Option<Vec<f64>> {
     if blob.is_empty() || !blob.len().is_multiple_of(8) {
         return None;
     }
+    // The length is a multiple of 8, so there is no remainder.
     let vector: Vec<f64> = blob
-        .chunks_exact(8)
-        .map(|bytes| f64::from_le_bytes(bytes.try_into().expect("8-byte chunk")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|bytes| f64::from_le_bytes(*bytes))
         .collect();
     vector.iter().all(|x| x.is_finite()).then_some(vector)
 }

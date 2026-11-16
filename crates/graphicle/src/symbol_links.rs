@@ -388,12 +388,12 @@ pub fn attach(
     let named: BTreeSet<String> = rows(
         db,
         "SELECT m.id AS id FROM repo_memories m, json_each(m.data,'$.symbols') j \
-         WHERE m.repository_id=?1 AND m.state='reviewed' \
+         WHERE m.repository_id=?1 AND m.memory_namespace IS NOT DISTINCT FROM ?3 AND m.state='reviewed' \
          AND json_extract(j.value,'$.stable_id') IN (SELECT value FROM json_each(?2)) \
          UNION SELECT g.memory_id AS id FROM gf_symbol_pins g, json_each(g.symbols) j \
          WHERE g.repository_id=?1 AND g.state='pinned' \
          AND json_extract(j.value,'$.stable_id') IN (SELECT value FROM json_each(?2))",
-        params![project, json!(ids).to_string()],
+        params![project, json!(ids).to_string(), p.memory_scope().bind()],
     )?
     .iter()
     .map(|row| s(row, "id").to_string())
@@ -407,7 +407,7 @@ pub fn attach(
     } else {
         let documents = crate::memory::documents(db, repository, p)?;
         naming = naming.knowing(project, &documents);
-        crate::memory::list_of(db, repository, &documents, false)?
+        crate::memory::list_of_scoped(db, repository, &documents, false, p.memory_scope())?
             .into_iter()
             .filter(|m| {
                 named.contains(s(m, "id")) && m["state"] == "reviewed" && m["stale"] != true

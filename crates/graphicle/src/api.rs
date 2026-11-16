@@ -297,6 +297,22 @@ pub fn router(app: App) -> Router {
             "/v1/workspaces/{workspace}/repos/{repo}/graph/labels",
             post(graph_label),
         )
+        .route(
+            "/api/workspaces/{workspace}/memory-namespaces/{namespace}/stats",
+            get(namespace_stats),
+        )
+        .route(
+            "/api/workspaces/{workspace}/memory-namespaces/{namespace}/export",
+            get(namespace_export),
+        )
+        .route(
+            "/api/workspaces/{workspace}/memory-namespaces/{namespace}/import",
+            post(namespace_import),
+        )
+        .route(
+            "/api/workspaces/{workspace}/memory-namespaces/{namespace}/delete",
+            post(namespace_delete),
+        )
         .route("/api/workspaces/{workspace}/credentials", post(grant))
         .route(
             "/api/workspaces/{workspace}/credentials/{credential}/revoke",
@@ -691,6 +707,52 @@ async fn grant(
         &workspace,
         token(&headers)?,
         &args,
+    )?))
+}
+async fn namespace_stats(
+    State(app): State<App>,
+    Path((workspace, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    Ok(Json(app.worker.store.namespace_stats(
+        &workspace,
+        token(&headers)?,
+        &namespace,
+    )?))
+}
+async fn namespace_export(
+    State(app): State<App>,
+    Path((workspace, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    Ok(Json(app.worker.store.namespace_export(
+        &workspace,
+        token(&headers)?,
+        &namespace,
+    )?))
+}
+async fn namespace_import(
+    State(app): State<App>,
+    Path((workspace, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(args): Json<Value>,
+) -> Result<Json<Value>> {
+    Ok(Json(app.worker.store.namespace_import(
+        &workspace,
+        token(&headers)?,
+        &namespace,
+        &args,
+    )?))
+}
+async fn namespace_delete(
+    State(app): State<App>,
+    Path((workspace, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    Ok(Json(app.worker.store.namespace_delete(
+        &workspace,
+        token(&headers)?,
+        &namespace,
     )?))
 }
 async fn revoke(
@@ -1472,6 +1534,23 @@ pub(crate) fn dispatch(
         _ => Err(Error::bad("Unsupported native project operation")),
     }
 }
+/// The MCP tools that read or write memory: a key with a memory namespace
+/// gets [`PRIVATE_MEMORY`] after their descriptions.
+pub const MEMORY_TOOLS: &[&str] = &[
+    "recall_project",
+    "project_memory",
+    "search_project_memory",
+    "project_memory_history",
+    "prepare_memory_refresh",
+    "propose_memory",
+    "propose_memory_refresh",
+    "prepare_observations",
+    "propose_observations",
+    "work_state_write",
+    "work_state_read",
+];
+/// What a namespaced key's memory tools say about whose memory they reach.
+pub const PRIVATE_MEMORY: &str = "This key's memory is private to its memory namespace: it reads and writes only what keys of that namespace wrote, never shared memory or another namespace's.";
 /// An MCP tool contract: an object input schema that admits no other
 /// properties, and read-only or write annotations.
 pub fn tool(
@@ -2260,6 +2339,12 @@ fn mcp_in(
                 app.worker.store.workspace(workspace, capability)?;
             }
         }
+        let private_memory =
+            app.worker
+                .store
+                .authorized_read(workspace, capability, "read", |_, p| {
+                    Ok(p.memory_scope().is_private())
+                })?;
         // A server that fixes the scope serves only connections of that
         // scope: one project's, or the workspace's.
         match (
@@ -2278,7 +2363,20 @@ fn mcp_in(
             }
             _ => {}
         }
-        let tools = connection_tools(app, repository);
+        let mut tools = connection_tools(app, repository);
+        // A key with a memory namespace is told so on every memory tool; a
+        // key without one gets the descriptions of earlier releases.
+        if private_memory {
+            for tool in &mut tools {
+                if MEMORY_TOOLS.contains(&tool.name()) {
+                    let described = format!(
+                        "{} {PRIVATE_MEMORY}",
+                        tool.spec["description"].as_str().unwrap_or_default()
+                    );
+                    tool.spec["description"] = json!(described);
+                }
+            }
+        }
         // The tools an installed extension allows this credential
         // (`Access::Tool`; every tool in Core): the connection lists and
         // describes only these. `tools/call` asks again for the tool it

@@ -148,7 +148,7 @@ fn derive(f: &Fixture, source: &str) {
     f.sql("INSERT INTO gf_anchor_edges(repository_id,episode,chunk_id,node_id,rung,confidence,attributes,created_at) VALUES(?1,'e1','chunk-plan',NULL,'lexical',0.5,?2,?3)", graphicle_runtime::params![repo, attributes, t]);
     let passage = format!("{source}:0");
     f.sql(
-        "INSERT INTO am_vectors VALUES(?1,?2,?3,'embedding-model',3,'[0.1,0.2,0.3]')",
+        "INSERT INTO am_vectors(repository_id,identity,source_sha,model_key,dimensions,vector) VALUES(?1,?2,?3,'embedding-model',3,'[0.1,0.2,0.3]')",
         graphicle_runtime::params![repo, passage, sha],
     );
     for (kind, dependent) in [
@@ -166,7 +166,7 @@ fn derive(f: &Fixture, source: &str) {
     }
     let answer = json!({"answer":SECRET}).to_string();
     f.sql(
-        "INSERT INTO am_model_cache VALUES(?1,'request','state',?2,?3)",
+        "INSERT INTO am_model_cache(repository_id,request_hash,source_state,result,created_at) VALUES(?1,'request','state',?2,?3)",
         graphicle_runtime::params![repo, answer, t],
     );
     f.sql("INSERT INTO gf_hints(id,workspace,repository_id,scope,target,weight,state,evidence,created_at,updated_at) VALUES('h1',?1,?2,'query',?3,1.0,'candidate','{}',?4,?4)", graphicle_runtime::params![ws, repo, source, t]);

@@ -56,6 +56,7 @@ mod lean_replies;
 mod local_inference;
 mod long_context_cache;
 mod memory_handoffs;
+mod memory_namespace;
 mod memory_symbols;
 mod observer;
 mod offboard;

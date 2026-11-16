@@ -238,12 +238,17 @@ fn bm25(
 }
 
 /// The `file:` ids memories cite: the text their staleness checks may read.
-fn memory_sources(db: &Connection, repository: &str) -> Result<BTreeSet<String>> {
+fn memory_sources(
+    db: &Connection,
+    repository: &str,
+    scope: &crate::memory_scope::MemoryScope,
+) -> Result<BTreeSet<String>> {
+    let namespace = scope.bind();
     let mut wanted = BTreeSet::new();
     for row in crate::store::rows(
         db,
-        "SELECT data FROM repo_memories WHERE repository_id=?",
-        [repository],
+        "SELECT data FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        crate::params![repository, namespace],
     )? {
         let data: Value = serde_json::from_str(s(&row, "data")).unwrap_or(Value::Null);
         for field in ["dependencies", "evidence_links", "native_sources"] {
@@ -328,8 +333,8 @@ pub fn packet(
     let id = s(repository, "id");
     // A project with reviewed memory walks its graph over every passage.
     let reviewed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND state='reviewed')",
-        [id],
+        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? AND state='reviewed')",
+        crate::params![id,p.memory_scope().bind()],
         |r| r.get(0),
     )?;
     if reviewed && args["graph_retrieval"] != false && args["memory_retrieval"] != false {
@@ -393,8 +398,8 @@ pub fn packet(
         return Ok(None);
     }
     crate::phase::phase("context_index_missing", || index.add_files(added))?;
-    docs.load(db, repository, &memory_sources(db, id)?)?;
-    let memories = memory::list_of(db, repository, &docs.list, true)?;
+    docs.load(db, repository, &memory_sources(db, id, p.memory_scope())?)?;
+    let memories = memory::list_of_scoped(db, repository, &docs.list, true, p.memory_scope())?;
     // The file relationships: the saved ones of the current episode
     // (crate::query_graph), else the snapshot's graph as `context` reads it.
     let current = crate::graph_projection::current_episode(db, id)?;
@@ -860,7 +865,7 @@ pub fn ready(db: &Connection, repository: &str) -> Result<bool> {
         return Ok(false);
     }
     let reviewed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND state='reviewed')",
+        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND memory_namespace IS NULL AND state='reviewed')",
         [repository],
         |r| r.get(0),
     )?;
@@ -908,7 +913,7 @@ pub fn hook_route(db: &Connection, repository: &str) -> Result<HookRoute> {
         return Ok(HookRoute::Full);
     }
     let reviewed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND state='reviewed')",
+        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND memory_namespace IS NULL AND state='reviewed')",
         [repository],
         |r| r.get(0),
     )?;
@@ -933,7 +938,7 @@ pub fn readiness(db: &Connection, repository: &str) -> Result<Value> {
     let coverage = passage_index::coverage(db, repository, &heads)?;
     let files = heads.len();
     let reviewed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND state='reviewed')",
+        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND memory_namespace IS NULL AND state='reviewed')",
         [repository],
         |r| r.get(0),
     )?;

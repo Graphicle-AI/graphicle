@@ -54,9 +54,12 @@ pub mod long_context;
 pub mod maintenance;
 pub mod memory;
 pub mod memory_evidence;
+/// The memory namespace of a request; built only inside [`store`].
+pub use store::scope as memory_scope;
 pub mod metering;
 pub mod model;
 pub mod muse_code;
+pub mod namespace_owner;
 pub mod notes_first;
 pub mod oauth;
 pub mod observer;

@@ -3,6 +3,37 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## Unreleased
+
+### Added
+
+- Private memory per key. The owner can give a key a `memory_namespace`
+  (and `self_review`) when making it. Such a key reads the shared project as
+  before, and reads and writes only its namespace's memory: memories and
+  their revisions, work state, claims, entities, events, jobs and cached
+  model results. It never sees shared memory or another namespace's, through
+  any tool or cache, and another namespace's memory id gets the answer an
+  unknown id gets. Keys without a namespace are unchanged. The owner API
+  adds `stats`, `export`, `import` and `delete` for a namespace
+  (`/api/workspaces/W/memory-namespaces/N/…`); deleting a project deletes its
+  namespaced memory.
+- A namespaced key's MCP memory tools say that its memory is private; other
+  keys' tool descriptions are unchanged.
+
+### After upgrading
+
+- The store gains a nullable `memory_namespace` column on credentials and on
+  the tables of agent-written memory and their caches, and an
+  `am_memory_namespaces` table. Existing rows stay shared (NULL); nothing is
+  rewritten. Code that inserts into these tables without naming its columns
+  must name them now.
+
+### Known limits
+
+- Namespaced keys do not use dense vectors, query embeddings or observer
+  notes; their recall is lexical and graph-based until those caches are
+  partitioned by namespace.
+
 ## 0.1.17 - 2026-11-13
 
 Every crate is at 0.1.17, and `graphicle --version` prints
