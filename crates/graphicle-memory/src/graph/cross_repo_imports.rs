@@ -1994,14 +1994,11 @@ fn node_satisfies(constraint: &str, version: &Version) -> VersionCheck {
     }
     let mut any_checked = false;
     for range in constraint.split("||") {
-        match node_range_satisfies(range, version) {
-            Some(satisfied) => {
-                any_checked = true;
-                if satisfied && node_range_allows_prerelease(range, version) {
-                    return VersionCheck::Satisfied;
-                }
+        if let Some(satisfied) = node_range_satisfies(range, version) {
+            any_checked = true;
+            if satisfied && node_range_allows_prerelease(range, version) {
+                return VersionCheck::Satisfied;
             }
-            None => {}
         }
     }
     if any_checked {
@@ -3210,7 +3207,7 @@ mod tests {
             "ts-b",
             None,
             &b_manifests,
-            &[index.clone()],
+            std::slice::from_ref(&index),
             &loader(&sources),
         );
         assert!(report.edges.is_empty(), "{:?}", report.edges);
