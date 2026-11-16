@@ -16,7 +16,6 @@
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-8B5CF6?style=flat-square&amp;labelColor=1E2235"></a>
   <a href="https://github.com/graphicle-ai/graphicle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/graphicle-ai/graphicle?style=flat-square&amp;color=5B7CFF&amp;labelColor=1E2235"></a>
   <img alt="Platforms: macOS, Linux and Windows (preview)" src="https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows%20%28preview%29-0EA5E9?style=flat-square&amp;labelColor=1E2235">
-  <a href="https://discord.com/invite/rWuU7cWU4E"><img alt="Chat on Discord" src="https://img.shields.io/badge/chat-Discord-5865F2?style=flat-square&amp;labelColor=1E2235&amp;logo=discord&amp;logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -133,7 +132,7 @@ Kubernetes (25,899 code files) builds in minutes on 4 vCPUs (chart above). By de
 <details>
 <summary><b>Is there a version for teams?</b></summary>
 
-Graphicle is free and open source under Apache-2.0, for individuals and teams alike. A commercial edition for teams is in private preview. To talk to us, start a [discussion](https://github.com/graphicle-ai/graphicle/discussions) or chat on [Discord](https://discord.com/invite/rWuU7cWU4E).
+Graphicle is free and open source under Apache-2.0, for individuals and teams alike. A commercial edition for teams is in private preview. To talk to us, start a [discussion](https://github.com/graphicle-ai/graphicle/discussions).
 </details>
 
 More answers: [FAQ](docs/faq.md) · [Troubleshooting](docs/troubleshooting.md) · or run `graphicle doctor`.
@@ -159,6 +158,6 @@ contributors, licensed under Apache-2.0, with portions that remain available und
 [NOTICE](NOTICE), [NOTICE.md](NOTICE.md) and the `licenses/` folders hold the attributions and the licences of every adapted project and third-party component.
 
 <p align="center"><br><b>If Graphicle is useful to you, star the repository so other developers find it.</b><br>
-  <sub><a href="#quick-start">Try it</a> · <a href="https://github.com/graphicle-ai/graphicle/issues">Report a bug</a> · <a href="CONTRIBUTING.md">Contribute</a> · <a href="https://discord.com/invite/rWuU7cWU4E">Discord</a></sub><br>
+  <sub><a href="#quick-start">Try it</a> · <a href="https://github.com/graphicle-ai/graphicle/issues">Report a bug</a> · <a href="CONTRIBUTING.md">Contribute</a> · <a href="https://github.com/graphicle-ai/graphicle/discussions">Discussions</a></sub><br>
   <sub>Built by <a href="https://www.karlex.ai"><img src="assets/karlex-ai-logo.png" width="16" height="16" align="absmiddle" alt="KarLex AI logo"></a> <a href="https://www.karlex.ai">KarLex AI, Inc.</a></sub>
 </p>

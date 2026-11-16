@@ -201,7 +201,7 @@ with `python -m pip install ./sdk/python`.
 
 ## Is there a version for teams?
 
-Graphicle is free and open source under Apache-2.0, for individuals and teams alike. A commercial edition for teams is in private preview. To talk to us, start a discussion: https://github.com/graphicle-ai/graphicle/discussions, or chat with us on [Discord](https://discord.com/invite/rWuU7cWU4E).
+Graphicle is free and open source under Apache-2.0, for individuals and teams alike. A commercial edition for teams is in private preview. To talk to us, start a [discussion](https://github.com/graphicle-ai/graphicle/discussions).
 
 ## How do I report a bug or a security problem?
 

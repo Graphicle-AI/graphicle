@@ -6,7 +6,7 @@ the memory library (`crates/graphicle-memory/`) and the SDKs (`sdk/`). All of
 it is licensed under the Apache License, Version 2.0 (`LICENSE`), Copyright (c)
 2026 KarLex AI, Inc.
 
-Questions or ideas? Start a [GitHub Discussion](https://github.com/graphicle-ai/graphicle/discussions) or chat with us on [Discord](https://discord.com/invite/rWuU7cWU4E).
+Questions or ideas? Start a [GitHub Discussion](https://github.com/graphicle-ai/graphicle/discussions).
 
 ## Licence and sign-off
 

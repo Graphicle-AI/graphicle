@@ -143,5 +143,4 @@ graphicle --data-dir /var/lib/graphicle-restored restore /safe/place/graphicle.s
 Graphicle Core's server is complete for a team that manages its own keys.
 Graphicle is free and open source under Apache-2.0, for individuals and teams
 alike. A commercial edition for teams is in private preview. To talk to us,
-start a discussion: https://github.com/graphicle-ai/graphicle/discussions, or
-chat with us on [Discord](https://discord.com/invite/rWuU7cWU4E).
+start a [discussion](https://github.com/graphicle-ai/graphicle/discussions).
