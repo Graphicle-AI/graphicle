@@ -3,7 +3,7 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## 0.1.19 - Unreleased
+## 0.1.19 
 
 ### Added
 
