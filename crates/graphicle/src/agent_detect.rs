@@ -102,6 +102,20 @@ impl Environment {
         self.at_home(".config/muse/settings.json")
     }
 
+    /// OpenCode's global folder: `$XDG_CONFIG_HOME/opencode`, else
+    /// `~/.config/opencode` (on every system, as OpenCode keeps it).
+    pub fn opencode_dir(&self) -> Option<PathBuf> {
+        self.xdg_config_home
+            .as_ref()
+            .map(|folder| folder.join("opencode"))
+            .or_else(|| self.at_home(".config/opencode"))
+    }
+
+    /// OpenCode's global configuration file ([`opencode_file`]).
+    pub fn opencode_config(&self) -> Option<PathBuf> {
+        self.opencode_dir().map(|folder| opencode_file(&folder))
+    }
+
     /// Claude Desktop's folder (where `connect claude` writes).
     pub fn claude_desktop_dir(&self) -> Option<PathBuf> {
         #[cfg(target_os = "macos")]
@@ -164,14 +178,28 @@ fn executable(path: &Path) -> bool {
     path.is_file()
 }
 
+/// The configuration file of an OpenCode folder: `opencode.json` when it
+/// exists, else an existing `opencode.jsonc` (JSON with comments), else a
+/// new `opencode.json`.
+pub fn opencode_file(folder: &Path) -> PathBuf {
+    let json = folder.join("opencode.json");
+    let jsonc = folder.join("opencode.jsonc");
+    if !json.exists() && jsonc.exists() {
+        jsonc
+    } else {
+        json
+    }
+}
+
 /// The clients `graphicle connect` supports, in the order setup lists them.
-pub const CLIENTS: [(&str, &str); 6] = [
+pub const CLIENTS: [(&str, &str); 7] = [
     ("claude-code", "Claude Code"),
     ("codex", "Codex"),
     ("cursor", "Cursor"),
     ("vscode", "VS Code"),
     ("claude", "Claude Desktop"),
     ("muse", "Muse Code"),
+    ("opencode", "OpenCode"),
 ];
 
 /// The display name of a client id.
@@ -197,6 +225,7 @@ pub fn parse(word: &str) -> Option<&'static str> {
         "vscode" | "code" | "visualstudiocode" | "copilot" => "vscode",
         "claude" | "claudedesktop" | "desktop" => "claude",
         "muse" | "musecode" => "muse",
+        "opencode" | "opencodeai" => "opencode",
         _ => return None,
     };
     Some(id)
@@ -226,6 +255,7 @@ pub fn detect(env: &Environment) -> Vec<Found> {
                 .or_else(|| folder(env.at_home(".vscode")))
                 .or_else(|| env.program("code")),
             "muse" => folder(env.at_home(".config/muse")).or_else(|| env.program("muse")),
+            "opencode" => folder(env.opencode_dir()).or_else(|| env.program("opencode")),
             _ => folder(env.claude_desktop_dir()),
         };
         if let Some(evidence) = evidence {
@@ -532,6 +562,22 @@ mod tests {
         assert_eq!(parse("claude-code"), Some("claude-code"));
         assert_eq!(parse("VS Code"), Some("vscode"));
         assert_eq!(parse("windsurf"), None);
+        // OpenCode: its global folder, and its file there (`.jsonc` only
+        // when that is the one there is).
+        assert_eq!(parse("OpenCode"), Some("opencode"));
+        let opencode = dir.path().join(".config/opencode");
+        std::fs::create_dir_all(&opencode).unwrap();
+        assert_eq!(detect(&env).last().map(|f| f.client), Some("opencode"));
+        assert_eq!(env.opencode_config(), Some(opencode.join("opencode.json")));
+        std::fs::write(opencode.join("opencode.jsonc"), "{}").unwrap();
+        assert_eq!(env.opencode_config(), Some(opencode.join("opencode.jsonc")));
+        std::fs::write(opencode.join("opencode.json"), "{}").unwrap();
+        assert_eq!(env.opencode_config(), Some(opencode.join("opencode.json")));
+        let xdg = Environment {
+            xdg_config_home: Some(dir.path().join("xdg")),
+            ..env.clone()
+        };
+        assert_eq!(xdg.opencode_dir(), Some(dir.path().join("xdg/opencode")));
     }
 
     #[test]

@@ -60,7 +60,8 @@ enum Command {
         #[arg(long, short = 'y')]
         yes: bool,
         /// The clients to connect: all, none, or a list such as
-        /// claude-code,cursor (claude-code, codex, cursor, vscode, claude).
+        /// claude-code,cursor (claude-code, codex, cursor, vscode, claude,
+        /// muse, opencode).
         #[arg(long, value_name = "LIST")]
         clients: Option<String>,
         /// No session-capture hooks for Claude Code and Codex.
@@ -103,13 +104,14 @@ enum Command {
     ///
     /// The project is this folder's (or --project). Claude Code and VS Code
     /// get an entry in this folder that finds the project from the folder it
-    /// starts in; Claude Desktop, Cursor and Codex get an entry named after
-    /// the project (`graphicle-<name>`) that names it. Without a client,
-    /// every client found on this machine is connected (asked on a
-    /// terminal; --all does not ask) and set up for the code graph, as with
-    /// --graph.
+    /// starts in; Claude Desktop, Cursor, Codex, Muse Code and OpenCode get
+    /// an entry named after the project (`graphicle-<name>`) that names it.
+    /// Without a client, every client found on this machine is connected
+    /// (asked on a terminal; --all does not ask) and set up for the code
+    /// graph, as with --graph.
     Connect {
-        /// claude-code, codex, cursor, vscode or claude (Claude Desktop).
+        /// claude-code, codex, cursor, vscode, claude (Claude Desktop), muse
+        /// (Muse Code) or opencode (OpenCode).
         client: Option<String>,
         /// Connect every client found, without asking.
         #[arg(long, conflicts_with_all = ["client", "config_path", "name"])]

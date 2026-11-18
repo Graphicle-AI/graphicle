@@ -454,6 +454,7 @@ fn list_in(
         )));
     }
     for row in &mut values {
+        crate::memory_scope::conceal(row);
         decode(row, "data")?;
     }
     let original = values.clone();
@@ -623,7 +624,7 @@ fn save_in(
             "Memory identifier unavailable in this repository",
         ));
     }
-    let raw = json!({"id":identifier,"repository_id":repository,"kind":kind,"revision":revision,"state":state,"title":title,"body":body,"data":data.to_string(),"created_at":created,"updated_at":stamp,"memory_namespace":namespace});
+    let raw = json!({"id":identifier,"repository_id":repository,"kind":kind,"revision":revision,"state":state,"title":title,"body":body,"data":data.to_string(),"created_at":created,"updated_at":stamp});
     db.execute(
         "INSERT INTO repo_memory_revisions(memory_id,revision,data,created_at,memory_namespace) VALUES(?,?,?,?,?)",
         params![identifier, revision, raw.to_string(), stamp, namespace],

@@ -483,7 +483,8 @@ pub struct Change {
     /// The entry's name (`mcp`, `codex`, and the `removed-*` kinds).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<String>,
-    /// The JSON object holding the entry (`mcpServers` or `servers`).
+    /// The JSON object holding the entry (`mcpServers`, `servers`, or
+    /// OpenCode's `mcp` or `mcp.servers`, the `servers` object inside `mcp`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
     /// Graphicle created the file.
@@ -625,25 +626,39 @@ pub fn record(directory: &Path, change: Change) -> Result<()> {
 /// MCP server: its command is a program named `graphicle…` and its
 /// arguments include `mcp`.
 pub fn is_graphicle_entry(entry: &Value) -> bool {
-    let command = entry["command"].as_str().unwrap_or_default();
+    let (command, args) = command_line(entry);
     let name = Path::new(command)
         .file_name()
         .map(|name| name.to_string_lossy().to_ascii_lowercase())
         .unwrap_or_default();
-    name.starts_with("graphicle")
-        && entry["args"]
-            .as_array()
-            .is_some_and(|args| args.iter().any(|arg| arg == "mcp"))
+    name.starts_with("graphicle") && args.contains(&"mcp")
+}
+
+/// The program and the arguments of an MCP entry, as text: its `command`
+/// and `args`, or OpenCode's one `command` list (the program first).
+pub fn command_line(entry: &Value) -> (&str, Vec<&str>) {
+    fn text(values: &[Value]) -> Vec<&str> {
+        values.iter().filter_map(Value::as_str).collect()
+    }
+    match &entry["command"] {
+        Value::Array(words) => (
+            words.first().and_then(Value::as_str).unwrap_or_default(),
+            words.get(1..).map(text).unwrap_or_default(),
+        ),
+        command => (
+            command.as_str().unwrap_or_default(),
+            entry["args"]
+                .as_array()
+                .map(Vec::as_slice)
+                .map(text)
+                .unwrap_or_default(),
+        ),
+    }
 }
 
 /// The arguments of an MCP entry, as text.
-fn arguments(entry: &Value) -> Vec<&str> {
-    entry["args"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .collect()
+pub fn arguments(entry: &Value) -> Vec<&str> {
+    command_line(entry).1
 }
 
 /// The data folder a `graphicle` command line opens: its `--data-dir`, else

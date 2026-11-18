@@ -239,6 +239,8 @@ fn traces(ids: &BTreeMap<&'static str, String>) -> Vec<String> {
         .map(|(_, id)| id.clone())
         .collect();
     out.push(MARK.to_string());
+    // Nor B's own namespace: replies to a namespaced key are a shared key's.
+    out.push("memory_namespace".to_string());
     out
 }
 
@@ -607,27 +609,20 @@ fn keys_without_a_namespace_keep_shared_memory_and_never_see_a_namespace() {
             &traces(&written),
         );
     }
-    // A shared key's MCP tools say what they always said; a namespaced
-    // key's memory tools say its memory is private.
-    let described = |key: &Key| -> String {
-        let listed = api::mcp(
+    // The tool contract is the same for every key: a namespaced key lists
+    // exactly the tools, descriptions and schemas a shared key of its role
+    // lists.
+    let listed = |key: &Key| -> Value {
+        api::mcp(
             &f.app(),
             &f.workspace,
             &key.capability,
             &f.repo,
             &json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
         )
-        .unwrap();
-        listed["result"]["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["name"] == "recall_project")
-            .map(|t| s(t, "description").to_string())
-            .unwrap()
+        .unwrap()
     };
-    assert!(!described(&shared_agent).contains(api::PRIVATE_MEMORY));
-    assert!(described(&a).ends_with(api::PRIVATE_MEMORY));
+    assert_eq!(listed(&shared_agent), listed(&a));
     // And a namespaced key never sees shared memory.
     let none = f.command(&a, "memories", json!({})).unwrap();
     assert!(!none.to_string().contains("Shared deploy rule"), "{none:#}");
@@ -873,20 +868,53 @@ fn every_sql_statement_on_namespaced_tables_is_scoped() {
     const JOB_QUEUE: &str = "worker internals: lease, heartbeat, finish, backoff and budget accounting of a job by its id, which only the worker holds; no caller-supplied id reaches them";
     const OWNER_ONLY: &str = "owner/admin operations over every namespace (maintenance, usage, metering, revocation, connectors, vault); a namespaced credential cannot call them";
     const WHOLE_PROJECT: &str = "removes a project's caches or jobs wholesale on a source, permission or project change: every namespace's rows go, which is what a shared change requires";
-    const SHARED_ONLY: &str = "reached only for a shared (NULL) principal: namespaced callers are refused or skipped before it (dense vectors, query embeddings and observer notes stay out of namespaces)";
+    const FORGET_SOURCE: &str = "certified forgetting of a source: every namespace's memory and derivations citing the forgotten documents go, and the receipt counts them all";
     const SCOPED_PARENT: &str =
         "updates a row by the id a namespace-scoped query of the same transaction just returned";
+    // In deletion.rs "memory.delete" statements count, delete and check for
+    // residue by the ids the caller's scoped memory listing returned in the
+    // same transaction.
     const ALLOW: &[(&str, &str, usize, &str)] = &[
         ("auto_observe.rs", "am_jobs", 2, OWNER_ONLY),
-        ("auto_observe.rs", "am_observer_notes", 1, SHARED_ONLY),
         ("claims.rs", "am_claims", 3, SCOPED_PARENT),
         ("connectors.rs", "am_jobs", 3, OWNER_ONLY),
         ("connectors.rs", "am_model_cache", 2, WHOLE_PROJECT),
         (
             "deletion.rs",
-            "repo_memories",
+            "am_claims",
+            3,
+            "memory.delete by scoped ids (2), and certified forgetting of a source (1)",
+        ),
+        ("deletion.rs", "am_document_reads", 2, FORGET_SOURCE),
+        (
+            "deletion.rs",
+            "am_entities",
             1,
-            "certified forgetting of a source: the post-delete residue check over every namespace",
+            "certified forgetting of a source: entities no claim links any more, in every namespace",
+        ),
+        (
+            "deletion.rs",
+            "am_entity_links",
+            1,
+            "certified forgetting of a source: entities no claim links any more, in every namespace",
+        ),
+        (
+            "deletion.rs",
+            "am_vectors",
+            5,
+            "memory.delete by scoped ids (2), and certified forgetting of a source (3)",
+        ),
+        (
+            "deletion.rs",
+            "repo_memories",
+            7,
+            "memory.delete by scoped ids (2), certified forgetting of a source (3), and the owner's deletion.state digest and deletion.verify (2)",
+        ),
+        (
+            "deletion.rs",
+            "repo_memory_revisions",
+            3,
+            "memory.delete by scoped ids (2), and certified forgetting of a source (1)",
         ),
         ("doc_links.rs", "am_jobs", 4, JOB_QUEUE),
         (
@@ -937,13 +965,10 @@ fn every_sql_statement_on_namespaced_tables_is_scoped() {
             "owner namespace operations: the parent subquery of a predicate whose outer table is filtered by namespace",
         ),
         ("oauth.rs", "am_model_cache", 1, WHOLE_PROJECT),
-        ("observer.rs", "am_observer_notes", 5, SHARED_ONLY),
-        ("observer.rs", "am_observer_reflections", 3, SHARED_ONLY),
         ("operations.rs", "am_jobs", 1, WHOLE_PROJECT),
         ("product.rs", "am_call_reservations", 1, OWNER_ONLY),
         ("product.rs", "am_jobs", 2, OWNER_ONLY),
         ("product.rs", "am_model_calls", 1, OWNER_ONLY),
-        ("query.rs", "am_vectors", 1, SHARED_ONLY),
         ("search.rs", "am_call_reservations", 1, JOB_QUEUE),
         ("store.rs", "am_jobs", 1, OWNER_ONLY),
         ("store.rs", "am_query_cache", 1, WHOLE_PROJECT),
@@ -969,8 +994,6 @@ fn every_sql_statement_on_namespaced_tables_is_scoped() {
         ),
         ("workflow_retrieval.rs", "am_model_calls", 2, JOB_QUEUE),
         ("workflows.rs", "am_call_reservations", 1, JOB_QUEUE),
-        ("workflows.rs", "am_query_cache", 3, SHARED_ONLY),
-        ("workflows.rs", "am_vectors", 3, SHARED_ONLY),
         (
             "workflows.rs",
             "repo_memories",
@@ -1022,8 +1045,11 @@ fn every_sql_statement_on_namespaced_tables_is_scoped() {
 /// SQL, names one of `tables` as a word, and does not mention
 /// `memory_namespace`.
 fn unscoped_statements(tables: &[&str]) -> Vec<(String, String, String)> {
-    let literal = regex::Regex::new(r#"(?s)r(#*)"(.*?)"|"((?:[^"\\]|\\.)*)""#).unwrap();
     let verb = regex::Regex::new(r"\b(SELECT|INSERT|UPDATE|DELETE)\b").unwrap();
+    let words: Vec<(&str, regex::Regex)> = tables
+        .iter()
+        .map(|table| (*table, regex::Regex::new(&format!(r"\b{table}\b")).unwrap()))
+        .collect();
     let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files: Vec<_> = std::fs::read_dir(&src)
         .unwrap()
@@ -1035,15 +1061,12 @@ fn unscoped_statements(tables: &[&str]) -> Vec<(String, String, String)> {
     for path in files {
         let text = std::fs::read_to_string(&path).unwrap();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
-        for m in literal.captures_iter(&text) {
-            let body = m.get(2).or_else(|| m.get(3)).map_or("", |b| b.as_str());
-            if !verb.is_match(body) || body.contains("memory_namespace") {
+        for (line, body) in string_literals(&text) {
+            if !verb.is_match(&body) || body.contains("memory_namespace") {
                 continue;
             }
-            for table in tables {
-                let word = regex::Regex::new(&format!(r"\b{table}\b")).unwrap();
-                if word.is_match(body) {
-                    let line = text[..m.get(0).unwrap().start()].matches('\n').count() + 1;
+            for (table, word) in &words {
+                if word.is_match(&body) {
                     let excerpt: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
                     out.push((
                         name.clone(),
@@ -1058,4 +1081,817 @@ fn unscoped_statements(tables: &[&str]) -> Vec<(String, String, String)> {
         }
     }
     out
+}
+
+/// The string literals of a Rust source file with their first line. A small
+/// lexer, not a pattern: comments, char and byte literals (`'"'`) and
+/// lifetimes are skipped, and a raw string ends only at a quote followed by
+/// its own number of `#`, so no quote in code can pair two literals and hide
+/// the SQL between them.
+fn string_literals(text: &str) -> Vec<(usize, String)> {
+    let b = text.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_';
+    let line = |at: usize| text[..at].matches('\n').count() + 1;
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut depth = 0;
+                while i < b.len() {
+                    if b[i..].starts_with(b"/*") {
+                        depth += 1;
+                        i += 2;
+                    } else if b[i..].starts_with(b"*/") {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'r' if (i == 0
+                || !ident(b[i - 1])
+                || (b[i - 1] == b'b' && (i < 2 || !ident(b[i - 2]))))
+                && {
+                    let hashes = b[i + 1..].iter().take_while(|c| **c == b'#').count();
+                    b.get(i + 1 + hashes) == Some(&b'"')
+                } =>
+            {
+                let hashes = b[i + 1..].iter().take_while(|c| **c == b'#').count();
+                let start = i + 2 + hashes;
+                let close: Vec<u8> = std::iter::once(b'"')
+                    .chain(std::iter::repeat_n(b'#', hashes))
+                    .collect();
+                let end = (start..b.len())
+                    .find(|j| b[*j..].starts_with(&close))
+                    .expect("unterminated raw string");
+                out.push((line(i), text[start..end].to_string()));
+                i = end + close.len();
+            }
+            b'"' => {
+                let start = i + 1;
+                let mut j = start;
+                while b[j] != b'"' {
+                    j += if b[j] == b'\\' { 2 } else { 1 };
+                }
+                out.push((line(i), text[start..j].to_string()));
+                i = j + 1;
+            }
+            b'\'' => {
+                // A char literal ('x', '\'', '\u{..}', a multi-byte char) or a
+                // lifetime ('a), which has no closing quote.
+                if b.get(i + 1) == Some(&b'\\') {
+                    let mut j = i + 3;
+                    while b[j] != b'\'' {
+                        j += 1;
+                    }
+                    i = j + 1;
+                } else {
+                    let width = text[i + 1..].chars().next().map_or(1, char::len_utf8);
+                    i += if b.get(i + 1 + width) == Some(&b'\'') {
+                        width + 2
+                    } else {
+                        1
+                    };
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
+/// The lexer the SQL check stands on: quotes inside char literals, comments
+/// and raw strings never pair two literals.
+#[test]
+fn the_sql_check_reads_every_literal() {
+    let source = r##"
+        let quote = |c: char| c != '"' && c != '\\' && c != '\'';
+        // a comment's "quote
+        /* a block's " quote /* nested " */ */
+        fn f<'a>(x: &'a str) {}
+        let a = "SELECT 1 FROM am_vectors";
+        let b = r#"SELECT "x" FROM am_jobs"#;
+        let c = b'"';
+        let d = "esc \" still";
+        let e = br"raw bytes";
+    "##;
+    let found: Vec<String> = string_literals(source)
+        .into_iter()
+        .map(|(_, s)| s)
+        .collect();
+    assert_eq!(
+        found,
+        [
+            "SELECT 1 FROM am_vectors",
+            "SELECT \"x\" FROM am_jobs",
+            "esc \\\" still",
+            "raw bytes",
+        ]
+    );
+}
+
+/// B's secret in the parity tests: its memory says deploys use another
+/// pipeline, so its passage ranks for the same question if it ever leaks.
+const ORCA: &str = "ORCA4410";
+const QUESTION: &str = "Which pipeline do deploys use?";
+
+/// A model provider and a Qdrant collection for the parity tests. Vectors
+/// count the words that tell the memories apart, so B's memory is as close
+/// to the question as A's.
+mod providers {
+    use axum::{
+        Json, Router,
+        extract::{Path, State},
+        http::StatusCode,
+        routing::{get, post, put},
+    };
+    use serde_json::{Value, json};
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    pub struct Calls {
+        pub embedded: Arc<Mutex<Vec<String>>>,
+        pub observed: Arc<Mutex<usize>>,
+        pub points: Arc<Mutex<BTreeMap<String, Value>>>,
+        pub created: Arc<Mutex<Option<Value>>>,
+    }
+
+    pub fn vector(text: &str) -> Vec<f64> {
+        let has = |word: &str| f64::from(u8::from(text.to_lowercase().contains(word)));
+        vec![
+            has("pipeline") + 0.01,
+            has("approval") + 0.01,
+            has("deploy") + 0.01,
+        ]
+    }
+
+    async fn embeddings(State(calls): State<Calls>, Json(body): Json<Value>) -> Json<Value> {
+        let inputs: Vec<String> = serde_json::from_value(body["input"].clone()).unwrap();
+        calls
+            .embedded
+            .lock()
+            .unwrap()
+            .extend(inputs.iter().cloned());
+        Json(
+            json!({"data":inputs.iter().enumerate().map(|(i, text)| json!({"index":i,"embedding":vector(text)})).collect::<Vec<_>>(),
+            "usage":{"prompt_tokens":25}}),
+        )
+    }
+
+    /// Observer notes: one note quoting the rollback rule.
+    async fn responses(State(calls): State<Calls>, Json(_): Json<Value>) -> Json<Value> {
+        *calls.observed.lock().unwrap() += 1;
+        let notes = json!({"notes":[{"text":"Rollbacks require two approvals.","quotes":["Rollbacks need two approvals."]}]});
+        Json(
+            json!({"status":"completed","model":"fixture-model","usage":{"input_tokens":150,"output_tokens":80},
+            "output":[{"type":"message","content":[{"type":"output_text","text":notes.to_string()}]}]}),
+        )
+    }
+
+    fn matches(point: &Value, condition: &Value) -> bool {
+        if let Some(ids) = condition["has_id"].as_array() {
+            return ids.contains(&point["id"]);
+        }
+        point["payload"][condition["key"].as_str().unwrap()] == condition["match"]["value"]
+    }
+
+    fn admitted(point: &Value, filter: &Value) -> bool {
+        filter["must"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .all(|c| matches(point, c))
+            && !filter["must_not"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .any(|c| matches(point, c))
+    }
+
+    async fn collection(
+        State(calls): State<Calls>,
+        Path(_): Path<String>,
+    ) -> (StatusCode, Json<Value>) {
+        match calls.created.lock().unwrap().clone() {
+            Some(created) => (
+                StatusCode::OK,
+                Json(json!({"result":{"config":{"params":{"vectors":created}}}})),
+            ),
+            None => (StatusCode::NOT_FOUND, Json(json!({}))),
+        }
+    }
+    async fn create(
+        State(calls): State<Calls>,
+        Path(_): Path<String>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        *calls.created.lock().unwrap() = Some(body["vectors"].clone());
+        Json(json!({"result":true}))
+    }
+    async fn upsert(
+        State(calls): State<Calls>,
+        Path(_): Path<String>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        let mut points = calls.points.lock().unwrap();
+        for point in body["points"].as_array().unwrap() {
+            points.insert(point["id"].as_str().unwrap().to_string(), point.clone());
+        }
+        Json(json!({"result":{"status":"completed"}}))
+    }
+    async fn delete(
+        State(calls): State<Calls>,
+        Path(_): Path<String>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        calls
+            .points
+            .lock()
+            .unwrap()
+            .retain(|_, point| !admitted(point, &body["filter"]));
+        Json(json!({"result":{"status":"completed"}}))
+    }
+    async fn query(
+        State(calls): State<Calls>,
+        Path(_): Path<String>,
+        Json(body): Json<Value>,
+    ) -> Json<Value> {
+        let question: Vec<f64> = serde_json::from_value(body["query"].clone()).unwrap();
+        let dot = |v: &Value| -> f64 {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .zip(&question)
+                .map(|(a, b)| a.as_f64().unwrap() * b)
+                .sum()
+        };
+        let mut found: Vec<Value> = calls
+            .points
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|point| admitted(point, &body["filter"]))
+            .map(|point| json!({"id":point["id"],"score":dot(&point["vector"]),"payload":point["payload"]}))
+            .collect();
+        found.sort_by(|a, b| {
+            b["score"]
+                .as_f64()
+                .partial_cmp(&a["score"].as_f64())
+                .unwrap()
+        });
+        Json(json!({"result":{"points":found}}))
+    }
+
+    pub struct Server {
+        pub address: std::net::SocketAddr,
+        pub calls: Calls,
+        task: tokio::task::JoinHandle<()>,
+    }
+    impl Drop for Server {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+    pub async fn start() -> Server {
+        let calls = Calls::default();
+        let app = Router::new()
+            .route("/v1/embeddings", post(embeddings))
+            .route("/v1/responses", post(responses))
+            .route("/qdrant/collections/{c}", get(collection).put(create))
+            .route("/qdrant/collections/{c}/points", put(upsert))
+            .route("/qdrant/collections/{c}/points/delete", post(delete))
+            .route("/qdrant/collections/{c}/points/query", post(query))
+            .with_state(calls.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        Server {
+            address,
+            calls,
+            task,
+        }
+    }
+}
+
+impl Fixture {
+    fn models(&self, server: &providers::Server) -> model::Config {
+        serde_json::from_value(
+            json!({"default_model":"fixture","embedding_model":"fixture","models":{"fixture":{
+            "protocol":"responses","base_url":format!("http://{}/v1",server.address),
+            "model":"fixture-model","input_limit":16000,"output_limit":2048}}}),
+        )
+        .unwrap()
+    }
+    /// Queue a job as `key`, run it and return its status.
+    async fn run(&self, key: &Key, config: &model::Config, args: Value) -> Value {
+        let job = self
+            .store
+            .enqueue(&self.workspace, &key.capability, &self.args(args), config)
+            .unwrap();
+        let worker = jobs::Worker::new(self.store.clone(), config.clone()).unwrap();
+        assert!(worker.once().await.unwrap());
+        self.store
+            .job_status(
+                &self.workspace,
+                &key.capability,
+                &self.args(json!({"job_id":job["id"]})),
+            )
+            .unwrap()
+    }
+    /// A reviewed memory saying `body`, as `key` (approved by `reviewer`, or
+    /// by `key` itself in a self-reviewing namespace). Returns its id.
+    fn remember(&self, key: &Key, reviewer: &Key, tag: &str, body: &str) -> String {
+        let proposed = self
+            .command(
+                key,
+                "memory.propose",
+                json!({"kind":"decision","title":"Deploy rule","body":body,"idempotency_key":format!("{tag}-rule"),
+                    "evidence":[{"source_id":"file:notes.txt","quote":"Deploys go through the blue pipeline."}]}),
+            )
+            .unwrap();
+        let memory = s(&proposed, "memory_id").to_string();
+        self.command(
+            reviewer,
+            "learning.review",
+            json!({"memory_id":memory,"expected_revision":1,"decision":"approve","maintainer":"r","reason":"checked"}),
+        )
+        .unwrap();
+        memory
+    }
+    fn vector_rows(&self) -> Vec<Value> {
+        self.store
+            .authorized(&self.workspace, &self.owner, "read", |db, _| {
+                graphicle_runtime::store::rows(
+                    db,
+                    "SELECT identity,memory_namespace FROM am_vectors WHERE repository_id=? ORDER BY identity",
+                    [&self.repo],
+                )
+            })
+            .unwrap()
+    }
+}
+
+/// Ids, digests and clocks differ between two stores (and so the token
+/// counts of texts that quote ids); everything else a reply says must not.
+fn masked(reply: &Value) -> Value {
+    // Text that quotes JSON (an MCP reply's content) is compared as JSON;
+    // the process's write-lock counters, which every store and test of this
+    // process adds to, are not compared.
+    fn unfold(value: &mut Value) {
+        match value {
+            Value::Object(fields) => {
+                fields.remove("write_lock");
+                fields.values_mut().for_each(unfold);
+            }
+            Value::Array(items) => items.iter_mut().for_each(unfold),
+            Value::String(text) if text.starts_with('{') => {
+                if let Ok(mut inner) = serde_json::from_str::<Value>(text) {
+                    unfold(&mut inner);
+                    *value = inner;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut value = reply.clone();
+    unfold(&mut value);
+    let rules = [
+        (r"[0-9a-f]{64}", "<sha>"),
+        (r"[0-9a-f]{32}", "<id>"),
+        (
+            r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?(Z|[+-]\d\d:\d\d)",
+            "<time>",
+        ),
+        (
+            r#""(elapsed_ms|ms|duration_ms|[a-z_]*seconds)":[0-9.e+-]+"#,
+            r#""$1":0"#,
+        ),
+        // Random hex ids tokenize to different lengths; the text is compared.
+        (r#""tokens":\d+"#, r#""tokens":0"#),
+    ];
+    let mut text = value.to_string();
+    for (pattern, with) in rules {
+        text = regex::Regex::new(pattern)
+            .unwrap()
+            .replace_all(&text, with)
+            .into_owned();
+    }
+    serde_json::from_str(&text).unwrap()
+}
+
+/// Where two replies first differ: the JSON path and both values.
+fn difference(path: &str, left: &Value, right: &Value) -> String {
+    match (left, right) {
+        (Value::Object(l), Value::Object(r)) => {
+            for key in l.keys().chain(r.keys()) {
+                let (a, b) = (
+                    l.get(key).unwrap_or(&Value::Null),
+                    r.get(key).unwrap_or(&Value::Null),
+                );
+                if a != b || l.contains_key(key) != r.contains_key(key) {
+                    return difference(&format!("{path}.{key}"), a, b);
+                }
+            }
+            String::new()
+        }
+        (Value::Array(l), Value::Array(r)) if l.len() == r.len() => l
+            .iter()
+            .zip(r)
+            .enumerate()
+            .find(|(_, (a, b))| a != b)
+            .map(|(i, (a, b))| difference(&format!("{path}[{i}]"), a, b))
+            .unwrap_or_default(),
+        _ => format!("at {path}: shared {left:#} | namespaced {right:#}"),
+    }
+}
+
+/// What an agent sees after one history: it writes a reviewed memory,
+/// embeds the project, observes the notes and asks with dense retrieval,
+/// cached query vectors, observer notes and Qdrant. `between` runs after
+/// the writes and before the reads (another namespace's work).
+async fn history<'a>(
+    f: &'a Fixture,
+    server: &'a providers::Server,
+    agent: &'a Key,
+    reviewer: &'a Key,
+    between: impl AsyncFnOnce(),
+) -> Vec<(&'static str, Value)> {
+    let config = f.models(server);
+    let memory = f.remember(agent, reviewer, "rule", "Deploys use the blue pipeline.");
+    let mut seen = Vec::new();
+    seen.push((
+        "work_state.write",
+        f.command(
+            agent,
+            "work_state.write",
+            json!({"list":"Release","fields":{"task":"ship it","status":"doing"}}),
+        )
+        .unwrap(),
+    ));
+    let prepared = f
+        .command(
+            agent,
+            "interpretation.prepare",
+            json!({"source_id":"file:notes.txt"}),
+        )
+        .unwrap();
+    let statement = "Rollbacks need two approvals.";
+    let claim = json!({"statement":statement,"subject":"rollbacks","relation":"need","object":"two approvals",
+        "speaker":"document","modality":"requirement","conditions":[],"action":"ADD","target_id":null,
+        "valid_at":null,"invalid_at":null,"time_basis":"unknown","anchor_id":null,
+        "evidence":[{"id":"file:notes.txt","quote":statement}]});
+    let proposed = f
+        .command(agent, "interpretation.propose", json!({"source_id":"file:notes.txt","context_sha256":prepared["sha256"],"claims":[claim]}))
+        .unwrap();
+    seen.push(("interpretation.propose", proposed.clone()));
+    seen.push((
+        "learning.review",
+        f.command(reviewer, "learning.review", json!({"memory_id":proposed["drafts"][0]["memory_id"],"expected_revision":1,"decision":"approve","maintainer":"r","reason":"checked"}))
+            .unwrap(),
+    ));
+    seen.push((
+        "embed",
+        f.run(agent, &config, json!({"kind":"embed","max_calls":2}))
+            .await,
+    ));
+    seen.push((
+        "observer_notes",
+        f.run(
+            agent,
+            &config,
+            json!({"kind":"observer_notes","include":["file:notes.txt"],"max_calls":2}),
+        )
+        .await,
+    ));
+    between().await;
+    let recall = json!({"kind":"recall","question":QUESTION,"max_calls":2});
+    seen.push(("recall", f.run(agent, &config, recall.clone()).await));
+    // Another job (a replay of the same input would return the first).
+    let mut again = recall.clone();
+    again["max_calls"] = json!(3);
+    seen.push((
+        "recall again (cached query vector)",
+        f.run(agent, &config, again).await,
+    ));
+    seen.push((
+        "recall with note keys",
+        f.run(agent, &config, json!({"kind":"recall","question":"How many approvals do rollbacks need?","note_keys":true,"max_calls":2})).await,
+    ));
+    // The owner publishes the project's vectors; the agent ranks with them.
+    let worker = jobs::Worker::new(f.store.clone(), config.clone()).unwrap();
+    graphicle_runtime::vector::configure(
+        &f.store,
+        &f.workspace,
+        &f.owner,
+        &f.args(
+            json!({"endpoint":format!("http://{}/qdrant",server.address),"collection":"parity"}),
+        ),
+    )
+    .unwrap();
+    let key = graphicle_runtime::model::key(config.profile(Some("fixture")).unwrap().1);
+    graphicle_runtime::vector::publish(
+        &f.store,
+        &worker.client,
+        &f.workspace,
+        &f.owner,
+        &f.args(json!({"model_key":key})),
+    )
+    .await
+    .unwrap();
+    seen.push((
+        "recall over Qdrant",
+        f.run(
+            agent,
+            &config,
+            json!({"kind":"recall","question":QUESTION,"vector_backend":"qdrant","max_calls":2}),
+        )
+        .await,
+    ));
+    for (label, operation, args) in [
+        ("context", "context", json!({"question":QUESTION})),
+        ("memories", "memories", json!({"include_retired":true})),
+        (
+            "memory.search",
+            "memory.search",
+            json!({"question":QUESTION}),
+        ),
+        ("memory.export", "memory.export", json!({})),
+        ("status", "status", json!({})),
+        ("workflow.status", "workflow.status", json!({})),
+        ("pack", "pack", json!({"question":QUESTION})),
+        (
+            "observer.context",
+            "observer.context",
+            json!({"question":"rollbacks approvals"}),
+        ),
+        (
+            "work_state.read",
+            "work_state.read",
+            json!({"include_closed":true}),
+        ),
+        (
+            "memory.history",
+            "memory.history",
+            json!({"memory_id":memory}),
+        ),
+        ("claim.history", "claim.history", json!({})),
+        ("memory.template", "memory.template", json!({})),
+    ] {
+        seen.push((label, f.command(agent, operation, args).unwrap()));
+    }
+    for (name, arguments) in [
+        (
+            "recall_project",
+            json!({"question":QUESTION,"structured":true}),
+        ),
+        ("project_memory", json!({"include_retired":true})),
+        ("search_project_memory", json!({"question":QUESTION})),
+        ("project_memory_history", json!({"memory_id":memory})),
+        ("repository_status", json!({})),
+        ("workflow_status", json!({})),
+        ("work_state_read", json!({"include_closed":true})),
+    ] {
+        seen.push((name, f.tool(agent, name, arguments)));
+    }
+    seen.push((
+        "initialize",
+        api::mcp(&f.app(), &f.workspace, &agent.capability, &f.repo,
+            &json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}))
+        .unwrap(),
+    ));
+    seen.push((
+        "tools/list",
+        api::mcp(
+            &f.app(),
+            &f.workspace,
+            &agent.capability,
+            &f.repo,
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}),
+        )
+        .unwrap(),
+    ));
+    seen
+}
+
+/// Parity: an agent of namespace A on a project it shares with namespace B
+/// sees exactly what a shared agent sees on a project of its own, through
+/// dense vectors, cached query vectors, observer notes and Qdrant, with only
+/// ids, digests and clocks differing. And B's work in between leaves no
+/// trace in what A sees.
+#[tokio::test]
+async fn a_namespaced_key_sees_what_a_shared_key_sees() {
+    let server = providers::start().await;
+    let alone = Fixture::new();
+    let agent = alone.key("agent", None, None);
+    let reviewer = alone.key("reviewer", None, None);
+    let shared = history(&alone, &server, &agent, &reviewer, async || {}).await;
+
+    let server = providers::start().await;
+    let together = Fixture::new();
+    let a = together.key("agent", Some("dev-a"), Some(true));
+    let b = together.key("agent", Some("dev-b"), Some(true));
+    let config = together.models(&server);
+    let b_memory = std::cell::RefCell::new(String::new());
+    let private = history(&together, &server, &a, &a, async || {
+        *b_memory.borrow_mut() = together.remember(&b, &b, "orca", &format!("{ORCA}: deploys use the red pipeline."));
+        let embedded = together.run(&b, &config, json!({"kind":"embed","max_calls":2})).await;
+        assert_eq!(embedded["result"]["embedded_passages"], 1, "B embeds only its memory: {embedded:#}");
+        let recalled = together.run(&b, &config, json!({"kind":"recall","question":QUESTION,"max_calls":2})).await;
+        assert!(recalled.to_string().contains(ORCA), "B recalls its own memory densely: {recalled:#}");
+        assert_eq!(recalled["result"]["semantic"]["loaded"], true);
+        // B's cache is full; A's questions must not evict any of it.
+        together
+            .store
+            .transaction(|db| {
+                for i in 0..600 {
+                    db.execute(
+                        "INSERT INTO am_query_cache(repository_id,request_hash,result,memory_namespace) VALUES(?,?,?,?)",
+                        graphicle_runtime::params![together.repo, format!("b-question-{i}"), "[1.0,0.0,0.0]", "dev-b"],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    })
+    .await;
+    let b_memory = b_memory.into_inner();
+
+    for ((label, theirs), (_, ours)) in shared.iter().zip(&private) {
+        assert!(
+            !ours.to_string().contains(ORCA),
+            "{label}: A sees B's memory: {ours:#}"
+        );
+        assert!(
+            !ours.to_string().contains(&b_memory),
+            "{label}: A sees B's id: {ours:#}"
+        );
+        assert!(
+            !ours.to_string().contains("memory_namespace")
+                && !theirs.to_string().contains("memory_namespace"),
+            "{label}: a reply names a namespace: {ours:#}"
+        );
+        let (theirs, ours) = (masked(theirs), masked(ours));
+        assert!(
+            theirs == ours,
+            "{label} differs: {}",
+            difference("", &theirs, &ours)
+        );
+    }
+    // The features were really in use, for both.
+    for seen in [&shared, &private] {
+        let get = |label: &str| &seen.iter().find(|(l, _)| *l == label).unwrap().1;
+        for label in ["recall", "recall over Qdrant"] {
+            assert_eq!(get(label)["result"]["semantic"]["loaded"], true, "{label}");
+            // The dense arm ranked something, not just loaded.
+            assert!(
+                get(label)["result"]["sources"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|e| s(e, "reason").contains("semantic")),
+                "{label}: {:#}",
+                get(label)["result"]
+            );
+            assert!(
+                s(&get(label)["result"], "markdown").contains("Deploys use the blue pipeline.")
+            );
+        }
+        assert_eq!(
+            get("recall again (cached query vector)")["calls"][0]["cached"],
+            1
+        );
+        assert_eq!(get("observer_notes")["result"]["notes"]["kept_now"], 1);
+        assert_eq!(get("observer.context")["selected"], 1);
+    }
+    // Where each row went: sources and shared memory shared, each
+    // namespace's memory under its namespace, in vectors and query vectors.
+    let rows = together.vector_rows();
+    let namespaces: Vec<Option<&str>> = rows
+        .iter()
+        .map(|r| r["memory_namespace"].as_str())
+        .collect();
+    assert_eq!(
+        rows.iter()
+            .filter(|r| !s(r, "identity").starts_with("memory:"))
+            .count(),
+        2
+    );
+    assert!(
+        rows.iter()
+            .filter(|r| !s(r, "identity").starts_with("memory:"))
+            .all(|r| r["memory_namespace"].is_null())
+    );
+    assert!(
+        namespaces.contains(&Some("dev-a")) && namespaces.contains(&Some("dev-b")),
+        "{rows:#?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|r| s(r, "identity") == format!("memory:{b_memory}"))
+            .unwrap()["memory_namespace"],
+        "dev-b"
+    );
+    let cached = together
+        .store
+        .authorized(&together.workspace, &together.owner, "read", |db, _| {
+            graphicle_runtime::store::rows(db, "SELECT DISTINCT memory_namespace FROM am_query_cache WHERE repository_id=? ORDER BY memory_namespace", [&together.repo])
+        })
+        .unwrap();
+    assert_eq!(
+        json!(cached),
+        json!([{"memory_namespace":"dev-a"},{"memory_namespace":"dev-b"}])
+    );
+    let kept = together
+        .store
+        .authorized(&together.workspace, &together.owner, "read", |db, _| {
+            graphicle_runtime::store::rows(db, "SELECT count(*) AS n FROM am_query_cache WHERE repository_id=? AND memory_namespace='dev-b'", [&together.repo])
+        })
+        .unwrap();
+    assert_eq!(
+        kept[0]["n"], 601,
+        "A's questions evicted B's cached query vectors"
+    );
+    // Qdrant holds every scope's points, each in its part.
+    let parts: std::collections::BTreeSet<String> = server
+        .calls
+        .points
+        .lock()
+        .unwrap()
+        .values()
+        .map(|p| s(&p["payload"], "partition").to_string())
+        .collect();
+    assert_eq!(
+        parts.into_iter().collect::<Vec<_>>(),
+        ["memory:dev-a", "memory:dev-b", "source"]
+    );
+}
+
+/// A store with a namespace needs a program that keeps namespaces apart:
+/// an earlier release would read a namespaced key as an ordinary key and its
+/// memory as shared, so it must refuse the store. A store that never had a
+/// namespace asks for nothing new.
+#[test]
+fn a_store_with_a_namespace_refuses_programs_that_cannot_keep_it() {
+    let f = Fixture::new();
+    let readers = |f: &Fixture| {
+        f.store
+            .authorized(&f.workspace, &f.owner, "read", |db, _| {
+                graphicle_runtime::store::rows(
+                    db,
+                    "SELECT reason,format,version FROM store_readers ORDER BY reason",
+                    [],
+                )
+            })
+            .unwrap()
+    };
+    f.key("agent", None, None);
+    assert!(
+        readers(&f).iter().all(|r| r["format"].as_i64() < Some(2)),
+        "{:#?}",
+        readers(&f)
+    );
+    f.key("agent", Some("dev-a"), Some(true));
+    assert!(
+        readers(&f)
+            .iter()
+            .any(|r| r["reason"] == "memory_namespaces"
+                && r["format"] == 2
+                && r["version"] == "0.1.19"),
+        "{:#?}",
+        readers(&f)
+    );
+    // A store whose record went missing (copied by hand, or made by a
+    // build that did not record it) gets it back when it is next opened.
+    f.store
+        .transaction(|db| {
+            db.execute(
+                "DELETE FROM store_readers WHERE reason='memory_namespaces'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let reopened = Store::open(f._dir.path()).unwrap();
+    let rows = reopened
+        .authorized(&f.workspace, &f.owner, "read", |db, _| {
+            graphicle_runtime::store::rows(
+                db,
+                "SELECT format FROM store_readers WHERE reason='memory_namespaces'",
+                [],
+            )
+        })
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["format"], 2);
 }

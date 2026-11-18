@@ -12,6 +12,10 @@
 //! view with the same content hash. Notes are deleted when their source changes
 //! or disappears ([`forget_source`], [`forget_document`], [`forget_prefix`]).
 //!
+//! A note's input is its source unit alone, never memory, so notes are shared
+//! like the sources they observe: a credential with a memory namespace writes
+//! and reads the same notes as one without, under the same view rule.
+//!
 //! The instructions port a research observer that raised the same thinking
 //! reader's accuracy on LongMemEval-S (with a local judge).
 use crate::db::{Connection, params};
@@ -250,13 +254,6 @@ impl Recipe {
 pub async fn execute(worker: &Worker, original: &Job) -> Result<Value> {
     let job = original.clone();
     validate_args(&job.payload)?;
-    if jobs::guarded_read(&worker.store, &job, |_, p, _| {
-        Ok(p.memory_scope().is_private())
-    })? {
-        return Err(Error::bad(
-            "Private observer notes require namespace-partitioned storage",
-        ));
-    }
     let config = crate::settings::configuration(&worker.store, &job.workspace, &worker.config)?;
     let (_, profile) = config.profile(job.payload["model"].as_str())?;
     let recipe = Recipe::new(&job.payload, profile)?;
@@ -347,7 +344,7 @@ pub fn notes_for(db: &Connection, repository: &str, documents: &[Value]) -> Resu
     let mut out = Vec::new();
     for mut row in rows(
         db,
-        "SELECT source_id,source_sha256,source_version,source_order,session_date,notes FROM am_observer_notes WHERE repository_id=? AND memory_namespace IS NULL ORDER BY source_order,source_id",
+        "SELECT source_id,source_sha256,source_version,source_order,session_date,notes FROM am_observer_notes WHERE repository_id=? ORDER BY source_order,source_id",
         [repository],
     )? {
         let Some(doc) = current.get(s(&row, "source_id")) else {

@@ -292,10 +292,7 @@ async fn basic_inner(worker: &Worker, job: &Job) -> Result<Value> {
     // pin before a source filter narrows what this answer may read.
     let mut available = None;
     if job.payload["observer_notes"] == true {
-        let notes = jobs::guarded_read(&worker.store, job, |db, p, _| {
-            if p.memory_scope().is_private() {
-                return Ok(Vec::new());
-            }
+        let notes = jobs::guarded_read(&worker.store, job, |db, _, _| {
             crate::observer::notes_for(db, &job.repository, &snap.documents)
         })?;
         if job.payload["notes_state"].as_str() != Some(crate::observer::state_of(&notes).as_str()) {

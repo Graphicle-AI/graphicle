@@ -46,6 +46,11 @@ use std::fmt;
 /// its project (directly, or through its parent). Each has a nullable
 /// `memory_namespace` column (NULL: shared). Owner operations on a namespace
 /// (`crate::namespace_owner`) walk this list in order, parents first.
+///
+/// Not here: what is derived from the project's sources alone (the code
+/// graph, the passage index, observer notes and reflections). Every
+/// credential reads the sources, so their derivations are shared like them,
+/// and each is served only while its source is in the reader's own view.
 pub const TABLES: &[(&str, &str)] = &[
     ("repo_memories", "repository_id"),
     ("repo_runs", "repository_id"),
@@ -66,8 +71,6 @@ pub const TABLES: &[(&str, &str)] = &[
     ("gf_observations", "repository_id"),
     ("gf_mental_models", "repository_id"),
     ("gf_alias_proposals", "repository_id"),
-    ("am_observer_notes", "repository_id"),
-    ("am_observer_reflections", "repository_id"),
     ("am_query_cache", "repository_id"),
     ("am_vectors", "repository_id"),
 ];
@@ -157,6 +160,16 @@ impl MemoryScope {
     pub fn bind(&self) -> Option<&str> {
         self.namespace.as_ref().map(Namespace::as_str)
     }
+    /// The namespace to stamp on a passage-index row (`am_vectors`): this
+    /// scope's for a memory passage, NULL (shared) for a source passage,
+    /// which every credential reads. A scope reads the index with
+    /// `(memory_namespace IS NOT DISTINCT FROM ? OR identity NOT LIKE
+    /// 'memory:%')` and [`Self::bind`]: the source passages and its own
+    /// memory passages. Readers still keep only the identities and
+    /// fingerprints of their own authorized candidates.
+    pub fn bind_passage(&self, memory: bool) -> Option<&str> {
+        if memory { self.bind() } else { None }
+    }
     pub fn is_shared(&self) -> bool {
         self.namespace.is_none()
     }
@@ -170,9 +183,36 @@ impl MemoryScope {
     }
 }
 
-/// The index that `stats` reads to find idle namespaces.
+/// Drop the namespace column from a row a reply will carry. A namespace is
+/// the key's, never a property of what the key reads: with every reader
+/// calling this, a namespaced key's replies are a shared key's, field for
+/// field (the parity test `memory_namespace::a_namespaced_key_sees_what_a_shared_key_sees`).
+pub fn conceal(row: &mut serde_json::Value) {
+    if let Some(fields) = row.as_object_mut() {
+        fields.remove("memory_namespace");
+    }
+}
+
+/// The index that `stats` reads to find idle namespaces, and the store
+/// format a store with a namespace requires (for a store whose namespaces
+/// came by a copy or a build that did not record it).
 pub fn migrate(db: &crate::db::Connection) -> crate::Result<()> {
     db.execute_batch("CREATE INDEX IF NOT EXISTS am_memory_namespaces_recent ON am_memory_namespaces(workspace_id,last_read_at,last_write_at)")?;
+    require_reader_if_namespaced(db)
+}
+
+/// [`crate::store::require_namespace_reader`] when the store has a
+/// namespace; run at every open.
+pub fn require_reader_if_namespaced(db: &crate::db::Connection) -> crate::Result<()> {
+    let namespaced = db
+        .query_row(
+            "SELECT CASE WHEN EXISTS(SELECT 1 FROM am_memory_namespaces) OR EXISTS(SELECT 1 FROM credentials WHERE memory_namespace IS NOT NULL) THEN 1 ELSE 0 END",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+    if namespaced == 1 {
+        crate::store::require_namespace_reader(db)?;
+    }
     Ok(())
 }
 
@@ -211,5 +251,10 @@ mod tests {
         assert!(a.allows(Some("tenant-a")) && !a.allows(None) && !a.allows(Some("tenant-b")));
         assert!(!b.allows(Some("tenant-a")) && !b.allows(None));
         assert_eq!((shared.bind(), a.bind()), (None, Some("tenant-a")));
+        assert_eq!(
+            (a.bind_passage(true), a.bind_passage(false)),
+            (Some("tenant-a"), None)
+        );
+        assert_eq!(shared.bind_passage(true), None);
     }
 }

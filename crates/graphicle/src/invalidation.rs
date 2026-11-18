@@ -26,6 +26,24 @@ pub const PRINCIPAL: &str = "principal";
 pub const SOURCE: &str = "source";
 /// One anchored document chunk of the semantic overlay (`gf_anchor_edges`).
 pub const ANCHOR: &str = "anchor";
+/// A source whose last dependency walk stopped at [`WALK_LIMIT`]: some of its
+/// dependents may be outdated without a marker of their own. The marker's id
+/// is [`incomplete_id`] of the source; [`freshness`] counts it, and so does
+/// [`repository_freshness`] of every repository, as an outdated answer or
+/// memory is. The next walk from the same source that finishes clears it.
+pub const INCOMPLETE: &str = "invalidation_incomplete";
+
+/// The id of an [`INCOMPLETE`] marker: a file's own id (which carries its
+/// repository, so a project's purge removes it), else `<kind>:<id>`, so that
+/// walks from different kinds of source with the same id (a connector
+/// document and its permission source) keep separate markers.
+pub fn incomplete_id(kind: &str, id: &str) -> String {
+    if kind == FILE {
+        id.to_string()
+    } else {
+        format!("{kind}:{id}")
+    }
+}
 
 /// Upper bound on the number of artifacts marked in one transitive walk.
 const WALK_LIMIT: usize = 100_000;
@@ -129,14 +147,33 @@ pub fn invalidate_source(
             if !seen.insert(dependent.clone()) {
                 continue;
             }
-            mark_stale(db, workspace, &dependent.0, &dependent.1, reason)?;
-            marked.push(dependent.clone());
             if marked.len() >= WALK_LIMIT {
+                // The change itself goes on (a sync commit, a deleted
+                // document): failing it would stop every later sync of the
+                // project. The walk stops here, and the source says so.
+                mark_stale(
+                    db,
+                    workspace,
+                    INCOMPLETE,
+                    &incomplete_id(source.0, source.1),
+                    &format!(
+                        "{reason}: the dependency walk from {} stopped at the {WALK_LIMIT}-artifact limit",
+                        source.0
+                    ),
+                )?;
                 return Ok(marked);
             }
+            mark_stale(db, workspace, &dependent.0, &dependent.1, reason)?;
+            marked.push(dependent.clone());
             queue.push_back(dependent);
         }
     }
+    clear_stale(
+        db,
+        workspace,
+        INCOMPLETE,
+        &incomplete_id(source.0, source.1),
+    )?;
     Ok(marked)
 }
 
@@ -207,7 +244,7 @@ pub fn repository_freshness(
 ) -> Result<Freshness> {
     let pattern = format!("{}:%", repository.replace('%', "\\%").replace('_', "\\_"));
     let mut statement = db.prepare(
-        "SELECT kind,count(*),min(since) FROM gf_stale WHERE workspace=? AND (id LIKE ? ESCAPE '\\' OR kind IN ('answer','memory','principal')) GROUP BY kind",
+        "SELECT kind,count(*),min(since) FROM gf_stale WHERE workspace=? AND (id LIKE ? ESCAPE '\\' OR kind IN ('answer','memory','principal','invalidation_incomplete')) GROUP BY kind",
     )?;
     let mut freshness = Freshness::default();
     for row in statement.query_map(params![workspace, pattern], |r| {
@@ -529,6 +566,64 @@ mod tests {
         assert!(clear_stale(&db, "w", SUMMARY, "s1").unwrap());
         assert_eq!(freshness(&db, "w").unwrap().stale_count, 3);
         assert!(freshness(&db, "other").unwrap().is_fresh());
+    }
+
+    #[test]
+    fn over_limit_invalidation_is_not_reported_as_complete() {
+        let db = db();
+        // 100,001 dependents of one file, in multi-row inserts both SQLite
+        // and PostgreSQL run (no `printf`, which PostgreSQL lacks).
+        let row =
+            |n: u32| format!("('w','chunk','chunk-{n:06}','file','f','2026-11-12T00:00:00Z')");
+        for start in (1..=100_001).step_by(1000) {
+            let rows = (start..(start + 1000).min(100_002))
+                .map(row)
+                .collect::<Vec<_>>()
+                .join(",");
+            db.execute_batch(&format!(
+                "INSERT INTO gf_dependencies(workspace,dependent_kind,dependent_id,source_kind,source_id,recorded_at) VALUES {rows}"
+            ))
+            .unwrap();
+        }
+
+        // The change goes on: the walk stops at the limit and the source is
+        // marked, so freshness does not report the store as fresh.
+        let marked = invalidate_source(&db, "w", (FILE, "f"), "edited").unwrap();
+        assert_eq!(marked.len(), WALK_LIMIT);
+        assert!(is_stale(&db, "w", INCOMPLETE, "f").unwrap());
+        let fresh = freshness(&db, "w").unwrap();
+        assert!(!fresh.is_fresh());
+        assert_eq!(fresh.by_kind.get(INCOMPLETE), Some(&1));
+
+        // A later walk from the same source that finishes clears the marker.
+        db.execute(
+            "DELETE FROM gf_dependencies WHERE workspace='w' AND dependent_id>'chunk-050000'",
+            [],
+        )
+        .unwrap();
+        let marked = invalidate_source(&db, "w", (FILE, "f"), "edited again").unwrap();
+        assert_eq!(marked.len(), 50_000);
+        assert!(!is_stale(&db, "w", INCOMPLETE, "f").unwrap());
+    }
+
+    #[test]
+    fn incomplete_markers_are_kept_per_kind_of_source() {
+        let db = db();
+        let document = connector_document_id("c", "d");
+        let marker = incomplete_id(DOCUMENT, &document);
+        // A document walk that stopped at the limit.
+        mark_stale(&db, "w", INCOMPLETE, &marker, "edited").unwrap();
+        // Every repository's freshness counts it.
+        let repo = repository_freshness(&db, "w", "r1").unwrap();
+        assert_eq!(repo.by_kind.get(INCOMPLETE), Some(&1));
+        // A finished walk from the permission source with the same id leaves
+        // the document's marker alone.
+        invalidate_source(&db, "w", (SOURCE, &document), "acl").unwrap();
+        assert!(is_stale(&db, "w", INCOMPLETE, &marker).unwrap());
+        // A finished walk from the document clears it.
+        invalidate_source(&db, "w", (DOCUMENT, &document), "edited again").unwrap();
+        assert!(!is_stale(&db, "w", INCOMPLETE, &marker).unwrap());
+        assert_eq!(incomplete_id(FILE, "r1:a.rs"), "r1:a.rs");
     }
 
     #[test]

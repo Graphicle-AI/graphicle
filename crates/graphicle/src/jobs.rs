@@ -1089,11 +1089,7 @@ pub fn queue(
         payload["observer_notes"] = json!(true);
     }
     if (kind == "basic" && payload["observer_notes"] == true) || (kind == "recall" && note_keys) {
-        payload["notes_state"] = json!(if p.memory_scope().is_private() {
-            crate::observer::state_of(&[])
-        } else {
-            crate::observer::state(db, identifier, &documents)?
-        });
+        payload["notes_state"] = json!(crate::observer::state(db, identifier, &documents)?);
     }
     if kind == "basic" {
         payload["answer_contract"] = json!(
@@ -1138,13 +1134,13 @@ pub fn queue(
         )?,
         "embed" => one(
             db,
-            "SELECT count(*) AS count FROM am_vectors WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+            "SELECT count(*) AS count FROM am_vectors WHERE repository_id=? AND (memory_namespace IS NOT DISTINCT FROM ? OR identity NOT LIKE 'memory:%')",
             params![identifier, p.memory_scope().bind()],
         )?,
         crate::observer::KIND => one(
             db,
-            "SELECT count(*) AS count,max(created_at) AS latest FROM am_observer_notes WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
-            params![identifier, p.memory_scope().bind()],
+            "SELECT count(*) AS count,max(created_at) AS latest FROM am_observer_notes WHERE repository_id=?",
+            [identifier],
         )?,
         "connector" | "permissions" | "connector_probe" => one(
             db,
@@ -1252,7 +1248,8 @@ impl Store {
                         }
                     }
                 }
-                let calls=rows(db,"SELECT c.*,r.state AS call_state,r.usage_reported,r.error FROM am_model_calls c LEFT JOIN am_call_reservations r ON r.id=c.id WHERE c.job_id=? ORDER BY c.created_at",[s(&row,"id")])?;
+                let mut calls=rows(db,"SELECT c.*,r.state AS call_state,r.usage_reported,r.error FROM am_model_calls c LEFT JOIN am_call_reservations r ON r.id=c.id WHERE c.job_id=? ORDER BY c.created_at",[s(&row,"id")])?;
+                calls.iter_mut().for_each(crate::memory_scope::conceal);
                 row["calls"]=json!(calls);row.as_object_mut().unwrap().remove("principal_hash");row.as_object_mut().unwrap().remove("payload");result.push(row);
             }
             if args["job_id"].is_string() {result.into_iter().next().ok_or_else(||Error::bad("Job unavailable"))}else{Ok(json!({"jobs":result}))}

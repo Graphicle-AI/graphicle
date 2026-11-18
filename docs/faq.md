@@ -88,8 +88,8 @@ Any MCP client.
 
 - `graphicle setup` connects the agents it finds, and `graphicle connect`
   writes the settings for one: Claude Code (`claude-code`), Cursor
-  (`cursor`), VS Code (`vscode`), Codex (`codex`) and Claude Desktop
-  (`claude`). [agents.md](agents.md) lists what each one gets and how to undo
+  (`cursor`), VS Code (`vscode`), Codex (`codex`), Claude Desktop (`claude`),
+  Muse Code (`muse`) and OpenCode (`opencode`). [agents.md](agents.md) lists what each one gets and how to undo
   it. Other clients take a short JSON entry ([mcp.md](mcp.md#other-clients)).
 - Session capture supports Claude Code and Codex. Setup turns it on.
 - `graphicle graph install --platform NAME` installs the graph's skill and

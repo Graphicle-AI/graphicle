@@ -2479,7 +2479,7 @@ pub fn project_packet(
     })?;
     let mut dense_report = json!({"status":"disabled"});
     let mut dense_calls = 0;
-    if let Some(profile) = embedding.filter(|_| p.memory_scope().is_shared()) {
+    if let Some(profile) = embedding {
         let (candidates, _) = match &shared {
             Some(passages) => candidates_from(&snap, passages.clone(), snap.memories.iter())?,
             None => candidates(&snap)?,
@@ -2492,8 +2492,8 @@ pub fn project_packet(
         let key = crate::model::key(profile);
         for row in crate::store::rows(
             db,
-            "SELECT identity,source_sha,vector FROM am_vectors WHERE repository_id=? AND model_key=?",
-            crate::params![s(repository, "id"), key],
+            "SELECT identity,source_sha,vector FROM am_vectors WHERE repository_id=? AND model_key=? AND (memory_namespace IS NOT DISTINCT FROM ? OR identity NOT LIKE 'memory:%')",
+            crate::params![s(repository, "id"), key, p.memory_scope().bind()],
         )? {
             if valid.get(s(&row, "identity")) == Some(&s(&row, "source_sha")) {
                 vectors.insert(
@@ -2611,9 +2611,7 @@ pub fn project_packet(
     };
     let lookup = crate::doc_links::Lookup::new(db, s(repository, "id"))
         .with_folder(crate::folders::current_folder(db, s(repository, "id"))?);
-    if p.memory_scope().is_shared()
-        && crate::observer::KeyMode::parse(args.get("note_keys"))?.is_some()
-    {
+    if crate::observer::KeyMode::parse(args.get("note_keys"))?.is_some() {
         rankings[crate::observer::NOTE_KEYS] = json!(crate::observer::notes_for(
             db,
             s(repository, "id"),

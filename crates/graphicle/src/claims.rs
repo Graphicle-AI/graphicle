@@ -22,6 +22,7 @@ pub fn current(db: &Connection, repository: &Value, p: &Principal) -> Result<Vec
         params![s(repository, "id"), p.memory_scope().bind()],
     )? {
         if let Some(memory) = allowed.get(s(&row, "memory_id")) {
+            crate::memory_scope::conceal(&mut row);
             decode(&mut row, "data")?;
             row["memory_revision"] = memory["revision"].clone();
             output.push(row);
@@ -409,6 +410,7 @@ impl Store {
                 if !memories.iter().any(|m| m["id"] == row["memory_id"]) {
                     continue;
                 }
+                crate::memory_scope::conceal(&mut row);
                 decode(&mut row, "data")?;
                 // Reconstruct the knowledge view from immutable events. The
                 // current row may contain an invalidation learned much later.

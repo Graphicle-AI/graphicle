@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <sub>Works with Claude Code · Codex · Cursor · VS Code · Claude Desktop · any MCP client. Local: no API key, no account, no telemetry.</sub>
+  <sub>Works with Claude Code · Codex · Cursor · VS Code · Claude Desktop · OpenCode · any MCP client. Local: no API key, no account, no telemetry.</sub>
 </p>
 
 <p align="center">
@@ -91,6 +91,7 @@ More: [packs for long-context models](docs/pack.md) · [reviews of a branch](doc
 | VS Code | `.vscode/mcp.json` in the repository | |
 | Claude Desktop | `claude_desktop_config.json` | |
 | Muse Code | `~/.config/muse/settings.json` ([Muse Code](docs/muse-code.md)) | preview: `graphicle connect muse --hooks` |
+| OpenCode | `~/.config/opencode/opencode.json` (or `.jsonc`) | |
 | Any other MCP client | a short JSON entry ([MCP](docs/mcp.md)) | |
 
 ## Agent memory, compared

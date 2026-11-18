@@ -631,7 +631,7 @@ pub fn migrate_pool(pool: &Arc<crate::db::Database>) -> Result<()> {
         // it changes.
         check_reader(&db)?;
         if schema_current(&db, &digest)? {
-            return Ok(());
+            return crate::memory_scope::require_reader_if_namespaced(&db);
         }
         let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_reader(&tx)?;
@@ -855,6 +855,7 @@ impl Store {
                     self_review = requested_review.unwrap_or(false);
                     db.execute("INSERT INTO am_memory_namespaces(workspace_id,name,self_review,created_at) VALUES(?,?,?,?)",
                         params![workspace,namespace,i64::from(self_review),now()])?;
+                    require_namespace_reader(db)?;
                 }
             }
             let expiry=args.get("expires_at").and_then(Value::as_str);
@@ -1312,8 +1313,18 @@ pub fn credential_sources(
 /// The store format this program reads ([`require_reader`]). Format 1 is
 /// Graphicle 0.1.3's: the first program that checks the format when it opens
 /// a store, and one that honours the `credential_requirements` contract
-/// ([`required_capabilities`]).
-pub const READER_FORMAT: i64 = 1;
+/// ([`required_capabilities`]). Format 2 is Graphicle 0.1.19's: memory
+/// namespaces ([`require_namespace_reader`]).
+pub const READER_FORMAT: i64 = 2;
+
+/// Once a store has a memory namespace, only a program that keeps
+/// namespaces apart may open it: an older one would read a namespaced key
+/// as an ordinary key of its role and namespaced memory as shared. A store
+/// that never had a namespace keeps format 1, so it can still be opened by
+/// earlier releases.
+pub(crate) fn require_namespace_reader(db: &Connection) -> Result<()> {
+    require_reader(db, "memory_namespaces", 2, "0.1.19")
+}
 
 /// The formats a store requires of the programs that open it, by reason.
 const READERS: &str = "CREATE TABLE IF NOT EXISTS store_readers (
@@ -1973,9 +1984,10 @@ mod reader_format_tests {
         drop(db);
         let error = Store::open(dir.path()).err().expect("refused");
         assert!(
-            error
-                .message
-                .starts_with("This store needs Graphicle 9.9.9 or newer (store format 2)"),
+            error.message.starts_with(&format!(
+                "This store needs Graphicle 9.9.9 or newer (store format {})",
+                READER_FORMAT + 1
+            )),
             "{}",
             error.message
         );

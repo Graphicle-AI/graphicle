@@ -207,6 +207,12 @@ pub struct HtmlOptions {
     pub node_limit: Option<i64>,
     pub learning_overlay: Option<Value>,
 }
+/// The refusal of a graph with `nodes` nodes above the HTML view's `limit`.
+pub fn too_large(nodes: usize, limit: i64) -> String {
+    format!(
+        "Graph has {nodes} nodes - too large for HTML viz (limit: {limit}). Use --no-viz, raise GRAPHICLE_VIZ_NODE_LIMIT, or reduce input size."
+    )
+}
 pub fn to_html(
     graph: &Graph,
     communities: &Communities,
@@ -219,10 +225,7 @@ pub fn to_html(
     let labels = &options.community_labels;
     if graph.nodes.len() as i64 > limit {
         if options.node_limit.is_none() {
-            return Err(format!(
-                "Graph has {} nodes - too large for HTML viz (limit: {limit}). Use --no-viz, raise GRAPHICLE_VIZ_NODE_LIMIT, or reduce input size.",
-                graph.nodes.len()
-            ).into());
+            return Err(too_large(graph.nodes.len(), limit).into());
         }
         diagnostics.stdout.push(format!(
             "Graph has {} nodes (above {limit} limit). Building aggregated community view...",

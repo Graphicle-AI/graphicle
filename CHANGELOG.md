@@ -3,36 +3,100 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## Unreleased
+## 0.1.19 - Unreleased
 
 ### Added
 
 - Private memory per key. The owner can give a key a `memory_namespace`
   (and `self_review`) when making it. Such a key reads the shared project as
   before, and reads and writes only its namespace's memory: memories and
-  their revisions, work state, claims, entities, events, jobs and cached
-  model results. It never sees shared memory or another namespace's, through
-  any tool or cache, and another namespace's memory id gets the answer an
-  unknown id gets. Keys without a namespace are unchanged. The owner API
-  adds `stats`, `export`, `import` and `delete` for a namespace
-  (`/api/workspaces/W/memory-namespaces/N/…`); deleting a project deletes its
-  namespaced memory.
-- A namespaced key's MCP memory tools say that its memory is private; other
-  keys' tool descriptions are unchanged.
+  their revisions, work state, claims, entities, events, jobs, embeddings,
+  cached query vectors and cached model results. It never sees shared memory
+  or another namespace's, through any tool or cache, and another namespace's
+  memory id gets the answer an unknown id gets. Everything else works as for
+  any key: dense retrieval, cached query vectors, Qdrant, observer notes and
+  the MCP tools and their descriptions, and its replies have the same fields
+  as a key without a namespace. Keys without a namespace are unchanged. The
+  owner API adds `stats`, `export`, `import` and `delete` for a namespace
+  (`/api/workspaces/W/memory-namespaces/N/…`); deleting a project deletes
+  its namespaced memory.
+
+### Behaviour changes
+
+- Qdrant points carry a `partition` (`source`, `memory` or
+  `memory:<namespace>`), and a reader accepts only the sources' and its own
+  memory's. An owner's publication includes every namespace's memory
+  vectors. Points published by earlier releases have none and are read as
+  before; publish again to partition them.
+- The opt-in embedding cache (`GRAPHICLE_EMBEDDING_CACHE`) keeps each
+  namespace's memory passages in their own key space. Source passages and
+  shared memory keep the shared one, so existing entries are still used.
+- Cached query vectors are evicted per namespace (the newest 500 each), so
+  one namespace's questions never evict another's.
 
 ### After upgrading
 
+- Once the owner makes a key with a memory namespace, the store records that
+  it needs Graphicle 0.1.19 or newer (store format 2), so 0.1.3 to 0.1.18
+  refuse to open it instead of reading namespaced keys as ordinary keys and
+  namespaced memory as shared. A store without a namespace can still be
+  opened by earlier releases.
 - The store gains a nullable `memory_namespace` column on credentials and on
   the tables of agent-written memory and their caches, and an
   `am_memory_namespaces` table. Existing rows stay shared (NULL); nothing is
   rewritten. Code that inserts into these tables without naming its columns
   must name them now.
 
-### Known limits
+## 0.1.18 - 2026-11-16
 
-- Namespaced keys do not use dense vectors, query embeddings or observer
-  notes; their recall is lexical and graph-based until those caches are
-  partitioned by namespace.
+Every crate is at 0.1.18, and `graphicle --version` prints
+`graphicle 0.1.18 (core)`. The Python and TypeScript SDKs are at 0.1.18 too.
+This release adds OpenCode, makes updates of large graphs faster and reports
+incomplete dependency invalidation. No migration runs, and graphs are not
+rebuilt: an update writes the same graph and report as 0.1.17.
+
+### Added
+
+- OpenCode: `graphicle setup` finds OpenCode (its `~/.config/opencode`
+  folder or the `opencode` program), and `graphicle connect opencode` and
+  `graphicle disconnect opencode` add and remove the project's MCP server in
+  OpenCode's global `opencode.json` (or `opencode.jsonc`, comments kept). The
+  entry takes OpenCode 2's shape (`mcp.servers`) when the file already uses
+  it or `opencode --version` reports 2 or later, else OpenCode 1.x's (`mcp`,
+  which 2.x still reads); `disconnect` removes it from both. The graph
+  engine's OpenCode skill and plugin stay a separate install:
+  `graphicle graph install --platform opencode` (#43, requested by
+  @rfrezino).
+- `GRAPHICLE_PROFILE=1` also times an update's read of the stored graph,
+  its manifest load and its split of changed files.
+
+### Fixes
+
+- Invalidation: a walk that reaches the 100,000-artifact limit used to stop
+  without a sign, leaving the rest of the dependents fresh. The change still
+  goes through, and the source now carries an `invalidation_incomplete`
+  marker that `freshness` and every repository's freshness count, as they
+  count an outdated answer. The marker stays until a walk from that source
+  finishes, or until the document or project is removed, so a source with
+  more than 100,000 dependents keeps it (#32, by @dajiaohuang).
+
+### Performance
+
+- Updates of large graphs: matching each new community to the previous
+  run's, which keeps community ids stable, counts overlaps from each node's
+  communities instead of comparing every pair of communities, with the same
+  result. On Kubernetes v1.37.1 (437,234 nodes, about 22,000 communities,
+  4 vCPUs) the clustering step of an update went from about 22 s to 10 s.
+- An update no longer loads the whole graph to learn that its HTML view
+  cannot render (more communities than the view's node limit); it decides
+  from the counts it already holds, with the same message. On the same
+  Kubernetes graph that step went from 6.4 s to 1.5 s.
+
+### Documentation
+
+- The README leads with what Graphicle does, a quick start, and Graphicle
+  0.1.17 against Graphify 0.9.108 on Kubernetes; `docs/benchmarks.md` has
+  the method and every measurement.
 
 ## 0.1.17 - 2026-11-13
 

@@ -8,7 +8,8 @@ use std::path::{Path, PathBuf};
 
 /// What `graphicle connect` was asked for.
 pub struct Connect<'a> {
-    /// `claude`, `claude-code`, `cursor`, `vscode` or `codex`.
+    /// `claude`, `claude-code`, `cursor`, `vscode`, `codex`, `muse` or
+    /// `opencode`.
     pub client: &'a str,
     /// The client configuration file to edit instead of the client's own.
     pub config_path: Option<&'a Path>,
@@ -165,13 +166,112 @@ pub fn setup_hooks(client: &str) -> bool {
     matches!(client, "claude-code" | "codex")
 }
 
-/// Clients whose MCP file belongs to one folder (Claude Code's `.mcp.json`,
-/// VS Code's `.vscode/mcp.json`); the others hold one file per user.
 /// The object of Muse Code's settings that holds its MCP servers.
 pub const MUSE_GROUP: &str = "mcp_servers";
 /// The `schema_version` Muse Code's settings file must set.
 pub const MUSE_SCHEMA_VERSION: u64 = 1;
 
+/// The objects of OpenCode's configuration that hold its MCP servers:
+/// OpenCode 2's `servers` inside `mcp`, and 1.x's `mcp` itself (which 2.x
+/// still reads).
+pub const OPENCODE_GROUPS: [&str; 2] = ["mcp.servers", "mcp"];
+
+/// The command that installs the graph engine's OpenCode skill and plugin;
+/// `connect opencode` names it and leaves it to the user.
+pub const OPENCODE_SKILL: &str = "graphicle graph install --platform opencode";
+
+/// The groups that may hold `client`'s entry recorded in `group`: both of
+/// OpenCode's ([`OPENCODE_GROUPS`]), else `group`.
+pub fn entry_groups<'a>(client: Option<&str>, group: &'a str) -> Vec<&'a str> {
+    if client == Some("opencode") {
+        OPENCODE_GROUPS.to_vec()
+    } else {
+        vec![group]
+    }
+}
+
+/// Whether OpenCode's configuration `document` gets the entry in OpenCode
+/// 2's shape (`mcp.servers`, no `enabled`): when it has `mcp.servers`; else,
+/// unless its `mcp` already holds 1.x servers (the file stays in one
+/// shape, which 2.x reads), when `major` (the installed OpenCode's major
+/// version, asked only then) is 2 or later. Otherwise OpenCode 1.x's shape.
+fn opencode_v2(document: Option<&Value>, major: impl FnOnce() -> Option<u64>) -> bool {
+    let mcp = document.map(|document| &document["mcp"]);
+    if mcp.is_some_and(|mcp| mcp["servers"].is_object()) {
+        return true;
+    }
+    let legacy = mcp.and_then(Value::as_object).is_some_and(|members| {
+        members.iter().any(|(name, server)| {
+            name != "servers" && (server.get("command").is_some() || server.get("type").is_some())
+        })
+    });
+    !legacy && major().is_some_and(|major| major >= 2)
+}
+
+/// The major version `opencode --version` prints (`2.3.0`, `opencode
+/// 2.3.0`, `v1.18.4`); `None` without the program or a version.
+fn opencode_major() -> Option<u64> {
+    let output = crate::platform::command("opencode")
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .find_map(|word| word.trim_start_matches('v').split('.').next()?.parse().ok())
+}
+
+/// An entry in OpenCode's shape: `{"type": "local", "command": [program,
+/// arguments…]}` and its other fields (1.x's `enabled`), from the shape
+/// the other clients share (`command`, `args`).
+fn opencode_entry(entry: &Value) -> Value {
+    let mut words = vec![entry["command"].clone()];
+    words.extend(entry["args"].as_array().into_iter().flatten().cloned());
+    let mut out = serde_json::Map::new();
+    if let Some(kind) = entry.get("type") {
+        out.insert("type".into(), kind.clone());
+    }
+    out.insert("command".into(), Value::Array(words));
+    for (key, value) in entry.as_object().into_iter().flatten() {
+        if !matches!(key.as_str(), "type" | "command" | "args") {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+/// An OpenCode entry in the shape the other clients share: its `command`
+/// list split into `command` and `args`, then its other fields, in the
+/// order `connect` builds them ([`opencode_entry`] undone).
+fn shared_entry(entry: &Value) -> Value {
+    let Some(words) = entry["command"].as_array() else {
+        return entry.clone();
+    };
+    let mut out = serde_json::Map::new();
+    out.insert(
+        "command".into(),
+        words.first().cloned().unwrap_or(Value::Null),
+    );
+    out.insert(
+        "args".into(),
+        Value::Array(words.iter().skip(1).cloned().collect()),
+    );
+    for (key, value) in entry.as_object().into_iter().flatten() {
+        if !matches!(key.as_str(), "command" | "args") {
+            out.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(out)
+}
+
+/// Clients whose MCP file belongs to one folder (Claude Code's `.mcp.json`,
+/// VS Code's `.vscode/mcp.json`); the others hold one file per user
+/// (OpenCode's global configuration too: an entry in a project's
+/// `opencode.json` would put this machine's paths in a shared file).
 fn project_scope(client: &str) -> bool {
     matches!(client, "claude-code" | "vscode")
 }
@@ -294,9 +394,12 @@ pub fn connect(store: &Store, options: &Connect<'_>) -> Result<Value> {
 /// when an existing entry of that name was replaced.
 pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Result<Value> {
     let client = options.client;
-    if !["claude", "claude-code", "cursor", "vscode", "codex", "muse"].contains(&client) {
+    if !crate::agent_detect::CLIENTS
+        .iter()
+        .any(|(id, _)| *id == client)
+    {
         return Err(Error::bad(
-            "Choose claude, claude-code, cursor, vscode, codex or muse",
+            "Choose claude, claude-code, cursor, vscode, codex, muse or opencode",
         ));
     }
     if options.hooks && !has_hooks(client) {
@@ -673,6 +776,10 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
             }
             "cursor" => user.join(".cursor/mcp.json"),
             "muse" => user.join(".config/muse/settings.json"),
+            // `$XDG_CONFIG_HOME/opencode/opencode.json` (or its `.jsonc`).
+            "opencode" => crate::agent_detect::Environment::current()
+                .opencode_config()
+                .unwrap_or_else(|| user.join(".config/opencode/opencode.json")),
             "vscode" => options.cwd.join(".vscode/mcp.json"),
             _ => options.cwd.join(".mcp.json"),
         }
@@ -680,9 +787,20 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
     // The reply names the file as given; the record, absolutely.
     let recorded = std::path::absolute(&destination)?;
     let existed = destination.exists();
+    let read = read_config(&destination, "MCP");
+    // OpenCode: 2.x's shape or 1.x's, by the file, else by the version
+    // installed.
+    let opencode = client == "opencode";
+    let v2 = opencode
+        && opencode_v2(
+            read.as_ref().ok().map(|(document, _)| document),
+            opencode_major,
+        );
     let group = match client {
         "vscode" => "servers",
         "muse" => MUSE_GROUP,
+        "opencode" if v2 => OPENCODE_GROUPS[0],
+        "opencode" => OPENCODE_GROUPS[1],
         _ => "mcpServers",
     };
     let mut server = json!({"command":command,"args":arguments});
@@ -699,15 +817,38 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
             entry["mode"] = json!("optional");
         }
     }
+    // OpenCode's local servers: `type`, and 1.x's `enabled` (2.x turns one
+    // off with `disabled` instead). Its file holds them with one `command`
+    // list ([`opencode_entry`]); here they keep the shape the other
+    // clients share, so that they compare the same way.
+    if opencode {
+        for entry in [&mut server, &mut learned] {
+            entry["type"] = json!("local");
+            if !v2 {
+                entry["enabled"] = json!(true);
+            }
+        }
+    }
+    let on_disk = |entry: &Value| {
+        if opencode {
+            opencode_entry(entry)
+        } else {
+            entry.clone()
+        }
+    };
     // The entry to paste by hand when the file cannot be edited.
     let by_hand = |name: &str| -> String {
+        let place = match group.split_once('.') {
+            Some((outer, inner)) => format!("the \"{inner}\" object inside \"{outer}\""),
+            None => format!("the \"{group}\" object"),
+        };
         format!(
-            "add this to the \"{group}\" object of {} yourself (docs/mcp.md#other-clients): \"{name}\": {}",
+            "add this to {place} of {} yourself (docs/mcp.md#other-clients): \"{name}\": {}",
             destination.display(),
-            server
+            on_disk(&server)
         )
     };
-    let (mut document, original) = match read_config(&destination, "MCP") {
+    let (mut document, original) = match read {
         Ok(read) => read,
         Err(error) => {
             return Err(Error::bad(format!(
@@ -717,28 +858,34 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
             )));
         }
     };
-    if document.get(group).is_none() {
-        document[group] = json!({});
-    }
-    if !document[group].is_object() {
+    if crate::json_edit::group_object(&mut document, group).is_none() {
         return Err(Error::bad(format!(
             "The \"{group}\" value in {} is not an object; {}",
             destination.display(),
             by_hand(base.as_str())
         )));
     }
+    let servers = crate::json_edit::group(&document, group)
+        .cloned()
+        .unwrap_or_else(|| json!({}));
     let entry = if named_for_project {
         entry_for_project(
             &base,
             &project.id,
             &directory,
-            &|name| document[group].get(name).cloned(),
+            &|name| servers.get(name).cloned(),
             &live,
         )
     } else {
         base.clone()
     };
-    let old = document[group].get(&entry).cloned();
+    let old = servers.get(&entry).map(|old| {
+        if opencode {
+            shared_entry(old)
+        } else {
+            old.clone()
+        }
+    });
     // Setup's entry, with `--allow-learning`, kept as it is.
     let learning_kept = !learning && old.as_ref() == Some(&learned);
     // `connect <client>` without `--tools` or `--allow-learning` keeps an
@@ -804,19 +951,28 @@ pub fn connect_with(store: &Store, options: &Connect<'_>, policy: Policy) -> Res
         None
     };
     let earlier = entry != "graphicle"
-        && document[group]
+        && servers
             .get("graphicle")
             .is_some_and(|earlier| agent_files::entry_uses_store(earlier, &directory));
     let mut result = json!({"connected":true,"client":client,"configuration":destination,"entry":entry,"project":chosen,"access":access(learning || learning_kept),"tools":tools.name(),"next":"Restart or reload your client to enable Graphicle"});
+    // The graph engine's OpenCode skill and plugin are a separate install.
+    if opencode {
+        result["skill"] = json!(format!(
+            "for the graph engine's OpenCode skill and plugin, run {OPENCODE_SKILL}"
+        ));
+    }
     if unchanged {
         result["unchanged"] = json!(true);
     } else {
         // Only Graphicle's entry changes in the file's text: its other
         // entries, formatting, comments and final newline stay.
+        let stored = on_disk(&server);
         let mut edited = original
             .as_deref()
-            .and_then(|text| crate::json_edit::set(text, group, &entry, &server));
-        document[group][&entry] = server.clone();
+            .and_then(|text| crate::json_edit::set(text, group, &entry, &stored));
+        if let Some(servers) = crate::json_edit::group_object(&mut document, group) {
+            servers.insert(entry.clone(), stored);
+        }
         // Muse Code refuses a settings file without its schema version.
         if client == "muse" && document.get("schema_version").is_none() {
             document["schema_version"] = json!(MUSE_SCHEMA_VERSION);
@@ -1753,7 +1909,8 @@ fn remove_matching(document: &mut Value, data: &Path, ours: &dyn Fn(&Value) -> b
 /// Remove the entry `name` from `group` when it runs Graphicle's MCP
 /// server for the data folder `data` and, given `project`, names that
 /// project or follows its folder ([`agent_files::entry_serves`]), with the
-/// group when that empties it. Returns whether it was removed.
+/// group when that empties it (and each object holding it that it empties:
+/// OpenCode's `mcp`). Returns whether it was removed.
 pub fn remove_entry(
     document: &mut Value,
     group: &str,
@@ -1761,7 +1918,8 @@ pub fn remove_entry(
     data: &Path,
     project: Option<&str>,
 ) -> bool {
-    let Some(servers) = document.get_mut(group).and_then(Value::as_object_mut) else {
+    let servers = crate::json_edit::group_mut(document, group);
+    let Some(servers) = servers.and_then(Value::as_object_mut) else {
         return false;
     };
     if !servers
@@ -1771,12 +1929,37 @@ pub fn remove_entry(
         return false;
     }
     servers.shift_remove(name);
-    if servers.is_empty()
-        && let Some(object) = document.as_object_mut()
-    {
-        object.shift_remove(group);
+    let keys: Vec<&str> = group.split('.').collect();
+    for depth in (0..keys.len()).rev() {
+        let holder = if depth == 0 {
+            Some(&mut *document)
+        } else {
+            crate::json_edit::group_mut(document, &keys[..depth].join("."))
+        };
+        let Some(holder) = holder.and_then(Value::as_object_mut) else {
+            break;
+        };
+        if !holder
+            .get(keys[depth])
+            .and_then(Value::as_object)
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            break;
+        }
+        holder.shift_remove(keys[depth]);
     }
     true
+}
+
+/// The entries of `group` in `document`.
+fn group_entries<'a>(
+    document: &'a Value,
+    group: &str,
+) -> impl Iterator<Item = (&'a String, &'a Value)> {
+    crate::json_edit::group(document, group)
+        .and_then(Value::as_object)
+        .into_iter()
+        .flatten()
 }
 
 /// The names of the Graphicle entries in `group` that open the data folder
@@ -1787,10 +1970,7 @@ pub fn graphicle_entries(
     project: Option<&str>,
     data: &Path,
 ) -> Vec<String> {
-    document[group]
-        .as_object()
-        .into_iter()
-        .flatten()
+    group_entries(document, group)
         .filter(|(_, entry)| {
             agent_files::entry_serves(entry, data, project)
                 && (project.is_none() || agent_files::entry_project(entry).is_some())
@@ -1802,20 +1982,15 @@ pub fn graphicle_entries(
 /// The Graphicle entries in `group` that open another data folder than
 /// `data`: `(name, that folder)`.
 pub fn other_stores(document: &Value, group: &str, data: &Path) -> Vec<(String, PathBuf)> {
-    document[group]
-        .as_object()
-        .into_iter()
-        .flatten()
+    group_entries(document, group)
         .filter(|(_, entry)| {
             agent_files::is_graphicle_entry(entry) && !agent_files::entry_uses_store(entry, data)
         })
         .map(|(name, entry)| {
-            let args = entry["args"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(Value::as_str);
-            (name.clone(), agent_files::store_of(args))
+            (
+                name.clone(),
+                agent_files::store_of(agent_files::arguments(entry)),
+            )
         })
         .collect()
 }
@@ -2348,6 +2523,73 @@ mod tests {
         let mut alone = json!({"servers":{"graphicle":{"command":"/x/graphicle","args":["--data-dir","/d","mcp"]}}});
         assert!(remove_entry(&mut alone, "servers", "graphicle", d, None));
         assert_eq!(alone, json!({}));
+    }
+
+    /// OpenCode's entries hold one `command` list, in 2.x's `mcp.servers`
+    /// or 1.x's `mcp`: found, and removed with the objects they empty.
+    #[test]
+    fn opencode_entries_are_found_in_both_shapes() {
+        let d = Path::new("/d");
+        let ours = json!({"type":"local","command":["/x/graphicle","--data-dir","/d","mcp","--project","p1"]});
+        let mut v2 = json!({"$schema":"https://opencode.ai/config.json",
+            "mcp":{"servers":{"graphicle-app":ours,"docs":{"type":"local","command":["node"]}}}});
+        assert!(agent_files::is_graphicle_entry(&ours));
+        assert_eq!(agent_files::entry_project(&ours).as_deref(), Some("p1"));
+        assert_eq!(
+            graphicle_entries(&v2, "mcp.servers", Some("p1"), d),
+            ["graphicle-app"]
+        );
+        // 1.x's group sees 2.x's `servers` as no entry.
+        assert!(graphicle_entries(&v2, "mcp", None, d).is_empty());
+        assert!(remove_entry(
+            &mut v2,
+            "mcp.servers",
+            "graphicle-app",
+            d,
+            None
+        ));
+        assert_eq!(v2["mcp"]["servers"].as_object().map(|s| s.len()), Some(1));
+        let mut alone = json!({"$schema":"x","mcp":{"servers":{"graphicle-app":ours}}});
+        assert!(remove_entry(
+            &mut alone,
+            "mcp.servers",
+            "graphicle-app",
+            d,
+            None
+        ));
+        assert_eq!(alone, json!({"$schema":"x"}));
+        let mut v1 = json!({"mcp":{"graphicle-app":ours,"other":{"type":"remote","url":"u"}}});
+        assert!(remove_entry(&mut v1, "mcp", "graphicle-app", d, None));
+        assert_eq!(v1, json!({"mcp":{"other":{"type":"remote","url":"u"}}}));
+        assert_eq!(entry_groups(Some("opencode"), "mcp"), OPENCODE_GROUPS);
+        assert_eq!(entry_groups(Some("cursor"), "mcpServers"), ["mcpServers"]);
+    }
+
+    /// The shape OpenCode's entry is written in: 2.x's when the file has
+    /// `mcp.servers`; 1.x's when its `mcp` holds 1.x servers; else by the
+    /// version installed (1.x's when unknown). The version is asked only
+    /// when the file does not decide.
+    #[test]
+    fn opencode_shape_follows_the_file_then_the_version() {
+        let never = || -> Option<u64> { panic!("the file decides") };
+        assert!(opencode_v2(Some(&json!({"mcp":{"servers":{}}})), never));
+        assert!(!opencode_v2(
+            Some(&json!({"mcp":{"docs":{"type":"local","command":["node"]}}})),
+            never
+        ));
+        assert!(opencode_v2(Some(&json!({"theme":"x"})), || Some(2)));
+        assert!(opencode_v2(Some(&json!({"mcp":{}})), || Some(3)));
+        assert!(!opencode_v2(Some(&json!({})), || Some(1)));
+        assert!(!opencode_v2(None, || None));
+        assert!(opencode_v2(None, || Some(2)));
+        // Written with one `command` list, and read back the same.
+        let shared = json!({"command":"/x/graphicle","args":["mcp","--project","p1"],"type":"local","enabled":true});
+        let written = opencode_entry(&shared);
+        assert_eq!(
+            written.to_string(),
+            r#"{"type":"local","command":["/x/graphicle","mcp","--project","p1"],"enabled":true}"#
+        );
+        assert_eq!(shared_entry(&written), shared);
     }
 
     #[test]

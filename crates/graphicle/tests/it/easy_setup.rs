@@ -1107,6 +1107,169 @@ fn muse_code_gets_an_entry_in_its_settings() {
     assert_eq!(after["tui"]["terminal_background"], "dark");
 }
 
+/// OpenCode without its program: setup finds it by its folder
+/// (`$XDG_CONFIG_HOME/opencode`), adds the project's entry to the global
+/// `opencode.json` in OpenCode 1.x's shape (the version is unknown), which
+/// 2.x reads too, keeps the file's other settings and names the graph
+/// engine's skill install; a second connect changes nothing; `disconnect
+/// opencode` puts the file back byte for byte.
+#[test]
+fn opencode_gets_a_1x_entry_without_its_program() {
+    let m = Machine::new();
+    let config = m.home.join(".config/opencode/opencode.json");
+    let original =
+        "{\n  \"$schema\": \"https://opencode.ai/config.json\",\n  \"theme\": \"dark\"\n}\n";
+    write(&config, original);
+    let report = m.graphicle(&["setup", "--yes", "--no-hooks"]);
+    assert_eq!(
+        states(&report, "clients", "client"),
+        [("opencode".to_string(), "added".to_string())],
+        "{report:#}"
+    );
+    assert!(
+        report["clients"][0]["skill"]
+            .as_str()
+            .is_some_and(|skill| skill.contains("graphicle graph install --platform opencode")),
+        "{report:#}"
+    );
+    let document = read_json(&config);
+    let entry = &document["mcp"]["graphicle-app"];
+    assert_eq!(entry["type"], "local", "{document:#}");
+    assert_eq!(entry["enabled"], true, "{document:#}");
+    assert!(entry.get("args").is_none(), "{entry}");
+    let command: Vec<&str> = entry["command"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|word| word.as_str().unwrap())
+        .collect();
+    assert!(
+        Path::new(command[0])
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("graphicle")),
+        "{entry}"
+    );
+    assert!(
+        command.contains(&"mcp") && command.contains(&"--project"),
+        "{entry}"
+    );
+    assert!(document["mcp"].get("servers").is_none(), "{document:#}");
+    assert_eq!(document["theme"], "dark");
+    assert_eq!(document["$schema"], "https://opencode.ai/config.json");
+    let again = m.graphicle(&["connect", "opencode"]);
+    assert_eq!(again["unchanged"], true, "{again:#}");
+    assert_eq!(again["entry"], "graphicle-app");
+    let undone = m.graphicle(&["disconnect", "opencode"]);
+    assert_eq!(undone["files"][0]["state"], "restored", "{undone:#}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+}
+
+/// A fake `opencode` program in the machine's `bin` that prints `version`
+/// for `opencode --version`.
+#[cfg(unix)]
+fn fake_opencode(m: &Machine, version: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let program = m.bin.join("opencode");
+    write(&program, &format!("#!/bin/sh\necho '{version}'\n"));
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+/// OpenCode 2: found by its program on `PATH`, it gets the entry in
+/// `mcp.servers` without `enabled`; a second connect changes nothing; an
+/// older copy of the entry in 1.x's place goes with it on `disconnect`,
+/// which deletes the file `connect` created. A file that already has
+/// `mcp.servers` gets 2.x's shape whatever the version says, and is put
+/// back as it was.
+#[cfg(unix)]
+#[test]
+fn opencode_2_gets_its_entry_in_mcp_servers() {
+    let m = Machine::new();
+    fake_opencode(&m, "opencode 2.3.0");
+    m.graphicle(&["sync", "."]);
+    let reply = m.graphicle(&["connect", "--all"]);
+    assert_eq!(reply["detected"][0]["client"], "opencode", "{reply:#}");
+    assert_eq!(
+        reply["detected"][0]["evidence"],
+        json!(m.bin.join("opencode"))
+    );
+    let config = m.home.join(".config/opencode/opencode.json");
+    assert_eq!(reply["connected"][0]["configuration"], json!(config));
+    let document = read_json(&config);
+    let entry = document["mcp"]["servers"]["graphicle-app"].clone();
+    assert_eq!(entry["type"], "local", "{document:#}");
+    assert!(
+        entry["command"].as_array().is_some_and(|c| c.len() > 3),
+        "{entry}"
+    );
+    assert!(entry.get("enabled").is_none(), "{entry}");
+    assert_eq!(
+        document["mcp"].as_object().unwrap().len(),
+        1,
+        "{document:#}"
+    );
+    let again = m.graphicle(&["connect", "opencode"]);
+    assert_eq!(again["unchanged"], true, "{again:#}");
+    // An earlier 1.x entry of the same name, beside 2.x's.
+    let mut both = document.clone();
+    let mut legacy = entry;
+    legacy["enabled"] = json!(true);
+    both["mcp"]["graphicle-app"] = legacy;
+    write(&config, &serde_json::to_string_pretty(&both).unwrap());
+    let undone = m.graphicle(&["disconnect", "opencode"]);
+    assert_eq!(undone["files"][0]["state"], "deleted", "{undone:#}");
+    assert_eq!(
+        undone["files"][0]["removed"],
+        json!(["removed the graphicle-app entry"])
+    );
+    assert!(!config.exists() && config.parent().unwrap().is_dir());
+
+    // `mcp.servers` decides, even when the program reports 1.x.
+    fake_opencode(&m, "1.18.4");
+    let original = "{\n  \"mcp\": {\n    \"servers\": {\n      \"docs\": {\"type\": \"local\", \"command\": [\"node\", \"docs.js\"]}\n    }\n  }\n}\n";
+    write(&config, original);
+    m.graphicle(&["connect", "opencode"]);
+    let document = read_json(&config);
+    assert!(
+        document["mcp"]["servers"]["graphicle-app"].is_object()
+            && document["mcp"].get("graphicle-app").is_none(),
+        "{document:#}"
+    );
+    assert_eq!(
+        document["mcp"]["servers"]["docs"]["command"],
+        json!(["node", "docs.js"])
+    );
+    let undone = m.graphicle(&["disconnect", "opencode"]);
+    assert_eq!(undone["files"][0]["state"], "restored", "{undone:#}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+}
+
+/// OpenCode's `opencode.jsonc`: its comments and trailing commas are kept,
+/// the entry goes where the file's servers are (1.x's `mcp` here), and
+/// `disconnect` gives the text back.
+#[test]
+fn opencode_jsonc_keeps_its_comments() {
+    let m = Machine::new();
+    let config = m.home.join(".config/opencode/opencode.jsonc");
+    let original = "// My OpenCode settings.\n{\n  \"mcp\": {\n    // The docs server.\n    \"docs\": {\"type\": \"local\", \"command\": [\"node\"]}, // npm\n  },\n}\n";
+    write(&config, original);
+    m.graphicle(&["sync", "."]);
+    let reply = m.graphicle(&["connect", "opencode"]);
+    assert_eq!(reply["configuration"], json!(config), "{reply:#}");
+    let text = std::fs::read_to_string(&config).unwrap();
+    assert!(
+        text.starts_with("// My OpenCode settings.\n{\n  \"mcp\": {\n    // The docs server.\n    \"docs\": {\"type\": \"local\", \"command\": [\"node\"]}, // npm\n    \"graphicle-app\": {\n"),
+        "{text}"
+    );
+    let document = graphicle_runtime::json_edit::parse(&text).unwrap();
+    assert_eq!(document["mcp"]["graphicle-app"]["enabled"], true, "{text}");
+    assert!(!m.home.join(".config/opencode/opencode.json").exists());
+    let again = m.graphicle(&["connect", "opencode"]);
+    assert_eq!(again["unchanged"], true, "{again:#}");
+    let undone = m.graphicle(&["disconnect", "opencode"]);
+    assert_eq!(undone["files"][0]["state"], "restored", "{undone:#}");
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), original);
+}
+
 /// A fake `muse` program in the machine's `bin`: it records each call's
 /// arguments, one line per call, in `bin/muse.calls`, and answers
 /// `plugins … --json` with `{"ok":true}`.

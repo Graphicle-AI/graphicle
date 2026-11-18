@@ -55,7 +55,7 @@ operations through the extension registry (`src/extension.rs`).
   provider permission mode ("is not part of Graphicle Core"), while it still enforces
   the provider permissions an existing store holds.
 - `build.info` reports the edition and its capabilities, and
-  `graphicle --version` prints it (`graphicle 0.1.17 (core)`).
+  `graphicle --version` prints it (`graphicle 0.1.18 (core)`).
 - A store keeps every table when either edition opens it, and Core keeps the
   other edition's guarantees on a store it has used (`src/store_compat.rs`).
 
@@ -97,7 +97,7 @@ graphicle disconnect claude-code        # removes what connect wrote
 
 `graphicle setup` does all of this in one step, in the folder it runs in:
 it syncs the folder, connects the agent clients it finds (Claude Code, Codex,
-Cursor, VS Code, Claude Desktop; asked on a terminal, else `--yes` or
+Cursor, VS Code, Claude Desktop, Muse Code, OpenCode; asked on a terminal, else `--yes` or
 `--clients`), turns on session capture for Claude Code and Codex, adds a
 Graphicle section to AGENTS.md (and to CLAUDE.md when it exists), and adds
 Git hooks that keep the project fresh. It lists every file it changes, backs
@@ -110,7 +110,8 @@ finds.
 `connect` connects the project of the folder it runs in (or `--project`: an
 id, a key or a folder). Claude Code and VS Code get an entry in the folder
 that finds the project from the folder the client starts in; Claude Desktop,
-Cursor and Codex get an entry named `graphicle-<project name>`. It keeps
+Cursor, Codex, Muse Code and OpenCode get an entry named
+`graphicle-<project name>`. It keeps
 unrelated client configuration and refuses to replace a different existing
 entry of that name without `--replace`. Codex connections use the installed
 client's MCP command. Reload the client afterwards. MCP reads
@@ -414,9 +415,13 @@ the shared, reviewed memory it always had, and never sees a namespace's.
 Grounding is as strict inside a namespace: quotes of current sources, the
 size limits, `<private>` spans dropped and credentials redacted.
 
-Namespaced keys do not use dense vectors, query embeddings or observer notes
-(their caches are not partitioned by namespace yet): their recall is
-lexical and graph-based.
+Apart from whose memory it reaches, a namespaced key works exactly as any
+key: dense retrieval and Qdrant rank its own memory beside the sources,
+its query vectors are cached for it, it reads and writes the observer notes
+of the sources it can read, and its MCP tools, their descriptions and its
+replies are those of a key without a namespace. Embeddings of a namespace's
+memory are stored under that namespace (in the store, in the embedding
+cache and in Qdrant) and read by nobody else.
 
 The owner manages a namespace across all of the workspace's projects:
 

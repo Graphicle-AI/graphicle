@@ -677,7 +677,20 @@ fn index_markers(
         "SELECT rowid,kind,id FROM gf_stale WHERE workspace=?",
         [workspace],
     )? {
-        if derived(repository, scope, s(&row, "kind"), s(&row, "id")) {
+        // A forgotten document's own marker of a walk that stopped at the
+        // limit (`invalidation::INCOMPLETE`, keyed by `incomplete_id` of the
+        // document or of its permission source) goes too.
+        if derived(repository, scope, s(&row, "kind"), s(&row, "id"))
+            || (row["kind"] == crate::invalidation::INCOMPLETE
+                && [crate::invalidation::DOCUMENT, crate::invalidation::SOURCE]
+                    .iter()
+                    .any(|kind| {
+                        s(&row, "id")
+                            .strip_prefix(*kind)
+                            .and_then(|rest| rest.strip_prefix(':'))
+                            .is_some_and(|id| scope.source(id))
+                    }))
+        {
             out.push(row["rowid"].as_i64().unwrap_or_default());
         }
     }

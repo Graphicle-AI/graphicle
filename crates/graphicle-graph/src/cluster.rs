@@ -1178,6 +1178,36 @@ pub fn score_all(graph: &Graph, communities: &Communities) -> Value {
             .collect(),
     )
 }
+/// Every (shared node count, old community, new community) with a shared
+/// node, unsorted. The new communities each node is in (one in a partition)
+/// are indexed once, so each old community's overlaps are counted from its
+/// own members: linear in the nodes, where intersecting every old set with
+/// every new one was quadratic in the communities (22K x 22K on Kubernetes,
+/// about 12 s of each update).
+fn community_overlaps(
+    new_sets: &BTreeMap<i64, BTreeSet<usize>>,
+    old_sets: &BTreeMap<i64, BTreeSet<usize>>,
+) -> Vec<(std::cmp::Reverse<usize>, i64, i64)> {
+    let mut new_of = rustc_hash::FxHashMap::<usize, Vec<i64>>::default();
+    for (new, new_nodes) in new_sets {
+        for node in new_nodes {
+            new_of.entry(*node).or_default().push(*new);
+        }
+    }
+    let mut overlaps = Vec::new();
+    for (old, old_nodes) in old_sets {
+        let mut counts = BTreeMap::<i64, usize>::new();
+        for node in old_nodes {
+            for new in new_of.get(node).into_iter().flatten() {
+                *counts.entry(*new).or_default() += 1;
+            }
+        }
+        for (new, count) in counts {
+            overlaps.push((std::cmp::Reverse(count), *old, new));
+        }
+    }
+    overlaps
+}
 pub fn remap_communities_to_previous(
     communities: &Communities,
     previous: &Partition,
@@ -1198,15 +1228,7 @@ pub fn remap_communities_to_previous(
             .or_default()
             .insert(registry.add_node(n.clone(), Map::new())?);
     }
-    let mut overlaps = Vec::new();
-    for (old, old_nodes) in old_sets {
-        for (new, new_nodes) in &new_sets {
-            let count = old_nodes.intersection(new_nodes).count();
-            if count > 0 {
-                overlaps.push((std::cmp::Reverse(count), old, *new));
-            }
-        }
-    }
+    let mut overlaps = community_overlaps(&new_sets, &old_sets);
     overlaps.sort();
     let mut mapping = BTreeMap::new();
     let mut used = BTreeSet::new();
@@ -1313,6 +1335,62 @@ mod tests {
     };
     use crate::graph::Graph;
     use serde_json::{Map, Value, json};
+
+    /// The overlap scan as it was: every old community against every new
+    /// one. `community_overlaps` must give the same triples.
+    #[test]
+    fn community_overlaps_match_the_all_pairs_scan() {
+        use std::collections::{BTreeMap, BTreeSet};
+        // Deterministic pseudo-random memberships: nodes move between
+        // communities, communities split and merge, nodes come and go, and
+        // a node may sit in two new communities.
+        let mut seed = 0x9e37_79b9_u64;
+        let mut next = |bound: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % bound
+        };
+        for round in 0..60 {
+            let nodes = 20 + next(400) as usize;
+            let (old_count, new_count) = (1 + next(40), 1 + next(40));
+            let mut old_sets = BTreeMap::<i64, BTreeSet<usize>>::new();
+            let mut new_sets = BTreeMap::<i64, BTreeSet<usize>>::new();
+            for node in 0..nodes {
+                if next(10) != 0 {
+                    old_sets
+                        .entry(next(old_count) as i64)
+                        .or_default()
+                        .insert(node);
+                }
+                if next(12) != 0 {
+                    new_sets
+                        .entry(next(new_count) as i64)
+                        .or_default()
+                        .insert(node);
+                }
+                if next(50) == 0 {
+                    new_sets
+                        .entry(next(new_count) as i64)
+                        .or_default()
+                        .insert(node);
+                }
+            }
+            let mut slow = Vec::new();
+            for (old, old_nodes) in &old_sets {
+                for (new, new_nodes) in &new_sets {
+                    let count = old_nodes.intersection(new_nodes).count();
+                    if count > 0 {
+                        slow.push((std::cmp::Reverse(count), *old, *new));
+                    }
+                }
+            }
+            slow.sort();
+            let mut fast = super::community_overlaps(&new_sets, &old_sets);
+            fast.sort();
+            assert_eq!(fast, slow, "round {round}");
+        }
+    }
 
     /// xorshift64, so that every generated graph depends on its seed only.
     struct Rng(u64);
