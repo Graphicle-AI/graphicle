@@ -1,0 +1,87 @@
+# Known vulnerabilities in each crate's dependencies: RustSec advisories, found
+# by cargo-deny in the crate's own Cargo.lock and ranked by
+# packaging/advisory_gate.py, which decides pass, warn or fail.
+#
+# A vulnerability is ranked by its CVSS score, or, when RustSec has none (about
+# half have none), by its category. Unmaintained, unsound, notice and yanked
+# findings are only ever warnings. What fails depends on what is checked:
+#
+#   pull request  a high or critical vulnerability the pull request brings in.
+#                 One already on the base branch is a warning: the pull request
+#                 did not cause it, and its author should not have to fix it.
+#   main, daily   a high or critical vulnerability with a fixed version (a
+#                 `cargo update -p` fixes it). Without a fixed version, a
+#                 warning: nobody here can fix it, and it must not stop work.
+#   release       every high or critical vulnerability that is not fixed or
+#                 accepted in .github/advisories.toml (release.yml calls this
+#                 workflow before it publishes).
+#
+# An advisory accepted in .github/advisories.toml, with a reason and a review
+# date, is reported but never fails until that date.
+name: vulnerabilities
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Daily, so that an advisory published against main is seen within a day,
+  # not at the next push.
+  schedule:
+    - cron: "23 5 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "pr, main or release"
+        default: main
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: release
+
+permissions:
+  contents: read
+
+env:
+  RUST_TOOLCHAIN: "1.95.0"
+  CARGO_DENY_VERSION: "0.20.2"
+
+jobs:
+  advisories:
+    name: vulnerabilities (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        crate: [graphicle, graphicle-graph, graphicle-memory]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          # A pull request is compared with its base branch's lockfile.
+          fetch-depth: 0
+      - name: Toolchain
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal && rustup default "$RUST_TOOLCHAIN"
+      - name: Cache cargo-deny
+        id: deny_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-${{ env.CARGO_DENY_VERSION }}-${{ runner.os }}
+      - name: cargo-deny
+        if: steps.deny_cache.outputs.cache-hit != 'true'
+        run: cargo install --locked "cargo-deny@$CARGO_DENY_VERSION"
+      - name: Gate tests
+        if: matrix.crate == 'graphicle'
+        run: python3 packaging/test_advisory_gate.py
+      - name: Advisories
+        env:
+          CRATE: ${{ matrix.crate }}
+          MODE: ${{ inputs.mode || (github.event_name == 'pull_request' && 'pr') || 'main' }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$MODE" = pr ]; then
+            python3 packaging/advisory_gate.py --crate "crates/$CRATE" --mode pr --base "origin/$BASE_REF"
+          else
+            python3 packaging/advisory_gate.py --crate "crates/$CRATE" --mode "$MODE"
+          fi

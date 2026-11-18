@@ -225,10 +225,18 @@ jobs:
         id: done
         run: echo "signed=true" >> "$GITHUB_OUTPUT"
 
+  # Before anything is published: no high or critical vulnerability that is
+  # neither fixed nor accepted in .github/advisories.toml.
+  vulnerabilities:
+    uses: ./.github/workflows/vulnerabilities.yml
+    with:
+      mode: release
+
   release:
-    needs: [build, sign-windows]
-    # Goes ahead after a successful build whatever became of the signing.
-    if: ${{ !cancelled() && needs.build.result == 'success' }}
+    needs: [build, sign-windows, vulnerabilities]
+    # Goes ahead after a successful build and vulnerability check, whatever
+    # became of the signing.
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.vulnerabilities.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
