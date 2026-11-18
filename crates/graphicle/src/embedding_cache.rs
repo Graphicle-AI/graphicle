@@ -11,10 +11,14 @@
 //! for local models, the manifest fingerprint, so a changed model or prefix
 //! never matches an old entry. Remote providers are assumed to serve fixed
 //! weights for a model name. Share one file only within one trust domain: a
-//! hit reveals that the same text was embedded before.
+//! hit reveals that the same text was embedded before. A memory namespace's
+//! memory passages have their own key space ([`Cache::get_in`]), so within
+//! one store no namespace learns from a hit what another embedded.
 use crate::db::{Connection, OptionalExtension, params, types::ValueRef};
+use crate::memory_scope::MemoryScope;
 use crate::platform::CanonicalExt;
 use crate::{Error, Result};
+use std::borrow::Cow;
 use std::path::Path;
 use std::time::Duration;
 
@@ -87,12 +91,31 @@ impl Cache {
 
     /// The cached vector for `text`, if any. A malformed entry is a miss.
     pub fn get(&self, text: &str) -> Result<Option<Vec<f64>>> {
+        self.get_in(None, text)
+    }
+
+    /// The key space of a passage: the shared one for the project's sources
+    /// and shared memory (`None`, or a shared scope), and one per namespace
+    /// for a namespace's memory, so a hit never tells one namespace that
+    /// another embedded the same words.
+    fn space(&self, memory: Option<&MemoryScope>) -> Cow<'_, str> {
+        match memory.and_then(MemoryScope::bind) {
+            Some(namespace) => {
+                Cow::Owned(format!("{}:memory_namespace:{namespace}", self.namespace))
+            }
+            None => Cow::Borrowed(&self.namespace),
+        }
+    }
+
+    /// [`Self::get`] for a memory passage of `memory` (`None`: a source
+    /// passage).
+    pub fn get_in(&self, memory: Option<&MemoryScope>, text: &str) -> Result<Option<Vec<f64>>> {
         let vector = self
             .db
             .prepare_cached(
                 "SELECT vector FROM am_embedding_cache WHERE model_key=? AND text_sha256=?",
             )?
-            .query_row(params![self.namespace, sha(text)], |row| {
+            .query_row(params![self.space(memory).as_ref(), sha(text)], |row| {
                 Ok(match row.get_ref(0)? {
                     ValueRef::Blob(blob) => decode(blob),
                     _ => None,
@@ -104,6 +127,17 @@ impl Cache {
 
     /// Record vectors for texts; an existing entry is kept.
     pub fn put<'a>(&self, entries: impl IntoIterator<Item = (&'a str, &'a [f64])>) -> Result<()> {
+        self.put_in(None, entries)
+    }
+
+    /// [`Self::put`] for memory passages of `memory` (`None`: source
+    /// passages).
+    pub fn put_in<'a>(
+        &self,
+        memory: Option<&MemoryScope>,
+        entries: impl IntoIterator<Item = (&'a str, &'a [f64])>,
+    ) -> Result<()> {
+        let space = self.space(memory);
         let tx = self.db.unchecked_transaction()?;
         {
             let mut insert = tx.prepare_cached(
@@ -113,7 +147,7 @@ impl Cache {
                 if vector.is_empty() || !vector.iter().all(|x| x.is_finite()) {
                     continue;
                 }
-                insert.execute(params![self.namespace, sha(text), encode(vector)])?;
+                insert.execute(params![space.as_ref(), sha(text), encode(vector)])?;
             }
         }
         tx.commit()?;
@@ -213,9 +247,12 @@ fn decode(blob: &[u8]) -> Option<Vec<f64>> {
     if blob.is_empty() || !blob.len().is_multiple_of(8) {
         return None;
     }
+    // The length is a multiple of 8, so there is no remainder.
     let vector: Vec<f64> = blob
-        .chunks_exact(8)
-        .map(|bytes| f64::from_le_bytes(bytes.try_into().expect("8-byte chunk")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|bytes| f64::from_le_bytes(*bytes))
         .collect();
     vector.iter().all(|x| x.is_finite()).then_some(vector)
 }

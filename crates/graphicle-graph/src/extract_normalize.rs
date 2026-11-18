@@ -916,7 +916,7 @@ pub fn finish<E: Rec>(nodes: &mut [Value], edges: &mut [E], root: &Path, convert
                 .rec_get(key)
                 .and_then(Value::as_str)
                 .filter(|current| !current.is_empty())
-                .and_then(&canon)
+                .and_then(canon)
             {
                 e.rec_set_str(key, &new);
             }

@@ -12,6 +12,10 @@
 //! view with the same content hash. Notes are deleted when their source changes
 //! or disappears ([`forget_source`], [`forget_document`], [`forget_prefix`]).
 //!
+//! A note's input is its source unit alone, never memory, so notes are shared
+//! like the sources they observe: a credential with a memory namespace writes
+//! and reads the same notes as one without, under the same view rule.
+//!
 //! The instructions port a research observer that raised the same thinking
 //! reader's accuracy on LongMemEval-S (with a local judge).
 use crate::db::{Connection, params};

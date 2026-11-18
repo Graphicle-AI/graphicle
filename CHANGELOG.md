@@ -3,6 +3,50 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## 0.1.19 
+
+### Added
+
+- Private memory per key. The owner can give a key a `memory_namespace`
+  (and `self_review`) when making it. Such a key reads the shared project as
+  before, and reads and writes only its namespace's memory: memories and
+  their revisions, work state, claims, entities, events, jobs, embeddings,
+  cached query vectors and cached model results. It never sees shared memory
+  or another namespace's, through any tool or cache, and another namespace's
+  memory id gets the answer an unknown id gets. Everything else works as for
+  any key: dense retrieval, cached query vectors, Qdrant, observer notes and
+  the MCP tools and their descriptions, and its replies have the same fields
+  as a key without a namespace. Keys without a namespace are unchanged. The
+  owner API adds `stats`, `export`, `import` and `delete` for a namespace
+  (`/api/workspaces/W/memory-namespaces/N/…`); deleting a project deletes
+  its namespaced memory.
+
+### Behaviour changes
+
+- Qdrant points carry a `partition` (`source`, `memory` or
+  `memory:<namespace>`), and a reader accepts only the sources' and its own
+  memory's. An owner's publication includes every namespace's memory
+  vectors. Points published by earlier releases have none and are read as
+  before; publish again to partition them.
+- The opt-in embedding cache (`GRAPHICLE_EMBEDDING_CACHE`) keeps each
+  namespace's memory passages in their own key space. Source passages and
+  shared memory keep the shared one, so existing entries are still used.
+- Cached query vectors are evicted per namespace (the newest 500 each), so
+  one namespace's questions never evict another's.
+
+### After upgrading
+
+- Once the owner makes a key with a memory namespace, the store records that
+  it needs Graphicle 0.1.19 or newer (store format 2), so 0.1.3 to 0.1.18
+  refuse to open it instead of reading namespaced keys as ordinary keys and
+  namespaced memory as shared. A store without a namespace can still be
+  opened by earlier releases.
+- The store gains a nullable `memory_namespace` column on credentials and on
+  the tables of agent-written memory and their caches, and an
+  `am_memory_namespaces` table. Existing rows stay shared (NULL); nothing is
+  rewritten. Code that inserts into these tables without naming its columns
+  must name them now.
+
 ## 0.1.18 - 2026-11-16
 
 Every crate is at 0.1.18, and `graphicle --version` prints

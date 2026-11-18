@@ -360,10 +360,9 @@ impl NativeSpeech {
         if bytes.len() % 4 != 0 {
             return Err("ValueError: invalid decoded audio".into());
         }
-        let samples: Vec<f32> = bytes
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes(b.try_into().unwrap()))
-            .collect();
+        // The length is a multiple of 4 (checked above), so no bytes are left over.
+        let (words, _) = bytes.as_chunks::<4>();
+        let samples: Vec<f32> = words.iter().map(|b| f32::from_le_bytes(*b)).collect();
         if samples.iter().any(|n| !n.is_finite()) {
             return Err("ValueError: decoded audio contains nonfinite samples".into());
         }

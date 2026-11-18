@@ -278,7 +278,7 @@ pub fn spring_layout(graph: &Graph) -> Result<Vec<[f64; 2]>> {
         if !result.f.is_finite() || result.x.iter().any(|x| !x.is_finite()) {
             return Err("SVG energy layout failed to produce finite positions".into());
         }
-        pos = result.x.chunks_exact(2).map(|p| [p[0], p[1]]).collect();
+        pos = result.x.as_chunks::<2>().0.to_vec();
     }
     for d in 0..2 {
         let mean = pos.iter().map(|p| p[d]).sum::<f64>() / n as f64;

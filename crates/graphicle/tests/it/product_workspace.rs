@@ -426,7 +426,7 @@ async fn served_tokens_are_reported_per_credential_and_agent_session() {
     )
     .unwrap();
     db.execute(
-        "INSERT INTO am_model_calls VALUES('call-1',?,'job-1','openai','gpt-test','h',1200,300,0,0,?)",
+        "INSERT INTO am_model_calls(id,repository_id,job_id,provider,model,request_hash,input_tokens,output_tokens,elapsed_ms,cached,created_at) VALUES('call-1',?,'job-1','openai','gpt-test','h',1200,300,0,0,?)",
         graphicle_runtime::params![f.repo, stamp],
     )
     .unwrap();

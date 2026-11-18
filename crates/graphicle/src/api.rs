@@ -297,6 +297,22 @@ pub fn router(app: App) -> Router {
             "/v1/workspaces/{workspace}/repos/{repo}/graph/labels",
             post(graph_label),
         )
+        .route(
+            "/api/workspaces/{workspace}/memory-namespaces/{namespace}/stats",
+            get(namespace_stats),
+        )
+        .route(
+            "/api/workspaces/{workspace}/memory-namespaces/{namespace}/export",
+            get(namespace_export),
+        )
+        .route(
+            "/api/workspaces/{workspace}/memory-namespaces/{namespace}/import",
+            post(namespace_import),
+        )
+        .route(
+            "/api/workspaces/{workspace}/memory-namespaces/{namespace}/delete",
+            post(namespace_delete),
+        )
         .route("/api/workspaces/{workspace}/credentials", post(grant))
         .route(
             "/api/workspaces/{workspace}/credentials/{credential}/revoke",
@@ -691,6 +707,52 @@ async fn grant(
         &workspace,
         token(&headers)?,
         &args,
+    )?))
+}
+async fn namespace_stats(
+    State(app): State<App>,
+    Path((workspace, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    Ok(Json(app.worker.store.namespace_stats(
+        &workspace,
+        token(&headers)?,
+        &namespace,
+    )?))
+}
+async fn namespace_export(
+    State(app): State<App>,
+    Path((workspace, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    Ok(Json(app.worker.store.namespace_export(
+        &workspace,
+        token(&headers)?,
+        &namespace,
+    )?))
+}
+async fn namespace_import(
+    State(app): State<App>,
+    Path((workspace, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(args): Json<Value>,
+) -> Result<Json<Value>> {
+    Ok(Json(app.worker.store.namespace_import(
+        &workspace,
+        token(&headers)?,
+        &namespace,
+        &args,
+    )?))
+}
+async fn namespace_delete(
+    State(app): State<App>,
+    Path((workspace, namespace)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Json<Value>> {
+    Ok(Json(app.worker.store.namespace_delete(
+        &workspace,
+        token(&headers)?,
+        &namespace,
     )?))
 }
 async fn revoke(

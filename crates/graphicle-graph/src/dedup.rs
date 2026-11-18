@@ -440,7 +440,7 @@ fn namespace_reference_stub_collisions_in<R: Record, E: EdgeItem<Record = R>>(
             }
             let mut reserved: HashSet<String> = taken.clone();
             reserved.extend(candidates.values().cloned());
-            for (_, value) in candidates.iter_mut() {
+            for value in candidates.values_mut() {
                 let base = value.clone();
                 let mut candidate = base.clone();
                 let mut suffix = 2;

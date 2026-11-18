@@ -195,10 +195,9 @@ fn siphash13(k0: u64, k1: u64, data: &[u8]) -> u64 {
         k0 ^ 0x6c79_6765_6e65_7261,
         k1 ^ 0x7465_6462_7974_6573,
     ];
-    let chunks = data.chunks_exact(8);
-    let tail = chunks.remainder();
+    let (chunks, tail) = data.as_chunks::<8>();
     for chunk in chunks {
-        let m = u64::from_le_bytes(chunk.try_into().expect("an 8-byte chunk"));
+        let m = u64::from_le_bytes(*chunk);
         v[3] ^= m;
         round(&mut v);
         v[0] ^= m;

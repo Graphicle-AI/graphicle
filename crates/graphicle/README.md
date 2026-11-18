@@ -390,6 +390,50 @@ accepts the account email and site URL. SharePoint, Salesforce and other
 connectors are not implemented, nor are Jira attachments and Confluence
 macros or attachments.
 
+### Private memory per key
+
+One project can serve many developers without their agents' memories
+mixing. The owner gives a key a **memory namespace** when making it, and can
+let that namespace approve its own drafts:
+
+```sh
+curl -X POST https://memory.example.com/api/workspaces/WORKSPACE_ID/credentials \
+  -H "Authorization: Bearer OWNER_KEY" -H "Content-Type: application/json" \
+  -d '{"role":"agent","label":"dev-17","memory_namespace":"dev-17","self_review":true}'
+```
+
+A key with a namespace reads the shared project (graph, sources, wiki) as any
+key does, and reads and writes only its own namespace's memory: proposed and
+reviewed memories, their revisions, work state, claims and entities, its
+queued jobs and the model results cached for them. It never sees shared
+memory or another namespace's, by any tool: not the text, a count, an id or a
+cached answer. Asking for another namespace's memory id gets the answer an
+unknown id gets (`Memory unavailable`). Several keys may share a namespace
+(one developer's key, rotated); a key's namespace and a namespace's
+`self_review` cannot be changed afterwards. A key without a namespace keeps
+the shared, reviewed memory it always had, and never sees a namespace's.
+Grounding is as strict inside a namespace: quotes of current sources, the
+size limits, `<private>` spans dropped and credentials redacted.
+
+Apart from whose memory it reaches, a namespaced key works exactly as any
+key: dense retrieval and Qdrant rank its own memory beside the sources,
+its query vectors are cached for it, it reads and writes the observer notes
+of the sources it can read, and its MCP tools, their descriptions and its
+replies are those of a key without a namespace. Embeddings of a namespace's
+memory are stored under that namespace (in the store, in the embedding
+cache and in Qdrant) and read by nobody else.
+
+The owner manages a namespace across all of the workspace's projects:
+
+| Request | What it does |
+| --- | --- |
+| `GET /api/workspaces/W/memory-namespaces/N/stats` | rows, bytes and the last read and write |
+| `GET /api/workspaces/W/memory-namespaces/N/export` | every row of the namespace, as one archive with its SHA-256 |
+| `POST /api/workspaces/W/memory-namespaces/N/import` | restore that archive into the same, empty namespace |
+| `POST /api/workspaces/W/memory-namespaces/N/delete` | delete every row in one transaction, with a hash-chained receipt and a residue check |
+
+Deleting a project deletes its namespaced memory too.
+
 ## Answering and memory
 
 Use **Connections → Answering models → Configure model**. Save a model name,

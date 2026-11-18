@@ -30,7 +30,9 @@ impl EncodingWarnings {
             let le = raw.starts_with(b"\xff\xfe");
             if raw.len() % 2 == 0 {
                 let units = raw[2..]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|b| {
                         if le {
                             u16::from_le_bytes([b[0], b[1]])

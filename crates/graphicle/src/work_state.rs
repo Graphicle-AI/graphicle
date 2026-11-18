@@ -319,12 +319,19 @@ fn write_fields(args: &Value) -> Result<(Map<String, Value>, Applied)> {
 }
 
 /// The repository's entries (one list's, when named), oldest first.
-fn entries(db: &Connection, repository: &str, list: Option<&str>) -> Result<Vec<Entry>> {
+fn entries(
+    db: &Connection,
+    repository: &str,
+    list: Option<&str>,
+    scope: &crate::memory_scope::MemoryScope,
+) -> Result<Vec<Entry>> {
+    let namespace = scope.bind();
     let mut statement = db.prepare(
         "SELECT id,list_name,fields,created_at FROM am_work_state
-         WHERE repository_id=?1 AND (?2::text IS NULL OR list_name=?2) ORDER BY id",
+         WHERE repository_id=?1 AND (?2::text IS NULL OR list_name=?2)
+           AND memory_namespace IS NOT DISTINCT FROM ?3 ORDER BY id",
     )?;
-    let rows = statement.query_map(params![repository, list], |row| {
+    let rows = statement.query_map(params![repository, list, namespace], |row| {
         Ok((
             row.get::<_, i64>(0)?,
             row.get::<_, String>(1)?,
@@ -354,8 +361,9 @@ pub(crate) fn start_section(
     db: &Connection,
     repository: &str,
     now_ms: i64,
+    scope: &crate::memory_scope::MemoryScope,
 ) -> Result<Option<String>> {
-    let lines = render(&entries(db, repository, None)?, now_ms, false);
+    let lines = render(&entries(db, repository, None, scope)?, now_ms, false);
     Ok((!lines.is_empty()).then(|| {
         fit(
             "Open work an agent recorded (work_state_write; not reviewed). Status \"done\" or \"dropped\" closes an item or list:",
@@ -379,8 +387,8 @@ impl Store {
             let repository = repo(db, p, crate::string(args, "repository_id", 100)?)?;
             let repository = s(&repository, "id");
             let held: i64 = db.query_row(
-                "SELECT count(*) FROM am_work_state WHERE repository_id=?",
-                [repository],
+                "SELECT count(*) FROM am_work_state WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+                params![repository, p.memory_scope().bind()],
                 |row| row.get(0),
             )?;
             if held >= MAX_ENTRIES {
@@ -391,16 +399,17 @@ impl Store {
             let at = chrono::Utc::now();
             let now_ms = at.timestamp_millis();
             let entry: i64 = db.query_row(
-                "INSERT INTO am_work_state(repository_id,list_name,fields,created_at) VALUES(?,?,?,?) RETURNING id",
+                "INSERT INTO am_work_state(repository_id,list_name,fields,created_at,memory_namespace) VALUES(?,?,?,?,?) RETURNING id",
                 params![
                     repository,
                     list,
                     encoded,
-                    at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                    at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                    p.memory_scope().bind()
                 ],
                 |row| row.get(0),
             )?;
-            let lines = render(&entries(db, repository, Some(&list))?, now_ms, false);
+            let lines = render(&entries(db, repository, Some(&list), p.memory_scope())?, now_ms, false);
             let saved = format!("Saved to \"{}\".", one_line(&list));
             let text = if lines.is_empty() {
                 format!("{saved} Nothing in it is open now.")
@@ -427,7 +436,7 @@ impl Store {
             let repository = repo(db, p, crate::string(args, "repository_id", 100)?)?;
             let now_ms = chrono::Utc::now().timestamp_millis();
             let lines = render(
-                &entries(db, s(&repository, "id"), list.as_deref())?,
+                &entries(db, s(&repository, "id"), list.as_deref(), p.memory_scope())?,
                 now_ms,
                 include_closed,
             );

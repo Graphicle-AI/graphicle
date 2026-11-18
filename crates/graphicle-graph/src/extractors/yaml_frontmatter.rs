@@ -382,7 +382,7 @@ fn expand(nodes: &[Node], id: usize, depth: usize) -> Result<Value> {
         Node::Mapping(children, kind) => {
             let mut entries: Vec<(Value, Value)> = Vec::new();
             let mut inherited = Map::new();
-            for pair in children.chunks_exact(2) {
+            for pair in children.as_chunks::<2>().0 {
                 let key = expand(nodes, pair[0], depth + 1)?;
                 let value = expand(nodes, pair[1], depth + 1)?;
                 if matches!(nodes[pair[0]], Node::Merge) {
@@ -585,7 +585,7 @@ fn expand_loaded(nodes: &[Node], id: usize, depth: usize) -> Result<Loaded> {
         Node::Mapping(children, _) => {
             let mut merged: Vec<(Value, Loaded)> = Vec::new();
             let mut own: Vec<(Value, Loaded)> = Vec::new();
-            for pair in children.chunks_exact(2) {
+            for pair in children.as_chunks::<2>().0 {
                 if matches!(nodes[pair[0]], Node::Merge) {
                     match expand_loaded(nodes, pair[1], depth + 1)? {
                         Loaded::Map(entries) => merged.extend(entries),
@@ -725,7 +725,7 @@ impl Tree {
         }
         let mut merged = vec![];
         let mut explicit = vec![];
-        for pair in children.chunks_exact(2) {
+        for pair in children.as_chunks::<2>().0 {
             let key = self.resolve(pair[0]);
             match &self.nodes[key] {
                 Node::Merge => {
