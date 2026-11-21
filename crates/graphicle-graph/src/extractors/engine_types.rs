@@ -155,17 +155,17 @@ pub fn python_collect_type_refs(
             }
         }
         "subscript" => {
-            // Parity quirk: the pinned engine.py walks `value` with the outer
-            // role and then re-walks every named child with generic=True,
-            // skipping the value only via `c is value`. py-tree-sitter 0.25
-            // returns a fresh Node from child_by_field_name so that identity
-            // test never matches and the value is emitted twice
-            // (`typing.ItemsView[str, str]` -> (ItemsView, type),
-            // (ItemsView, generic_arg)). Unchanged in 0.9.66; reproduced here
-            // so `references` edge `context` matches byte-for-byte.
+            // The value is walked with the outer role and the other named
+            // children as generic arguments. Before Graphify 0.9.106 (#5113)
+            // the value was walked a second time as its own generic argument
+            // (`mod.MyBox[Foo]` gave MyBox as both type and generic_arg),
+            // because py-tree-sitter's `c is value` never matched.
             let value = node.child_by_field_name("value");
             python_collect_type_refs(value, source, generic, out);
             for c in named(node) {
+                if Some(c) == value {
+                    continue;
+                }
                 python_collect_type_refs(Some(c), source, true, out)
             }
         }

@@ -239,3 +239,34 @@ fn structured_enum_fields_are_reported_and_folded() {
     assert_eq!(a["file_type"], "concept", "{out:#}");
     assert_eq!(out["links"][0]["confidence"], "INFERRED", "{out:#}");
 }
+
+// Graphify 0.9.106 ---------------------------------------------------------
+
+#[test]
+fn python_subscript_annotation_value_counts_once() {
+    // test_python_type_refs (#5113): `mod.MyBox[Foo]` names MyBox as the type
+    // and Foo as the generic argument; MyBox is not its own generic argument.
+    graphicle::rcfile::set_language_overrides(None);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(root.join("box.py"), "class MyBox:\n    pass\n\nclass Foo:\n    pass\n").unwrap();
+    std::fs::write(root.join("use.py"), "import box\n\ndef f(x: box.MyBox[Foo]) -> None:\n    pass\n").unwrap();
+    let r = graphicle::api::extract(
+        &[root.join("box.py"), root.join("use.py")],
+        &graphicle::api::ExtractOptions {
+            root: Some(root.clone()),
+            cache_root: Some(root.join("cache")),
+            parallel: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let generic = r["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["relation"] == "references" && e["context"] == "generic_arg")
+        .map(|e| e["target"].as_str().unwrap_or("").to_string())
+        .collect::<Vec<_>>();
+    assert!(!generic.iter().any(|t| t.ends_with("mybox")), "{generic:?}");
+}
