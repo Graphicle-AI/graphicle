@@ -2943,9 +2943,24 @@ fn watched(p: &Path) -> bool {
     .iter()
     .any(|k| crate::detect_types::contains(k, &watched_suffix(p)))
 }
-fn watch_snapshot(root: &Path, ignore: &mut detect::IgnoreState) -> BTreeMap<PathBuf, (u64, u128)> {
+type Stats = BTreeMap<PathBuf, (u64, u128)>;
+/// The size and modification time of `m`, nanoseconds since the epoch.
+fn stat_of(m: &fs::Metadata) -> (u64, u128) {
+    let ns = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|t| t.as_nanos())
+        .unwrap_or(0);
+    (m.len(), ns)
+}
+/// The watched files' stats, and in `ignores` those of the ignore files in
+/// the walked folders (`.gitignore`, `.graphicleignore`), whose change
+/// reloads the ignore rules (Graphify 0.9.105, #5033).
+fn watch_snapshot(root: &Path, ignore: &mut detect::IgnoreState, ignores: &mut Stats) -> Stats {
     let mut stack = vec![root.to_path_buf()];
     let mut out = BTreeMap::new();
+    ignores.clear();
     let mut warnings = detect::EncodingWarnings::default();
     while let Some(dir) = stack.pop() {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -2955,6 +2970,12 @@ fn watch_snapshot(root: &Path, ignore: &mut detect::IgnoreState) -> BTreeMap<Pat
             let p = e.path();
             let name = e.file_name();
             let name = name.to_string_lossy();
+            if matches!(name.as_ref(), ".gitignore" | ".graphicleignore")
+                && let Ok(m) = p.metadata()
+                && m.is_file()
+            {
+                ignores.insert(p.clone(), stat_of(&m));
+            }
             if name.starts_with('.') || name == paths::OUT_DIR_NAME.as_str() {
                 continue;
             }
@@ -3013,7 +3034,17 @@ pub fn watch(
     crate::rcfile::activate_language_overrides(&root);
     let mut rc_prior = rc_state(&rc_path);
     let mut config_changed = false;
-    let mut prior = watch_snapshot(&root, &mut ignore);
+    let new_ignore = |root: &Path| {
+        detect::IgnoreState::new(
+            root,
+            &[],
+            build_gitignore(&root.join(paths::OUT_DIR.as_str())),
+            &mut detect::EncodingWarnings::default(),
+        )
+    };
+    let mut ignores_prior = Stats::new();
+    let mut ignores_next = Stats::new();
+    let mut prior = watch_snapshot(&root, &mut ignore, &mut ignores_prior);
     let mut changed = BTreeSet::new();
     let mut last = Instant::now();
     announce(&format!(
@@ -3029,7 +3060,18 @@ pub fn watch(
             config_changed = true;
             last = Instant::now();
         }
-        let next = watch_snapshot(&root, &mut ignore);
+        let mut next = watch_snapshot(&root, &mut ignore, &mut ignores_next);
+        if ignores_next != ignores_prior {
+            // An ignore file changed: rebuild the rules, so a newly ignored
+            // folder stops being watched and a newly unignored one starts,
+            // without counting either as a change (Graphify 0.9.105, #5033).
+            if let Ok(reloaded) = new_ignore(&root) {
+                ignore = reloaded;
+            }
+            next = watch_snapshot(&root, &mut ignore, &mut ignores_next);
+            prior = next.clone();
+            ignores_prior = ignores_next.clone();
+        }
         for p in prior.keys().chain(next.keys()) {
             if prior.get(p) != next.get(p) {
                 changed.insert(p.clone());
