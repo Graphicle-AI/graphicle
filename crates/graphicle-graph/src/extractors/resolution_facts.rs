@@ -311,7 +311,44 @@ pub fn top_bodies<'t>(
     }
     let stem = file_stem(path);
     let mut out = vec![];
+    // Python: a decorated definition is unwrapped, and the methods of a
+    // top-level class are walked too, so an aliased import call (`from m
+    // import f as g` then `g()`) made there is linked (Graphify 0.9.110,
+    // #5214).
+    let definition = |n: Node<'t>| {
+        if n.kind_name() == "decorated_definition" {
+            n.child_by_field_name("definition")
+        } else {
+            Some(n)
+        }
+    };
     for n in top {
+        let Some(n) = (if python { definition(n) } else { Some(n) }) else {
+            continue;
+        };
+        if python
+            && n.kind_name() == "class_definition"
+            && let (Some(class), Some(body)) =
+                (n.child_by_field_name("name"), n.child_by_field_name("body"))
+        {
+            let class = read_text(class, s);
+            for member in children(body) {
+                let Some(method) = definition(member).filter(|m| m.kind_name() == "function_definition")
+                else {
+                    continue;
+                };
+                if let (Some(name), Some(method_body)) = (
+                    method.child_by_field_name("name"),
+                    method.child_by_field_name("body"),
+                ) {
+                    out.push((
+                        make_id([stem.as_str(), class.as_str(), read_text(name, s).as_str()]),
+                        method_body,
+                    ));
+                }
+            }
+            continue;
+        }
         if n.kind_name()
             == if python {
                 "function_definition"
