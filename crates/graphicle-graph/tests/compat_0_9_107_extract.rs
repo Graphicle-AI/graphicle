@@ -122,3 +122,61 @@ fn registry_salts_a_same_kind_underscore_respelling() {
     taken.insert("a_foo".into());
     assert_eq!(registry.resolve("a_foo", "FOO", "type", |id| taken.contains(id)), "a_foo");
 }
+
+fn ids_and_calls(name: &str, text: &str) -> (std::collections::BTreeMap<String, Vec<String>>, BTreeSet<(String, String)>) {
+    let r = extract_one(name, text);
+    let mut ids = std::collections::BTreeMap::<String, Vec<String>>::new();
+    for n in r["nodes"].as_array().unwrap() {
+        ids.entry(n["label"].as_str().unwrap_or("").to_string())
+            .or_default()
+            .push(n["id"].as_str().unwrap_or("").to_string());
+    }
+    let calls = r["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["relation"] == "calls")
+        .map(|e| (e["source"].as_str().unwrap().to_string(), e["target"].as_str().unwrap().to_string()))
+        .collect();
+    (ids, calls)
+}
+
+fn one(ids: &std::collections::BTreeMap<String, Vec<String>>, label: &str) -> String {
+    let found = ids.get(label).cloned().unwrap_or_default();
+    assert_eq!(found.len(), 1, "{label}: {ids:?}");
+    found[0].clone()
+}
+
+#[test]
+fn php_underscore_method_twins_are_two_nodes() {
+    // Graphify 0.9.107 (6a69b73d; #2810)
+    let (ids, calls) = ids_and_calls(
+        "b.php",
+        "<?php\nclass B {\n  private function _x() { return 1; }\n  public function x() { return $this->_x(); }\n  public function y() { return $this->x(); }\n}\n",
+    );
+    let (ux, x, y) = (one(&ids, "._x()"), one(&ids, ".x()"), one(&ids, ".y()"));
+    assert_ne!(ux, x);
+    assert!(calls.contains(&(x.clone(), ux)), "{calls:?}");
+    assert!(calls.contains(&(y, x.clone())), "{calls:?}");
+    assert!(!calls.contains(&(x.clone(), x)), "{calls:?}");
+}
+
+#[test]
+fn java_underscore_and_case_twins_keep_their_own_nodes_and_calls() {
+    // test_java_underscore_ids.py (Graphify 0.9.107)
+    let (ids, calls) = ids_and_calls(
+        "Foo.java",
+        "package demo;\n\npublic class Foo {\n    public void bar() { helper(); }\n    private void _bar() { other(); }\n    void helper() {}\n    void other() {}\n    void Run() {}\n    void run() {}\n    public void caller() { _bar(); bar(); run(); Run(); }\n}\n",
+    );
+    let (bar, ubar) = (one(&ids, ".bar()"), one(&ids, "._bar()"));
+    let (helper, other, caller) = (one(&ids, ".helper()"), one(&ids, ".other()"), one(&ids, ".caller()"));
+    assert_ne!(bar, ubar);
+    assert!(bar.ends_with("_foo_bar") && helper.ends_with("_foo_helper"), "{bar} {helper}");
+    for pair in [(&bar, &helper), (&ubar, &other), (&caller, &bar), (&caller, &ubar)] {
+        assert!(calls.contains(&(pair.0.clone(), pair.1.clone())), "{pair:?}: {calls:?}");
+    }
+    assert!(!calls.contains(&(bar.clone(), other.clone())));
+    let (run, big_run) = (one(&ids, ".run()"), one(&ids, ".Run()"));
+    assert_ne!(run, big_run);
+    assert!(calls.contains(&(caller.clone(), run)) && calls.contains(&(caller, big_run)));
+}

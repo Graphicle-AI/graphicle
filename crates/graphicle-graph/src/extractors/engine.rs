@@ -751,6 +751,16 @@ impl<'a, 't> Engine<'a, 't> {
             )
         {
             id = self.js_member_nid(class, n, &sanitized);
+        } else if self.is("php")
+            && let Some(class) = parent
+            && n.kind_name() == "method_declaration"
+        {
+            id = self.php_member_nid(class, n, &sanitized);
+        } else if self.is("java")
+            && let Some(class) = parent
+            && matches!(n.kind_name(), "method_declaration" | "constructor_declaration")
+        {
+            id = self.java_member_nid(class, n, &sanitized);
         }
         if parent.is_none() {
             // A top-level function whose id is the file's (Graphify 0.9.98,
@@ -921,6 +931,79 @@ impl<'a, 't> Engine<'a, 't> {
             self.js_member_groups.insert(key.clone(), names);
         }
         underscore_salted_nid(&plain, name, &self.js_member_groups[&key], &['_', '$', '#'])
+    }
+    /// `_php_member_nid` (Graphify 0.9.107, #2810): a PHP method's id,
+    /// salted when a sibling method of the same class, trait, interface or
+    /// enum body differs only by `_`. PHP method names are case-insensitive,
+    /// so names are case-folded first: `Foo()` / `foo()` are one method.
+    pub fn php_member_nid(&mut self, class: &str, member: Node<'t>, name: &str) -> String {
+        let plain = make_id([class, name]);
+        let Some(body) = member
+            .parent()
+            .filter(|b| matches!(b.kind_name(), "declaration_list" | "enum_declaration_list"))
+        else {
+            return plain;
+        };
+        let key = (class.to_string(), body.start_byte(), body.end_byte());
+        if !self.js_member_groups.contains_key(&key) {
+            let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for c in children(body) {
+                if c.kind_name() != "method_declaration" {
+                    continue;
+                }
+                let text = c
+                    .child_by_field_name("name")
+                    .map(|n| self.text(n))
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    names
+                        .entry(make_id([class, text.as_str()]))
+                        .or_default()
+                        .insert(crate::dedup_strings::casefold(&text));
+                }
+            }
+            names.retain(|_, names| names.len() >= 2);
+            self.js_member_groups.insert(key.clone(), names);
+        }
+        underscore_salted_nid(
+            &plain,
+            &crate::dedup_strings::casefold(name),
+            &self.js_member_groups[&key],
+            &['_'],
+        )
+    }
+    /// `_java_member_nid` (Graphify 0.9.107): a Java method's or
+    /// constructor's id, salted when a sibling of the same body mints the
+    /// same id (`_testFoo()` / `testFoo()`, `getId()` / `getID()`, a
+    /// constructor `HashCode()` / method `hashCode()`); overloads share one
+    /// name and are no collision.
+    pub fn java_member_nid(&mut self, class: &str, member: Node<'t>, name: &str) -> String {
+        let plain = make_id([class, name]);
+        let Some(body) = member.parent() else {
+            return plain;
+        };
+        let key = (class.to_string(), body.start_byte(), body.end_byte());
+        if !self.js_member_groups.contains_key(&key) {
+            let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for c in children(body) {
+                if !matches!(c.kind_name(), "method_declaration" | "constructor_declaration") {
+                    continue;
+                }
+                let text = c
+                    .child_by_field_name("name")
+                    .map(|n| self.text(n))
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    names
+                        .entry(make_id([class, text.as_str()]))
+                        .or_default()
+                        .insert(text);
+                }
+            }
+            names.retain(|_, names| names.len() >= 2);
+            self.js_member_groups.insert(key.clone(), names);
+        }
+        underscore_salted_nid(&plain, name, &self.js_member_groups[&key], &['_'])
     }
     pub fn nested(&mut self, n: Node<'t>, parent: &str) {
         for c in children(n) {
