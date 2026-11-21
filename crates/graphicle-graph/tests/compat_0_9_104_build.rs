@@ -47,3 +47,40 @@ fn legacy_id_source_prefix_reads_the_relative_marker() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(legacy_id_source_prefix(&dir.path().join("graph.json")), None);
 }
+
+#[test]
+fn learning_overlay_ignores_non_object_root() {
+    // test_learning_overlay_input.py test_learning_overlay_ignores_non_object_root (#5019)
+    use graphicle::reflect::{LEARNING_SIDECAR_NAME, load_learning_overlay};
+    for payload in [json!(null), json!([]), json!(7), json!("unexpected")] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(LEARNING_SIDECAR_NAME), payload.to_string()).unwrap();
+        assert_eq!(
+            load_learning_overlay(&dir.path().join("graph.json")).unwrap(),
+            json!({}),
+            "{payload}"
+        );
+    }
+}
+
+#[test]
+fn learning_overlay_keeps_valid_entries_beside_malformed_source() {
+    // test_learning_overlay_input.py (#5019, #5024)
+    use graphicle::reflect::{LEARNING_SIDECAR_NAME, load_learning_overlay};
+    let dir = tempfile::tempdir().unwrap();
+    let payload = json!({"nodes": {
+        "bad": {"source_file": ["app.py"], "status": "preferred"},
+        "good": {"status": "preferred", "score": 2},
+        "legacy": {"source_file": null, "status": "preferred"},
+        "gone": {"source_file": "deleted.py", "status": "preferred"},
+    }});
+    std::fs::write(dir.path().join(LEARNING_SIDECAR_NAME), payload.to_string()).unwrap();
+    assert_eq!(
+        load_learning_overlay(&dir.path().join("graph.json")).unwrap(),
+        json!({
+            "good": {"status": "preferred", "score": 2, "stale": false},
+            "legacy": {"source_file": null, "status": "preferred", "stale": false},
+            "gone": {"source_file": "deleted.py", "status": "preferred", "stale": true},
+        })
+    );
+}
