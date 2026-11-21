@@ -579,21 +579,44 @@ impl Runtime {
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let mut path = target.join(&filename);
-        let mut counter = 1usize;
-        loop {
-            match std::fs::symlink_metadata(&path) {
-                Ok(_) => {
-                    path = target.join(format!("{stem}_{counter}{suffix}"));
-                    counter += 1;
+        let free = || -> Result<PathBuf> {
+            let mut path = target.join(&filename);
+            let mut counter = 1usize;
+            loop {
+                match std::fs::symlink_metadata(&path) {
+                    Ok(_) => {
+                        path = target.join(format!("{stem}_{counter}{suffix}"));
+                        counter += 1;
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(path),
+                    Err(e) => return Err(format!("OSError: {e}").into()),
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => break,
+            }
+        };
+        // `_write_capture` (Graphify 0.9.104, #5018, #5023): inspect the
+        // destination before fetching, fetch once, then reserve the name with
+        // an exclusive create; a concurrent capture that took it first makes
+        // this one pick the next free name instead of clobbering it.
+        let mut path = free()?;
+        let bytes = self.fetcher.fetch(url, security::MAX_FETCH_BYTES)?;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    if let Err(e) = file.write_all(&bytes) {
+                        drop(file);
+                        let _ = std::fs::remove_file(&path);
+                        return Err(format!("OSError: {e}").into());
+                    }
+                    return Ok(path);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => path = free()?,
                 Err(e) => return Err(format!("OSError: {e}").into()),
             }
         }
-        let bytes = self.fetcher.fetch(url, security::MAX_FETCH_BYTES)?;
-        std::fs::write(&path, bytes).map_err(|e| format!("OSError: {e}"))?;
-        Ok(path)
     }
     pub fn ingest(
         &self,
