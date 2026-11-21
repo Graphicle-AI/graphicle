@@ -106,12 +106,20 @@ impl Runtime {
             if chunk.len() != 1 || depth >= max_depth {
                 return None;
             }
-            let Unit::Slice(s) = &chunk[0] else {
-                return None;
+            let mut source = self.source.lock().ok()?;
+            let full;
+            let s = match &chunk[0] {
+                Unit::Slice(s) => s,
+                // A splittable text file below the character cap is bisected
+                // as a full-range slice too (Graphify 0.9.105, #5072).
+                Unit::Path(path) if crate::file_slice::is_splittable_text(path) => {
+                    let n = source.source.unit_source_text(path).ok()?.chars().count();
+                    full = crate::file_slice::FileSlice::new(path.clone(), 0, n as i64, 0, 1);
+                    &full
+                }
+                _ => return None,
             };
-            self.source
-                .lock()
-                .ok()?
+            source
                 .source
                 .bisect_slice(s)
                 .map(|(a, b)| (vec![Unit::Slice(a)], vec![Unit::Slice(b)]))
