@@ -16,9 +16,6 @@ pub const REQUIRED_NODE_FIELDS: &[&str] = &["file_type", "id", "label", "source_
 pub const REQUIRED_EDGE_FIELDS: &[&str] =
     &["confidence", "relation", "source", "source_file", "target"];
 
-    Ok(value.as_str().is_some_and(|value| allowed.contains(&value)))
-}
-
 /// Preserve the reference's checks and diagnostics. Required-field diagnostics
 /// use a stable order; upstream iterates an unordered Python set.
 pub fn validate_extraction(data: &Value) -> Result<Vec<String>> {
