@@ -51,7 +51,8 @@ and 0.9.113 and 0.9.114, are ported. The AST cache schema goes from 11 to
   its name (#5080); `--context inherits` and `implements` reach heritage
   edges (#5178); `path` refuses an endpoint of unknown words (#5079) and
   prefers a route away from import hubs (#5153); `affected <file>` reaches
-  callers of nested members (#5094).
+  callers of nested members (#5094); `explain`, get_node and
+  get_neighbors resolve an exact node id before ranking (#5343).
 - Watch reloads the ignore rules when `.gitignore` or `.graphicleignore`
   changes (#5033). The wiki keeps both articles of labels that fold to one
   name (#5087). Malformed learning overlay and global manifest entries are
