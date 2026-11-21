@@ -211,12 +211,31 @@ fn opencode_v2(document: Option<&Value>, major: impl FnOnce() -> Option<u64>) ->
 /// The major version `opencode --version` prints (`2.3.0`, `opencode
 /// 2.3.0`, `v1.18.4`); `None` without the program or a version.
 fn opencode_major() -> Option<u64> {
-    let output = crate::platform::command("opencode")
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+    let mut child = crate::platform::command("opencode")
         .arg("--version")
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
+    // A program that does not answer within a few seconds is read as no
+    // version (the 1.x shape, which OpenCode 2 also reads) instead of
+    // holding up setup.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let output = child.wait_with_output().ok()?;
     if !output.status.success() {
         return None;
     }
