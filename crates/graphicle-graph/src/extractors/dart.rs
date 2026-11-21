@@ -138,9 +138,12 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     // (0.9.93, #4582). Return-type tokens cannot hold whitespace, so a long
     // line that never reaches `(` fails in linear time.
     typedef: compile(r"(?m)^\s*typedef\s+(\w+)\s*(?:<[^>]+>)?\s*=\s*([^;]+);"),
+    // A token may carry one parameter list, so a function-typed return type
+    // (`typedef int Function(int) Make();`) is skipped whole, and the name is
+    // never `Function` (Graphify 0.9.109, #4641).
     legacy_typedef: compile(&format!(
-        r"(?m)^[ \t]*typedef[ \t]+(?:[{}<>,.?]+[ \t]+)*?(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
-        word_chars()
+        r"(?m)^[ \t]*typedef[ \t]+(?:[{w}<>,.?]+(?:\([^()\n]*\)[{w}<>,.?]*)?[ \t]+)*?(?!Function\b)(\w+)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
+        w = word_chars()
     )),
     // `_TYPEDEF_LINE.match(...)`: a match the typedef step declared.
     typedef_line: compile(r"^\s*typedef\b"),

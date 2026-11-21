@@ -124,3 +124,16 @@ fn a_variadic_parameter_references_its_type() {
         assert_eq!(refs.get(*func).map(String::as_str), Some(expected), "{case}: {refs:?}");
     }
 }
+
+#[test]
+fn dart_legacy_typedef_returning_a_function_type_is_named_by_its_own_name() {
+    // test_dart_typedef.py (#4641)
+    let (ids, _) = ids_and_calls(
+        "lib/t.dart",
+        "typedef int Function(int) Make();\ntypedef void Function() Callback(String s);\ntypedef int Function(int)? MaybeMake();\ntypedef Map<String, int> Function(int a, String b) Build();\n",
+    );
+    for name in ["Make", "Callback", "MaybeMake", "Build"] {
+        assert!(ids.contains_key(name), "{name}: {ids:?}");
+    }
+    assert!(!ids.contains_key("Function"), "{ids:?}");
+}
