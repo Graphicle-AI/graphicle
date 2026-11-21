@@ -179,11 +179,18 @@ impl Runtime {
                             "exceeds model context"
                         }
                     ));
-                    return Ok(empty_result(o));
+                    // The chunk's files are partial, as on the hollow give-up
+                    // path, so a parent whose other slices succeeded is not
+                    // cached as complete (Graphify 0.9.107, #5099).
+                    let mut empty = empty_result(o);
+                    mark_chunk_partial(&mut empty, chunk);
+                    return Ok(empty);
                 }
                 if depth >= max_depth {
                     d.stderr.push(format!("[graphicle] chunk of {} {} at recursion depth {depth} (max {max_depth}) — dropping",chunk.len(),if timed{"still times out"}else{"still overflows context"}));
-                    return Ok(empty_result(o));
+                    let mut empty = empty_result(o);
+                    mark_chunk_partial(&mut empty, chunk);
+                    return Ok(empty);
                 }
                 d.stderr.push(format!("[graphicle] chunk of {} {reason} at depth {depth} ({:?}); splitting in half and retrying",chunk.len(),e.kind));
                 let mid = chunk.len() / 2;
