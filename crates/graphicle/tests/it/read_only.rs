@@ -212,3 +212,64 @@ fn a_read_only_folder_answers_in_read_only_mode() {
     assert!(String::from_utf8_lossy(&answered.stdout).contains("borrow.md"));
     assert!(files(&data) == before, "the data folder changed");
 }
+
+/// A code project whose saved query files are missing (as after an upgrade,
+/// whose new build writes its own) still packs in read-only mode, from the
+/// graph in the store, and no file appears; a writing command outside the
+/// store (`config set`) is refused.
+#[test]
+fn a_read_only_pack_writes_no_query_file() {
+    if graphicle_runtime::db::postgres_configured() {
+        eprintln!(
+            "skipped: read-only mode opens SQLite data folders; GRAPHICLE_DATABASE_URL is set"
+        );
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let home = dir.path().join("home");
+    let code = dir.path().join("code");
+    let data = dir.path().join("data");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&code).unwrap();
+    std::fs::write(
+        code.join("prices.py"),
+        "def price_with_tax(price):\n    return round(price * 1.2, 2)\n",
+    )
+    .unwrap();
+    let mut sync = graphicle(&home, &data, &code);
+    sync.args(["sync", ".", "--json"]);
+    ok(sync);
+    // Every saved query file goes, as an upgrade leaves them for another
+    // build.
+    let mut removed = 0;
+    let mut stack = vec![data.join("gf-cache")];
+    while let Some(next) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&next) else {
+            continue;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.parent().and_then(Path::file_name) == Some("query".as_ref()) {
+                std::fs::remove_file(&path).unwrap();
+                removed += 1;
+            }
+        }
+    }
+    assert!(removed > 0, "the sync saved no query file");
+    let before = files(&data);
+    let mut pack = graphicle(&home, &data, &code);
+    pack.args(["--read-only", "pack", "where is tax added to prices?"]);
+    assert!(ok(pack).contains("price_with_tax"));
+    let mut set = graphicle(&home, &data, &code);
+    set.args(["--read-only", "config", "set", "model", "ollama"]);
+    let refused = output(set);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("read-only"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    assert!(files(&data) == before, "the data folder changed");
+}

@@ -999,6 +999,17 @@ pub fn ensure(store: &Store, session: &Session, project: &str, options: Options)
     if options.mode == Mode::Off {
         return Outcome::default();
     }
+    // Read-only mode syncs nothing and takes no lock file: the answer says
+    // the folder's changes, if any, were not brought in.
+    if crate::db::read_only() {
+        let mut check = Check::without(project, State::Changed, None);
+        check.changed = None;
+        return stale(
+            &check,
+            "read_only",
+            Some("the data folder is open read-only; changes were not synced".into()),
+        );
+    }
     let key = (store.directory.to_path_buf(), project.to_string());
     {
         let mut recent = RECENT.lock().unwrap_or_else(PoisonError::into_inner);

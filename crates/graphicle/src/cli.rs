@@ -1208,6 +1208,27 @@ where
         return print(&result);
     }
     let directory = cli.data_dir.unwrap_or_else(local::data_dir);
+    // Read-only mode: the commands that write the data folder outside its
+    // store (or make or delete one) are refused before they start.
+    if crate::db::read_only()
+        && matches!(
+            &command,
+            Command::Login { .. }
+                | Command::Init { .. }
+                | Command::Restore { .. }
+                | Command::ImportSqlite { .. }
+                | Command::Usage {
+                    clear_pending: true,
+                    ..
+                }
+                | Command::Uninstall { .. }
+                | Command::Config {
+                    action: Some(crate::terminal::ConfigAction::Set { .. })
+                }
+        )
+    {
+        return Err(Error::bad(crate::db::READ_ONLY_REFUSAL));
+    }
     if let Command::Hook {
         client,
         event,

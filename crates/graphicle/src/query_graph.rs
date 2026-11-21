@@ -112,6 +112,10 @@ pub(crate) fn identity(metadata: &std::fs::Metadata) -> (u64, u64) {
 /// damaged, so that the next sync writes it again; not when another file has
 /// replaced it since it was read (`read`, its [`identity`]).
 pub(crate) fn remove_damaged(path: &Path, read: (u64, u64)) {
+    // Read-only mode leaves it: the read falls back to the store.
+    if crate::db::read_only() {
+        return;
+    }
     if std::fs::metadata(path).is_ok_and(|now| identity(&now) == read) {
         let _ = std::fs::remove_file(path);
     }
@@ -427,6 +431,11 @@ pub fn query_file_state(db: &Connection, repository: &str, episode: &str) -> Val
 pub fn ensure(db: &Connection, repository: &str, retry: bool) -> Result<Value> {
     if !enabled() {
         return Ok(serde_json::json!({"status":"off"}));
+    }
+    // Read-only mode writes no file: a read without a current query file
+    // reads the saved graph from the store instead.
+    if crate::db::read_only() {
+        return Ok(serde_json::json!({"status":"read_only"}));
     }
     let Some(episode) = read_episode(db, repository)? else {
         return Ok(serde_json::json!({"status":"no_episode"}));

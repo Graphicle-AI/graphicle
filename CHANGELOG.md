@@ -9,12 +9,14 @@ Every crate is at 0.1.19, and `graphicle --version` prints
 `graphicle 0.1.19 (core)`. The Python and TypeScript SDKs are at 0.1.19 too.
 This release adds a read-only mode, fixes a vulnerable zlib dependency,
 gates releases on known vulnerabilities and takes in part of Graphify
-0.9.104 to 0.9.113. No migration runs.
+0.9.104 to 0.9.113. No migration of the store runs.
 
 The engine takes in Graphify 0.9.104 to 0.9.113 in part (0.1.18 followed
 0.9.103); it still reports Graphify 0.9.103 until the rest of that range,
-and 0.9.114, are ported. The AST cache schema goes from 11 to 12, so cached
-extractions of the languages below run again once.
+and 0.9.114, are ported. As after every release, each file is extracted
+again once (the extraction cache is kept per version). The AST cache
+schema goes from 11 to 12, which is part of the code graph's format, so
+each project's code graph is built again at its next sync.
 
 ### Security
 
@@ -25,12 +27,15 @@ extractions of the languages below run again once.
 ### Added
 
 - Read-only mode: `--read-only` on any command, or `GRAPHICLE_READ_ONLY=1`,
-  opens a SQLite data folder without changing any of its files. Reads such
-  as `graphicle context` and `graphicle call context` answer, also from a
-  folder that cannot be written; a command that writes is refused with a
-  message; the count of tokens served is not recorded. The folder must
-  have been last used by this version, with an empty write-ahead log
-  (`docs/configuration.md`, A read-only data folder).
+  opens a SQLite data folder without changing its files. Reads such as
+  `graphicle context`, `graphicle call context` and `graphicle pack`
+  answer, also from a folder that cannot be written: the store, its query
+  files and the count of tokens served are not written, and a folder's
+  changes are not synced before an answer (the answer says so). Commands
+  that write, such as `sync`, `login` and `config set`, are refused with a
+  message. The folder must have been last used by this version, with an
+  empty write-ahead log (`docs/configuration.md`, A read-only data
+  folder).
 - Releases check known vulnerabilities: a `vulnerabilities` workflow ranks
   RustSec advisories by severity on pull requests, on main, daily and
   before a release, and a release is not published while a high or
@@ -81,9 +86,9 @@ extractions of the languages below run again once.
   derived table's alias (#5147) or a non-ASCII table name (#5250).
 - YAML: CloudFormation intrinsic tags (`!Ref`, `!Sub`) no longer fail the
   whole file (#5071). Maven POM namespaces in any spelling (#5124).
-- Updates: a missing graph.json or a changed `tsconfig.json`,
-  `jsconfig.json` or `package.json` rebuilds the whole graph (#5016,
-  #5017); hyperedges survive an incremental merge (#5081); a degraded
+- Updates: a missing graph.json, or a changed `package.json`,
+  `package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `jsconfig.json` or
+  `tsconfig*.json`, rebuilds the whole graph (#5016, #5017); hyperedges survive an incremental merge (#5081); a degraded
   semantic result is not replayed from the cache (#5083); the write guard
   no longer counts re-extracted or pruned semantic sources as lost
   (#5107); the report keeps the token cost from cost.json (#5154).
