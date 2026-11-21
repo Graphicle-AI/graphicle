@@ -96,3 +96,54 @@ fn go_internal_test_file_method_folds_into_the_package_type() {
     assert_eq!(methods, 3, "{r:#}");
     assert_eq!(nodes.iter().filter(|n| n["label"] == "Fixture").count(), 2);
 }
+
+fn indirect(a_js: &str) -> BTreeSet<(String, String)> {
+    graphicle::rcfile::set_language_overrides(None);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    std::fs::write(root.join("a.js"), a_js).unwrap();
+    std::fs::write(root.join("b.js"), "export function value() {}\n").unwrap();
+    let r = extract(
+        &[root.join("a.js"), root.join("b.js")],
+        &ExtractOptions {
+            root: Some(root.clone()),
+            cache_root: Some(root.join("graphify-out")),
+            parallel: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let nodes = r["nodes"].as_array().unwrap();
+    let label = |id: &serde_json::Value| {
+        nodes
+            .iter()
+            .find(|n| n["id"] == *id)
+            .and_then(|n| n["label"].as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    r["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["relation"] == "indirect_call")
+        .map(|e| (label(&e["source"]), label(&e["target"])))
+        .collect()
+}
+
+#[test]
+fn names_captured_from_enclosing_scopes_are_not_references() {
+    // test_indirect_call_file_scope_callback_shadow.py (#5217)
+    for src in [
+        "m.c(function ($scope, confirm) {\n  $scope.remove = function (value) {\n    confirm({ buttons: { ok: { action: function () { del(value); } } } });\n  };\n});\n",
+        "m.c(function () {\n  const value = 1;\n  setTimeout(function () { show(value); });\n});\n",
+        "m.c(function (xs) {\n  for (const value of xs) { setTimeout(function () { show(value); }); }\n});\n",
+        "m.c(function () {\n  try { run(); } catch (value) { setTimeout(function () { show(value); }); }\n});\n",
+    ] {
+        assert!(indirect(src).is_empty(), "{src}: {:?}", indirect(src));
+    }
+    let unbound = indirect(
+        "m.c(function ($scope) {\n  $scope.load = function (rows) {\n    setTimeout(function () { show(value); });\n  };\n});\n",
+    );
+    assert_eq!(unbound.len(), 1, "{unbound:?}");
+}

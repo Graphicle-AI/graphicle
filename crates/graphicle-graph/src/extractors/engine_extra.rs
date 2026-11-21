@@ -218,8 +218,12 @@ impl<'a, 't> Engine<'a, 't> {
                         // this body's locals; otherwise `forEach(function
                         // (value) { s.on(value) })` resolves `value` to any
                         // same-named function in the corpus.
-                        self.closure_locals
-                            .insert(b.id(), js_local_bound_names(c, self.source));
+                        // #5217: a call statement nested in another function
+                        // walks the closure from here, so the enclosing
+                        // scopes' bindings ride along too (Graphify 0.9.110).
+                        let mut locals = js_local_bound_names(c, self.source);
+                        locals.extend(js_enclosing_bound_names(c, self.source));
+                        self.closure_locals.insert(b.id(), locals);
                         self.bodies.push((file.clone(), b));
                     }
                 }

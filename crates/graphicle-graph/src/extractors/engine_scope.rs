@@ -766,6 +766,33 @@ fn js_bind_walk(n: Node<'_>, source: &[u8], bound: &mut BTreeSet<String>, module
         js_bind_walk(c, source, bound, module);
     }
 }
+/// `_js_enclosing_bound_names` (Graphify 0.9.110, #5217): the names bound
+/// by every scope enclosing `node` up to the program: each enclosing
+/// function's parameters and `var`s, and the `let`/`const`, loop and `catch`
+/// bindings of each enclosing block. A closure body walked on its own never
+/// sees them otherwise, and a captured name reads as a free reference.
+pub fn js_enclosing_bound_names(node: Node<'_>, source: &[u8]) -> BTreeSet<String> {
+    let mut bound = BTreeSet::new();
+    let mut anc = node.parent();
+    while let Some(a) = anc.filter(|a| a.kind_name() != "program") {
+        let t = a.kind_name();
+        if set("_JS_SCOPE_BOUNDARY").contains(t) && !matches!(t, "class_declaration" | "class") {
+            bound.extend(js_local_bound_names(a, source));
+        } else if matches!(t, "statement_block" | "for_statement") {
+            bound.extend(js_direct_lexical_names(a, source));
+        } else if t == "for_in_statement" {
+            if let Some(left) = a.child_by_field_name("left") {
+                js_collect_pattern_idents(left, source, &mut bound);
+            }
+        } else if t == "catch_clause"
+            && let Some(param) = a.child_by_field_name("parameter")
+        {
+            js_collect_pattern_idents(param, source, &mut bound);
+        }
+        anc = a.parent();
+    }
+    bound
+}
 pub fn js_local_bound_names(n: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     let mut bound = BTreeSet::new();
     for field in ["parameters", "parameter"] {
