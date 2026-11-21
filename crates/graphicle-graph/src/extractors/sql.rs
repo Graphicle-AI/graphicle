@@ -655,11 +655,17 @@ impl Extractor<'_> {
         }
     }
     fn edge(&mut self, source: &str, target: &str, relation: &str, line: usize) {
+        // An empty id is a name the grammar could not read (`_` is all it
+        // keeps of a non-ASCII name): never a node or an edge (Graphify
+        // 0.9.112, #5250).
+        if source.is_empty() || target.is_empty() {
+            return;
+        }
         self.edges.push(json!({"source":source,"target":target,"relation":relation,"confidence":"EXTRACTED","source_file":self.path,"source_location":format!("L{line}"),"weight":1.0}));
     }
     fn stub(&mut self, name: &str) -> String {
         let id = make_id([name]);
-        if self.seen.insert(id.clone()) {
+        if !id.is_empty() && self.seen.insert(id.clone()) {
             self.nodes.push(json!({"id":id,"label":clean_ident(name),"file_type":"code","source_file":"","source_location":"","origin_file":self.path}));
         }
         id
