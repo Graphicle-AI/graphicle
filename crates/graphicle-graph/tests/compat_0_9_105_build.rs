@@ -216,3 +216,26 @@ fn markdown_keeps_uppercase_namespace_classes_and_called_members() {
     assert_eq!(code_span_mention("Foo::CONST"), None);
     assert_eq!(code_span_mention("Foo::class"), None);
 }
+
+#[test]
+fn structured_enum_fields_are_reported_and_folded() {
+    // test_build.py / test_validate.py (#5086, #5088)
+    let data = json!({
+        "nodes": [
+            {"id": "a", "label": "A", "file_type": ["code"], "source_file": "a.py"},
+            {"id": "b", "label": "B", "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [{"source": "a", "target": "b", "relation": "calls", "confidence": {"x": 1}, "source_file": "a.py"}],
+    });
+    let errors = graphicle::validate::validate_extraction(&data).unwrap();
+    assert!(errors.iter().any(|e| e.contains("invalid file_type")), "{errors:?}");
+    assert!(errors.iter().any(|e| e.contains("invalid confidence")), "{errors:?}");
+    let mut data = data;
+    data["hyperedges"] = json!([]);
+    let mut diagnostics = graphicle::build::Diagnostics::default();
+    let g = graphicle::build_from_json(&mut data, true, None, &mut diagnostics).unwrap();
+    let out = g.to_node_link("links");
+    let a = out["nodes"].as_array().unwrap().iter().find(|n| n["id"] == "a").unwrap();
+    assert_eq!(a["file_type"], "concept", "{out:#}");
+    assert_eq!(out["links"][0]["confidence"], "INFERRED", "{out:#}");
+}

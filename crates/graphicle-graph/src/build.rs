@@ -600,7 +600,11 @@ fn normalized_file_type(value: &Value) -> Result<Value> {
     if value.is_null() || value.as_str() == Some("") {
         return Ok(json!("concept"));
     }
-    let ft = value.as_str().ok_or("Expected file_type string")?;
+    // A structured file_type from a drifting model pass folds to concept
+    // (Graphify 0.9.105, #5086, #5088).
+    let Some(ft) = value.as_str() else {
+        return Ok(json!("concept"));
+    };
     if validate::VALID_FILE_TYPES.contains(&ft) {
         return Ok(value.clone());
     }

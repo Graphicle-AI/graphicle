@@ -391,6 +391,9 @@ pub(crate) fn fold_confidence<R: Record>(e: &mut R) {
                 e.put("confidence", json!("INFERRED"));
             }
         }
+        // A structured value carries no usable confidence: INFERRED, with
+        // no invented score (Graphify 0.9.105, #5086, #5088).
+        Some(Value::Array(_) | Value::Object(_)) => e.put("confidence", json!("INFERRED")),
         _ => {}
     }
     if !e.get("confidence").is_some_and(truthy)
