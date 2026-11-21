@@ -3,14 +3,55 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
-## Unreleased
+## 0.1.19 - 2026-11-21
 
-The engine takes in Graphify 0.9.104 to 0.9.112 in part (0.1.18 followed
+Every crate is at 0.1.19, and `graphicle --version` prints
+`graphicle 0.1.19 (core)`. The Python and TypeScript SDKs are at 0.1.19 too.
+This release adds a read-only mode, fixes a vulnerable zlib dependency,
+gates releases on known vulnerabilities and takes in part of Graphify
+0.9.104 to 0.9.113. No migration runs.
+
+The engine takes in Graphify 0.9.104 to 0.9.113 in part (0.1.18 followed
 0.9.103); it still reports Graphify 0.9.103 until the rest of that range,
-and 0.9.113 and 0.9.114, are ported. The AST cache schema goes from 11 to
-12, so cached extractions of the languages below run again once.
+and 0.9.114, are ported. The AST cache schema goes from 11 to 12, so cached
+extractions of the languages below run again once.
+
+### Security
+
+- zlib: libz-sys goes from 1.1.31 to 1.1.33 in every crate, for
+  RUSTSEC-2026-0544 (CVE-2026-85091), a heap buffer overflow in zlib's
+  `gz_vacate()` reached through non-blocking `gzwrite()` and `gzprintf()`.
+
+### Added
+
+- Read-only mode: `--read-only` on any command, or `GRAPHICLE_READ_ONLY=1`,
+  opens a SQLite data folder without changing any of its files. Reads such
+  as `graphicle context` and `graphicle call context` answer, also from a
+  folder that cannot be written; a command that writes is refused with a
+  message; the count of tokens served is not recorded. The folder must
+  have been last used by this version, with an empty write-ahead log
+  (`docs/configuration.md`, A read-only data folder).
+- Releases check known vulnerabilities: a `vulnerabilities` workflow ranks
+  RustSec advisories by severity on pull requests, on main, daily and
+  before a release, and a release is not published while a high or
+  critical one is neither fixed nor accepted with a reason in
+  `.github/advisories.toml` (#46, by @andreimerlescu).
 
 ### Fixes
+
+- A folder no project was synced from, given as `--project` (a store or a
+  folder moved or unpacked elsewhere), is refused with a message that
+  lists the projects by id and the folder each was synced from; before,
+  `graphicle call` passed the path on and answered "Repository not found
+  in this workspace".
+- Cross-repository links of npm packages follow npm's prerelease rule: a
+  prerelease is linked only by a range that names a prerelease of the same
+  version (#44, by @dajiaohuang).
+- OpenCode: setup gives up on `opencode --version` after 5 seconds instead
+  of waiting for a program that does not answer.
+- The docs point questions to GitHub Discussions.
+
+### Code graph engine (from Graphify 0.9.104 to 0.9.113)
 
 - Solidity: members, free functions and types whose names differ only by
   a leading `_` or by case get their own nodes; a call on a typed receiver
