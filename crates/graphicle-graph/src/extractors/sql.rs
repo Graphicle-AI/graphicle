@@ -690,7 +690,21 @@ impl Extractor<'_> {
             }
         }
         if matches!(node.kind(), "from" | "join") {
-            for child in children(node).filter(|n| n.kind() == "relation") {
+            // A derived table the grammar cannot parse comes back as an
+            // ERROR node holding `( ... )` followed by a relation holding only
+            // its alias, which names no table (Graphify 0.9.108, #5147).
+            let all = children(node).collect::<Vec<_>>();
+            let source = self.source;
+            let failed_subquery = |i: usize| {
+                i > 0 && all[i - 1].kind() == "ERROR" && {
+                    let text = read(all[i - 1], source);
+                    text.trim_start().starts_with('(') && text.trim_end().ends_with(')')
+                }
+            };
+            for (i, child) in all.iter().copied().enumerate() {
+                if child.kind() != "relation" || failed_subquery(i) {
+                    continue;
+                }
                 // `FROM tbl@link` keeps its database link: a remote table,
                 // not the local one (Graphify 0.9.108, #5169).
                 let mut table = None;

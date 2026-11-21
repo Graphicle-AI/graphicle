@@ -61,3 +61,14 @@ fn sql_dblink_suffix_is_kept() {
     assert!(labels.contains("hr.emp@remote_db"), "{labels:?}");
     assert!(has(&edges, "p3a()", "reads_from", "hr.emp@remote_db"), "{edges:?}");
 }
+
+#[test]
+fn sql_unparsed_derived_table_alias_is_not_read_as_a_table() {
+    // test_multilang.py (#5147)
+    let (edges, labels) = sql_edges(
+        "schema.sql",
+        "CREATE TABLE items (val INT);\nCREATE VIEW v AS\n  SELECT AVG(val) FROM (SELECT val FROM items\n  LIMIT 2 - MOD((SELECT COUNT(*) FROM items), 2)\n  OFFSET 1) q2;\n",
+    );
+    assert!(!labels.contains("q2"), "{labels:?}");
+    assert!(has(&edges, "v", "reads_from", "items"), "{edges:?}");
+}
