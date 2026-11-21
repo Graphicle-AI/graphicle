@@ -205,15 +205,16 @@ pub fn parse(raw: &str, d: &mut Diagnostics) -> Value {
         let Ok(mut p) = serde_json::from_str::<Value>(&candidate) else {
             continue;
         };
-        if let Some(items) = p.as_array() {
-            let frags = array_fragments(items);
-            if frags.len() > 1 {
+        let unwrapped = match p.as_array().map(Vec::as_slice).map(array_fragments) {
+            Some(frags) if frags.len() > 1 => {
                 d.stderr.push("[graphicle] LLM returned an array of graph fragments; refusing to accept only its first object.".into());
                 return empty();
             }
-            if let [one] = frags.as_slice() {
-                p = (*one).clone();
-            }
+            Some(frags) => frags.first().map(|one| (*one).clone()),
+            None => None,
+        };
+        if let Some(one) = unwrapped {
+            p = one;
         }
         let Some(m) = p.as_object() else { continue };
         if KEYS.iter().any(|k| m.contains_key(*k)) {
