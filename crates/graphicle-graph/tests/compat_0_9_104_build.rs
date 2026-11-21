@@ -212,3 +212,34 @@ fn to_wiki_unicode_case_fold_collision_keeps_both_articles() {
         assert_eq!(wiki_articles(dir.path()), after_first);
     }
 }
+
+#[test]
+fn incremental_merge_reads_the_nested_hyperedge_slot() {
+    // test_build_merge_hyperedges_and_prune.py (#5081): a node-link-only
+    // writer keeps hyperedges in graph.hyperedges; a top-level list wins, and
+    // a malformed top-level value falls back to the nested list.
+    use graphicle::build::load_existing_graph;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("graph.json");
+    let ids = |data: serde_json::Value| {
+        std::fs::write(&path, data.to_string()).unwrap();
+        load_existing_graph(&path)
+            .unwrap()
+            .unwrap()
+            .hyperedges
+            .iter()
+            .map(|h| h["id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    let nested = json!([{"id": "he_nested", "nodes": ["a"]}]);
+    assert_eq!(ids(json!({"nodes": [], "links": [], "graph": {"hyperedges": nested}})), ["he_nested"]);
+    assert_eq!(
+        ids(json!({"nodes": [], "links": [], "hyperedges": "bad", "graph": {"hyperedges": nested}})),
+        ["he_nested"]
+    );
+    assert_eq!(
+        ids(json!({"nodes": [], "links": [], "hyperedges": [{"id": "he_top", "nodes": ["a"]}], "graph": {"hyperedges": nested}})),
+        ["he_top"]
+    );
+    assert!(ids(json!({"nodes": [], "links": [], "hyperedges": [], "graph": {"hyperedges": nested}})).is_empty());
+}

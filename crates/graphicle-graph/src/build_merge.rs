@@ -63,10 +63,22 @@ pub fn load_existing_graph(path: &Path) -> Result<Option<LoadedGraph>> {
     for item in nodes.iter_mut().chain(edges.iter_mut()) {
         backfill_origin(item);
     }
+    // Hyperedges persist in two slots (#2485): the top-level key and the
+    // node-link `graph.hyperedges`, which a node-link-only writer emits
+    // alone. A top-level list wins (an explicit [] there is not resurrected
+    // from a stale nested copy); a missing, null or malformed one falls back
+    // to the nested list (Graphify 0.9.105, #5081).
+    let hyperedges = match data.get("hyperedges") {
+        Some(Value::Array(top)) => top.clone(),
+        _ => data["graph"]["hyperedges"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default(),
+    };
     Ok(Some(LoadedGraph {
         nodes,
         edges,
-        hyperedges: list("hyperedges")?,
+        hyperedges,
         directed: truthy(&data["directed"]),
     }))
 }
@@ -567,6 +579,37 @@ pub fn build_merge_owned(
             }
         }
         graph.remove_edges_from(&edges);
+        // The build revalidated hyperedge members before this prune removed
+        // the deleted files' nodes, so a surviving hyperedge can still name
+        // one of them: drop the members that no longer resolve, and the
+        // hyperedge only when none remains (#1916 policy; Graphify 0.9.105,
+        // #5081).
+        if let Some(hyperedges) = graph
+            .attributes
+            .get("hyperedges")
+            .and_then(Value::as_array)
+            .filter(|h| !h.is_empty())
+            .cloned()
+        {
+            let mut kept = Vec::with_capacity(hyperedges.len());
+            for mut he in hyperedges {
+                if let Some(members) = he.get("nodes").and_then(Value::as_array) {
+                    let live = members
+                        .iter()
+                        .filter(|m| scalar_key(m).is_some() && graph.node_index(m).is_some())
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if live.is_empty() {
+                        continue;
+                    }
+                    if live.len() != members.len() {
+                        he["nodes"] = Value::Array(live);
+                    }
+                }
+                kept.push(he);
+            }
+            graph.attributes["hyperedges"] = Value::Array(kept);
+        }
         let orphaned = sweep_orphans(&mut graph, &spare_isolated, Some(&isolated_before))?;
         n_nodes += orphaned.len();
         // A stub minted in this run and then orphaned was never in graph.json,
