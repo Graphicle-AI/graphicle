@@ -135,3 +135,15 @@ fn global_list_isolates_malformed_repo_entries() {
     assert!(store.manifest_path.is_file());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
+
+#[test]
+fn build_tree_accepts_src_and_file_aliases() {
+    // test_tree_html.py test_build_tree_accepts_src_and_file_aliases (#5030)
+    let graph = json!({"nodes": [
+        {"id": "a", "label": "fn_a", "src": "pkg/sub/a.py"},
+        {"id": "b", "label": "fn_b", "file": "pkg/sub/b.py"},
+    ]});
+    let tree = graphicle::tree_html::build_tree(&graph, None, 200, None).unwrap();
+    assert_ne!(tree["name"], "(empty graph)", "{tree:#}");
+    assert_eq!(tree["total_count"], 2, "{tree:#}");
+}
