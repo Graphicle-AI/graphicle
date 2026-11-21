@@ -137,3 +137,46 @@ fn dart_legacy_typedef_returning_a_function_type_is_named_by_its_own_name() {
     }
     assert!(!ids.contains_key("Function"), "{ids:?}");
 }
+
+#[cfg(unix)]
+#[test]
+fn same_basename_files_stay_distinct_under_a_symlinked_root() {
+    // test_symlinked_root_source_file.py (#4624)
+    graphicle::rcfile::set_language_overrides(None);
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("real");
+    std::fs::create_dir(&real).unwrap();
+    let root = dir.path().join("link");
+    std::os::unix::fs::symlink(&real, &root).unwrap();
+    let page = "export default function ListPage() {\n  return helper();\n}\nfunction helper() { return 1; }\n";
+    let paths = ["web/app/a/page.tsx", "web/app/b/page.tsx"]
+        .iter()
+        .map(|rel| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, page).unwrap();
+            p
+        })
+        .collect::<Vec<_>>();
+    let r = extract(
+        &paths,
+        &ExtractOptions {
+            root: Some(root.clone()),
+            cache_root: Some(dir.path().join("cache")),
+            parallel: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let files = r["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|n| n["source_file"].as_str().map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        files,
+        ["web/app/a/page.tsx".to_string(), "web/app/b/page.tsx".to_string()].into_iter().collect(),
+        "{r:#}"
+    );
+}
