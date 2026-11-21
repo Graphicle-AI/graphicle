@@ -439,6 +439,13 @@ fn rivals_across_files(g: &Graph, tier: &[usize]) -> Vec<usize> {
 /// it comes back as a near miss listing the candidates (Graphify 0.9.94,
 /// #3917).
 pub fn resolve(g: &Graph, index: &SearchIndex, query: &str) -> std::result::Result<usize, String> {
+    // A node id names exactly one node, so it resolves before any ranking:
+    // the refusals tell the caller to retry with the id, and an id that
+    // tokenizes like a source path must not lose to that file's node
+    // (Graphify 0.9.113, #5343).
+    if let Some(i) = g.node_index(&serde_json::json!(query)) {
+        return Ok(i);
+    }
     let [source_exact, exact, prefix, substring] = tiers(g, index, query);
     let file_query = !source_exact.is_empty() && !query.contains("::");
     let Some(tier) = [source_exact, exact, prefix]
