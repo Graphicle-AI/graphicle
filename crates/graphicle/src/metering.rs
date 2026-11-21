@@ -508,7 +508,8 @@ pub fn record_text(store: &Store, call: Call, text: String) {
 /// [`record_text`], for a call that names no project counted on the
 /// projects its result serves ([`shares`], [`split`]).
 pub fn record_served(store: &Store, call: Call, text: String, shares: Vec<(String, u64)>) {
-    if call.repository.is_empty() && shares.is_empty() {
+    // A read-only store is not changed, by a count either.
+    if (call.repository.is_empty() && shares.is_empty()) || crate::db::read_only() {
         return;
     }
     let count = move |store: &Store, call: &Call, text: &str| {

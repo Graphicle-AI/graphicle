@@ -36,6 +36,11 @@ struct Cli {
     /// The model configuration (default: models.json in the data folder).
     #[arg(long, global = true, value_name = "FILE")]
     config: Option<PathBuf>,
+    /// Open the data folder read-only: queries answer, commands that would
+    /// write are refused, and no file of the store changes (also
+    /// GRAPHICLE_READ_ONLY=1).
+    #[arg(long, global = true)]
+    read_only: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -1116,6 +1121,12 @@ where
             .cloned()
             .unwrap_or_else(local::data_dir),
         matches.get_one::<PathBuf>("config").cloned(),
+    );
+    // Read-only mode is set before any store opens, the extensions' too.
+    crate::db::set_read_only(
+        matches.get_flag("read_only")
+            || std::env::var("GRAPHICLE_READ_ONLY")
+                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
     );
     if let Some(command) = extensions.run_cli(&matches, &context) {
         return command.await;

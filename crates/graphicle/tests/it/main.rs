@@ -71,6 +71,7 @@ mod query_code_graph_arm;
 mod query_file;
 mod query_graph_source;
 mod query_variants;
+mod read_only;
 mod receipts;
 mod release_0_4;
 mod rerank_depth;

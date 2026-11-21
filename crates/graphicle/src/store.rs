@@ -405,6 +405,9 @@ impl Store {
     /// `copy`: a new unfinished store for this command to copy into
     /// ([`Store::create_postgres`]).
     fn open_with(directory: &Path, copy: Option<crate::db::Origin>) -> Result<Self> {
+        if crate::db::read_only() && copy.is_none() {
+            return Self::open_read_only(directory);
+        }
         let beside_sqlite = copy.is_some();
         if directory.is_symlink() {
             return Err(Error::bad("Data directory cannot be a symlink"));
@@ -464,6 +467,47 @@ impl Store {
                 std::fs::Permissions::from_mode(0o600),
             )?;
         }
+        Ok(store)
+    }
+
+    /// [`Store::open`] in read-only mode ([`crate::db::read_only`]): the
+    /// SQLite store of `directory` as it is, never created, migrated or
+    /// changed. Its version stamp must be this program's version, so that
+    /// its tables are the ones this program reads; open it once without
+    /// read-only mode to bring it up to date.
+    fn open_read_only(directory: &Path) -> Result<Self> {
+        if crate::db::postgres_configured()
+            || crate::db::Database::engine_of(directory) != crate::db::Engine::Sqlite
+        {
+            return Err(Error::bad(
+                "Read-only mode (--read-only, GRAPHICLE_READ_ONLY=1) opens SQLite data folders only",
+            ));
+        }
+        let ours = env!("CARGO_PKG_VERSION");
+        match crate::terminal::data_version(directory) {
+            Some(recorded) if recorded == ours => {}
+            recorded => {
+                return Err(Error::bad(format!(
+                    "Read-only mode opens a data folder last used by this version of Graphicle ({ours}); {} was last used by {}. Open it once without --read-only to update it.",
+                    directory.display(),
+                    recorded.as_deref().unwrap_or("an unknown version")
+                )));
+            }
+        }
+        // An immutable read sees the database file only: commits still in
+        // its write-ahead log (a store another process has open, or one
+        // copied while open) would be missing.
+        let log = directory.join(format!("{}-wal", crate::db::SQLITE_FILE));
+        if std::fs::metadata(&log).is_ok_and(|m| m.len() > 0) {
+            return Err(Error::bad(format!(
+                "Read-only mode reads a store whose write-ahead log is empty; {} holds commits. Close every program using the store, or open it once without --read-only, then try again.",
+                log.display()
+            )));
+        }
+        let store = Self::existing(directory)?.ok_or_else(|| {
+            Error::bad(format!("There is no Graphicle data folder at {}", directory.display()))
+        })?;
+        check_reader(&store.pool.connect()?)?;
         Ok(store)
     }
 

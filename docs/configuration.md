@@ -29,6 +29,27 @@ how retrieval ranks and packs evidence.
 `graphicle sync` creates the local workspace the first time it runs, so you do
 not need `graphicle init`.
 
+### A read-only data folder
+
+`--read-only` on any command, or `GRAPHICLE_READ_ONLY=1`, opens the data
+folder without changing it: reads such as `graphicle context` and
+`graphicle call context` are answered, a command that would write to the
+store is refused with a message, and no file of the store changes, not even
+the count of tokens served. Use it to
+serve a store from read-only media, or to query the only copy of one.
+
+- The folder must hold a SQLite store last used by this version of
+  Graphicle (its `version.json`), and its write-ahead log
+  (`reviews.sqlite3-wal`) must be empty: open it once without
+  `--read-only` to update or close it.
+- SQLite reads the file as it is, without locks, so no other program may
+  write to the store while a read-only one reads it.
+- A PostgreSQL store is not opened read-only.
+
+A store keeps the path each folder was synced from. Unpacked or moved to
+another folder, a project is still named by its id: `--project <id>` (an
+error that names a folder no project was synced from lists the ids).
+
 To back up while the app is running, run `graphicle backup /safe/place/graphicle.sqlite3`,
 or `graphicle backup` to write it to the data folder's `backups/` folder (a
 backup there goes with the data folder, so keep a copy elsewhere too).

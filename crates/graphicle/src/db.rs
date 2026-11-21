@@ -1252,6 +1252,44 @@ fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+/// Read-only mode (`--read-only`, `GRAPHICLE_READ_ONLY=1`): a SQLite store is
+/// opened read-only, write transactions are refused and no checkpoint runs,
+/// so the store's files stay byte for byte as they were.
+static READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What a write transaction in [`read_only`] mode is refused with.
+pub const READ_ONLY_REFUSAL: &str =
+    "This store is open read-only (--read-only or GRAPHICLE_READ_ONLY=1); this command writes to it";
+
+/// Turn read-only mode on or off for this process ([`READ_ONLY`]).
+pub fn set_read_only(on: bool) {
+    READ_ONLY.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether this process opens stores read-only ([`set_read_only`]).
+pub fn read_only() -> bool {
+    READ_ONLY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// A SQLite `file:` URI that opens `path` read-only and immutable: SQLite
+/// then reads the file as it is, creates no `-shm` or `-wal` file and takes
+/// no locks, so nothing beside the store changes (and a store on read-only
+/// media opens). [`crate::store::Store`] refuses a store whose log still
+/// holds commits, which an immutable read would not see.
+fn read_only_uri(path: &Path) -> String {
+    let mut uri = String::from("file:");
+    for c in path.to_string_lossy().chars() {
+        match c {
+            '%' => uri.push_str("%25"),
+            '?' => uri.push_str("%3f"),
+            '#' => uri.push_str("%23"),
+            c => uri.push(c),
+        }
+    }
+    uri.push_str("?mode=ro&immutable=1");
+    uri
+}
+
 static WAL_CHECKPOINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static WAL_CHECKPOINTS_BUSY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
@@ -2250,7 +2288,17 @@ impl Database {
         let pool = match &self.backend {
             Backend::Postgres(pool) => pool,
             Backend::Sqlite { path, store } => {
-                let lite = if *store {
+                let lite = if *store && read_only() {
+                    let lite = rusqlite::Connection::open_with_flags(
+                        read_only_uri(path),
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+                            | rusqlite::OpenFlags::SQLITE_OPEN_URI
+                            | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+                    )?;
+                    lite.busy_timeout(DEFAULT_BUSY)?;
+                    lite.pragma_update(None, "foreign_keys", true)?;
+                    lite
+                } else if *store {
                     let lite = rusqlite::Connection::open(path)?;
                     lite.busy_timeout(DEFAULT_BUSY)?;
                     lite.pragma_update(None, "foreign_keys", true)?;
@@ -2837,7 +2885,7 @@ impl Connection {
         let Some(file) = &self.database.file else {
             return Ok(None);
         };
-        if limit == 0 || !self.is_autocommit() {
+        if limit == 0 || !self.is_autocommit() || read_only() {
             return Ok(None);
         }
         let mut wal = file.clone().into_os_string();
@@ -3230,6 +3278,9 @@ impl Connection {
     }
 
     fn begin(&self, behavior: TransactionBehavior, read_only: bool) -> Result<()> {
+        if !read_only && self::read_only() {
+            return Err(Error::Other(READ_ONLY_REFUSAL.into()));
+        }
         if self.in_transaction.get() {
             return Err(Error::Other(
                 "cannot start a transaction within a transaction".into(),
