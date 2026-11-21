@@ -1250,7 +1250,7 @@ pub fn extract_go(path: &Path) -> Value {
     });
     let path = ex.path.clone();
     json!({"nodes":ex.nodes,"edges":ex.edges,"raw_calls":ex.raw_calls,"go_imports":ex.imports,
-        "go_type_table":{"path":path,"table":type_table,"package_vars":package_vars}})
+        "go_type_table":{"path":path,"table":type_table,"package_vars":package_vars,"package_path":package_path}})
 }
 #[cfg(test)]
 mod tests {

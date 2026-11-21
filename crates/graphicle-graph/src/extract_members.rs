@@ -3240,6 +3240,7 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
     // variable (Graphify 0.9.102, #4962, #3368).
     let mut package_vars: FxHashMap<&str, &serde_json::Map<String, Value>> = FxHashMap::default();
     let mut file_imports: FxHashMap<&str, &Value> = FxHashMap::default();
+    let mut file_package: FxHashMap<&str, &str> = FxHashMap::default();
     for r in per {
         let entry = r.at("go_type_table");
         let path = s(entry, "path");
@@ -3248,6 +3249,9 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
         }
         if let Some(vars) = entry["package_vars"].as_object() {
             package_vars.insert(path, vars);
+        }
+        if !s(entry, "package_path").is_empty() {
+            file_package.insert(path, s(entry, "package_path"));
         }
         file_imports.insert(path, r.at("go_imports"));
     }
@@ -3374,9 +3378,31 @@ pub fn go_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mu
         // be called later: an `indirect_call`, never parked, since `f(x.y)`
         // may as well pass a field (Graphify 0.9.99, #1566).
         let indirect = truthy(at(rc, "indirect"));
-        let found = match &qualified {
-            Some(found) => Some(found),
-            None => defs.get(&java_key(ty)).filter(|d| !d.is_empty()),
+        // A bare name is a same-package reference: narrowed to the caller's
+        // own package when that is known, so two packages that both declare
+        // the type do not collide into one ambiguity (Graphify 0.9.112,
+        // #5242).
+        let scoped: Option<Vec<String>> = if qualified.is_none()
+            && let Some(own) = file_package.get(rs(rc, "source_file"))
+        {
+            let hits = defs
+                .get(&java_key(ty))
+                .into_iter()
+                .flatten()
+                .filter(|id| {
+                    package_paths
+                        .get(id.as_str())
+                        .is_some_and(|paths| paths.contains(*own))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            (!hits.is_empty()).then_some(hits)
+        } else {
+            None
+        };
+        let found = match (&qualified, &scoped) {
+            (Some(found), _) | (None, Some(found)) => Some(found),
+            (None, None) => defs.get(&java_key(ty)).filter(|d| !d.is_empty()),
         };
         let Some(found) = found else {
             if !indirect {
