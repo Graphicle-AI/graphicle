@@ -55,12 +55,24 @@ pub fn filtered_contexts<'a>(
     if filters.is_empty() {
         return Ok(std::borrow::Cow::Borrowed(g));
     }
+    // Heritage relations match by relation name as well as by context: C#,
+    // Java and Python emit them with no context, TypeScript as `type`
+    // (Graphify 0.9.108, #5178).
+    let relations = filters
+        .iter()
+        .filter(|f| matches!(f.as_str(), "inherits" | "implements" | "extends"))
+        .cloned()
+        .collect::<Vec<_>>();
     let mut h = Graph::new(g.directed, g.multigraph);
     for n in &g.nodes {
         h.add_node(n.id.clone(), n.attributes.clone())?;
     }
     for (u, v, e) in g.iter_edges() {
-        if filters.contains(&text(e.attributes.get("context").unwrap_or(&Value::Null))) {
+        let context = e.attributes.get("context").and_then(Value::as_str);
+        let relation = e.attributes.get("relation").and_then(Value::as_str);
+        if context.is_some_and(|c| filters.iter().any(|f| f == c))
+            || relation.is_some_and(|r| relations.iter().any(|f| f == r))
+        {
             h.add_edge(
                 g.nodes[u].id.clone(),
                 g.nodes[v].id.clone(),
@@ -592,10 +604,17 @@ fn render_query(
         );
     }
     if !filters.is_empty() {
+        // A filter that selects no edge says so, rather than reading as
+        // "these symbols are unrelated" (Graphify 0.9.108, #5178).
         head.push(format!(
-            "Context: {} ({})",
+            "Context: {} ({}{})",
             filters.join(", "),
-            source.unwrap_or("")
+            source.unwrap_or(""),
+            if traversal.edge_count() == 0 {
+                ", matched 0 edges"
+            } else {
+                ""
+            }
         ));
     }
     head.push(format!("{} nodes found", nodes.len()));

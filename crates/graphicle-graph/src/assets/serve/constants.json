@@ -128,7 +128,18 @@
     "module": "import",
     "modules": "import",
     "exports": "export",
-    "exported": "export"
+    "exported": "export",
+    "inherit": "inherits",
+    "inherited": "inherits",
+    "inheritance": "inherits",
+    "subclass": "inherits",
+    "subclasses": "inherits",
+    "superclass": "inherits",
+    "implements": "implements",
+    "implemented": "implements",
+    "interface": "implements",
+    "interfaces": "implements",
+    "extends": "extends"
   },
   "tools": [
     {
