@@ -53,8 +53,8 @@ fn windows_normpath(path: &str) -> String {
     let path = path_syntax::strip_verbatim(path);
     crate::detect_manifest::ntpath_normpath(&path).replace('\\', "/")
 }
-#[cfg_attr(windows, allow(dead_code))]
-fn posix_normpath(path: &str) -> String {
+/// `posixpath.normpath` on every platform.
+pub fn posix_normpath(path: &str) -> String {
     let mut parts = Vec::<String>::new();
     for part in path_syntax::posix_parts(path) {
         if part == ".." {

@@ -875,7 +875,43 @@ pub fn has_global_id(node: &Value) -> bool {
         Some("mcp_command" | "mcp_package" | "env_var")
     )
 }
+/// `legacy_id_source_prefix` (Graphify 0.9.104, #2603, #5028): the scan-root
+/// prefix a graph's stored `source_file` values carry. A build scoped to a
+/// subfolder from its parent stores `source_file` relative to the build's cwd
+/// (`sub/pkg/mod.py`) while every id is minted relative to the scan root
+/// (`pkg_mod`); the relative `.graphify_root` marker next to the graph records
+/// that offset (`sub`). `None` when there is no offset: no marker, an
+/// absolute marker, `.`, or a path leaving the cwd.
+pub fn legacy_id_source_prefix(graph_path: &Path) -> Option<String> {
+    let bytes = std::fs::read(graph_path.parent()?.join(".graphify_root")).ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    let text = text.trim().replace('\\', "/");
+    if text.is_empty() || paths::is_absolute_any_platform(Some(&text)) {
+        return None;
+    }
+    let prefix = paths::posix_normpath(&text);
+    if matches!(prefix.as_str(), "." | "" | "..") || prefix.starts_with("../") {
+        return None;
+    }
+    Some(prefix)
+}
+/// Whether a loaded graph still uses pre-#1504 node ids. `source_prefix`
+/// (see [`legacy_id_source_prefix`]) is stripped from each stored
+/// `source_file` before its stem is derived, since ids never include it
+/// (Graphify 0.9.104, #5028).
 pub fn graph_has_legacy_ids(nodes: &[Value], root: Option<&Path>, sample: i64) -> bool {
+    graph_has_legacy_ids_with(nodes, root, sample, None)
+}
+pub fn graph_has_legacy_ids_with(
+    nodes: &[Value],
+    root: Option<&Path>,
+    sample: i64,
+    source_prefix: Option<&str>,
+) -> bool {
+    let prefix = source_prefix
+        .filter(|p| !p.is_empty())
+        .map(|p| format!("{}/", p.replace('\\', "/").trim_end_matches('/')));
     let mut checked = 0;
     for node in nodes {
         if !node.is_object() || node["source_location"] != "L1" || has_global_id(node) {
@@ -887,9 +923,15 @@ pub fn graph_has_legacy_ids(nodes: &[Value], root: Option<&Path>, sample: i64) -
         if !truthy(&node["source_file"]) {
             continue;
         }
-        let source = norm_path(&python_compat::string(&node["source_file"]), root);
+        let mut source = norm_path(&python_compat::string(&node["source_file"]), root);
+        if paths::is_absolute_any_platform(Some(&source)) {
+            continue;
+        }
+        if let Some(stripped) = prefix.as_deref().and_then(|p| source.strip_prefix(p)) {
+            source = stripped.to_string();
+        }
         let rel = Path::new(&source);
-        if paths::is_absolute_any_platform(Some(&source)) || rel.file_name().is_none() {
+        if rel.file_name().is_none() {
             continue;
         }
         let stem = ids::make_id([base::file_stem(rel)]);
