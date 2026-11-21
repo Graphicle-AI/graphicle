@@ -298,6 +298,24 @@ pub fn json_like(path: &Path) -> Value {
         .filter(Value::is_object)
         .unwrap_or(json!({}))
 }
+/// `_read_json_like_for_merge` (Graphify 0.9.112, #5265): [`json_like`] for
+/// a config that will be rewritten. A missing file is `{}`; an existing one
+/// that does not parse as a JSON object is refused instead of being replaced
+/// by a file holding only Graphicle's entry. A UTF-8 BOM is tolerated.
+pub fn json_like_for_merge(path: &Path) -> Result<Value> {
+    if !path.exists() {
+        return Ok(json!({}));
+    }
+    let mut raw = read(path).map_err(|_| refuse(path))?;
+    raw = raw.trim_start_matches('\u{feff}').to_string();
+    if path.extension().is_some_and(|s| s == "jsonc") {
+        raw = strip_json_comments(&raw);
+    }
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .filter(Value::is_object)
+        .ok_or_else(|| refuse(path).into())
+}
 pub fn refuse(path: &Path) -> String {
     format!(
         "[graphicle] refusing to modify {}: not valid JSON (fix or move it and re-run)",
