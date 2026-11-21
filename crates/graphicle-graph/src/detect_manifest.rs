@@ -550,7 +550,11 @@ pub fn mtime_may_hide_a_rewrite(current: f64, stored: &Value) -> bool {
         return false;
     };
     let delta = seen - current;
-    delta >= 0.0 && delta < if current.fract() == 0.0 { 2.0 } else { 0.05 }
+    // A row stamped a hair before the mtime it describes is same-tick too:
+    // `seen` is the process clock and mtime the file system's, which can
+    // disagree by a few hundred nanoseconds either way (Graphify 0.9.105,
+    // #5036, #5090).
+    delta.abs() < if current.fract() == 0.0 { 2.0 } else { 0.05 }
 }
 /// With a scan `root`, manifest entries outside it belong to another scan of a
 /// shared manifest and are neither deleted nor excluded (0.9.77, #3785).

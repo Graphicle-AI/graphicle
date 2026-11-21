@@ -108,3 +108,19 @@ fn constructor_call_resolves_through_destructured_barrel_require() {
     let text = r.to_string();
     assert!(!text.contains("_require_target_file") && !text.contains("_require_imported_name"));
 }
+
+#[test]
+fn racily_clean_window_holds_when_seen_lands_before_mtime() {
+    // test_detect*.py test_a_row_stamped_just_before_the_mtime_still_hashes and
+    // ..._well_before_the_mtime_keeps_the_fastpath (#5036, #5090)
+    let mtime_may_hide_a_rewrite = |current: f64, stored: &serde_json::Value| {
+        graphicle::dispatch(&json!({"operation": "detect", "function": "_mtime_may_hide_a_rewrite",
+            "current_mtime": current, "stored": stored}))
+        .unwrap()
+            == json!(true)
+    };
+    let mtime = 1_700_000_000.5;
+    assert!(mtime_may_hide_a_rewrite(mtime, &json!({"seen": mtime - 0.000_000_24})));
+    assert!(!mtime_may_hide_a_rewrite(mtime, &json!({"seen": mtime - 1.0})));
+    assert!(mtime_may_hide_a_rewrite(mtime, &json!({"seen": mtime + 0.01})));
+}
