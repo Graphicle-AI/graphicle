@@ -270,3 +270,41 @@ fn python_subscript_annotation_value_counts_once() {
         .collect::<Vec<_>>();
     assert!(!generic.iter().any(|t| t.ends_with("mybox")), "{generic:?}");
 }
+
+#[test]
+fn pom_namespace_spellings_preserve_identity_properties_and_scopes() {
+    // test_manifest_ingest.py (#5124, #5126)
+    let ns = "http://maven.apache.org/POM/4.0.0";
+    let forms = [
+        (String::new(), ""),
+        (format!(" xmlns=\"{ns}\""), ""),
+        (format!(" xmlns='{ns}'"), ""),
+        (format!(" xmlns = \"{ns}\""), ""),
+        (format!(" xmlns:m=\"{ns}\""), "m:"),
+    ];
+    for (decl, p) in forms {
+        let text = format!(
+            "<{p}project{decl} xmlns:x=\"urn:other\">\n  <{p}parent><{p}groupId>com.acme</{p}groupId>\n    <{p}artifactId>parent</{p}artifactId><{p}version>1.2</{p}version></{p}parent>\n  <{p}artifactId>app</{p}artifactId>\n  <{p}properties><{p}core.name>core</{p}core.name></{p}properties>\n  <{p}dependencies><{p}dependency>\n    <{p}groupId>${{project.groupId}}</{p}groupId>\n    <{p}artifactId>${{core.name}}</{p}artifactId>\n  </{p}dependency><x:dependency>\n    <x:groupId>other</x:groupId><x:artifactId>foreign</x:artifactId>\n  </x:dependency></{p}dependencies>\n  <{p}profiles><{p}profile><{p}dependencies><{p}dependency>\n    <{p}groupId>com.acme</{p}groupId><{p}artifactId>profile</{p}artifactId>\n  </{p}dependency></{p}dependencies></{p}profile></{p}profiles>\n  <{p}dependencyManagement><{p}dependencies><{p}dependency>\n    <{p}groupId>com.acme</{p}groupId><{p}artifactId>managed</{p}artifactId>\n  </{p}dependency></{p}dependencies></{p}dependencyManagement>\n</{p}project>"
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pom.xml");
+        std::fs::write(&path, &text).unwrap();
+        let r = graphicle::manifest_ingest::extract_package_manifest(&path).unwrap();
+        assert!(r.get("error").is_none_or(|e| e.is_null()), "{decl}: {r:#}");
+        let nodes = r["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 1, "{decl}: {r:#}");
+        assert_eq!(nodes[0]["id"], "pkg_com_acme_app");
+        assert_eq!(nodes[0]["label"], "com.acme:app");
+        let targets = r["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["target"].as_str().unwrap().to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            targets,
+            ["pkg_com_acme_core".to_string(), "pkg_com_acme_profile".to_string()].into_iter().collect(),
+            "{decl}"
+        );
+    }
+}
