@@ -19,6 +19,9 @@ use std::{
     path::{Path, PathBuf},
 };
 #[derive(Clone, Debug, Serialize)]
+/// The graph attribute build_merge leaves for to_json: the saved sources it
+/// replaced or pruned on purpose. Never written to graph.json.
+pub const REPLACED_SOURCES: &str = "_replaced_sources";
 pub struct LoadedGraph {
     pub nodes: Vec<Value>,
     pub edges: Vec<Value>,
@@ -461,6 +464,13 @@ pub fn build_merge_owned(
     // (and their sources by the prune inference); otherwise they move.
     let disk_sources = stored_sources(&[&disk_nodes]);
     let disk_copy = (had_graph && !options.dedup).then(|| disk_nodes.clone());
+    // The saved semantic sources, for the replaced-on-purpose list below.
+    let disk_semantic_sources = disk_nodes
+        .iter()
+        .filter(|n| n.is_object() && !is_ast_tier(n))
+        .filter_map(|n| n["source_file"].as_str().filter(|s| !s.is_empty()))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
     let mut existing_nodes = disk_nodes;
     let mut existing_edges = existing.edges;
     if !new_sources.is_empty() {
@@ -714,6 +724,23 @@ pub fn build_merge_owned(
                 graph.nodes.len()
             ).into());
         }
+    }
+    // Saved sources whose semantic nodes this run replaced or pruned on
+    // purpose, for to_json's lost-node check: model-made ids are not stable
+    // across re-extracts. A source with an unverified shrink stays guarded
+    // (Graphify 0.9.105, #5107).
+    let mut replaced = vec![];
+    for sf in &disk_semantic_sources {
+        let norm = norm_path(sf, root.as_deref());
+        if shrink.contains_key(&norm) {
+            continue;
+        }
+        if sem.contains(sf) || sem.contains(&norm) || prune.hits(&json!(sf))? {
+            replaced.push(sf.clone());
+        }
+    }
+    if !replaced.is_empty() {
+        graph.attributes[REPLACED_SOURCES] = json!(replaced);
     }
     if !shrink.is_empty() {
         graph.attributes["_unverified_semantic_shrink"] = json!(shrink);

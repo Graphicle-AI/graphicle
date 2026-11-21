@@ -4,7 +4,8 @@
 pub use crate::build_global::{distinct_repo_tags, prefix_graph_for_global, prune_repo_from_graph};
 pub use crate::build_labels::is_file_node_label;
 pub use crate::build_merge::{
-    MergeOptions, build_merge, build_merge_owned, load_existing_graph, merge_raw_extraction,
+    MergeOptions, REPLACED_SOURCES, build_merge, build_merge_owned, load_existing_graph,
+    merge_raw_extraction,
 };
 pub use crate::build_normalize::*;
 use crate::{

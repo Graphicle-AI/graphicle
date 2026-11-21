@@ -625,10 +625,21 @@ pub fn to_json(
         // saved id folded into a twin, or merged by dedup into a survivor in
         // the new graph, is not (Graphify 0.9.97-0.9.102, #4778, #4940).
         let mut folded = std::collections::BTreeMap::new();
+        // Sources build_merge replaced or pruned this run: their old
+        // semantic ids are not lost (Graphify 0.9.105, #5107).
+        let replaced = graph
+            .attributes
+            .get(crate::build::REPLACED_SOURCES)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         let missing = crate::build::lost_saved_semantic_nodes_with(
             &existing,
             &semantic_check_nodes(graph),
-            &[],
+            &replaced,
             Some(&mut folded),
             Some(graph.dedup_remap()),
         );
@@ -768,6 +779,7 @@ pub fn to_json(
     if let Some(attributes) = graph_attributes.as_object_mut() {
         attributes.shift_remove(crate::build::DEDUP_COLLAPSED);
         attributes.shift_remove(crate::build::PRUNED_NODE_COUNT);
+        attributes.shift_remove(crate::build::REPLACED_SOURCES);
     }
     if graph_attributes.get("hyperedges").is_some() {
         graph_attributes["hyperedges"] = hyperedges.clone()
