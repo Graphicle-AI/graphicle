@@ -69,8 +69,39 @@ impl GlobalStore {
     }
     pub fn load_manifest(&mut self) -> Value {
         if self.manifest_path.exists() {
-            match read_json(&self.manifest_path) {
-                Ok(value) => return value,
+            // Only a non-object root or repos map is broken enough to back up;
+            // a malformed repo entry is dropped on its own, keeping the other
+            // tracked repos (Graphify 0.9.104, #5020, #5025).
+            let shaped = read_json(&self.manifest_path).and_then(|value| {
+                if value.get("repos").is_some_and(Value::is_object) {
+                    Ok(value)
+                } else {
+                    Err("expected a manifest object with a repos map".into())
+                }
+            });
+            match shaped {
+                Ok(mut value) => {
+                    let repos = value["repos"].as_object_mut().unwrap();
+                    let bad = repos
+                        .iter()
+                        .filter(|(_, info)| !info.is_object())
+                        .map(|(name, _)| name.clone())
+                        .collect::<std::collections::BTreeSet<_>>();
+                    if !bad.is_empty() {
+                        for name in &bad {
+                            repos.shift_remove(name);
+                        }
+                        self.warnings.push(format!(
+                            "[graphicle global] dropped {} malformed repo entr{} ({}) from {}; kept {} valid repo(s).",
+                            bad.len(),
+                            if bad.len() == 1 { "y" } else { "ies" },
+                            bad.iter().cloned().collect::<Vec<_>>().join(", "),
+                            fsutil::path_string(&self.manifest_path),
+                            repos.len()
+                        ));
+                    }
+                    return value;
+                }
                 Err(error) => {
                     let backup = self.manifest_path.with_file_name(format!(
                         "{}.corrupt.{}",

@@ -84,3 +84,54 @@ fn learning_overlay_keeps_valid_entries_beside_malformed_source() {
         })
     );
 }
+
+#[test]
+fn global_list_backs_up_wrong_manifest_shape() {
+    // test_global_manifest_shape.py test_global_list_backs_up_wrong_manifest_shape
+    for payload in [json!(null), json!([]), json!({}), json!({"repos": []})] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = graphicle::global_graph::GlobalStore::new(dir.path().to_path_buf());
+        std::fs::write(&store.manifest_path, payload.to_string()).unwrap();
+        assert_eq!(store.list().unwrap(), json!({}), "{payload}");
+        assert!(!store.manifest_path.exists());
+        let backups = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("global-manifest.json.corrupt.")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            std::fs::read_to_string(backups[0].path()).unwrap(),
+            payload.to_string()
+        );
+        assert!(store.warnings.iter().any(|w| w.contains("moved to")), "{:?}", store.warnings);
+    }
+}
+
+#[test]
+fn global_list_isolates_malformed_repo_entries() {
+    // test_global_manifest_shape.py (#5020)
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = graphicle::global_graph::GlobalStore::new(dir.path().to_path_buf());
+    let good = json!({"source_path": "graph.json", "node_count": 2});
+    std::fs::write(
+        &store.manifest_path,
+        json!({"version": 1, "repos": {"goodA": good, "bad": "oops", "goodB": good}}).to_string(),
+    )
+    .unwrap();
+    assert_eq!(store.list().unwrap(), json!({"goodA": good, "goodB": good}));
+    assert!(store.manifest_path.is_file());
+    let warning = store.warnings.join("\n");
+    assert!(warning.contains("dropped 1 malformed repo") && warning.contains("bad"), "{warning}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut store = graphicle::global_graph::GlobalStore::new(dir.path().to_path_buf());
+    std::fs::write(&store.manifest_path, json!({"repos": {"legacy": "invalid"}}).to_string()).unwrap();
+    assert_eq!(store.list().unwrap(), json!({}));
+    assert!(store.manifest_path.is_file());
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+}
