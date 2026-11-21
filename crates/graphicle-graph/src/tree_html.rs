@@ -13,7 +13,15 @@ pub fn common_root(paths: &[String]) -> String {
     let mut parts = paths
         .iter()
         .filter(|p| !p.is_empty())
-        .map(|p| path_syntax::posix_parts(p));
+        // The files' folders, so a single file or folder is not nested under
+        // the file itself (Graphify 0.9.105, #5092): `Path(p).parent.parts`.
+        .map(|p| {
+            let mut parts = path_syntax::posix_parts(p);
+            if !(parts.len() == 1 && matches!(parts[0].as_str(), "/" | "//")) {
+                parts.pop();
+            }
+            parts
+        });
     let Some(mut prefix) = parts.next() else {
         return String::new();
     };

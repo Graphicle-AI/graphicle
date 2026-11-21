@@ -34,3 +34,22 @@ fn file_affected_reaches_nested_method_callers() {
         .collect::<Vec<_>>();
     assert!(hits.contains(&"runner_run".to_string()), "{hits:?}");
 }
+
+#[test]
+fn build_tree_single_file_common_root_is_directory() {
+    // test_tree_html.py test_build_tree_single_file_common_root_is_directory (#5092)
+    let graph = json!({"directed": false, "links": [],
+        "nodes": [{"id": "n0", "label": "func_a", "source_file": "pkg/a.py"}]});
+    let tree = graphicle::tree_html::build_tree(&graph, None, 200, None).unwrap();
+    assert_eq!(tree["name"], "pkg", "{tree:#}");
+    let names = |v: &serde_json::Value| {
+        v["children"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["name"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(names(&tree), ["a.py"]);
+    assert_eq!(names(&tree["children"][0]), ["func_a"]);
+}
