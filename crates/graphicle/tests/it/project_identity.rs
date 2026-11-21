@@ -903,6 +903,40 @@ fn call_sends_workspace_operations_without_a_project() {
     }
 }
 
+/// A moved or unpacked folder is not found by its new path: the error names
+/// the projects to use by id, and `call` reports it instead of sending the
+/// path on as a project id ("Repository not found").
+#[test]
+fn a_moved_folder_names_the_projects_to_use_by_id() {
+    let mut f = Fixture::new();
+    let docs = f.folder("docs");
+    let id = f.sync(&docs, None);
+    let moved = f.folder("unpacked/docs");
+    let refused = f
+        .resolve(Some(moved.to_str().unwrap()), &f.root, None)
+        .unwrap_err();
+    assert!(refused.message.contains(&id), "{}", refused.message);
+    assert!(
+        refused.message.contains(&format!("synced from {}", docs.display())),
+        "{}",
+        refused.message
+    );
+    let mut command = f.binary(&f.root);
+    command
+        .arg("call")
+        .args(["status", "--project", moved.to_str().unwrap()]);
+    let called = output(command);
+    assert!(!called.status.success());
+    let stderr = String::from_utf8_lossy(&called.stderr);
+    assert!(stderr.contains(&id), "{stderr}");
+    assert!(!stderr.contains("Repository not found"), "{stderr}");
+    // The id still answers.
+    let mut command = f.binary(&f.root);
+    command.arg("call").args(["status", "--project", &id]);
+    let status: Value = serde_json::from_str(&run(command, "")).unwrap();
+    assert_eq!(status["repository"]["id"], id.as_str());
+}
+
 /// Folder aliases are where a project's files are, not what it holds: two
 /// stores with the same content synced from different folders have the
 /// same `deletion.state` (the contract the edition oracle and forgetting

@@ -225,10 +225,48 @@ pub fn requested(
     match lookup(db, p, &path)?.readable()? {
         Some(found) => Ok(found.id),
         None => Err(Error::bad(format!(
-            "No project is registered for {}; sync it first",
-            path.display()
+            "No project is registered for {}; sync it first{}",
+            path.display(),
+            known_projects(db, p)?
         ))),
     }
+}
+
+/// The hint [`requested`] adds when a path names no project: a store knows a
+/// folder by the path it was synced from, so a moved or unpacked folder (or
+/// store) is not found by its new path, but its project still answers by id.
+/// Lists up to five projects the principal may read, with the folder each
+/// was last synced from; empty when there are none.
+fn known_projects(db: &Connection, p: &Principal) -> Result<String> {
+    const SHOWN: usize = 5;
+    let mut readable = Vec::new();
+    for row in crate::store::rows(
+        db,
+        "SELECT id,name FROM repo_projects WHERE workspace_id=? ORDER BY name,id",
+        [p.workspace.as_str()],
+    )? {
+        let id = s(&row, "id");
+        if repo_readable(db, p, id)? {
+            readable.push((id.to_string(), s(&row, "name").to_string()));
+        }
+    }
+    if readable.is_empty() {
+        return Ok(String::new());
+    }
+    let mut lines = Vec::new();
+    for (id, name) in readable.iter().take(SHOWN) {
+        let folder = current_folder(db, id)?
+            .map(|folder| format!(", synced from {}", folder.display()))
+            .unwrap_or_default();
+        lines.push(format!("  {id} ({name}{folder})"));
+    }
+    if readable.len() > SHOWN {
+        lines.push(format!("  and {} more", readable.len() - SHOWN));
+    }
+    Ok(format!(
+        ". A store knows a folder by the path it was synced from, so a moved or unpacked folder is not found by its new path; name the project by its id instead (--project <id>):\n{}",
+        lines.join("\n")
+    ))
 }
 
 /// The project a project id, a project key or a recorded folder key names,

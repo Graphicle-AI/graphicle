@@ -2432,9 +2432,15 @@ where
             // Without it: this folder's project, else the saved default,
             // else no `repository_id` at all.
             let project = match project {
-                Some(value) => {
-                    Some(local::project(&store, &session, Some(&value)).unwrap_or(value))
-                }
+                // A value that is not an id, a key or a synced folder goes
+                // as given, except an existing path: its resolution error
+                // (which lists the projects to name instead) is the answer,
+                // not "Repository not found" for the path used as an id.
+                Some(value) => Some(match local::project(&store, &session, Some(&value)) {
+                    Ok(id) => id,
+                    Err(error) if std::path::Path::new(&value).exists() => return Err(error),
+                    Err(_) => value,
+                }),
                 None => local::find(&store, &session)?.map(|resolved| resolved.id),
             };
             if let Some(project) = project {
