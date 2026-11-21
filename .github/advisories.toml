@@ -1,0 +1,26 @@
+# Vulnerability advisories the maintainers have looked at and decided to ship
+# with for now (packaging/advisory_gate.py, .github/workflows/vulnerabilities.yml).
+#
+# An accepted advisory is still reported (a notice in every run and a row in
+# the job summary) but never fails the check, until its review_by date. After
+# that date it counts as unreviewed again, so an acceptance cannot outlive the
+# reasons for it unnoticed. Accept an advisory only with a reason a reviewer can
+# check: why Graphicle is not exposed (the affected function is never called,
+# the feature is off) or why shipping now is still the safer choice, and what
+# would end the acceptance (a fixed release of the dependency).
+#
+# Each entry:
+#   id         the RustSec id
+#   reason     why it is acceptable, and what ends the acceptance
+#   review_by  a date (no quotes) within about three months
+#   crates     optional: only these crates (graphicle, graphicle-graph,
+#              graphicle-memory); all three when absent
+#
+# [[accept]]
+# id = "RUSTSEC-YYYY-NNNN"
+# reason = "..."
+# review_by = 2027-02-15
+# crates = ["graphicle-graph"]
+#
+# Advisories the crates' deny.toml files ignore (the zstd and the unmaintained
+# entries) never reach this check; move them here to give them review dates.

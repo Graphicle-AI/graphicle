@@ -5,7 +5,8 @@
 # formatted, linted and tested on macOS (Apple silicon) and Linux (x86-64), in
 # its own job: the three build folders together would not fit a runner's disk.
 # The windows job builds, lints and tests each crate on Windows (x86-64,
-# preview); that job says which crates' tests gate.
+# preview); that job says which crates' tests gate. Vulnerability advisories
+# have their own workflow, vulnerabilities.yml.
 name: ci
 
 on:
@@ -198,13 +199,15 @@ jobs:
         run: |
           cargo install --locked cargo-deny@0.20.2
           cargo install --locked --features cli cargo-about@0.9.2
-      - name: Engine dependencies (licences, advisories, sources)
-        working-directory: crates/graphicle-graph
-        run: cargo deny check
-      - name: Memory library and program dependency licences
+      # Licences, banned crates and allowed sources gate every crate here.
+      # Vulnerability advisories are not a licence question: the
+      # vulnerabilities workflow ranks them by severity and decides pass, warn
+      # or fail (.github/workflows/vulnerabilities.yml).
+      - name: Dependency licences, bans and sources
         run: |
-          (cd crates/graphicle-memory && cargo deny check licenses)
-          (cd crates/graphicle && cargo deny check licenses)
+          (cd crates/graphicle-graph && cargo deny check bans licenses sources)
+          (cd crates/graphicle-memory && cargo deny check bans licenses sources)
+          (cd crates/graphicle && cargo deny check bans licenses sources)
       - name: Adapted-file headers
         working-directory: crates/graphicle-graph
         run: python3 tools/mark_adapted_files.py --check
