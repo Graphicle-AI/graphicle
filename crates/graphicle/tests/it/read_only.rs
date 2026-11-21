@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use tempfile::TempDir;
 
 /// Every file under `folder`, with its bytes.
@@ -39,6 +39,10 @@ fn graphicle(home: &Path, data: &Path, cwd: &Path) -> Command {
 }
 
 fn output(mut command: Command) -> Output {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     crate::fork_guard::spawn(&mut command)
         .unwrap()
         .wait_with_output()
@@ -186,7 +190,11 @@ fn a_read_only_folder_answers_in_read_only_mode() {
         for path in all {
             let mut permissions = std::fs::metadata(&path).unwrap().permissions();
             let current = permissions.mode();
-            permissions.set_mode(if mode == 0 { current & !0o222 } else { current | 0o200 });
+            permissions.set_mode(if mode == 0 {
+                current & !0o222
+            } else {
+                current | 0o200
+            });
             std::fs::set_permissions(&path, permissions).unwrap();
         }
     };
