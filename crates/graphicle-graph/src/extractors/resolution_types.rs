@@ -50,13 +50,25 @@ pub fn prune_repointed(nodes: &mut Vec<Value>, edges: &[Value], old: &BTreeSet<S
         .collect::<BTreeSet<_>>();
     nodes.retain(|n| !old.contains(s(n, "id")) || refs.contains(s(n, "id")));
 }
+/// `_go_package_clause`: the package a Go file's `package` clause declares.
+fn go_package_clause(path: &Path) -> Option<String> {
+    static COMMENT: std::sync::LazyLock<regex::bytes::Regex> =
+        std::sync::LazyLock::new(|| regex::bytes::Regex::new(r"(?s)//[^\n]*|/\*.*?\*/").unwrap());
+    static PACKAGE: std::sync::LazyLock<regex::bytes::Regex> = std::sync::LazyLock::new(|| {
+        regex::bytes::Regex::new(r"(?m)^\s*package\s+([A-Za-z_][A-Za-z0-9_]*)").unwrap()
+    });
+    let source = std::fs::read(path).ok()?;
+    let clean = COMMENT.replace_all(&source, &b" "[..]);
+    let m = PACKAGE.captures(&clean)?;
+    Some(String::from_utf8_lossy(&m[1]).into_owned())
+}
 /// `_merge_go_package_types` (#3399): a Go package's type declared in one
 /// file and the copies minted by the other files that declare methods on it
 /// share one id (the extractor keys a type on its package directory), so they
 /// fold into the declaring file's node before disambiguation would split
 /// them. Only `.go` nodes of one directory fold (the id holds only the
-/// directory's name), and never with a `_test.go` member (its package clause
-/// may be the separate `_test` package). Edges already point at the shared id.
+/// directory's name), and a `_test.go` member only when every file names one
+/// package (Graphify 0.9.110, #5209). Edges already point at the shared id.
 pub fn merge_go_package_types(nodes: &mut Vec<Value>, edges: &[Value]) {
     let mut by_id: FxHashMap<&str, Vec<usize>> = FxHashMap::default();
     for (i, n) in nodes.iter().enumerate() {
@@ -99,11 +111,21 @@ pub fn merge_go_package_types(nodes: &mut Vec<Value>, edges: &[Value]) {
         if files.iter().any(|f| f.parent() != files[0].parent()) {
             continue;
         }
+        // A `_test.go` member folds only when every file's package clause
+        // names one package: an internal test file adds test-only methods to
+        // a package type, an external `package svc_test` declares its own
+        // (Graphify 0.9.110, #5209).
         if files.iter().any(|f| {
             f.file_name()
                 .is_some_and(|n| n.to_string_lossy().ends_with("_test.go"))
         }) {
-            continue;
+            let clauses = files
+                .iter()
+                .map(|f| go_package_clause(f))
+                .collect::<FxHashSet<_>>();
+            if clauses.len() != 1 || clauses.contains(&None) {
+                continue;
+            }
         }
         // A type whose declaring file is outside the corpus leaves the group
         // method-only; it still folds, onto the lowest path.

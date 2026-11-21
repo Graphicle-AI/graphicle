@@ -50,3 +50,49 @@ fn aliased_call_in_a_method_or_staticmethod_is_linked() {
         assert_eq!(calls_to_f(caller), BTreeSet::from(["pkg_b_c_use".to_string()]), "{caller}");
     }
 }
+
+#[test]
+fn go_internal_test_file_method_folds_into_the_package_type() {
+    // test_go_package_type_fold.py (#5209)
+    graphicle::rcfile::set_language_overrides(None);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let files = [
+        ("go.mod", "module example.com/app\n\ngo 1.22\n"),
+        ("seq/seq.go", "package seq\n\ntype Seq struct{}\n\nfunc (s *Seq) helper() int { return 1 }\n\nfunc (s *Seq) Run() int { return s.helper() }\n"),
+        ("seq/extra_test.go", "// Test-only helpers.\npackage seq\n\nfunc (s *Seq) extra() int { return 2 }\n"),
+        ("svc/a.go", "package svc\n\ntype Fixture struct{}\n"),
+        ("svc/b_test.go", "package svc_test\n\nfunc (f *Fixture) Reset() {}\n"),
+    ];
+    let paths = files
+        .iter()
+        .map(|(rel, text)| {
+            let p = root.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, text).unwrap();
+            p
+        })
+        .filter(|p| p.extension().is_some_and(|e| e == "go"))
+        .collect::<Vec<_>>();
+    let r = extract(
+        &paths,
+        &ExtractOptions {
+            root: Some(root.clone()),
+            cache_root: Some(root.join("graphify-out")),
+            parallel: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let nodes = r["nodes"].as_array().unwrap();
+    let seqs = nodes.iter().filter(|n| n["label"] == "Seq").collect::<Vec<_>>();
+    assert_eq!(seqs.len(), 1, "{seqs:?}");
+    let methods = r["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["relation"] == "method" && e["source"] == seqs[0]["id"])
+        .count();
+    assert_eq!(methods, 3, "{r:#}");
+    assert_eq!(nodes.iter().filter(|n| n["label"] == "Fixture").count(), 2);
+}

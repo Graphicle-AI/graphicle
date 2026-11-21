@@ -202,9 +202,11 @@ fn go_package_type_fold_stops_at_test_files_and_other_directories() {
             "package svc\n\nfunc (s *Server) Close() {}\n",
         ),
         ("c/svc/server.go", "package svc\n\ntype Server struct{}\n"),
+        // An external test package keeps its own type (Graphify 0.9.110,
+        // #5209: an internal `package svc` test file folds).
         (
             "c/svc/server_test.go",
-            "package svc\n\nfunc (s *Server) Check() {}\n",
+            "package svc_test\n\nfunc (s *Server) Check() {}\n",
         ),
     ]);
     let servers = nodes(&r).iter().filter(|n| n["label"] == "Server").count();
