@@ -792,15 +792,24 @@ mod tests {
             extract: None,
         };
         let request = plan(&config, options, &mut d).unwrap();
-        assert!(request.headers.contains(&("x-opencode-session".into(), "s1".into())));
+        assert!(
+            request
+                .headers
+                .contains(&("x-opencode-session".into(), "s1".into()))
+        );
         let auth = request
             .headers
             .iter()
             .filter(|(k, _)| k.eq_ignore_ascii_case("authorization"))
             .collect::<Vec<_>>();
-        assert_eq!(auth, [&("authorization".to_string(), "Bearer k".to_string())]);
+        assert_eq!(
+            auth,
+            [&("authorization".to_string(), "Bearer k".to_string())]
+        );
         assert!(
-            d.stderr.iter().any(|w| w.contains("cannot set Authorization")),
+            d.stderr
+                .iter()
+                .any(|w| w.contains("cannot set Authorization")),
             "{:?}",
             d.stderr
         );

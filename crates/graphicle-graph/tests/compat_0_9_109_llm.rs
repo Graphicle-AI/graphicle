@@ -4,7 +4,8 @@
 use serde_json::{Value, json};
 
 fn parse(raw: &str) -> Value {
-    graphicle::dispatch(&json!({"operation": "llm", "function": "_parse_llm_json", "raw": raw})).unwrap()
+    graphicle::dispatch(&json!({"operation": "llm", "function": "_parse_llm_json", "raw": raw}))
+        .unwrap()
 }
 
 fn nodes(v: &Value) -> usize {

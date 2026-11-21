@@ -18,10 +18,10 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
-#[derive(Clone, Debug, Serialize)]
 /// The graph attribute build_merge leaves for to_json: the saved sources it
 /// replaced or pruned on purpose. Never written to graph.json.
 pub const REPLACED_SOURCES: &str = "_replaced_sources";
+#[derive(Clone, Debug, Serialize)]
 pub struct LoadedGraph {
     pub nodes: Vec<Value>,
     pub edges: Vec<Value>,

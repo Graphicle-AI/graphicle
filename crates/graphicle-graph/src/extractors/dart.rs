@@ -722,7 +722,9 @@ impl Output<'_> {
             Default::default();
         for m in &matches {
             let name = m.get(1).unwrap().as_str().rsplit('.').next().unwrap();
-            let private_type = name.trim_start_matches('_').starts_with(|c: char| c.is_ascii_uppercase())
+            let private_type = name
+                .trim_start_matches('_')
+                .starts_with(|c: char| c.is_ascii_uppercase())
                 && name.starts_with('_');
             if !crate::ids::normalize_id(name).is_empty() && !private_type {
                 groups

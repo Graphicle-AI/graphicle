@@ -886,25 +886,28 @@ impl<'a, 't> Engine<'a, 't> {
                     c.is_named() && !matches!(c.kind_name(), "modifiers" | "variable_declarator")
                 })
             });
-            let ty = spread.flatten().or_else(|| p.child_by_field_name("type")).or_else(|| {
-                if self.is("php") {
-                    first_child(
-                        p,
-                        &[
-                            "named_type",
-                            "primitive_type",
-                            "nullable_type",
-                            "union_type",
-                            "intersection_type",
-                            "optional_type",
-                        ],
-                    )
-                } else if self.is("kotlin") {
-                    first_child(p, &["user_type", "nullable_type", "type_reference"])
-                } else {
-                    None
-                }
-            });
+            let ty = spread
+                .flatten()
+                .or_else(|| p.child_by_field_name("type"))
+                .or_else(|| {
+                    if self.is("php") {
+                        first_child(
+                            p,
+                            &[
+                                "named_type",
+                                "primitive_type",
+                                "nullable_type",
+                                "union_type",
+                                "intersection_type",
+                                "optional_type",
+                            ],
+                        )
+                    } else if self.is("kotlin") {
+                        first_child(p, &["user_type", "nullable_type", "type_reference"])
+                    } else {
+                        None
+                    }
+                });
             self.refs(id, ty, line, "parameter_type", false);
             if self.is("php")
                 && p.kind_name() == "property_promotion_parameter"

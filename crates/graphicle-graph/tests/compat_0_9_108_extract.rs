@@ -25,7 +25,13 @@ fn sql_edges(name: &str, text: &str) -> (BTreeSet<(String, String, String)>, BTr
         .unwrap()
         .iter()
         .filter(|e| e["relation"] != "contains")
-        .map(|e| (label(&e["source"]), e["relation"].as_str().unwrap().to_string(), label(&e["target"])))
+        .map(|e| {
+            (
+                label(&e["source"]),
+                e["relation"].as_str().unwrap().to_string(),
+                label(&e["target"]),
+            )
+        })
         .collect();
     let labels = r["nodes"]
         .as_array()
@@ -59,7 +65,10 @@ fn sql_dblink_suffix_is_kept() {
         "CREATE OR REPLACE PROCEDURE p3a IS\nBEGIN\n  INSERT INTO hr.emp_copy SELECT * FROM hr.emp@remote_db;\nEND;\n/\n",
     );
     assert!(labels.contains("hr.emp@remote_db"), "{labels:?}");
-    assert!(has(&edges, "p3a()", "reads_from", "hr.emp@remote_db"), "{edges:?}");
+    assert!(
+        has(&edges, "p3a()", "reads_from", "hr.emp@remote_db"),
+        "{edges:?}"
+    );
 }
 
 #[test]
@@ -77,9 +86,18 @@ fn sql_unparsed_derived_table_alias_is_not_read_as_a_table() {
 fn sql_edition_keyword_matches_plain_ddl() {
     // test_sql_oracle_editionable.py (#5167)
     let templates = [
-        ("CREATE OR REPLACE {kw}PROCEDURE hr.load_emp IS\nBEGIN\n  INSERT INTO hr.emp_copy SELECT * FROM hr.emp;\nEND;\n/\n", "hr.load_emp()"),
-        ("CREATE OR REPLACE {kw}FUNCTION hr.f RETURN NUMBER IS\n  n NUMBER;\nBEGIN\n  SELECT COUNT(*) INTO n FROM hr.emp;\n  RETURN n;\nEND;\n/\n", "hr.f()"),
-        ("CREATE OR REPLACE {kw}TRIGGER hr.trg_emp BEFORE INSERT ON hr.emp FOR EACH ROW\nBEGIN\n  INSERT INTO hr.audit_log (id) VALUES (:new.id);\nEND;\n/\n", "hr.trg_emp"),
+        (
+            "CREATE OR REPLACE {kw}PROCEDURE hr.load_emp IS\nBEGIN\n  INSERT INTO hr.emp_copy SELECT * FROM hr.emp;\nEND;\n/\n",
+            "hr.load_emp()",
+        ),
+        (
+            "CREATE OR REPLACE {kw}FUNCTION hr.f RETURN NUMBER IS\n  n NUMBER;\nBEGIN\n  SELECT COUNT(*) INTO n FROM hr.emp;\n  RETURN n;\nEND;\n/\n",
+            "hr.f()",
+        ),
+        (
+            "CREATE OR REPLACE {kw}TRIGGER hr.trg_emp BEFORE INSERT ON hr.emp FOR EACH ROW\nBEGIN\n  INSERT INTO hr.audit_log (id) VALUES (:new.id);\nEND;\n/\n",
+            "hr.trg_emp",
+        ),
     ];
     for kw in ["EDITIONABLE ", "NONEDITIONABLE ", "editionable "] {
         for (template, label) in templates {

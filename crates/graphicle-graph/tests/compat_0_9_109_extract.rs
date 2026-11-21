@@ -5,7 +5,10 @@
 use graphicle::api::{ExtractOptions, extract};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn ids_and_calls(name: &str, text: &str) -> (BTreeMap<String, Vec<String>>, BTreeSet<(String, String)>) {
+fn ids_and_calls(
+    name: &str,
+    text: &str,
+) -> (BTreeMap<String, Vec<String>>, BTreeSet<(String, String)>) {
     graphicle::rcfile::set_language_overrides(None);
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -33,7 +36,12 @@ fn ids_and_calls(name: &str, text: &str) -> (BTreeMap<String, Vec<String>>, BTre
         .unwrap()
         .iter()
         .filter(|e| e["relation"] == "calls")
-        .map(|e| (e["source"].as_str().unwrap().to_string(), e["target"].as_str().unwrap().to_string()))
+        .map(|e| {
+            (
+                e["source"].as_str().unwrap().to_string(),
+                e["target"].as_str().unwrap().to_string(),
+            )
+        })
         .collect();
     (ids, calls)
 }
@@ -54,7 +62,10 @@ fn kotlin_underscore_twin_keeps_its_own_node_and_calls() {
     let (bar, ubar) = (one(&ids, ".bar()"), one(&ids, "._bar()"));
     let (helper, other) = (one(&ids, ".helper()"), one(&ids, ".other()"));
     assert_ne!(bar, ubar);
-    assert!(bar.ends_with("_foo_bar") && helper.ends_with("_foo_helper"), "{bar} {helper}");
+    assert!(
+        bar.ends_with("_foo_bar") && helper.ends_with("_foo_helper"),
+        "{bar} {helper}"
+    );
     assert!(calls.contains(&(bar, helper)), "{calls:?}");
     assert!(calls.contains(&(ubar, other)), "{calls:?}");
     assert_ne!(one(&ids, ".run()"), one(&ids, ".Run()"));
@@ -74,13 +85,48 @@ fn dart_underscore_twins_keep_their_own_nodes() {
 }
 
 const VARIADIC_CASES: &[(&str, &str, &str, &str)] = &[
-    ("csharp", "x.cs", "class Opt {}\nclass X {\n  void Plain(Opt o) {}\n  void Vari(params Opt[] os) {}\n}\n", ".Vari()"),
-    ("go", "x.go", "package p\n\ntype Opt struct{}\n\nfunc Plain(o Opt) {}\nfunc Vari(os ...Opt) {}\n", "Vari()"),
-    ("java", "X.java", "class Opt {}\nclass X {\n  void plain(Opt o) {}\n  void vari(Opt... os) {}\n}\n", ".vari()"),
-    ("java-generic", "Y.java", "import java.util.List;\nclass Opt {}\nclass Y {\n  void vari(List<Opt>... os) {}\n}\n", ".vari()"),
-    ("php", "x.php", "<?php\nclass Opt {}\nfunction plain(Opt $o) {}\nfunction vari(Opt ...$os) {}\n", "vari()"),
-    ("scala", "x.scala", "class Opt\nobject X {\n  def plain(o: Opt): Unit = ()\n  def vari(os: Opt*): Unit = ()\n}\n", ".vari()"),
-    ("scala-by-name", "y.scala", "class Opt\nobject Y {\n  def lazyp(o: => Opt): Unit = ()\n}\n", ".lazyp()"),
+    (
+        "csharp",
+        "x.cs",
+        "class Opt {}\nclass X {\n  void Plain(Opt o) {}\n  void Vari(params Opt[] os) {}\n}\n",
+        ".Vari()",
+    ),
+    (
+        "go",
+        "x.go",
+        "package p\n\ntype Opt struct{}\n\nfunc Plain(o Opt) {}\nfunc Vari(os ...Opt) {}\n",
+        "Vari()",
+    ),
+    (
+        "java",
+        "X.java",
+        "class Opt {}\nclass X {\n  void plain(Opt o) {}\n  void vari(Opt... os) {}\n}\n",
+        ".vari()",
+    ),
+    (
+        "java-generic",
+        "Y.java",
+        "import java.util.List;\nclass Opt {}\nclass Y {\n  void vari(List<Opt>... os) {}\n}\n",
+        ".vari()",
+    ),
+    (
+        "php",
+        "x.php",
+        "<?php\nclass Opt {}\nfunction plain(Opt $o) {}\nfunction vari(Opt ...$os) {}\n",
+        "vari()",
+    ),
+    (
+        "scala",
+        "x.scala",
+        "class Opt\nobject X {\n  def plain(o: Opt): Unit = ()\n  def vari(os: Opt*): Unit = ()\n}\n",
+        ".vari()",
+    ),
+    (
+        "scala-by-name",
+        "y.scala",
+        "class Opt\nobject Y {\n  def lazyp(o: => Opt): Unit = ()\n}\n",
+        ".lazyp()",
+    ),
 ];
 
 #[test]
@@ -103,7 +149,10 @@ fn a_variadic_parameter_references_its_type() {
         )
         .unwrap();
         let nodes = r["nodes"].as_array().unwrap();
-        let opt = nodes.iter().filter(|n| n["label"] == "Opt").collect::<Vec<_>>();
+        let opt = nodes
+            .iter()
+            .filter(|n| n["label"] == "Opt")
+            .collect::<Vec<_>>();
         assert_eq!(opt.len(), 1, "{case}: {r:#}");
         let label = |id: &serde_json::Value| {
             nodes
@@ -118,10 +167,23 @@ fn a_variadic_parameter_references_its_type() {
             .unwrap()
             .iter()
             .filter(|e| e["relation"] == "references" && e["target"] == opt[0]["id"])
-            .map(|e| (label(&e["source"]), e["context"].as_str().unwrap_or("").to_string()))
+            .map(|e| {
+                (
+                    label(&e["source"]),
+                    e["context"].as_str().unwrap_or("").to_string(),
+                )
+            })
             .collect::<BTreeMap<_, _>>();
-        let expected = if *case == "java-generic" { "generic_arg" } else { "parameter_type" };
-        assert_eq!(refs.get(*func).map(String::as_str), Some(expected), "{case}: {refs:?}");
+        let expected = if *case == "java-generic" {
+            "generic_arg"
+        } else {
+            "parameter_type"
+        };
+        assert_eq!(
+            refs.get(*func).map(String::as_str),
+            Some(expected),
+            "{case}: {refs:?}"
+        );
     }
 }
 
@@ -176,7 +238,12 @@ fn same_basename_files_stay_distinct_under_a_symlinked_root() {
         .collect::<BTreeSet<_>>();
     assert_eq!(
         files,
-        ["web/app/a/page.tsx".to_string(), "web/app/b/page.tsx".to_string()].into_iter().collect(),
+        [
+            "web/app/a/page.tsx".to_string(),
+            "web/app/b/page.tsx".to_string()
+        ]
+        .into_iter()
+        .collect(),
         "{r:#}"
     );
 }

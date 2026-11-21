@@ -758,7 +758,10 @@ impl<'a, 't> Engine<'a, 't> {
             id = self.php_member_nid(class, n, &sanitized);
         } else if self.is("java")
             && let Some(class) = parent
-            && matches!(n.kind_name(), "method_declaration" | "constructor_declaration")
+            && matches!(
+                n.kind_name(),
+                "method_declaration" | "constructor_declaration"
+            )
         {
             id = self.java_member_nid(class, n, &sanitized);
         } else if self.is("kotlin")
@@ -991,7 +994,10 @@ impl<'a, 't> Engine<'a, 't> {
         if !self.js_member_groups.contains_key(&key) {
             let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
             for c in children(body) {
-                if !matches!(c.kind_name(), "method_declaration" | "constructor_declaration") {
+                if !matches!(
+                    c.kind_name(),
+                    "method_declaration" | "constructor_declaration"
+                ) {
                     continue;
                 }
                 let text = c

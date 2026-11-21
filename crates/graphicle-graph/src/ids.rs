@@ -127,7 +127,11 @@ impl DeclIdRegistry {
         let key = (kind.to_string(), nid.to_string());
         let owner = self.owners.get(nid).cloned();
         if owner.as_ref() == Some(&key) {
-            let first = self.spelled.get(nid).cloned().unwrap_or_else(|| name.into());
+            let first = self
+                .spelled
+                .get(nid)
+                .cloned()
+                .unwrap_or_else(|| name.into());
             if name == first || name.trim_matches('_') != first.trim_matches('_') {
                 return self.assigned[&key].clone();
             }

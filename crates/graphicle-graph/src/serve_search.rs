@@ -58,9 +58,7 @@ const QUALIFIED_MAX_TOKENS: usize = 4;
 /// `_name_key`: the token-joined form of an already normalized name.
 fn name_key(text: &str) -> String {
     static RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"[^\W_]+").unwrap());
-    let stripped = text
-        .trim_matches(|c| "()[]{} ".contains(c))
-        .to_lowercase();
+    let stripped = text.trim_matches(|c| "()[]{} ".contains(c)).to_lowercase();
     RE.find_iter(&stripped)
         .map(|m| m.as_str())
         .collect::<Vec<_>>()

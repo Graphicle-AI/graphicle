@@ -1140,16 +1140,16 @@ pub fn php_route_name(closure: Node<'_>, source: &[u8]) -> Option<String> {
                 .into_iter()
                 .take_while(|sibling| *sibling != node)
                 .find_map(|sibling| {
-                let target = if sibling.kind_name() == "argument" {
-                    children(sibling)
-                        .into_iter()
-                        .find(|c| string(*c))
-                        .unwrap_or(sibling)
-                } else {
-                    sibling
-                };
-                string(target).then(|| unquote(target))
-            });
+                    let target = if sibling.kind_name() == "argument" {
+                        children(sibling)
+                            .into_iter()
+                            .find(|c| string(*c))
+                            .unwrap_or(sibling)
+                    } else {
+                        sibling
+                    };
+                    string(target).then(|| unquote(target))
+                });
             if verb.is_none() {
                 match path {
                     Some(p)
@@ -2245,8 +2245,15 @@ fn scala_collect_type_refs_in(
         }
         // `os: Opt*` and the by-name `o: => Opt` wrap the parameter type
         // (Graphify 0.9.109, #4638).
-        "compound_type" | "infix_type" | "function_type" | "tuple_type" | "annotated_type"
-        | "projected_type" | "match_type" | "type_case_clause" | "repeated_parameter_type"
+        "compound_type"
+        | "infix_type"
+        | "function_type"
+        | "tuple_type"
+        | "annotated_type"
+        | "projected_type"
+        | "match_type"
+        | "type_case_clause"
+        | "repeated_parameter_type"
         | "lazy_parameter_type" => {
             for c in named(n) {
                 scala_collect_type_refs_in(c, source, generic, out, skip)

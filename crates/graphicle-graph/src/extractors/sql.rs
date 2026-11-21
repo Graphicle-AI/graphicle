@@ -411,9 +411,7 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     )),
     // `_BODY_COMMA_TABLE_RX.match(masked, pos)`: the next table of a comma
     // join (`FROM a, b`), anchored (Graphify 0.9.108, #5169).
-    body_comma_table: compile(&format!(
-        r"^\s*,\s*({BODY_TABLE_IDENT}){BODY_TAIL}"
-    )),
+    body_comma_table: compile(&format!(r"^\s*,\s*({BODY_TABLE_IDENT}){BODY_TAIL}")),
     // `_BODY_ALIAS_RX.match(masked, end)`, anchored at the text it is given.
     body_alias: compile("^\\s+(?:AS\\s+)?([A-Za-z\u{130}\u{131}\u{17f}\u{212a}_][\\w$]*)"),
     body_event: compile(r"(?:\b(?:ON|FOR|AFTER|BEFORE|OF)|,)\s*$"),
@@ -536,7 +534,9 @@ fn routine_body_refs(masked: &str) -> Result<Vec<(&'static str, String, usize)>>
                     let end = alias.get(0).unwrap().end();
                     let alias = alias[1].to_lowercase();
                     if !non_tables.contains(&alias) {
-                        aliases.entry(alias).or_insert_with(|| table.as_str().to_owned());
+                        aliases
+                            .entry(alias)
+                            .or_insert_with(|| table.as_str().to_owned());
                         pos += end;
                     }
                 }
