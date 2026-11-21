@@ -2243,8 +2243,11 @@ fn scala_collect_type_refs_in(
                 }
             }
         }
+        // `os: Opt*` and the by-name `o: => Opt` wrap the parameter type
+        // (Graphify 0.9.109, #4638).
         "compound_type" | "infix_type" | "function_type" | "tuple_type" | "annotated_type"
-        | "projected_type" | "match_type" | "type_case_clause" => {
+        | "projected_type" | "match_type" | "type_case_clause" | "repeated_parameter_type"
+        | "lazy_parameter_type" => {
             for c in named(n) {
                 scala_collect_type_refs_in(c, source, generic, out, skip)
             }

@@ -72,3 +72,55 @@ fn dart_underscore_twins_keep_their_own_nodes() {
     assert_eq!(bar, "lib_foo_bar");
     assert_ne!(one(&ids, "helper"), one(&ids, "_helper"));
 }
+
+const VARIADIC_CASES: &[(&str, &str, &str, &str)] = &[
+    ("csharp", "x.cs", "class Opt {}\nclass X {\n  void Plain(Opt o) {}\n  void Vari(params Opt[] os) {}\n}\n", ".Vari()"),
+    ("go", "x.go", "package p\n\ntype Opt struct{}\n\nfunc Plain(o Opt) {}\nfunc Vari(os ...Opt) {}\n", "Vari()"),
+    ("java", "X.java", "class Opt {}\nclass X {\n  void plain(Opt o) {}\n  void vari(Opt... os) {}\n}\n", ".vari()"),
+    ("java-generic", "Y.java", "import java.util.List;\nclass Opt {}\nclass Y {\n  void vari(List<Opt>... os) {}\n}\n", ".vari()"),
+    ("php", "x.php", "<?php\nclass Opt {}\nfunction plain(Opt $o) {}\nfunction vari(Opt ...$os) {}\n", "vari()"),
+    ("scala", "x.scala", "class Opt\nobject X {\n  def plain(o: Opt): Unit = ()\n  def vari(os: Opt*): Unit = ()\n}\n", ".vari()"),
+    ("scala-by-name", "y.scala", "class Opt\nobject Y {\n  def lazyp(o: => Opt): Unit = ()\n}\n", ".lazyp()"),
+];
+
+#[test]
+fn a_variadic_parameter_references_its_type() {
+    // test_variadic_param_refs.py (#4638)
+    for (case, name, src, func) in VARIADIC_CASES {
+        graphicle::rcfile::set_language_overrides(None);
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join(name);
+        std::fs::write(&path, src).unwrap();
+        let r = extract(
+            &[path],
+            &ExtractOptions {
+                root: Some(root.clone()),
+                cache_root: Some(root.join("graphify-out")),
+                parallel: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let nodes = r["nodes"].as_array().unwrap();
+        let opt = nodes.iter().filter(|n| n["label"] == "Opt").collect::<Vec<_>>();
+        assert_eq!(opt.len(), 1, "{case}: {r:#}");
+        let label = |id: &serde_json::Value| {
+            nodes
+                .iter()
+                .find(|n| n["id"] == *id)
+                .and_then(|n| n["label"].as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let refs = r["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["relation"] == "references" && e["target"] == opt[0]["id"])
+            .map(|e| (label(&e["source"]), e["context"].as_str().unwrap_or("").to_string()))
+            .collect::<BTreeMap<_, _>>();
+        let expected = if *case == "java-generic" { "generic_arg" } else { "parameter_type" };
+        assert_eq!(refs.get(*func).map(String::as_str), Some(expected), "{case}: {refs:?}");
+    }
+}

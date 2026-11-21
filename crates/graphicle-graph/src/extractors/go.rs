@@ -487,7 +487,14 @@ impl<'tree> Extractor<'_, 'tree> {
         let mut skip = type_param_names(node, self.source);
         skip.extend(type_params.iter().cloned());
         if let Some(params) = node.child_by_field_name("parameters") {
-            for p in children(params).filter(|n| n.kind() == "parameter_declaration") {
+            // `opts ...Option` is a variadic_parameter_declaration with the
+            // same `type` field (Graphify 0.9.109, #4638).
+            for p in children(params).filter(|n| {
+                matches!(
+                    n.kind(),
+                    "parameter_declaration" | "variadic_parameter_declaration"
+                )
+            }) {
                 self.refs(
                     p.child_by_field_name("type"),
                     function,

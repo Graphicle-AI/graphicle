@@ -854,14 +854,24 @@ impl<'a, 't> Engine<'a, 't> {
         } else {
             ps.map(children).unwrap_or_default()
         };
+        // A variadic parameter references its type like any other (Graphify
+        // 0.9.109, #4638): C# `params Opt[] os` keeps its `type` on the
+        // parameter list itself, Java `Opt... os` (spread_parameter) has no
+        // `type` field, PHP `Opt ...$os` is a variadic_parameter.
+        if self.is("c_sharp")
+            && let Some(ty) = ps.and_then(|ps| ps.child_by_field_name("type"))
+        {
+            self.refs(id, Some(ty), line, "parameter_type", false);
+        }
         for p in params {
             let accepted = if self.is("java") {
-                p.kind_name() == "formal_parameter"
+                matches!(p.kind_name(), "formal_parameter" | "spread_parameter")
             } else {
                 [
                     "parameter",
                     "simple_parameter",
                     "property_promotion_parameter",
+                    "variadic_parameter",
                     "parameter_declaration",
                     "required_parameter",
                     "optional_parameter",
@@ -871,7 +881,12 @@ impl<'a, 't> Engine<'a, 't> {
             if !accepted {
                 continue;
             }
-            let ty = p.child_by_field_name("type").or_else(|| {
+            let spread = (p.kind_name() == "spread_parameter").then(|| {
+                children(p).into_iter().find(|c| {
+                    c.is_named() && !matches!(c.kind_name(), "modifiers" | "variable_declarator")
+                })
+            });
+            let ty = spread.flatten().or_else(|| p.child_by_field_name("type")).or_else(|| {
                 if self.is("php") {
                     first_child(
                         p,
