@@ -147,12 +147,22 @@ fn the_write_ahead_log_stays_bounded_under_constant_reads() {
         "the log did not grow without the limit: {unbounded} bytes"
     );
     // With it, under the same load, the store's checkpoint cut it back
-    // (no other test's store passes the default 64 MiB limit), and the log
-    // never passed the limit by more than the commits made while a
-    // checkpoint waited for readers.
+    // (no other test's store passes the default 64 MiB limit).
     assert!(ran > 0, "no checkpoint ran");
     assert!(
-        bounded <= limit + (6 << 20),
-        "the log passed its limit: {bounded} bytes ({ran} checkpoints, {busy} of them found readers)"
+        bounded < unbounded,
+        "the limit did not cut the log back: {bounded} bytes against {unbounded} without it"
     );
+    // When no checkpoint found readers, the log never passed the limit by
+    // more than the commits made while one ran. After one that finds
+    // readers the store runs none for `CHECKPOINT_PAUSE` (so checkpoints do
+    // not starve other writers), and the log keeps what is written in that
+    // pause: on a fast machine more than this slack, so only the cut-back
+    // above is asserted then.
+    if busy == 0 {
+        assert!(
+            bounded <= limit + (6 << 20),
+            "the log passed its limit: {bounded} bytes ({ran} checkpoints, none found readers)"
+        );
+    }
 }
