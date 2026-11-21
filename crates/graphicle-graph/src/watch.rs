@@ -1996,7 +1996,9 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     // Whether the graph read is one a record vouched for: an incremental
     // update of it that finds nothing to change may record the early stop.
     let mut vouched = true;
-    if o.incremental && o.changed_paths.is_none() && !o.force {
+    // A manifest cannot restore unchanged nodes when the graph it describes
+    // is missing (Graphify 0.9.104, #5016).
+    if o.incremental && o.changed_paths.is_none() && !o.force && graph_path.is_file() {
         let baseline = base_state
             .as_ref()
             .ok_or("no update baseline")
@@ -2041,7 +2043,14 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                     .flat_map(|buckets| buckets.values())
                     .map(|bucket| bucket.as_array().map_or(0, Vec::len))
                     .sum();
-                if changed.is_empty() {
+                if changed.iter().any(|p| is_resolution_input(p)) {
+                    // An unchanged importer may resolve differently when its
+                    // configuration changes: re-resolve the corpus (Graphify
+                    // 0.9.104, #5017).
+                    result.messages.push(
+                        "JS/TS resolution inputs changed; rebuilding the full code graph.".into(),
+                    );
+                } else if changed.is_empty() {
                     // Nothing differs from the manifest: the full update runs,
                     // finds nothing to change and records the early stop, so
                     // the next update stops before scanning extraction at all
@@ -3640,4 +3649,24 @@ mod digest_tests {
             assert!(stream_candidate(text.as_bytes()).is_none(), "{text}");
         }
     }
+}
+
+/// `is_resolution_input` (Graphify 0.9.100, #4740; used by 0.9.104, #5017):
+/// whether `path` steers JavaScript/TypeScript module resolution. Over
+/// approximate on purpose: a false positive only costs a slower update.
+pub fn is_resolution_input(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        name.as_str(),
+        "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "jsconfig.json"
+    ) || name
+        .strip_prefix("tsconfig")
+        .and_then(|rest| rest.strip_suffix(".json"))
+        .is_some_and(|mid| {
+            mid.is_empty()
+                || (mid.len() > 1 && mid.starts_with('.') && !mid[1..].contains(['/', '\\']))
+        })
 }
