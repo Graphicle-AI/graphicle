@@ -204,3 +204,15 @@ fn path_refuses_endpoint_that_names_no_node() {
     assert!(!out.stdout.contains("Shortest path"), "{}", out.stdout);
     assert!(!out.stdout.contains("no_such_symbol_helper"), "{}", out.stdout);
 }
+
+#[test]
+fn markdown_keeps_uppercase_namespace_classes_and_called_members() {
+    // test_markdown_code_spans.py (#5093)
+    use graphicle::extractors::markdown::code_span_mention;
+    let parts = |v: &[&str]| Some((None, v.iter().map(|s| s.to_string()).collect::<Vec<_>>()));
+    assert_eq!(code_span_mention("App\\Services\\DB"), parts(&["App", "Services", "DB"]));
+    assert_eq!(code_span_mention("App\\API"), parts(&["App", "API"]));
+    assert_eq!(code_span_mention("Http::GET()"), parts(&["Http", "GET"]));
+    assert_eq!(code_span_mention("Foo::CONST"), None);
+    assert_eq!(code_span_mention("Foo::class"), None);
+}
