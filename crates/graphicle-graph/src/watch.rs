@@ -2672,7 +2672,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     let (gods, surprises, questions) = (gods?, surprises?, questions?);
     let report = crate::report::generate(
         &graph,
-        &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([])),"unclassified_warning":detected.get("unclassified_warning").cloned().unwrap_or(Value::Null)},"token_cost":{"input":0,"output":0},"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
+        &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([])),"unclassified_warning":detected.get("unclassified_warning").cloned().unwrap_or(Value::Null)},"token_cost":crate::report::load_report_token_cost(out),"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
     )?;
     timer.mark("report");
     // A randomly named file in the output folder, created exclusively, then
