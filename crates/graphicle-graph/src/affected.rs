@@ -317,25 +317,31 @@ pub fn affected_nodes(
     let mut seen = BTreeSet::from([seed.to_string()]);
     let mut queue = VecDeque::from([(seed.to_string(), 0)]);
     let mut hits = vec![];
-    let seed_index = graph.node_index(&json!(seed));
-    let member_edges = if graph.directed {
-        seed_index.map(|i| graph.out_edges(i)).unwrap_or_default()
-    } else {
-        graph
-            .iter_edges()
-            .filter(|(source, _, _)| Some(*source) == seed_index)
-            .collect()
-    };
-    for (_, member, edge) in member_edges {
-        if !matches!(
-            text(&edge.attributes, "relation").as_str(),
-            "method" | "contains"
-        ) {
-            continue;
-        }
-        let member = string(&graph.nodes[member].id);
-        if seen.insert(member.clone()) {
-            queue.push_back((member, 0));
+    // Nested members (a method inside a class inside the file) are seeded
+    // transitively, not just one hop (Graphify 0.9.105, #5094).
+    let mut member_queue = VecDeque::from([graph.node_index(&json!(seed))]);
+    while let Some(parent) = member_queue.pop_front() {
+        let Some(parent) = parent else { continue };
+        let member_edges = if graph.directed {
+            graph.out_edges(parent)
+        } else {
+            graph
+                .iter_edges()
+                .filter(|(source, _, _)| *source == parent)
+                .collect()
+        };
+        for (_, member, edge) in member_edges {
+            if !matches!(
+                text(&edge.attributes, "relation").as_str(),
+                "method" | "contains"
+            ) {
+                continue;
+            }
+            let id = string(&graph.nodes[member].id);
+            if seen.insert(id.clone()) {
+                queue.push_back((id, 0));
+                member_queue.push_back(Some(member));
+            }
         }
     }
     let mut supertype_cache = HashMap::new();
