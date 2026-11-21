@@ -1235,8 +1235,26 @@ fn weakest_shortest_path(
     let capped = paths.len() > MAX_SHORTEST_PATHS;
     paths.truncate(MAX_SHORTEST_PATHS);
     let routes = paths.len();
+    // A route through a sourceless hub (an external or stdlib import stub)
+    // is shortest by accident of degree: fewer such intermediate hops win
+    // first, then the weakest hop breaks a tie (Graphify 0.9.108, #5153).
+    let hub_penalty = |path: &[usize]| {
+        path[1..path.len().saturating_sub(1).max(1)]
+            .iter()
+            .filter(|i| {
+                !g.nodes[**i]
+                    .attributes
+                    .get("source_file")
+                    .is_some_and(crate::build::truthy)
+            })
+            .count()
+    };
+    let least = paths.iter().map(|p| hub_penalty(p)).min().unwrap_or(0);
     let mut best: Option<(Option<WeakestRank>, usize)> = None;
     for (i, path) in paths.iter().enumerate() {
+        if hub_penalty(path) != least {
+            continue;
+        }
         let hop_datas = path
             .windows(2)
             .map(|pair| {
