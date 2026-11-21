@@ -995,7 +995,14 @@ fn pick_seeds_by(
         ordered.extend(best.keys().filter(|t| !named.contains(t)));
         for term in ordered {
             let i = &best[term];
-            if !seeds.contains(i) && labels.insert(key(*i)) {
+            // The label cap applies only when the term is in the shared
+            // label: then the seeded twin matches the term through it.
+            // Otherwise this node won the term via its path, rationale or
+            // attributes and is the term's only seed (Graphify 0.9.104,
+            // #5027).
+            let k = key(*i);
+            if !seeds.contains(i) && (!labels.contains(&k) || !k.contains(term.as_str())) {
+                labels.insert(k);
                 seeds.push(*i);
             }
         }
