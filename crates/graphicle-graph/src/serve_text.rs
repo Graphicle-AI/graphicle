@@ -128,16 +128,26 @@ pub fn traverse(
         }
     } else {
         visited = seedset.clone();
-        let mut frontier = seedset.clone();
+        // Seeds in their ranked order, then each level in the order it was
+        // discovered (Graphify 0.9.106, #5109, #5112).
+        let mut seen_seed = BTreeSet::new();
+        let mut frontier = seeds
+            .iter()
+            .copied()
+            .filter(|i| seen_seed.insert(*i))
+            .collect::<Vec<_>>();
         for _ in 0..depth.max(0) {
-            let mut next = BTreeSet::new();
+            let mut next = vec![];
+            let mut in_next = BTreeSet::new();
             for i in frontier {
                 if !seedset.contains(&i) && ds[i] >= threshold {
                     continue;
                 }
                 for nb in neighbors(g, i, false) {
                     if !visited.contains(&nb) {
-                        next.insert(nb);
+                        if in_next.insert(nb) {
+                            next.push(nb);
+                        }
                         edges.push((i, nb));
                     }
                 }
