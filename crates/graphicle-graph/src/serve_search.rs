@@ -53,6 +53,71 @@ pub fn tokens(s: &str) -> Vec<String> {
         .map(|m| m.as_str().to_string())
         .collect()
 }
+const QUALIFIED_MATCH_BONUS: f64 = 500.0;
+const QUALIFIED_MAX_TOKENS: usize = 4;
+/// `_name_key`: the token-joined form of an already normalized name.
+fn name_key(text: &str) -> String {
+    static RE: LazyLock<regex::Regex> = LazyLock::new(|| regex::Regex::new(r"[^\W_]+").unwrap());
+    let stripped = text
+        .trim_matches(|c| "()[]{} ".contains(c))
+        .to_lowercase();
+    RE.find_iter(&stripped)
+        .map(|m| m.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+/// `_is_name_segment`: a segment that names something, not a file extension
+/// or a number.
+fn is_name_segment(segment: &str) -> bool {
+    static SUFFIX: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^(?:py|pyi|js|jsx|ts|tsx|mjs|cjs|go|rs|java|kt|kts|c|h|cc|cpp|hpp|cs|rb|php|swift|scala|lua|sh|bash|sql|md|rst|txt|ya?ml|toml|json|ini|cfg|html?|css|scss|vue|svelte|ex|exs|erl|hs|ml|clj|dart|proto|graphql)$").unwrap()
+    });
+    !segment.is_empty() && !segment.chars().all(char::is_numeric) && !SUFFIX.is_match(segment)
+}
+/// `_qualified_tail` (Graphify 0.9.105, #5080): `(qualifier token count,
+/// tail key)` of a label `<qualifier><sep><rest>` (`public.f()`, `fmt.Println`,
+/// a CamelCase qualifier on the last segment), else `None`.
+pub fn qualified_tail(norm_label: &str) -> Option<(usize, String)> {
+    static MAYBE: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"[.:/\\@]|[a-z0-9][A-Z]").unwrap());
+    static SEPARATORS: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\.+|::|/|\\|:|@").unwrap());
+    static CAMEL: LazyLock<fancy_regex::Regex> = LazyLock::new(|| {
+        fancy_regex::Regex::new(r"[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+").unwrap()
+    });
+    let label = norm_label.trim();
+    if !MAYBE.is_match(label) {
+        return None;
+    }
+    let mut parts = SEPARATORS
+        .split(label)
+        .filter(|p| !p.is_empty())
+        .collect::<Vec<_>>();
+    while parts.last().is_some_and(|p| !is_name_segment(p)) {
+        parts.pop();
+    }
+    let tail = *parts.last()?;
+    if parts.len() > 1 {
+        let head = tokens(&parts[..parts.len() - 1].join(" ")).len();
+        if head > 0 {
+            return Some((head, name_key(tail)));
+        }
+    }
+    let words = CAMEL
+        .find_iter(tail)
+        .filter_map(|m| m.ok())
+        .map(|m| m.as_str())
+        .collect::<Vec<_>>();
+    if words.len() < 2
+        || !words[1..]
+            .iter()
+            .any(|w| w.chars().next().is_some_and(char::is_uppercase))
+    {
+        return None;
+    }
+    let head = tokens(&words[..words.len() - 1].join(" ")).len();
+    (head > 0).then(|| (head, name_key(words[words.len() - 1])))
+}
 pub fn norm_label(g: &Graph, i: usize) -> String {
     let norm = text(field(g, i, "norm_label"));
     if norm.is_empty() {
@@ -804,6 +869,16 @@ fn score_on_weighted(
                 score += 10000.0 * joined_w;
             } else if [norm, bare, lt].iter().any(|s| s.starts_with(&joined)) {
                 score += 1000.0 * joined_w;
+            } else if let Some((qualifier_tokens, tail)) = qualified_tail(norm)
+                && qualifier_tokens <= QUALIFIED_MAX_TOKENS
+                && !tail.is_empty()
+                && tail == joined
+            {
+                // The label is `<qualifier>.<rest>` and the query names the
+                // rest: below the exact tier, above what the per-token tiers
+                // give a node whose whole label is one query token (Graphify
+                // 0.9.105, #5080).
+                score += QUALIFIED_MATCH_BONUS * joined_w / qualifier_tokens as f64;
             }
         }
         let (mut matched, mut tiered) = (0, 0.0);

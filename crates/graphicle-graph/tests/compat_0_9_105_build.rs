@@ -124,3 +124,55 @@ fn racily_clean_window_holds_when_seen_lands_before_mtime() {
     assert!(!mtime_may_hide_a_rewrite(mtime, &json!({"seen": mtime - 1.0})));
     assert!(mtime_may_hide_a_rewrite(mtime, &json!({"seen": mtime + 0.01})));
 }
+
+fn serve(action: &str, request: serde_json::Value) -> serde_json::Value {
+    let mut request = request;
+    request["operation"] = json!("serve");
+    request["action"] = json!(action);
+    graphicle::dispatch(&request).unwrap()
+}
+
+#[test]
+fn qualified_label_beats_a_whole_label_token_collision() {
+    // test_serve.py (#5080)
+    let mut nodes = vec![];
+    for i in 0..4 {
+        nodes.push(json!({"id": format!("migrations/04{i}_widget_sweep.sql::public.sweep_widget_state()"),
+            "label": "public.sweep_widget_state()", "norm_label": "public.sweep_widget_state()",
+            "source_file": format!("migrations/04{i}_widget_sweep.sql"), "community": 0}));
+    }
+    nodes.push(json!({"id": "consts_sweep", "label": "SWEEP", "norm_label": "sweep", "source_file": "src/consts.py", "community": 0}));
+    nodes.push(json!({"id": "consts_widget", "label": "WIDGET", "norm_label": "widget", "source_file": "src/consts.py", "community": 0}));
+    nodes.push(json!({"id": "types_state", "label": "State", "norm_label": "state", "source_file": "src/types.py", "community": 0}));
+    for i in 0..6 {
+        nodes.push(json!({"id": format!("noise_{i}"), "label": format!("unrelated_{i}"), "source_file": format!("src/noise{i}.py"), "community": 1}));
+    }
+    let g = json!({"directed": false, "multigraph": false, "graph": {}, "nodes": nodes, "links": []});
+    let scored = serve("score_nodes", json!({"graph": g, "terms": ["sweep_widget_state"]}));
+    let scored = scored.as_array().unwrap();
+    for row in &scored[..4] {
+        assert!(row[1].as_str().unwrap().starts_with("migrations/"), "{scored:?}");
+    }
+    assert!(scored[4][0].as_f64().unwrap() < scored[0][0].as_f64().unwrap(), "{scored:?}");
+
+    let g = json!({"directed": false, "multigraph": false, "graph": {}, "links": [], "nodes": [
+        {"id": "qualified", "label": "public.sweep()", "norm_label": "public.sweep()", "source_file": "m.sql"},
+        {"id": "plain", "label": "sweep", "norm_label": "sweep", "source_file": "s.py"},
+    ]});
+    let scored = serve("score_nodes", json!({"graph": g, "terms": ["sweep"]}));
+    assert_eq!(scored[0][1], "plain", "{scored}");
+}
+
+#[test]
+fn qualified_tail_split() {
+    use graphicle::serve_search::qualified_tail;
+    let some = |n: usize, s: &str| Some((n, s.to_string()));
+    assert_eq!(qualified_tail("public.sweep_widget_state()"), some(1, "sweep widget state"));
+    assert_eq!(qualified_tail("Index.ClientLive"), some(1, "clientlive"));
+    assert_eq!(qualified_tail("fmt.Println"), some(1, "println"));
+    assert_eq!(qualified_tail("Widget::sweep"), some(1, "sweep"));
+    assert_eq!(qualified_tail("lib/foo/bar.py"), some(2, "bar"));
+    for none in ["3.14", "HTTPClient", "sweep_widget_state", ""] {
+        assert_eq!(qualified_tail(none), None, "{none}");
+    }
+}
