@@ -102,7 +102,7 @@ fn indirect(a_js: &str) -> BTreeSet<(String, String)> {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     std::fs::write(root.join("a.js"), a_js).unwrap();
-    std::fs::write(root.join("b.js"), "export function value() {}\n").unwrap();
+    std::fs::write(root.join("b.js"), "function value(x) { return x; }\n").unwrap();
     let r = extract(
         &[root.join("a.js"), root.join("b.js")],
         &ExtractOptions {
