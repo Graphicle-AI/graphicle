@@ -720,3 +720,48 @@ fn csharp_property_sharing_a_methods_id_does_not_lend_it_its_calls() {
     assert!(!calls.contains(&pair(&method, &method)), "{r:#}");
     assert!(calls.contains(&pair(&method, &find(&r, ".Other()", ""))));
 }
+
+// --- Python: ambiguous import placeholders (#5044) ---------------------------
+
+#[test]
+fn ambiguous_import_placeholder_id_is_independent_of_checkout_path() {
+    // test_src_layout_import_resolution.py
+    let files = [
+        ("app/main.py", "from helper import f\n\n\ndef run():\n    return f()\n"),
+        ("one/helper.py", "def f():\n    return 1\n"),
+        ("two/helper.py", "def f():\n    return 2\n"),
+    ];
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    let placeholders = |checkout: PathBuf| {
+        let paths = files
+            .iter()
+            .map(|(rel, body)| {
+                let path = checkout.join(rel);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, body).unwrap();
+                path
+            })
+            .collect::<Vec<_>>();
+        let r = extract(
+            &paths,
+            &ExtractOptions {
+                root: Some(checkout.clone()),
+                cache_root: Some(checkout.join("cache")),
+                parallel: false,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        edges(&r)
+            .iter()
+            .filter(|e| text(&e["target"]).starts_with("ambiguous_python_import_"))
+            .map(|e| (text(&e["source"]), text(&e["target"]), text(&e["source_file"])))
+            .collect::<BTreeSet<_>>()
+    };
+    graphicle::rcfile::set_language_overrides(None);
+    let first = placeholders(base.join("checkout-aaa"));
+    let second = placeholders(base.join("nested").join("checkout-bbbbbbbb"));
+    assert!(!first.is_empty(), "the ambiguous `helper` import keeps a placeholder edge");
+    assert_eq!(first, second);
+}
