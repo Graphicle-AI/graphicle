@@ -714,7 +714,38 @@ pub fn resolve_path_endpoint(
     if scored.is_empty() {
         return (None, vec![], None);
     }
+    // A name made of words the graph does not know is a miss, not the top of
+    // a weak ranking (Graphify 0.9.105, #5079, #5085).
+    if !query_uses_known_words(g, &terms) {
+        return (None, vec![], None);
+    }
     (pick_endpoint(g, &scored, query), scored, None)
+}
+/// `_query_uses_known_words`: whether every word of the query occurs in some
+/// node's id or label, split as the scorer splits them.
+fn query_uses_known_words(g: &Graph, terms: &[String]) -> bool {
+    let mut seen = BTreeSet::new();
+    let words = terms
+        .iter()
+        .flat_map(|t| tokens(t))
+        .filter(|w| seen.insert(w.clone()))
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        return false;
+    }
+    words.iter().all(|word| {
+        (0..g.nodes.len()).any(|i| {
+            tokens(&id(g, i)).contains(word)
+                || tokens(
+                    g.nodes[i]
+                        .attributes
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                )
+                .contains(word)
+        })
+    })
 }
 fn general(n: f64) -> String {
     if n == 0.0 {

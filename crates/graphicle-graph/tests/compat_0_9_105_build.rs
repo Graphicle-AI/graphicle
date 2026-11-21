@@ -176,3 +176,31 @@ fn qualified_tail_split() {
         assert_eq!(qualified_tail(none), None, "{none}");
     }
 }
+
+#[test]
+fn path_refuses_endpoint_that_names_no_node() {
+    // test_path_cli.py test_path_refuses_endpoint_that_names_no_node (#5079)
+    let node = |id: &str, label: &str, sf: &str| json!({"id": id, "label": label, "source_file": sf, "source_location": "L1"});
+    let link = |a: &str, b: &str, r: &str| json!({"source": a, "target": b, "relation": r, "confidence": "EXTRACTED"});
+    let g = json!({"directed": false, "multigraph": false, "graph": {}, "nodes": [
+        node("src_a_ts", "a.ts", "src/a.ts"), node("src_a_ts_parse", "parse()", "src/a.ts"),
+        node("src_b_ts", "b.ts", "src/b.ts"), node("src_b_ts_helper", "no_such_symbol_helper()", "src/b.ts"),
+        node("src_b_ts_format", "format()", "src/b.ts"), node("src_c_ts", "c.ts", "src/c.ts"),
+        node("src_c_ts_format", "format()", "src/c.ts"),
+    ], "links": [
+        link("src_a_ts", "src_a_ts_parse", "contains"), link("src_a_ts_parse", "src_b_ts_helper", "calls"),
+        link("src_b_ts", "src_b_ts_helper", "contains"), link("src_b_ts", "src_b_ts_format", "contains"),
+        link("src_c_ts", "src_c_ts_format", "contains"), link("src_b_ts_helper", "src_b_ts_format", "calls"),
+    ]});
+    let dir = tempfile::tempdir().unwrap();
+    let gp = dir.path().join("graph.json");
+    std::fs::write(&gp, g.to_string()).unwrap();
+    let args = ["path", "zzqqxx_no_such_symbol_9137", "src/b.ts::format()", "--graph", gp.to_str().unwrap()]
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+    let out = graphicle::cli::run(&args);
+    assert_ne!(out.exit_code, 0, "{} {}", out.stdout, out.stderr);
+    assert!(!out.stdout.contains("Shortest path"), "{}", out.stdout);
+    assert!(!out.stdout.contains("no_such_symbol_helper"), "{}", out.stdout);
+}
