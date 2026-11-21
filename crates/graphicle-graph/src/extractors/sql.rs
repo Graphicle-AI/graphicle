@@ -29,6 +29,11 @@ fn clean_part(part: &str) -> String {
 /// `dbo.Orders`). Double-quoted parts keep their quotes. Labels only: node ids
 /// come from the text as written.
 pub fn clean_ident(name: &str) -> String {
+    // `tbl@link` (an Oracle database link) keeps its link (Graphify 0.9.108,
+    // #5169).
+    if let Some((table, link)) = name.split_once('@') {
+        return format!("{}@{link}", clean_ident(table));
+    }
     if !name.contains(['[', ']']) {
         return name.to_owned();
     }
@@ -50,6 +55,9 @@ pub fn clean_ident(name: &str) -> String {
 /// and `PUBLIC.USERS` all give `public.users`, and `[dbo].[Orders]`, the
 /// parser's `dbo].[Orders` and `dbo.Orders` give `dbo.orders`.
 pub fn norm_ident(name: &str) -> String {
+    if let Some((table, link)) = name.split_once('@') {
+        return format!("{}@{}", norm_ident(table), norm_ident(link));
+    }
     name.split('.')
         .map(|part| {
             let p = trim(part);
@@ -265,8 +273,15 @@ const IDENT: &str = concat!(
     r#"(?:\s*\.\s*(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*"#
 );
 /// `_BODY_TAIL`: the identifier atom never backtracks to a prefix of a longer
-/// name (`tempdb..#x`, `dbo.fn(`).
-const BODY_TAIL: &str = r"(?![\w$]|\s*\.)";
+/// name (`tempdb..#x`, `dbo.fn(`, `tbl@link`).
+const BODY_TAIL: &str = r"(?![\w$@]|\s*\.)";
+/// `_BODY_TABLE_IDENT`: a table name with an optional `@dblink` suffix
+/// (Graphify 0.9.108, #5169).
+const BODY_TABLE_IDENT: &str = concat!(
+    r#"(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"#,
+    r#"(?:\s*\.\s*(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*"#,
+    r#"(?:@(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$.]+))?"#
+);
 /// `_BODY_NON_TABLES`: words after FROM/JOIN/INTO/UPDATE/... that name no
 /// table, and words that are no alias.
 const BODY_NON_TABLES: &[&str] = &[
@@ -340,6 +355,7 @@ struct Patterns {
     body_end: Regex,
     body_read: Regex,
     body_write: Regex,
+    body_comma_table: Regex,
     body_alias: Regex,
     body_event: Regex,
     body_from_not_table: Regex,
@@ -384,9 +400,16 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
         "(?m)",
         r"^[ \t]*(?:GO(?:[ \t]+\d+)?[ \t\r]*;?[ \t\r]*$|(?:CREATE|ALTER)\b(?!\s+TABLE\s+[#@]))",
     ),
-    body_read: compile(&format!(r"\b(?:FROM|JOIN)\s+({IDENT}){BODY_TAIL}")),
+    body_read: compile(&format!(
+        r"\b(?:FROM|JOIN)\s+({BODY_TABLE_IDENT}){BODY_TAIL}"
+    )),
     body_write: compile(&format!(
-        r"\b(INSERT(?:\s+INTO)?|UPDATE(?:\s+TOP\s*\([^)]*\))?|DELETE(?:\s+TOP\s*\([^)]*\))?(?:\s+FROM)?|MERGE(?:\s+INTO)?|INTO)\s+({IDENT}){BODY_TAIL}"
+        r"\b(INSERT(?:\s+INTO)?|UPDATE(?:\s+TOP\s*\([^)]*\))?|DELETE(?:\s+TOP\s*\([^)]*\))?(?:\s+FROM)?|MERGE(?:\s+INTO)?|INTO)\s+({BODY_TABLE_IDENT}){BODY_TAIL}"
+    )),
+    // `_BODY_COMMA_TABLE_RX.match(masked, pos)`: the next table of a comma
+    // join (`FROM a, b`), anchored (Graphify 0.9.108, #5169).
+    body_comma_table: compile(&format!(
+        r"^\s*,\s*({BODY_TABLE_IDENT}){BODY_TAIL}"
     )),
     // `_BODY_ALIAS_RX.match(masked, end)`, anchored at the text it is given.
     body_alias: compile("^\\s+(?:AS\\s+)?([A-Za-z\u{130}\u{131}\u{17f}\u{212a}_][\\w$]*)"),
@@ -466,14 +489,54 @@ fn routine_body_refs(masked: &str) -> Result<Vec<(&'static str, String, usize)>>
             continue;
         }
         reads.push((whole.start(), m[1].to_owned()));
+        let mut pos = whole.end();
         if let Some(alias) = P
             .body_alias
-            .captures(&masked[whole.end()..])
+            .captures(&masked[pos..])
             .map_err(crate::Error::from)?
         {
+            let end = alias.get(0).unwrap().end();
             let alias = alias[1].to_lowercase();
             if !non_tables.contains(&alias) {
                 aliases.entry(alias).or_insert_with(|| m[1].to_owned());
+                pos += end;
+            }
+        }
+        // `FROM a, b`: every table of a comma join is read (Graphify
+        // 0.9.108, #5169).
+        if whole
+            .as_str()
+            .trim_start()
+            .get(..4)
+            .is_some_and(|w| w.eq_ignore_ascii_case("from"))
+        {
+            while let Some(c) = P
+                .body_comma_table
+                .captures(&masked[pos..])
+                .map_err(crate::Error::from)?
+            {
+                let (table, end) = (c.get(1).unwrap(), c.get(0).unwrap().end());
+                if !usable(table.as_str())
+                    || masked[pos + end..]
+                        .trim_start_matches(python_space)
+                        .starts_with('(')
+                {
+                    break;
+                }
+                reads.push((pos + table.start(), table.as_str().to_owned()));
+                pos += end;
+                if let Some(alias) = P
+                    .body_alias
+                    .captures(&masked[pos..])
+                    .map_err(crate::Error::from)?
+                {
+                    let end = alias.get(0).unwrap().end();
+                    let alias = alias[1].to_lowercase();
+                    if !non_tables.contains(&alias) {
+                        aliases.entry(alias).or_insert_with(|| table.as_str().to_owned());
+                        pos += end;
+                    }
+                }
             }
         }
     }
@@ -628,8 +691,22 @@ impl Extractor<'_> {
         }
         if matches!(node.kind(), "from" | "join") {
             for child in children(node).filter(|n| n.kind() == "relation") {
-                for item in children(child).filter(|n| n.kind() == "object_reference") {
-                    let name = ident(item, self.source);
+                // `FROM tbl@link` keeps its database link: a remote table,
+                // not the local one (Graphify 0.9.108, #5169).
+                let mut table = None;
+                let mut link = None;
+                for item in children(child) {
+                    if item.kind() == "object_reference" {
+                        table = Some(ident(item, self.source));
+                    } else if item.kind() == "identifier" {
+                        let text = read(item, self.source);
+                        if text.starts_with('@') {
+                            link = Some(text);
+                        }
+                    }
+                }
+                if let Some(table) = table.filter(|t| !t.is_empty()) {
+                    let name = format!("{table}{}", link.unwrap_or_default());
                     if !active.contains(&norm_ident(&name)) {
                         let id = self.resolve(&name);
                         self.edge(caller, &id, "reads_from", child.start_position().row + 1);
