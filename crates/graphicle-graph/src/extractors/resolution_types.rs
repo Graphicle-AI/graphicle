@@ -313,13 +313,13 @@ pub fn record_python_syntax(
         // class, owned by `<file stem>_<class>_<name>`; decorators are
         // unwrapped (Graphify 0.9.110, #5214).
         let stem = file_stem(path);
-        let definition = |n: Node<'_>| {
+        fn definition(n: Node<'_>) -> Option<Node<'_>> {
             if n.kind_name() == "decorated_definition" {
                 n.child_by_field_name("definition")
             } else {
                 Some(n)
             }
-        };
+        }
         for top in children(root) {
             let Some(n) = definition(top) else { continue };
             let (Some(name), Some(body)) =
