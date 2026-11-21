@@ -5,9 +5,9 @@ library (`graphicle-memory`) and the `graphicle` program.
 
 ## Unreleased
 
-The engine takes in Graphify 0.9.104 to 0.9.110 in part (0.1.18 followed
+The engine takes in Graphify 0.9.104 to 0.9.112 in part (0.1.18 followed
 0.9.103); it still reports Graphify 0.9.103 until the rest of that range,
-and 0.9.111 to 0.9.114, are ported. The AST cache schema goes from 11 to
+and 0.9.113 and 0.9.114, are ported. The AST cache schema goes from 11 to
 12, so cached extractions of the languages below run again once.
 
 ### Fixes
@@ -26,16 +26,18 @@ and 0.9.111 to 0.9.114, are ported. The AST cache schema goes from 11 to
   longer collapse into one node (#2810).
 - JavaScript and TypeScript: a destructured `require` of a barrel file
   reaches the declaring symbol (#5034); names captured from enclosing
-  scopes no longer make false `indirect_call` edges (#5217).
+  scopes, or a `this.x = function` member's parameters, no longer make
+  false `indirect_call` edges (#5217, #5241).
 - Python: aliased imported calls are linked from methods and decorated
   functions (#5214); a subscript annotation's value is no longer its own
   generic argument (#5113).
 - Go: an internal `_test.go` file's methods fold into the package type
-  (#5209). Variadic parameters reference their type in Go, Java, C#,
+  (#5209), and a bare receiver type resolves in the caller's own package
+  when two packages declare it (#5242). Variadic parameters reference their type in Go, Java, C#,
   Scala and PHP (#4638).
 - SQL: comma joins and `@dblink` tables in routine bodies (#5169), Oracle
   `[NON]EDITIONABLE` routines (#5167), and no table node for an unparsed
-  derived table's alias (#5147).
+  derived table's alias (#5147) or a non-ASCII table name (#5250).
 - YAML: CloudFormation intrinsic tags (`!Ref`, `!Sub`) no longer fail the
   whole file (#5071). Maven POM namespaces in any spelling (#5124).
 - Updates: a missing graph.json or a changed `tsconfig.json`,
@@ -54,6 +56,10 @@ and 0.9.111 to 0.9.114, are ported. The AST cache schema goes from 11 to
   changes (#5033). The wiki keeps both articles of labels that fold to one
   name (#5087). Malformed learning overlay and global manifest entries are
   skipped one by one (#5019, #5020).
+- Analyze lists two-file import cycles before its enumeration cap fills
+  (#5267). The fuzzy label merge keeps a prefixed word apart from its base
+  (`synchronous`/`asynchronous`). The Kilo installer refuses to rewrite a
+  config it cannot parse (#5265).
 - LLM extraction: a provider's `extra_headers` are sent (#3680); a reply
   with several graph fragments is refused instead of cached as its first
   (#5192); a truncated or timed-out document slice is retried or marked

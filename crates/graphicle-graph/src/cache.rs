@@ -15,12 +15,15 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 /// Bump when AST cache-key semantics change independently of the package
-/// version; 12 carries the extraction changes of Graphify 0.9.104-0.9.106
-/// (upstream schemas 40-43: Solidity `_`/case-distinct ids, typed-receiver
-/// and `using`-attached calls; C# constructors and accessor, indexer and
-/// operator members; Markdown namespace and called-member mentions; the
-/// destructured CommonJS barrel require keys; Python subscript annotations
-/// counted once); 11 carries the extraction changes of Graphify 0.9.96-0.9.103
+/// version; 12 carries the extraction changes of Graphify 0.9.104-0.9.112
+/// ported so far (upstream schemas 40-48: Solidity `_`/case-distinct ids,
+/// typed-receiver and `using`-attached calls; C# constructors and accessor,
+/// indexer and operator members; Markdown namespace and called-member
+/// mentions; the destructured CommonJS barrel require keys; Python subscript
+/// annotations counted once; PHP routes; `_x`/`x` twins in module-level
+/// declarations and PHP, Java, Kotlin and Dart members; variadic parameter
+/// types; Dart legacy typedefs; SQL comma joins, database links, EDITIONABLE
+/// DDL and empty ids; the Go package path in the type table); 11 carries the extraction changes of Graphify 0.9.96-0.9.103
 /// (upstream schemas 26-39; 38 and 39 in 0.9.103: C# preprocessor blanking,
 /// Solidity event, error and library calls, YAML merge order, Markdown
 /// namespace and member mentions; also JS/TS receiver-shadow and `new`
