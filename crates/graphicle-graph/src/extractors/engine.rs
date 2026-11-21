@@ -761,6 +761,11 @@ impl<'a, 't> Engine<'a, 't> {
             && matches!(n.kind_name(), "method_declaration" | "constructor_declaration")
         {
             id = self.java_member_nid(class, n, &sanitized);
+        } else if self.is("kotlin")
+            && let Some(class) = parent
+            && n.kind_name() == "function_declaration"
+        {
+            id = self.kotlin_member_nid(class, n, &sanitized);
         }
         if parent.is_none() {
             // A top-level function whose id is the file's (Graphify 0.9.98,
@@ -1004,6 +1009,62 @@ impl<'a, 't> Engine<'a, 't> {
             self.js_member_groups.insert(key.clone(), names);
         }
         underscore_salted_nid(&plain, name, &self.js_member_groups[&key], &['_'])
+    }
+    /// `_kotlin_member_nid` (Graphify 0.9.109): a Kotlin method's id, salted
+    /// when a sibling of the class body or its companion object mints the
+    /// same id (`_bar()` / `bar()`, `run()` / `Run()`); a backticked name is
+    /// judged by its text.
+    pub fn kotlin_member_nid(&mut self, class: &str, member: Node<'t>, name: &str) -> String {
+        const BODIES: [&str; 2] = ["class_body", "enum_class_body"];
+        let plain = make_id([class, name]);
+        let Some(mut body) = member
+            .parent()
+            .filter(|b| BODIES.contains(&b.kind_name()) && b.parent().is_some())
+        else {
+            return plain;
+        };
+        if let Some(owner) = body.parent()
+            && owner.kind_name() == "companion_object"
+            && let Some(outer) = owner.parent().filter(|o| BODIES.contains(&o.kind_name()))
+        {
+            body = outer;
+        }
+        let key = (class.to_string(), body.start_byte(), body.end_byte());
+        if !self.js_member_groups.contains_key(&key) {
+            let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            let mut bodies = vec![body];
+            while let Some(b) = bodies.pop() {
+                for c in children(b) {
+                    if c.kind_name() == "function_declaration" {
+                        let text = c
+                            .child_by_field_name("name")
+                            .or_else(|| first_child(c, &["simple_identifier"]))
+                            .map(|n| self.text(n))
+                            .unwrap_or_default();
+                        if !text.is_empty() && !crate::ids::normalize_id(&text).is_empty() {
+                            names
+                                .entry(make_id([class, text.as_str()]))
+                                .or_default()
+                                .insert(text.trim_matches('`').to_string());
+                        }
+                    } else if c.kind_name() == "companion_object" {
+                        bodies.extend(
+                            children(c)
+                                .into_iter()
+                                .filter(|x| BODIES.contains(&x.kind_name())),
+                        );
+                    }
+                }
+            }
+            names.retain(|_, names| names.len() >= 2);
+            self.js_member_groups.insert(key.clone(), names);
+        }
+        underscore_salted_nid(
+            &plain,
+            name.trim_matches('`'),
+            &self.js_member_groups[&key],
+            &['_'],
+        )
     }
     pub fn nested(&mut self, n: Node<'t>, parent: &str) {
         for c in children(n) {
