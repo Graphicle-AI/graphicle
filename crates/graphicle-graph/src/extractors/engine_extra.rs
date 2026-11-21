@@ -138,6 +138,12 @@ impl<'a, 't> Engine<'a, 't> {
                 Value::Null,
             );
             if let Some(b) = value.child_by_field_name("body") {
+                // #5241: the member body is walked on its own, so its params
+                // and the names it captures from enclosing scopes are its
+                // locals (Graphify 0.9.112).
+                let mut locals = js_local_bound_names(value, self.source);
+                locals.extend(js_enclosing_bound_names(value, self.source));
+                self.closure_locals.insert(b.id(), locals);
                 self.bodies.push((mid, b));
             }
         }
