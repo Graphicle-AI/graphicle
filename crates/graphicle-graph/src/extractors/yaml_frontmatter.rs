@@ -46,6 +46,10 @@ struct Builder {
     error: Option<String>,
     /// Keep non-finite floats as [`Node::NonFinite`] instead of failing.
     nonfinite: bool,
+    /// Read an unrecognized local `!` tag (CloudFormation's `!Ref`, `!Sub`,
+    /// `!GetAtt`, `!Equals`) as its node's plain shape instead of failing
+    /// (Graphify 0.9.104, #5071); `!!python/...` still fails.
+    local_tags: bool,
     /// Per node: its 1-based start line and, for a scalar, its text as
     /// written (the composed view of [`Tree`], Graphify 0.9.97).
     lines: Vec<usize>,
@@ -73,9 +77,10 @@ impl Builder {
         id
     }
 }
-fn tag_name(tag: Option<Tag>, default: &str) -> Result<String> {
+fn tag_name(tag: Option<Tag>, default: &str, local_tags: bool) -> Result<String> {
     match tag {
         None => Ok(default.into()),
+        Some(tag) if local_tags && tag.handle == "!" => Ok(default.into()),
         Some(tag) if tag.handle == "tag:yaml.org,2002:" => Ok(tag.suffix),
         Some(tag) if tag.handle.is_empty() && tag.suffix == "!" => Ok(default.into()),
         _ => Err("Unsupported safe YAML tag".into()),
@@ -95,7 +100,7 @@ impl MarkedEventReceiver for Builder {
             match event {
                 Event::Scalar(text, style, anchor, tag) => {
                     let implicit = style == TScalarStyle::Plain && tag.is_none();
-                    let kind = tag_name(tag, "str")?;
+                    let kind = tag_name(tag, "str", self.local_tags)?;
                     if kind == "merge" || (implicit && text == "<<") {
                         self.add(Node::Merge, anchor);
                     } else {
@@ -112,7 +117,7 @@ impl MarkedEventReceiver for Builder {
                     }
                 }
                 Event::SequenceStart(anchor, tag) => {
-                    let kind = tag_name(tag, "seq")?;
+                    let kind = tag_name(tag, "seq", self.local_tags)?;
                     if !["seq", "omap", "pairs"].contains(&kind.as_str()) {
                         return Err("Invalid YAML sequence tag".into());
                     }
@@ -120,7 +125,7 @@ impl MarkedEventReceiver for Builder {
                     self.stack.push(id);
                 }
                 Event::MappingStart(anchor, tag) => {
-                    let kind = tag_name(tag, "map")?;
+                    let kind = tag_name(tag, "map", self.local_tags)?;
                     if !["map", "set"].contains(&kind.as_str()) {
                         return Err("Invalid YAML mapping tag".into());
                     }
@@ -765,13 +770,16 @@ impl Tree {
         out
     }
 }
-/// `yaml.safe_load_all(text)`: every document of the stream, in order, and
-/// the stream's composed [`Tree`], document for document.
+/// `yaml.load_all(text, Loader=_permissive_loader())`: every document of the
+/// stream, in order, and the stream's composed [`Tree`], document for
+/// document. The loader is `SafeLoader` that also reads an unknown local `!`
+/// tag as its node's plain shape (Graphify 0.9.104, #5071).
 pub fn parse_all_with_tree(text: &str) -> Result<(Vec<Loaded>, Tree)> {
     let text = repair_flow_indentation(text, FLOW_REPAIR_READ_LIMIT)?;
     let text = text.as_ref();
     let mut builder = Builder {
         nonfinite: true,
+        local_tags: true,
         ..Default::default()
     };
     Parser::new_from_str(text)

@@ -765,3 +765,38 @@ fn ambiguous_import_placeholder_id_is_independent_of_checkout_path() {
     assert!(!first.is_empty(), "the ambiguous `helper` import keeps a placeholder edge");
     assert_eq!(first, second);
 }
+
+// --- YAML: CloudFormation intrinsic tags (#5071, #5077) ----------------------
+
+#[test]
+fn cloudformation_intrinsic_tags_do_not_fail_the_whole_file() {
+    // test_yaml_extraction.py test_cloudformation_intrinsic_tags_do_not_fail_the_whole_file
+    let f = Fixture::new();
+    let path = f.write(
+        "template.yaml",
+        "Conditions:\n  IsProd: !Equals [ !Ref Environment, prod ]\nResources:\n  ExampleFunction:\n    Type: AWS::Serverless::Function\n    Properties:\n      Events:\n        ApiEvent:\n          Properties:\n            Path: /api/example\n",
+    );
+    let r = graphicle::extractors::yaml_config::extract_yaml(&path);
+    assert!(r.get("error").is_none(), "{r:#}");
+    let labels = nodes(&r).iter().map(|n| text(&n["label"])).collect::<BTreeSet<_>>();
+    for label in ["Conditions", "IsProd", "Resources", "ExampleFunction", "Events", "ApiEvent", "Path"] {
+        assert!(labels.contains(label), "{label}: {r:#}");
+    }
+}
+
+#[test]
+fn cloudformation_intrinsic_tag_still_does_not_execute_python_tag() {
+    // test_yaml_extraction.py test_cloudformation_intrinsic_tag_still_does_not_execute_python_tag
+    let f = Fixture::new();
+    let marker = f.root.join("pwned");
+    let path = f.write(
+        "template.yaml",
+        &format!(
+            "IsProd: !Equals [ !Ref Environment, prod ]\ndanger: !!python/object/apply:os.system ['touch {}']\n",
+            marker.display()
+        ),
+    );
+    let r = graphicle::extractors::yaml_config::extract_yaml(&path);
+    assert!(r.get("error").is_some(), "{r:#}");
+    assert!(!marker.exists());
+}
