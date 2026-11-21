@@ -3,7 +3,7 @@
 //! Port of graphify/validate.py at 20a20d30d8e7eef77675651f0199d87f913bd3e7.
 use crate::{
     Result,
-    python_compat::{repr, scalar_key, string, type_name},
+    python_compat::{repr, scalar_key, string},
     record::{EdgeItem, Record},
 };
 use serde_json::{Value, json};
@@ -15,13 +15,6 @@ pub const VALID_CONFIDENCES: &[&str] = &["AMBIGUOUS", "EXTRACTED", "INFERRED"];
 pub const REQUIRED_NODE_FIELDS: &[&str] = &["file_type", "id", "label", "source_file"];
 pub const REQUIRED_EDGE_FIELDS: &[&str] =
     &["confidence", "relation", "source", "source_file", "target"];
-
-fn in_string_set(value: &Value, allowed: &[&str]) -> Result<bool> {
-    if scalar_key(value).is_none() {
-        return Err(format!("TypeError: unhashable type: '{}'", type_name(value)).into());
-    }
-    Ok(value.as_str().is_some_and(|value| allowed.contains(&value)))
-}
 
 /// Preserve the reference's checks and diagnostics. Required-field diagnostics
 /// use a stable order; upstream iterates an unordered Python set.
@@ -88,8 +81,10 @@ pub(crate) fn validate_extraction_beside<R: Record, E: EdgeItem<Record = R>>(
                         ));
                     }
                 }
+                // A structured value is reported, not hashed (Graphify
+                // 0.9.105, #5086, #5088).
                 if let Some(kind) = node.get("file_type")
-                    && !in_string_set(kind, VALID_FILE_TYPES)?
+                    && !kind.as_str().is_some_and(|k| VALID_FILE_TYPES.contains(&k))
                 {
                     errors.push(format!(
                         "Node {i} (id={}) has invalid file_type '{}' - must be one of {}",
@@ -150,7 +145,9 @@ impl EdgeCheck<'_> {
             }
         }
         if let Some(confidence) = edge.get("confidence")
-            && !in_string_set(confidence, VALID_CONFIDENCES)?
+            && !confidence
+                .as_str()
+                .is_some_and(|c| VALID_CONFIDENCES.contains(&c))
         {
             errors.push(format!(
                 "Edge {i} has invalid confidence '{}' - must be one of {}",

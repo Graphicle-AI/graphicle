@@ -69,6 +69,27 @@ pub fn portable_root_label(root: &str) -> String {
 pub fn safe_community_name(label: &str) -> String {
     crate::export::obsidian_safe_stem(label, 200)
 }
+/// `load_report_token_cost` (Graphify 0.9.108, #5154): the cumulative token
+/// totals of cost.json, for a report written without model calls (update,
+/// watch); a missing or malformed ledger gives zeros.
+pub fn load_report_token_cost(out: &std::path::Path) -> serde_json::Value {
+    let zero = serde_json::json!({"input": 0, "output": 0});
+    let Some(cost) = std::fs::read_to_string(out.join("cost.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .filter(serde_json::Value::is_object)
+    else {
+        return zero;
+    };
+    let int = |k: &str| {
+        cost.get(k)
+            .map_or(Some(0), |v| v.as_i64().filter(|_| v.is_i64() || v.is_u64()))
+    };
+    match (int("total_input_tokens"), int("total_output_tokens")) {
+        (Some(input), Some(output)) => serde_json::json!({"input": input, "output": output}),
+        _ => zero,
+    }
+}
 pub fn load_learning_for_report(path: &Path) -> Option<Value> {
     (|| -> Result<Option<Value>> {
         let overlay = reflect::load_learning_overlay(path)?;

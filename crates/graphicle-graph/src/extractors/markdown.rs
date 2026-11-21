@@ -442,15 +442,20 @@ pub fn code_span_mention(span: &str) -> Option<(Option<String>, Vec<String>)> {
     // `App\Services\Mailer` and `Mailer::send()`: split on `\` and `::` the
     // way the dotted form splits on `.` (Graphify 0.9.103, #4610).
     if NS_MENTION.is_match(text) {
+        let is_call = text.ends_with("()");
         let body = text.strip_suffix("()").unwrap_or(text);
         let parts: Vec<String> = body
             .split("::")
             .flat_map(|part| part.split('\\'))
             .map(str::to_owned)
             .collect();
-        if parts
-            .last()
-            .is_some_and(|last| NS_NON_SYMBOL.is_match(last))
+        // Only a non-call `Type::CONST` / `Type::class` names no node: an
+        // uppercase `\`-namespace class (`App\API`) and a call
+        // (`Type::member()`) are mentions (Graphify 0.9.105, #5093).
+        if !is_call
+            && parts.last().is_some_and(|last| {
+                body.ends_with(&format!("::{last}")) && NS_NON_SYMBOL.is_match(last)
+            })
         {
             return None;
         }

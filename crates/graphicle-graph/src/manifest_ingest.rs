@@ -63,7 +63,6 @@ struct Patterns {
     require_block: regex::Regex,
     block_dep: regex::Regex,
     require: regex::Regex,
-    namespace: regex::Regex,
 }
 static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     name: compile(r#"^name:\s*["']?([^"'\s#]+)"#),
@@ -77,7 +76,6 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     require_block: compile(r"^require\s*\("),
     block_dep: compile(r"^(\S+)\s+v\S+"),
     require: compile(r"^require\s+(\S+)\s+v\S+"),
-    namespace: compile(r#"\sxmlns="[^"]*""#),
 });
 pub fn coerce_deps(value: &Value) -> Vec<String> {
     match value {
@@ -257,8 +255,16 @@ pub fn parse_gomod(text: &str) -> Value {
         None => Value::Null,
     }
 }
+/// Whether `node` is the element `name` in the root element's namespace (or
+/// in none): only the root's namespace is unqualified, whatever its spelling
+/// (default or prefixed, either quote, spaced), and a foreign namespace's
+/// tags stay out (Graphify 0.9.106, #5124, #5126).
 fn xml_tag(node: roxmltree::Node<'_, '_>, name: &str) -> bool {
-    node.is_element() && node.tag_name().name() == name && node.tag_name().namespace().is_none()
+    node.is_element() && node.tag_name().name() == name && in_root_namespace(node)
+}
+fn in_root_namespace(node: roxmltree::Node<'_, '_>) -> bool {
+    let ns = node.tag_name().namespace();
+    ns.is_none() || ns == node.document().root_element().tag_name().namespace()
 }
 fn xml_findtext(node: roxmltree::Node<'_, '_>, name: &str) -> Option<String> {
     let child = node.children().find(|c| xml_tag(*c, name))?;
@@ -314,9 +320,8 @@ fn text_or(a: Option<String>, b: Option<String>) -> Option<String> {
 static POM_PLACEHOLDER: LazyLock<regex::Regex> =
     LazyLock::new(|| regex::Regex::new(r"\$\{([^}]+)\}").unwrap());
 pub fn parse_pom(text: &str) -> Result<Value> {
-    let text = P.namespace.replacen(text, 1, "");
     let doc = roxmltree::Document::parse_with_options(
-        &text,
+        text,
         roxmltree::ParsingOptions {
             allow_dtd: true,
             ..Default::default()
@@ -348,8 +353,8 @@ pub fn parse_pom(text: &str) -> Result<Value> {
             if !text.is_empty() {
                 let tag = prop.tag_name();
                 let key = match tag.namespace() {
-                    Some(ns) => format!("{{{ns}}}{}", tag.name()),
-                    None => tag.name().to_string(),
+                    Some(ns) if !in_root_namespace(prop) => format!("{{{ns}}}{}", tag.name()),
+                    _ => tag.name().to_string(),
                 };
                 props.insert(key, py_strip(&text));
             }

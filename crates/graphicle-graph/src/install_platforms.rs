@@ -174,15 +174,19 @@ pub fn plugin(name: &str, project: &Path, remove: bool) -> Result<Vec<String>> {
     let entry = reqwest::Url::from_file_path(crate::extractors::resolution::resolved(&file))
         .map_err(|_| "Invalid plugin path")?
         .to_string();
+    if remove && !read_path.exists() {
+        f::remove(&file)?;
+        return Ok(vec![]);
+    }
+    // Read (and refuse an unparseable config) before writing anything, so a
+    // refused install leaves no half-registered plugin (Graphify 0.9.112,
+    // #5265).
+    let mut cfg = f::json_like_for_merge(&read_path)?;
     if remove {
         f::remove(&file)?;
-        if !read_path.exists() {
-            return Ok(vec![]);
-        }
     } else {
         f::write(&file, &constant("_KILO_PLUGIN_JS"))?;
     }
-    let mut cfg = f::json_like(&read_path);
     let mut plugins = cfg["plugin"].as_array().cloned().unwrap_or_default();
     if remove {
         let n = plugins.len();

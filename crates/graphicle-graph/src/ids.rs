@@ -99,6 +99,10 @@ pub struct DeclIdRegistry {
     salted: std::collections::HashSet<String>,
     /// The name each id was first claimed by (Graphify 0.9.100, #4904).
     spelled: std::collections::HashMap<String, String>,
+    /// `(kind, nid, name)` -> the salted id of a same-kind declaration
+    /// spelled apart from the owner only by underscores (Graphify 0.9.107,
+    /// #2810).
+    respelled: std::collections::HashMap<(String, String, String), String>,
 }
 
 impl DeclIdRegistry {
@@ -123,7 +127,27 @@ impl DeclIdRegistry {
         let key = (kind.to_string(), nid.to_string());
         let owner = self.owners.get(nid).cloned();
         if owner.as_ref() == Some(&key) {
-            return self.assigned[&key].clone();
+            let first = self
+                .spelled
+                .get(nid)
+                .cloned()
+                .unwrap_or_else(|| name.into());
+            if name == first || name.trim_matches('_') != first.trim_matches('_') {
+                return self.assigned[&key].clone();
+            }
+            // Same kind, spelled apart only by underscores (`_save` then
+            // `save`): two declarations, not a re-declaration (Graphify
+            // 0.9.107, #2810); salted from the spelling, memoised.
+            let memo = (kind.to_string(), nid.to_string(), name.to_string());
+            if let Some(id) = self.respelled.get(&memo) {
+                return id.clone();
+            }
+            let candidate = self.salt(nid, name, kind, &taken);
+            let own = (kind.to_string(), candidate.clone());
+            self.owners.insert(candidate.clone(), own.clone());
+            self.assigned.insert(own, candidate.clone());
+            self.respelled.insert(memo, candidate.clone());
+            return candidate;
         }
         if owner.is_none() && !taken(nid) {
             self.owners.insert(nid.to_string(), key.clone());
@@ -153,6 +177,13 @@ impl DeclIdRegistry {
         {
             return nid.to_string();
         }
+        let candidate = self.salt(nid, name, kind, &taken);
+        self.owners.insert(candidate.clone(), key.clone());
+        self.assigned.insert(key, candidate.clone());
+        candidate
+    }
+    /// Mint and record a salted id for `name`; the caller records ownership.
+    fn salt(&mut self, nid: &str, name: &str, kind: &str, taken: &impl Fn(&str) -> bool) -> String {
         let base = make_id([nid, decl_salt(name).as_str()]);
         let mut candidate = base.clone();
         let mut counter = 2;
@@ -160,8 +191,6 @@ impl DeclIdRegistry {
             candidate = make_id([base.as_str(), counter.to_string().as_str()]);
             counter += 1;
         }
-        self.owners.insert(candidate.clone(), key.clone());
-        self.assigned.insert(key, candidate.clone());
         self.salted.insert(candidate.clone());
         self.spelled.insert(candidate.clone(), name.to_string());
         self.by_name

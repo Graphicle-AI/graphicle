@@ -956,15 +956,27 @@ pub fn load_learning_overlay(graph: &Path) -> Result<Value> {
     let Some(data) = read_json(&parent(graph).join(LEARNING_SIDECAR_NAME)) else {
         return Ok(json!({}));
     };
-    let data = object(&data)?;
-    let Some(nodes) = field(data, "nodes").as_object() else {
+    // A malformed sidecar root yields {}; a malformed entry is skipped on
+    // its own, and a legacy null `source_file` is a source-less annotation
+    // (Graphify 0.9.104, #5019, #5024).
+    let Some(nodes) = data
+        .as_object()
+        .and_then(|data| field(data, "nodes").as_object())
+    else {
         return Ok(json!({}));
     };
     let mut out = Map::new();
     for (id, entry) in nodes {
         if let Some(entry) = entry.as_object() {
+            if entry
+                .get("source_file")
+                .is_some_and(|s| !s.is_null() && !s.is_string())
+            {
+                continue;
+            }
             let mut entry = entry.clone();
-            let stale = is_stale(&entry, graph)?;
+            // An inaccessible path has no verifiable fingerprint.
+            let stale = is_stale(&entry, graph).unwrap_or(true);
             entry.insert("stale".into(), json!(stale));
             out.insert(id.clone(), Value::Object(entry));
         }

@@ -155,17 +155,17 @@ pub fn python_collect_type_refs(
             }
         }
         "subscript" => {
-            // Parity quirk: the pinned engine.py walks `value` with the outer
-            // role and then re-walks every named child with generic=True,
-            // skipping the value only via `c is value`. py-tree-sitter 0.25
-            // returns a fresh Node from child_by_field_name so that identity
-            // test never matches and the value is emitted twice
-            // (`typing.ItemsView[str, str]` -> (ItemsView, type),
-            // (ItemsView, generic_arg)). Unchanged in 0.9.66; reproduced here
-            // so `references` edge `context` matches byte-for-byte.
+            // The value is walked with the outer role and the other named
+            // children as generic arguments. Before Graphify 0.9.106 (#5113)
+            // the value was walked a second time as its own generic argument
+            // (`mod.MyBox[Foo]` gave MyBox as both type and generic_arg),
+            // because py-tree-sitter's `c is value` never matched.
             let value = node.child_by_field_name("value");
             python_collect_type_refs(value, source, generic, out);
             for c in named(node) {
+                if Some(c) == value {
+                    continue;
+                }
                 python_collect_type_refs(Some(c), source, true, out)
             }
         }
@@ -223,12 +223,15 @@ fn csharp_namespace_name(node: Node<'_>, source: &[u8]) -> String {
 /// so the second declaration was dropped. Returns `(type_groups,
 /// member_groups)` for the ids two or more distinct names share; types keyed
 /// as the walk mints them, members (methods, properties, enum members) under
-/// their type's final (already salted) id. Overloads are one name.
+/// their type's final (already salted) id. Overloads are one name. The third
+/// value is every member's plain id, which a constructor's id must not take
+/// (a member may be spelled like its type in another case; Graphify 0.9.104,
+/// #5054).
 pub fn csharp_pre_scan_name_collisions(
     root: Node<'_>,
     source: &[u8],
     stem: &str,
-) -> (NameGroups, NameGroups) {
+) -> (NameGroups, NameGroups, BTreeSet<String>) {
     fn visit<'a>(
         n: Node<'a>,
         ns: &[String],
@@ -308,8 +311,9 @@ pub fn csharp_pre_scan_name_collisions(
         let type_id = python_underscore_salted_nid(&plain, &name, &types);
         members(decl, &type_id, source, &mut member_names);
     }
+    let member_ids = member_names.keys().cloned().collect();
     member_names.retain(|_, names| names.len() >= 2);
-    (types, member_names)
+    (types, member_names, member_ids)
 }
 pub fn csharp_pre_scan_interfaces(root: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -1093,8 +1097,9 @@ const PHP_ROUTING_VERBS: [&str; 9] = [
 /// prefixes of enclosing route groups and fluent chains (`_php_get_route_name`,
 /// #3409). A closure nested in a non-route closure gets no route name.
 ///
-/// Upstream compares argument nodes by Python object identity, which never
-/// matches, so the first string argument names the route wherever it sits.
+/// Only string arguments before the closure's own argument count (Graphify
+/// 0.9.107, #5135; earlier upstream compared nodes by object identity, which
+/// never matched, so a string after the closure named the route).
 pub fn php_route_name(closure: Node<'_>, source: &[u8]) -> Option<String> {
     let string = |n: Node<'_>| matches!(n.kind_name(), "string" | "encapsed_string");
     let unquote = |n: Node<'_>| read_text(n, source).trim_matches(['\'', '"']).to_string();
@@ -1131,17 +1136,20 @@ pub fn php_route_name(closure: Node<'_>, source: &[u8]) -> Option<String> {
                 .or_else(|| call.child_by_field_name("function"))
                 .map(|n| read_text(n, source).to_lowercase())
                 .unwrap_or_default();
-            let path = children(arguments).into_iter().find_map(|sibling| {
-                let target = if sibling.kind_name() == "argument" {
-                    children(sibling)
-                        .into_iter()
-                        .find(|c| string(*c))
-                        .unwrap_or(sibling)
-                } else {
-                    sibling
-                };
-                string(target).then(|| unquote(target))
-            });
+            let path = children(arguments)
+                .into_iter()
+                .take_while(|sibling| *sibling != node)
+                .find_map(|sibling| {
+                    let target = if sibling.kind_name() == "argument" {
+                        children(sibling)
+                            .into_iter()
+                            .find(|c| string(*c))
+                            .unwrap_or(sibling)
+                    } else {
+                        sibling
+                    };
+                    string(target).then(|| unquote(target))
+                });
             if verb.is_none() {
                 match path {
                     Some(p)
@@ -1609,12 +1617,23 @@ pub fn underscore_salted_nid(
 /// overloads apart, and the argument counts it accepts: `arity`, `min_arity`
 /// for optional, `params` and extension parameters, `variadic` for `params`.
 pub fn csharp_method_signature(node: Node<'_>, source: &[u8]) -> (String, Value) {
+    csharp_signature_of(node, source, None)
+}
+/// [`csharp_method_signature`] with the parameter list handed over: a primary
+/// constructor's list is an unnamed child of its type declaration, and the
+/// type's own type parameters are not the constructor's (Graphify 0.9.104,
+/// #5054).
+pub fn csharp_signature_of(
+    node: Node<'_>,
+    source: &[u8],
+    primary: Option<Node<'_>>,
+) -> (String, Value) {
     let squeeze = |n: Node<'_>| read_text(n, source).split_whitespace().collect::<String>();
     let mut parts = vec![];
     let (mut arity, mut required) = (0i64, 0i64);
     let (mut variadic, mut extension) = (false, false);
-    let params = node
-        .child_by_field_name("parameters")
+    let params = primary
+        .or_else(|| node.child_by_field_name("parameters"))
         .map(children)
         .unwrap_or_default();
     for (i, c) in params.iter().enumerate() {
@@ -1647,12 +1666,16 @@ pub fn csharp_method_signature(node: Node<'_>, source: &[u8]) -> (String, Value)
             variadic = true;
         }
     }
-    let type_params = children(node)
-        .into_iter()
-        .filter(|c| c.kind_name() == "type_parameter_list")
-        .flat_map(children)
-        .filter(|p| matches!(p.kind_name(), "type_parameter" | "identifier"))
-        .count();
+    let type_params = if primary.is_some() {
+        0
+    } else {
+        children(node)
+            .into_iter()
+            .filter(|c| c.kind_name() == "type_parameter_list")
+            .flat_map(children)
+            .filter(|p| matches!(p.kind_name(), "type_parameter" | "identifier"))
+            .count()
+    };
     let mut signature = parts.join(",");
     if type_params > 0 {
         signature = format!("`{type_params}:{signature}");
@@ -1680,6 +1703,23 @@ pub fn csharp_argc(call: Node<'_>) -> Option<i64> {
             .filter(|c| c.kind_name() == "argument")
             .count() as i64
     }))
+}
+/// `_csharp_creation_argc`: the argument count of a C# `new X(...)`, `new X
+/// { ... }` or `: base(...)`; no argument list runs the parameterless
+/// constructor (Graphify 0.9.104, #5054).
+pub fn csharp_creation_argc(node: Node<'_>) -> i64 {
+    node.child_by_field_name("arguments")
+        .or_else(|| {
+            children(node)
+                .into_iter()
+                .find(|c| c.kind_name() == "argument_list")
+        })
+        .map_or(0, |args| {
+            children(args)
+                .into_iter()
+                .filter(|c| c.kind_name() == "argument")
+                .count() as i64
+        })
 }
 /// `_csharp_pick_overload`: the one overload a call with `argc` arguments can
 /// mean, from `(id, metadata)` of the overloads of one name on one type.
@@ -2203,8 +2243,18 @@ fn scala_collect_type_refs_in(
                 }
             }
         }
-        "compound_type" | "infix_type" | "function_type" | "tuple_type" | "annotated_type"
-        | "projected_type" | "match_type" | "type_case_clause" => {
+        // `os: Opt*` and the by-name `o: => Opt` wrap the parameter type
+        // (Graphify 0.9.109, #4638).
+        "compound_type"
+        | "infix_type"
+        | "function_type"
+        | "tuple_type"
+        | "annotated_type"
+        | "projected_type"
+        | "match_type"
+        | "type_case_clause"
+        | "repeated_parameter_type"
+        | "lazy_parameter_type" => {
             for c in named(n) {
                 scala_collect_type_refs_in(c, source, generic, out, skip)
             }
@@ -2379,30 +2429,27 @@ mod python_type_ref_tests {
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect()
     }
-    // Expected tuples were captured from pinned engine.py::_python_collect_type_refs
-    // under py-tree-sitter 0.25.2. Its `c is value` identity test never matches the
-    // fresh Node that child_by_field_name returns, so a subscript's attribute value
-    // is emitted twice ((name, type), then (name, generic_arg)); the port matches.
+    // Since Graphify 0.9.106 (#5113) a subscript's value is walked once, as
+    // the type; before, upstream's identity test never matched and the value
+    // was emitted a second time as a generic argument.
     #[test]
-    fn attribute_subscript_emits_value_twice_like_upstream() {
+    fn attribute_subscript_emits_value_once() {
         assert_eq!(
             refs("def f() -> typing.ItemsView[str, str]: pass"),
-            s(&[("ItemsView", "type"), ("ItemsView", "generic_arg")])
+            s(&[("ItemsView", "type")])
         );
         assert_eq!(
             refs("def f() -> a.B[C, D.E[F]]: pass"),
             s(&[
                 ("B", "type"),
-                ("B", "generic_arg"),
                 ("C", "generic_arg"),
-                ("E", "generic_arg"),
                 ("E", "generic_arg"),
                 ("F", "generic_arg"),
             ])
         );
         assert_eq!(
             refs("def f(x: a.B[C]) -> None: pass"),
-            s(&[("B", "type"), ("B", "generic_arg"), ("C", "generic_arg")])
+            s(&[("B", "type"), ("C", "generic_arg")])
         );
     }
     #[test]

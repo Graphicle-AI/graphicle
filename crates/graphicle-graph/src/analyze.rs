@@ -845,12 +845,31 @@ pub fn find_import_cycles(graph: &Graph, max_cycle_length: i64, top_n: i64) -> R
         .iter()
         .map(|node| python_compat::str_hash_seed0(node.id.as_str().unwrap_or_default()))
         .collect();
-    let mut cycles = graph_algorithms::directed_cycles(
-        &graph_algorithms::neighbors(&files),
-        &hashes,
-        max_cycle_length as usize,
-        cap,
-    );
+    // Two-file cycles first, read straight off reciprocal edges: the capped
+    // enumeration below stops in its own order, not by length, and could
+    // fill the cap before reaching a mutual import, the tightest coupling
+    // (Graphify 0.9.112, #5267).
+    let adjacency = graph_algorithms::neighbors(&files);
+    let mut cycles: Vec<Vec<usize>> = vec![];
+    if max_cycle_length >= 2 {
+        let id = |i: usize| files.nodes[i].id.as_str().unwrap_or_default();
+        for (u, v, _) in files.iter_edges() {
+            if cycles.len() >= cap {
+                break;
+            }
+            if id(u) < id(v) && adjacency[v].contains(&u) {
+                cycles.push(vec![u, v]);
+            }
+        }
+    }
+    if cycles.len() < cap {
+        cycles.extend(graph_algorithms::directed_cycles(
+            &adjacency,
+            &hashes,
+            max_cycle_length as usize,
+            cap - cycles.len(),
+        ));
+    }
     cycles.sort_by_key(Vec::len);
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();

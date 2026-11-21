@@ -162,6 +162,17 @@ impl<'a, 't> Engine<'a, 't> {
             .unwrap_or(&self.file)
             .to_string();
         self.edge(&owner, &id, "contains", line, None, Value::Null);
+        if self.is("c_sharp")
+            && t != "interface_declaration"
+            && let Some(primary) = children(n)
+                .into_iter()
+                .find(|c| c.kind_name() == "parameter_list")
+        {
+            // `class Foo(int x)` / `record R(int A)`: the primary constructor
+            // is one of Foo's constructors, so `new Foo(1)` weighs it against
+            // the explicit ones (Graphify 0.9.104, #5054).
+            self.csharp_add_constructor(&id, &name, n, Some(primary), line, false);
+        }
         if self.js() {
             self.ts_decorators(n, &id);
         }
@@ -843,14 +854,24 @@ impl<'a, 't> Engine<'a, 't> {
         } else {
             ps.map(children).unwrap_or_default()
         };
+        // A variadic parameter references its type like any other (Graphify
+        // 0.9.109, #4638): C# `params Opt[] os` keeps its `type` on the
+        // parameter list itself, Java `Opt... os` (spread_parameter) has no
+        // `type` field, PHP `Opt ...$os` is a variadic_parameter.
+        if self.is("c_sharp")
+            && let Some(ty) = ps.and_then(|ps| ps.child_by_field_name("type"))
+        {
+            self.refs(id, Some(ty), line, "parameter_type", false);
+        }
         for p in params {
             let accepted = if self.is("java") {
-                p.kind_name() == "formal_parameter"
+                matches!(p.kind_name(), "formal_parameter" | "spread_parameter")
             } else {
                 [
                     "parameter",
                     "simple_parameter",
                     "property_promotion_parameter",
+                    "variadic_parameter",
                     "parameter_declaration",
                     "required_parameter",
                     "optional_parameter",
@@ -860,25 +881,33 @@ impl<'a, 't> Engine<'a, 't> {
             if !accepted {
                 continue;
             }
-            let ty = p.child_by_field_name("type").or_else(|| {
-                if self.is("php") {
-                    first_child(
-                        p,
-                        &[
-                            "named_type",
-                            "primitive_type",
-                            "nullable_type",
-                            "union_type",
-                            "intersection_type",
-                            "optional_type",
-                        ],
-                    )
-                } else if self.is("kotlin") {
-                    first_child(p, &["user_type", "nullable_type", "type_reference"])
-                } else {
-                    None
-                }
+            let spread = (p.kind_name() == "spread_parameter").then(|| {
+                children(p).into_iter().find(|c| {
+                    c.is_named() && !matches!(c.kind_name(), "modifiers" | "variable_declarator")
+                })
             });
+            let ty = spread
+                .flatten()
+                .or_else(|| p.child_by_field_name("type"))
+                .or_else(|| {
+                    if self.is("php") {
+                        first_child(
+                            p,
+                            &[
+                                "named_type",
+                                "primitive_type",
+                                "nullable_type",
+                                "union_type",
+                                "intersection_type",
+                                "optional_type",
+                            ],
+                        )
+                    } else if self.is("kotlin") {
+                        first_child(p, &["user_type", "nullable_type", "type_reference"])
+                    } else {
+                        None
+                    }
+                });
             self.refs(id, ty, line, "parameter_type", false);
             if self.is("php")
                 && p.kind_name() == "property_promotion_parameter"
@@ -1072,16 +1101,138 @@ impl<'a, 't> Engine<'a, 't> {
             self.refs(&owner, n.child_by_field_name("type"), line, "field", false);
         }
         let Some(parent) = parent else { return false };
-        if self.is("c_sharp")
-            && t == "constructor_declaration"
-            && let Some(body) = n.child_by_field_name("body")
-        {
-            // A C# constructor has no node of its own: its body's calls are
-            // attributed to the declaring type (0.9.83, #4246). Not handled
-            // here otherwise, so the walk carries on as before.
-            self.method_scopes.insert(body.id(), (n, parent.into()));
-            self.bodies.push((parent.into(), body));
+        if self.is("c_sharp") && t == "constructor_declaration" {
+            // A constructor is a node of its own, like a method, so the calls
+            // in its body and initializer are its calls, not the type's
+            // (Graphify 0.9.104, #5054; #4246 credited them to the type). Not
+            // handled here otherwise, so the walk carries on as before.
+            let name = n
+                .child_by_field_name("name")
+                .map(|c| self.text(c))
+                .unwrap_or_default();
+            if !name.is_empty() {
+                let line = n.start_position().row + 1;
+                let is_static = children(n)
+                    .iter()
+                    .any(|c| c.kind_name() == "modifier" && self.text(*c) == "static");
+                let ctor = self.csharp_add_constructor(parent, &name, n, None, line, is_static);
+                for part in children(n) {
+                    if part.kind_name() != "constructor_initializer" {
+                        continue;
+                    }
+                    self.method_scopes.insert(part.id(), (n, parent.into()));
+                    self.bodies.push((ctor.clone(), part));
+                    if let Some(keyword) = children(part)
+                        .into_iter()
+                        .map(|c| c.kind_name())
+                        .find(|k| matches!(*k, "base" | "this"))
+                    {
+                        self.csharp_ctor_records.push(json!({
+                            "caller_nid": ctor,
+                            "lang": "csharp",
+                            "csharp_ctor_init": keyword,
+                            "arity": csharp_creation_argc(part),
+                            "source_file": self.path,
+                            "source_location": format!("L{}", part.start_position().row + 1),
+                        }));
+                    }
+                }
+                if let Some(body) = n.child_by_field_name("body") {
+                    self.method_scopes.insert(body.id(), (n, parent.into()));
+                    self.bodies.push((ctor, body));
+                }
+            }
             return false;
+        }
+        if self.is("c_sharp") && t == "indexer_declaration" {
+            // `this[int i]` is a property with parameters: a `this[]` node
+            // beside the properties, so its accessors' calls have a caller.
+            // Overloads are salted by signature like methods; a member
+            // spelled `This` keeps its id (Graphify 0.9.104, #5056).
+            use sha1::Digest;
+            let (mut signature, mut meta) = csharp_method_signature(n, self.source);
+            if let Some(explicit) = children(n)
+                .into_iter()
+                .find(|c| c.kind_name() == "explicit_interface_specifier")
+            {
+                // `IList<T>.this[int]` and `IList.this[int]` are two indexers.
+                let written = self.text(explicit).split_whitespace().collect::<String>();
+                signature = format!("{written}{signature}");
+            }
+            let mut base = make_id([parent, "this"]);
+            if self.csharp_member_ids.contains(&base) {
+                let salt = format!("{:x}", sha1::Sha1::digest(b"this[]"));
+                base = make_id([base.as_str(), &salt[..6]]);
+            }
+            let group = self
+                .csharp_indexer_overloads
+                .entry(base.clone())
+                .or_default();
+            let known = group.contains(&signature);
+            let mut id = base.clone();
+            if !group.is_empty() && !known {
+                let salt = format!("{:x}", sha1::Sha1::digest(signature.as_bytes()));
+                id = make_id([base.as_str(), &salt[..6]]);
+            }
+            meta["signature"] = json!(signature);
+            meta["kind"] = json!("indexer");
+            let fresh = !self.seen.contains(&id);
+            self.add_node(&id, "this[]", line, None, meta);
+            if !known && fresh {
+                self.csharp_indexer_overloads
+                    .entry(base)
+                    .or_default()
+                    .insert(signature);
+            }
+            self.edge(parent, &id, "defines", line, Some("field"), Value::Null);
+            self.csharp_queue_member_bodies(&id, n, parent);
+            return true;
+        }
+        if self.is("c_sharp")
+            && matches!(
+                t,
+                "operator_declaration" | "conversion_operator_declaration"
+            )
+        {
+            // A user-defined operator or conversion is a static method with a
+            // body: a member node whose calls are its own. Its name is spelled
+            // as C# writes it (`operator +`, `operator int`) and is never a
+            // call name, so the id always carries the signature: several
+            // conversions share one parameter list (Graphify 0.9.104, #5056).
+            use sha1::Digest;
+            let (op_name, op_key) = if t == "operator_declaration" {
+                let op = n
+                    .child_by_field_name("operator")
+                    .map(|o| self.text(o))
+                    .unwrap_or_default();
+                let name = format!("operator {op}");
+                (name.clone(), name)
+            } else {
+                let to = n
+                    .child_by_field_name("type")
+                    .map(|o| self.text(o).split_whitespace().collect::<String>())
+                    .unwrap_or_default();
+                let name = format!("operator {to}");
+                let direction = children(n)
+                    .into_iter()
+                    .map(|c| c.kind_name())
+                    .find(|k| matches!(*k, "implicit" | "explicit"))
+                    .unwrap_or("");
+                (name.clone(), format!("{direction} {name}"))
+            };
+            let (signature, mut meta) = csharp_method_signature(n, self.source);
+            let signature = format!("{op_key}:{signature}");
+            let salt = format!("{:x}", sha1::Sha1::digest(signature.as_bytes()));
+            let id = make_id([parent, "operator", &salt[..6]]);
+            meta["signature"] = json!(signature);
+            meta["kind"] = json!("operator");
+            self.add_node(&id, &format!(".{op_name}()"), line, None, meta);
+            self.edge(parent, &id, "method", line, None, Value::Null);
+            if let Some(body) = n.child_by_field_name("body") {
+                self.method_scopes.insert(body.id(), (n, parent.into()));
+                self.bodies.push((id, body));
+            }
+            return true;
         }
         if self.is("c_sharp") && matches!(t, "field_declaration" | "property_declaration") {
             if t == "property_declaration"
@@ -1097,6 +1248,11 @@ impl<'a, 't> Engine<'a, 't> {
                     if !self.seen.contains(&id) {
                         self.add_node(&id, &name, line, None, Value::Null);
                         self.edge(parent, &id, "defines", line, Some("field"), Value::Null);
+                        // Only the declaration that owns the node: an id
+                        // another member already took must not be credited
+                        // with this property's calls (Graphify 0.9.104,
+                        // #5056).
+                        self.csharp_queue_member_bodies(&id, n, parent);
                     }
                 }
             }

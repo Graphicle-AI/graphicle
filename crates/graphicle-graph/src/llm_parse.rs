@@ -99,26 +99,69 @@ pub fn object_candidates(text: &str) -> Vec<usize> {
     preferred
 }
 pub fn fragment_candidates(text: &str) -> Vec<String> {
+    fragment_candidate_spans(text)
+        .into_iter()
+        .map(|(c, _, _)| c)
+        .collect()
+}
+/// [`fragment_candidates`] with each candidate's source span, in characters
+/// (Graphify 0.9.109, #5192).
+pub fn fragment_candidate_spans(text: &str) -> Vec<(String, usize, usize)> {
     static FENCES: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(r"(?s)```[ \t]*([A-Za-z0-9_+-]*)[ \t]*\r?\n(.*?)```").unwrap()
     });
+    let char_at = |byte: usize| text[..byte].chars().count();
     let mut fences: Vec<_> = FENCES
         .captures_iter(text)
         .map(|c| {
+            let body = c.get(2).unwrap();
             (
                 !["json", ""].contains(&c[1].to_lowercase().as_str()),
                 crate::llm_config::trim(&c[2]).to_owned(),
+                char_at(body.start()),
+                char_at(body.end()),
             )
         })
         .collect();
     fences.sort_by_key(|c| c.0);
-    let mut out: Vec<_> = fences.into_iter().map(|c| c.1).collect();
-    out.extend(
-        object_candidates(text)
-            .into_iter()
-            .filter_map(|i| balanced_object(text, i)),
-    );
+    let mut out: Vec<_> = fences.into_iter().map(|c| (c.1, c.2, c.3)).collect();
+    out.extend(object_candidates(text).into_iter().filter_map(|i| {
+        balanced_object(text, i).map(|blob| {
+            let n = blob.chars().count();
+            (blob, i, i + n)
+        })
+    }));
     out
+}
+/// The graph fragments of a JSON array: its objects with any extraction
+/// content.
+fn array_fragments(items: &[Value]) -> Vec<&Value> {
+    let mut scratch = Diagnostics::default();
+    items
+        .iter()
+        .filter(|item| {
+            item.is_object() && {
+                let cand = sanitize((*item).clone(), &mut scratch);
+                KEYS.iter().any(|k| truth(&cand[*k]))
+            }
+        })
+        .collect()
+}
+/// A key-sorted copy, for comparing two fragments.
+fn sorted_keys(v: &Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut keys = m.keys().collect::<Vec<_>>();
+            keys.sort();
+            Value::Object(
+                keys.into_iter()
+                    .map(|k| (k.clone(), sorted_keys(&m[k])))
+                    .collect(),
+            )
+        }
+        Value::Array(a) => Value::Array(a.iter().map(sorted_keys).collect()),
+        other => other.clone(),
+    }
 }
 pub fn parse(raw: &str, d: &mut Diagnostics) -> Value {
     if raw.chars().count() > MAX_JSON {
@@ -130,22 +173,55 @@ pub fn parse(raw: &str, d: &mut Diagnostics) -> Value {
     });
     let stripped = THINK.replace_all(raw, " ");
     let stripped = crate::llm_config::trim(&stripped);
-    if let Ok(p) = serde_json::from_str::<Value>(stripped)
-        && p.is_object()
-    {
-        return sanitize(p, d);
+    if let Ok(p) = serde_json::from_str::<Value>(stripped) {
+        if p.is_object() {
+            return sanitize(p, d);
+        }
+        // A single-element array wrapping one fragment is unambiguous; zero
+        // or several are refused rather than keeping only the first
+        // (Graphify 0.9.109, #5192).
+        if let Some(items) = p.as_array() {
+            let frags = array_fragments(items);
+            if let [one] = frags.as_slice() {
+                return sanitize((*one).clone(), d);
+            }
+            d.stderr.push("[graphicle] LLM returned an array instead of one graph fragment; refusing to accept only its first object.".into());
+            return empty();
+        }
     }
     let mut empty_fragment = None;
     let mut fallback = None;
-    for candidate in fragment_candidates(stripped) {
-        let Ok(p) = serde_json::from_str::<Value>(&candidate) else {
+    // Independent fragments with content are ambiguous: keeping only the
+    // first would cache missing content as complete (Graphify 0.9.109,
+    // #5192).
+    let mut content: Vec<(Value, usize, usize)> = vec![];
+    for (candidate, start, end) in fragment_candidate_spans(stripped) {
+        if content
+            .iter()
+            .any(|(_, left, right)| *left <= start && end <= *right)
+        {
+            continue;
+        }
+        let Ok(mut p) = serde_json::from_str::<Value>(&candidate) else {
             continue;
         };
+        let unwrapped = match p.as_array().map(Vec::as_slice).map(array_fragments) {
+            Some(frags) if frags.len() > 1 => {
+                d.stderr.push("[graphicle] LLM returned an array of graph fragments; refusing to accept only its first object.".into());
+                return empty();
+            }
+            Some(frags) => frags.first().map(|one| (*one).clone()),
+            None => None,
+        };
+        if let Some(one) = unwrapped {
+            p = one;
+        }
         let Some(m) = p.as_object() else { continue };
         if KEYS.iter().any(|k| m.contains_key(*k)) {
             let p = sanitize(p, d);
             if KEYS.iter().any(|k| truth(&p[*k])) {
-                return p;
+                content.push((p, start, end));
+                continue;
             }
             if empty_fragment.is_none() {
                 empty_fragment = Some(p)
@@ -153,6 +229,30 @@ pub fn parse(raw: &str, d: &mut Diagnostics) -> Value {
         } else if fallback.is_none() {
             fallback = Some(p)
         }
+    }
+    let mut distinct: Vec<(String, Value)> = vec![];
+    for (cand, start, end) in &content {
+        if content.iter().any(|(_, left, right)| {
+            *left <= *start && *end <= *right && (*left, *right) != (*start, *end)
+        }) {
+            continue;
+        }
+        let signature = sorted_keys(&json!({
+            "nodes": cand.get("nodes").cloned().unwrap_or(json!([])),
+            "edges": cand.get("edges").cloned().unwrap_or(json!([])),
+            "hyperedges": cand.get("hyperedges").cloned().unwrap_or(json!([])),
+        }))
+        .to_string();
+        if !distinct.iter().any(|(s, _)| *s == signature) {
+            distinct.push((signature, cand.clone()));
+        }
+    }
+    if distinct.len() > 1 {
+        d.stderr.push("[graphicle] LLM returned multiple independent graph fragments; refusing to cache only the first as a complete extraction.".into());
+        return empty();
+    }
+    if let Some((_, p)) = distinct.into_iter().next() {
+        return p;
     }
     if let Some(p) = empty_fragment.or(fallback) {
         return sanitize(p, d);

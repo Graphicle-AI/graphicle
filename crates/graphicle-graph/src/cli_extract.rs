@@ -6,7 +6,7 @@ use crate::{
     cache::{ExtractionCache, Prompt, SemanticOptions},
     cli::{Args, Output, expand},
     cli_state::{self as state, ar, strings},
-    detect, extract, llm, paths,
+    detect, extract, fsutil, llm, paths,
     record::Attributes,
 };
 use serde_json::{Value, json};
@@ -693,6 +693,10 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
         .map(|p| p.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     let mut hits = 0;
+    // The files served from the semantic cache this run, to tell a cached
+    // replay from a fresh under-production in the shrink guard (Graphify
+    // 0.9.105, #5083).
+    let mut cached_semantic: BTreeSet<PathBuf> = BTreeSet::new();
     if !semantic.is_empty() {
         let uncached = if force {
             semantic_paths.clone()
@@ -704,6 +708,12 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
             strings(&cached[3])
         };
         hits = semantic.len() - uncached.len();
+        let uncached_set = uncached.iter().collect::<BTreeSet<_>>();
+        cached_semantic = semantic_paths
+            .iter()
+            .filter(|p| !uncached_set.contains(p))
+            .map(|p| fsutil::resolve_missing(Path::new(p)).unwrap_or_else(|_| PathBuf::from(p)))
+            .collect();
         if !uncached.is_empty() {
             let files = uncached
                 .iter()
@@ -864,12 +874,46 @@ pub fn run(a: &Args, out: &mut Output) -> Result<()> {
     let mut manifest = state::stamped(&files, &sem, &target, &partial, &failed, &[]);
     let mut handle_shrink = |shrink: &Value, out: &mut Output| -> Result<()> {
         if let Some(m) = shrink.as_object().filter(|m| !m.is_empty()) {
-            out.warn(format!("semantic extraction is incomplete: unverified semantic shrink for {}. Use --allow-partial to accept this result.",m.keys().cloned().collect::<Vec<_>>().join(", ")));
+            // A degraded entry must not stay in the semantic cache: it would
+            // be replayed on every later run while the guard keeps refusing
+            // the write. It is removed even with --allow-partial, so the next
+            // run re-extracts the source (Graphify 0.9.105, #5083).
+            for source in m.keys() {
+                cache.invalidate(&target.join(source), &sem_options.cache_options())?;
+            }
+            let key = |source: &String| {
+                let p = target.join(source);
+                fsutil::resolve_missing(&p).unwrap_or(p)
+            };
+            let (cached, fresh): (Vec<&String>, Vec<&String>) =
+                m.keys().partition(|s| cached_semantic.contains(&key(s)));
+            let list = |sources: &[&String]| {
+                sources
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.warn(format!(
+                "semantic extraction is incomplete: unverified semantic shrink for {}.",
+                list(&m.keys().collect::<Vec<_>>())
+            ));
+            if !cached.is_empty() {
+                out.warn(format!(
+                    "{} was replayed from the semantic cache, not freshly extracted; its cache entry is removed so the next run re-extracts it. {}",
+                    list(&cached),
+                    if allow_partial {
+                        "--allow-partial was passed, so the degraded replay is written over the existing graph and the prior nodes are dropped."
+                    } else {
+                        "Do not pass --allow-partial here: it would write the degraded replay over the larger existing graph and drop the prior nodes."
+                    }
+                ));
+            }
+            if !fresh.is_empty() && !allow_partial {
+                out.warn("The shrink guard stays armed for this write; pass --allow-partial to overwrite a larger existing graph anyway.");
+            }
             if !allow_partial {
                 incomplete = true;
-                for source in m.keys() {
-                    cache.invalidate(&target.join(source), &sem_options.cache_options())?;
-                }
                 manifest = state::stamped(
                     &files,
                     &sem,

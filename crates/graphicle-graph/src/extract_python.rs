@@ -205,6 +205,47 @@ fn loose_sibling(edge: &Value, module: &str, files: &ModuleFiles, root: &Path) -
         && candidates.iter().any(|c| resolved(Path::new(c)) == target)
 }
 
+/// `_root_relative_source_file` (Graphify 0.9.104, #5044): the scan-root
+/// relative POSIX form of `source_file`, for id hashing.
+fn root_relative_source_file(source_file: &str, root: &Path) -> String {
+    if source_file.is_empty() {
+        return String::new();
+    }
+    let path = Path::new(source_file);
+    let posix = |p: &Path| crate::fsutil::path_string(p).replace('\\', "/");
+    if !path.is_absolute() {
+        return posix(path);
+    }
+    if let Ok(rel) = path.strip_prefix(root) {
+        return posix(rel);
+    }
+    if let Ok(resolved) = crate::fsutil::resolve_missing(path)
+        && let Ok(rel) = resolved.strip_prefix(root)
+    {
+        return posix(rel);
+    }
+    // `os.path.relpath`: up from the root to the common prefix, then down.
+    let (a, b) = (
+        path.components().collect::<Vec<_>>(),
+        root.components().collect::<Vec<_>>(),
+    );
+    if a.first() != b.first() {
+        // Another Windows drive: no relative path.
+        return path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+    }
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let mut parts = vec!["..".to_string(); b.len() - common];
+    parts.extend(
+        a[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
+    parts.join("/")
+}
+
 /// Strip the transient `_python_import_*` keys from every import edge, drop
 /// namespace-package markers, point ambiguous imports at a node-less id so
 /// the graph builder drops them, and flag raw calls whose receiver or callee
@@ -284,11 +325,15 @@ pub fn suppress_ambiguous_imports<P: PerFile>(
         if ambiguous_module {
             // A raw dotted alias could belong to an unrelated real node: use a
             // stable node-less id so the builder drops the unresolved edge.
+            // Hashed only from checkout-independent material: the source file
+            // and the importer's id still embed the absolute scan root here,
+            // so the same commit built in two directories minted different
+            // ids (Graphify 0.9.104, #5044).
+            let relative = root_relative_source_file(&source_file, root);
             let identity = [
                 module.as_str(),
-                source_file.as_str(),
+                relative.as_str(),
                 s(&edge, "source_location"),
-                s(&edge, "source"),
             ]
             .join("\0");
             let digest = format!("{:x}", Sha1::digest(identity.as_bytes()));

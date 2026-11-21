@@ -147,8 +147,13 @@ pub fn run(command: &str, a: &Args, out: &mut Output) -> Result<()> {
             let mut g = Graph::new(false, false);
             let mut hs = vec![];
             let mut offset = 0;
+            // External stubs keep their bare ids, so one node per external id
+            // shared across repos is absorbed: reported, not silent (Graphify
+            // 0.9.106, #5127).
+            let mut input_nodes = 0;
             for (path, tag) in names.iter().zip(&tags) {
                 let one = load(Path::new(path), None)?;
+                input_nodes += one.nodes.len();
                 let prefixed = simple(&build::prefix_graph_for_global(&one, tag, offset)?)?;
                 hs.extend_from_slice(ar(prefixed
                     .attributes
@@ -214,6 +219,12 @@ pub fn run(command: &str, a: &Args, out: &mut Output) -> Result<()> {
                 Path::new(paths::OUT_DIR.as_str()).join("merged-graph.json"),
             );
             crate::cli_state::write_json_compact(&target, &data).map_err(crate::Error::from)?;
+            let unified = input_nodes.saturating_sub(g.nodes.len());
+            if unified > 0 {
+                out.line(format!(
+                    "  unified {unified} external node(s) shared across repos"
+                ));
+            }
             out.line(format!(
                 "Merged {} graphs -> {} nodes, {} edges\nWritten to: {}",
                 names.len(),

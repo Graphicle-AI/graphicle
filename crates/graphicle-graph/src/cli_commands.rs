@@ -810,7 +810,25 @@ pub fn provider(a: &Args, out: &mut Output) -> Result<()> {
             if !crate::llm_config::provider_base_url_ok(url, name, false, &mut d) {
                 return Err("refusing to add provider with unsafe base_url".into());
             }
-            cfg[name] = json!({"base_url":url,"default_model":model,"env_key":key,"pricing":{"input":a.float("pricing-input",0.0)?,"output":a.float("pricing-output",0.0)?},"temperature":0});
+            // A price must be a finite, non-negative number: a NaN, infinite
+            // or negative one poisons every cost estimate (Graphify 0.9.104,
+            // #5031).
+            let price = |k: &str| -> Result<f64> {
+                match a.get(k) {
+                    None => Ok(0.0),
+                    Some(text) => text
+                        .trim()
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|n| n.is_finite() && *n >= 0.0)
+                        .ok_or_else(|| {
+                            format!("invalid price for --{k}: '{text}' (expected a finite, non-negative number)")
+                                .into()
+                        }),
+                }
+            };
+            let (input, output) = (price("pricing-input")?, price("pricing-output")?);
+            cfg[name] = json!({"base_url":url,"default_model":model,"env_key":key,"pricing":{"input":input,"output":output},"temperature":0});
             crate::install_fs::write(&p, &format!("{}\n", crate::install_fs::json_text(&cfg)))?;
             out.line(format!(
                 "Provider '{name}' added. Use with: {} extract . --backend {name}",

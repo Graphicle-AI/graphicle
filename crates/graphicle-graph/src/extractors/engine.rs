@@ -133,6 +133,15 @@ pub(crate) struct Engine<'a, 't> {
     /// C#: plain method id -> `(signature, id, metadata)` of the overloads of
     /// one name on one type, in declaration order (0.9.95, #4584).
     pub csharp_overloads: BTreeMap<String, Vec<(String, String, Value)>>,
+    /// C#: every member's plain id (a constructor's id must not take one),
+    /// the signatures of each plain constructor id, and the `new X(...)` and
+    /// `: base(...)` / `: this(...)` records for the constructor pass
+    /// (Graphify 0.9.104, #5054).
+    pub csharp_member_ids: BTreeSet<String>,
+    pub csharp_ctor_overloads: BTreeMap<String, BTreeSet<String>>,
+    /// C#: the signatures of each plain indexer id (`this[]`).
+    pub csharp_indexer_overloads: BTreeMap<String, BTreeSet<String>>,
+    pub csharp_ctor_records: Vec<Value>,
     /// JS/TS: the enclosing scope of each `contains` target (a factory
     /// object `const store = {}` inside `makeStore()`), so `store.get()`
     /// inside `store.set = ...` is a sibling call (0.9.94, #4598).
@@ -242,6 +251,80 @@ impl<'a, 't> Engine<'a, 't> {
     }
     pub fn text(&self, n: Node<'_>) -> String {
         read_text(n, self.source)
+    }
+    /// `csharp_add_constructor` (Graphify 0.9.104, #5054): mint the node for
+    /// one C# constructor and own it from its type. The id is the one a
+    /// method named after the type would get, so the first declared
+    /// constructor keeps it and each other signature is salted like a method
+    /// overload; a member spelled like the type in another case already owns
+    /// that id, and the constructor takes a salted one. A static constructor
+    /// is its own signature.
+    pub fn csharp_add_constructor(
+        &mut self,
+        type_id: &str,
+        type_name: &str,
+        decl: Node<'_>,
+        params: Option<Node<'_>>,
+        line: usize,
+        is_static: bool,
+    ) -> String {
+        use sha1::Digest;
+        let (mut signature, mut meta) =
+            super::engine_types::csharp_signature_of(decl, self.source, params);
+        if is_static {
+            (signature, meta) = ("static".into(), json!({"arity": 0}));
+        }
+        let mut base = make_id([type_id, type_name]);
+        if self.csharp_member_ids.contains(&base) {
+            let salt = format!("{:x}", sha1::Sha1::digest(b".ctor"));
+            base = make_id([base.as_str(), &salt[..6]]);
+        }
+        let group = self.csharp_ctor_overloads.entry(base.clone()).or_default();
+        let known = group.contains(&signature);
+        let mut id = base.clone();
+        if !group.is_empty() && !known {
+            let salt = format!("{:x}", sha1::Sha1::digest(signature.as_bytes()));
+            id = make_id([base.as_str(), &salt[..6]]);
+        }
+        meta["signature"] = json!(signature);
+        meta["kind"] = json!("constructor");
+        let fresh = !self.seen.contains(&id);
+        self.add_node(&id, &format!(".{type_name}()"), line, None, meta);
+        if !known && fresh {
+            self.csharp_ctor_overloads
+                .entry(base)
+                .or_default()
+                .insert(signature);
+        }
+        self.edge(type_id, &id, "method", line, None, Value::Null);
+        id
+    }
+    /// `csharp_queue_member_bodies` (Graphify 0.9.104, #5056): walk a C#
+    /// property's or indexer's accessor bodies as its calls. `get { ... }` /
+    /// `set => ...` and an expression body (`int P => F();`) run code like a
+    /// method; an auto-accessor and an initializer have no body here. The
+    /// declaration is the scope, so an indexer's parameters type receivers in
+    /// every accessor.
+    pub fn csharp_queue_member_bodies(&mut self, member: &str, decl: Node<'t>, class: &str) {
+        let mut bodies = vec![];
+        if let Some(accessors) = decl.child_by_field_name("accessors") {
+            for accessor in super::engine_types::children(accessors) {
+                if accessor.kind() == "accessor_declaration"
+                    && let Some(body) = accessor.child_by_field_name("body")
+                {
+                    bodies.push(body);
+                }
+            }
+        }
+        if let Some(value) = decl.child_by_field_name("value")
+            && value.kind() == "arrow_expression_clause"
+        {
+            bodies.push(value);
+        }
+        for body in bodies {
+            self.method_scopes.insert(body.id(), (decl, class.into()));
+            self.bodies.push((member.into(), body));
+        }
     }
     pub fn add_node(
         &mut self,
@@ -668,6 +751,24 @@ impl<'a, 't> Engine<'a, 't> {
             )
         {
             id = self.js_member_nid(class, n, &sanitized);
+        } else if self.is("php")
+            && let Some(class) = parent
+            && n.kind_name() == "method_declaration"
+        {
+            id = self.php_member_nid(class, n, &sanitized);
+        } else if self.is("java")
+            && let Some(class) = parent
+            && matches!(
+                n.kind_name(),
+                "method_declaration" | "constructor_declaration"
+            )
+        {
+            id = self.java_member_nid(class, n, &sanitized);
+        } else if self.is("kotlin")
+            && let Some(class) = parent
+            && n.kind_name() == "function_declaration"
+        {
+            id = self.kotlin_member_nid(class, n, &sanitized);
         }
         if parent.is_none() {
             // A top-level function whose id is the file's (Graphify 0.9.98,
@@ -838,6 +939,138 @@ impl<'a, 't> Engine<'a, 't> {
             self.js_member_groups.insert(key.clone(), names);
         }
         underscore_salted_nid(&plain, name, &self.js_member_groups[&key], &['_', '$', '#'])
+    }
+    /// `_php_member_nid` (Graphify 0.9.107, #2810): a PHP method's id,
+    /// salted when a sibling method of the same class, trait, interface or
+    /// enum body differs only by `_`. PHP method names are case-insensitive,
+    /// so names are case-folded first: `Foo()` / `foo()` are one method.
+    pub fn php_member_nid(&mut self, class: &str, member: Node<'t>, name: &str) -> String {
+        let plain = make_id([class, name]);
+        let Some(body) = member
+            .parent()
+            .filter(|b| matches!(b.kind_name(), "declaration_list" | "enum_declaration_list"))
+        else {
+            return plain;
+        };
+        let key = (class.to_string(), body.start_byte(), body.end_byte());
+        if !self.js_member_groups.contains_key(&key) {
+            let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for c in children(body) {
+                if c.kind_name() != "method_declaration" {
+                    continue;
+                }
+                let text = c
+                    .child_by_field_name("name")
+                    .map(|n| self.text(n))
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    names
+                        .entry(make_id([class, text.as_str()]))
+                        .or_default()
+                        .insert(crate::dedup_strings::casefold(&text));
+                }
+            }
+            names.retain(|_, names| names.len() >= 2);
+            self.js_member_groups.insert(key.clone(), names);
+        }
+        underscore_salted_nid(
+            &plain,
+            &crate::dedup_strings::casefold(name),
+            &self.js_member_groups[&key],
+            &['_'],
+        )
+    }
+    /// `_java_member_nid` (Graphify 0.9.107): a Java method's or
+    /// constructor's id, salted when a sibling of the same body mints the
+    /// same id (`_testFoo()` / `testFoo()`, `getId()` / `getID()`, a
+    /// constructor `HashCode()` / method `hashCode()`); overloads share one
+    /// name and are no collision.
+    pub fn java_member_nid(&mut self, class: &str, member: Node<'t>, name: &str) -> String {
+        let plain = make_id([class, name]);
+        let Some(body) = member.parent() else {
+            return plain;
+        };
+        let key = (class.to_string(), body.start_byte(), body.end_byte());
+        if !self.js_member_groups.contains_key(&key) {
+            let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            for c in children(body) {
+                if !matches!(
+                    c.kind_name(),
+                    "method_declaration" | "constructor_declaration"
+                ) {
+                    continue;
+                }
+                let text = c
+                    .child_by_field_name("name")
+                    .map(|n| self.text(n))
+                    .unwrap_or_default();
+                if !text.is_empty() {
+                    names
+                        .entry(make_id([class, text.as_str()]))
+                        .or_default()
+                        .insert(text);
+                }
+            }
+            names.retain(|_, names| names.len() >= 2);
+            self.js_member_groups.insert(key.clone(), names);
+        }
+        underscore_salted_nid(&plain, name, &self.js_member_groups[&key], &['_'])
+    }
+    /// `_kotlin_member_nid` (Graphify 0.9.109): a Kotlin method's id, salted
+    /// when a sibling of the class body or its companion object mints the
+    /// same id (`_bar()` / `bar()`, `run()` / `Run()`); a backticked name is
+    /// judged by its text.
+    pub fn kotlin_member_nid(&mut self, class: &str, member: Node<'t>, name: &str) -> String {
+        const BODIES: [&str; 2] = ["class_body", "enum_class_body"];
+        let plain = make_id([class, name]);
+        let Some(mut body) = member
+            .parent()
+            .filter(|b| BODIES.contains(&b.kind_name()) && b.parent().is_some())
+        else {
+            return plain;
+        };
+        if let Some(owner) = body.parent()
+            && owner.kind_name() == "companion_object"
+            && let Some(outer) = owner.parent().filter(|o| BODIES.contains(&o.kind_name()))
+        {
+            body = outer;
+        }
+        let key = (class.to_string(), body.start_byte(), body.end_byte());
+        if !self.js_member_groups.contains_key(&key) {
+            let mut names: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+            let mut bodies = vec![body];
+            while let Some(b) = bodies.pop() {
+                for c in children(b) {
+                    if c.kind_name() == "function_declaration" {
+                        let text = c
+                            .child_by_field_name("name")
+                            .or_else(|| first_child(c, &["simple_identifier"]))
+                            .map(|n| self.text(n))
+                            .unwrap_or_default();
+                        if !text.is_empty() && !crate::ids::normalize_id(&text).is_empty() {
+                            names
+                                .entry(make_id([class, text.as_str()]))
+                                .or_default()
+                                .insert(text.trim_matches('`').to_string());
+                        }
+                    } else if c.kind_name() == "companion_object" {
+                        bodies.extend(
+                            children(c)
+                                .into_iter()
+                                .filter(|x| BODIES.contains(&x.kind_name())),
+                        );
+                    }
+                }
+            }
+            names.retain(|_, names| names.len() >= 2);
+            self.js_member_groups.insert(key.clone(), names);
+        }
+        underscore_salted_nid(
+            &plain,
+            name.trim_matches('`'),
+            &self.js_member_groups[&key],
+            &['_'],
+        )
     }
     pub fn nested(&mut self, n: Node<'t>, parent: &str) {
         for c in children(n) {
@@ -1065,14 +1298,21 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         python_attr_types: BTreeMap::new(),
         python_factory_bindings: BTreeMap::new(),
         csharp_overloads: BTreeMap::new(),
+        csharp_member_ids: BTreeSet::new(),
+        csharp_ctor_overloads: BTreeMap::new(),
+        csharp_indexer_overloads: BTreeMap::new(),
+        csharp_ctor_records: vec![],
         python_fixture_params: BTreeMap::new(),
         js_factory_scope: Table::new(),
         js_member_groups: BTreeMap::new(),
     };
     if e.is("c_sharp") {
         e.interfaces = csharp_pre_scan_interfaces(root, source);
-        (e.csharp_type_groups, e.csharp_member_groups) =
-            csharp_pre_scan_name_collisions(root, source, &stem);
+        (
+            e.csharp_type_groups,
+            e.csharp_member_groups,
+            e.csharp_member_ids,
+        ) = csharp_pre_scan_name_collisions(root, source, &stem);
     }
     if e.is("swift") {
         (e.protocols, e.swift_classes) = swift_pre_scan(root, source);

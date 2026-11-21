@@ -1996,7 +1996,9 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     // Whether the graph read is one a record vouched for: an incremental
     // update of it that finds nothing to change may record the early stop.
     let mut vouched = true;
-    if o.incremental && o.changed_paths.is_none() && !o.force {
+    // A manifest cannot restore unchanged nodes when the graph it describes
+    // is missing (Graphify 0.9.104, #5016).
+    if o.incremental && o.changed_paths.is_none() && !o.force && graph_path.is_file() {
         let baseline = base_state
             .as_ref()
             .ok_or("no update baseline")
@@ -2041,7 +2043,14 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
                     .flat_map(|buckets| buckets.values())
                     .map(|bucket| bucket.as_array().map_or(0, Vec::len))
                     .sum();
-                if changed.is_empty() {
+                if changed.iter().any(|p| is_resolution_input(p)) {
+                    // An unchanged importer may resolve differently when its
+                    // configuration changes: re-resolve the corpus (Graphify
+                    // 0.9.104, #5017).
+                    result.messages.push(
+                        "JS/TS resolution inputs changed; rebuilding the full code graph.".into(),
+                    );
+                } else if changed.is_empty() {
                     // Nothing differs from the manifest: the full update runs,
                     // finds nothing to change and records the early stop, so
                     // the next update stops before scanning extraction at all
@@ -2663,7 +2672,7 @@ fn rebuild_inner(path: &Path, out: &Path, o: &RebuildOptions) -> Result<RebuildR
     let (gods, surprises, questions) = (gods?, surprises?, questions?);
     let report = crate::report::generate(
         &graph,
-        &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([])),"unclassified_warning":detected.get("unclassified_warning").cloned().unwrap_or(Value::Null)},"token_cost":{"input":0,"output":0},"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
+        &json!({"communities":cluster::communities_to_json(&communities),"cohesion_scores":cohesion,"community_labels":labels,"god_node_list":gods,"surprise_list":surprises,"detection_result":{"total_files":code.len(),"total_words":detected["total_words"].as_u64().unwrap_or(0),"files":{"code":code},"unclassified":detected.get("unclassified").cloned().unwrap_or_else(|| json!([])),"unclassified_warning":detected.get("unclassified_warning").cloned().unwrap_or(Value::Null)},"token_cost":crate::report::load_report_token_cost(out),"root":report_root_label(path),"suggested_questions":questions,"built_at_commit":commit,"learning":crate::report::load_learning_for_report(&graph_path)}),
     )?;
     timer.mark("report");
     // A randomly named file in the output folder, created exclusively, then
@@ -2934,9 +2943,24 @@ fn watched(p: &Path) -> bool {
     .iter()
     .any(|k| crate::detect_types::contains(k, &watched_suffix(p)))
 }
-fn watch_snapshot(root: &Path, ignore: &mut detect::IgnoreState) -> BTreeMap<PathBuf, (u64, u128)> {
+type Stats = BTreeMap<PathBuf, (u64, u128)>;
+/// The size and modification time of `m`, nanoseconds since the epoch.
+fn stat_of(m: &fs::Metadata) -> (u64, u128) {
+    let ns = m
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|t| t.as_nanos())
+        .unwrap_or(0);
+    (m.len(), ns)
+}
+/// The watched files' stats, and in `ignores` those of the ignore files in
+/// the walked folders (`.gitignore`, `.graphicleignore`), whose change
+/// reloads the ignore rules (Graphify 0.9.105, #5033).
+fn watch_snapshot(root: &Path, ignore: &mut detect::IgnoreState, ignores: &mut Stats) -> Stats {
     let mut stack = vec![root.to_path_buf()];
     let mut out = BTreeMap::new();
+    ignores.clear();
     let mut warnings = detect::EncodingWarnings::default();
     while let Some(dir) = stack.pop() {
         let Ok(entries) = fs::read_dir(dir) else {
@@ -2946,6 +2970,12 @@ fn watch_snapshot(root: &Path, ignore: &mut detect::IgnoreState) -> BTreeMap<Pat
             let p = e.path();
             let name = e.file_name();
             let name = name.to_string_lossy();
+            if matches!(name.as_ref(), ".gitignore" | ".graphicleignore")
+                && let Ok(m) = p.metadata()
+                && m.is_file()
+            {
+                ignores.insert(p.clone(), stat_of(&m));
+            }
             if name.starts_with('.') || name == paths::OUT_DIR_NAME.as_str() {
                 continue;
             }
@@ -3004,7 +3034,17 @@ pub fn watch(
     crate::rcfile::activate_language_overrides(&root);
     let mut rc_prior = rc_state(&rc_path);
     let mut config_changed = false;
-    let mut prior = watch_snapshot(&root, &mut ignore);
+    let new_ignore = |root: &Path| {
+        detect::IgnoreState::new(
+            root,
+            &[],
+            build_gitignore(&root.join(paths::OUT_DIR.as_str())),
+            &mut detect::EncodingWarnings::default(),
+        )
+    };
+    let mut ignores_prior = Stats::new();
+    let mut ignores_next = Stats::new();
+    let mut prior = watch_snapshot(&root, &mut ignore, &mut ignores_prior);
     let mut changed = BTreeSet::new();
     let mut last = Instant::now();
     announce(&format!(
@@ -3020,7 +3060,18 @@ pub fn watch(
             config_changed = true;
             last = Instant::now();
         }
-        let next = watch_snapshot(&root, &mut ignore);
+        let mut next = watch_snapshot(&root, &mut ignore, &mut ignores_next);
+        if ignores_next != ignores_prior {
+            // An ignore file changed: rebuild the rules, so a newly ignored
+            // folder stops being watched and a newly unignored one starts,
+            // without counting either as a change (Graphify 0.9.105, #5033).
+            if let Ok(reloaded) = new_ignore(&root) {
+                ignore = reloaded;
+            }
+            next = watch_snapshot(&root, &mut ignore, &mut ignores_next);
+            prior = next.clone();
+            ignores_prior = ignores_next.clone();
+        }
         for p in prior.keys().chain(next.keys()) {
             if prior.get(p) != next.get(p) {
                 changed.insert(p.clone());
@@ -3640,4 +3691,24 @@ mod digest_tests {
             assert!(stream_candidate(text.as_bytes()).is_none(), "{text}");
         }
     }
+}
+
+/// `is_resolution_input` (Graphify 0.9.100, #4740; used by 0.9.104, #5017):
+/// whether `path` steers JavaScript/TypeScript module resolution. Over
+/// approximate on purpose: a false positive only costs a slower update.
+pub fn is_resolution_input(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        name.as_str(),
+        "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "jsconfig.json"
+    ) || name
+        .strip_prefix("tsconfig")
+        .and_then(|rest| rest.strip_suffix(".json"))
+        .is_some_and(|mid| {
+            mid.is_empty()
+                || (mid.len() > 1 && mid.starts_with('.') && !mid[1..].contains(['/', '\\']))
+        })
 }

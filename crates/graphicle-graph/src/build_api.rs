@@ -138,11 +138,13 @@ pub fn dispatch(r: &Value) -> Result<Value> {
         "_old_file_stems" => Ok(json!(old_file_stems(Path::new(s("rel"))))),
         "_semantic_id_remap" => Ok(json!(semantic_id_remap(array("nodes"), root))),
         "_has_global_id" => Ok(json!(has_global_id(&r["node"]))),
-        "graph_has_legacy_ids" => Ok(json!(graph_has_legacy_ids(
+        "graph_has_legacy_ids" => Ok(json!(graph_has_legacy_ids_with(
             array("nodes"),
             root,
-            r["sample"].as_i64().unwrap_or(300)
+            r["sample"].as_i64().unwrap_or(300),
+            r["source_prefix"].as_str()
         ))),
+        "legacy_id_source_prefix" => Ok(json!(legacy_id_source_prefix(Path::new(s("graph_path"))))),
         "_doc_twin_remap" => Ok(json!(doc_twin_remap(array("nodes")))),
         "build_from_json" => {
             let mut data = r["extraction"].clone();

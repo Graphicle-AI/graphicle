@@ -18,6 +18,9 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
 };
+/// The graph attribute build_merge leaves for to_json: the saved sources it
+/// replaced or pruned on purpose. Never written to graph.json.
+pub const REPLACED_SOURCES: &str = "_replaced_sources";
 #[derive(Clone, Debug, Serialize)]
 pub struct LoadedGraph {
     pub nodes: Vec<Value>,
@@ -63,10 +66,22 @@ pub fn load_existing_graph(path: &Path) -> Result<Option<LoadedGraph>> {
     for item in nodes.iter_mut().chain(edges.iter_mut()) {
         backfill_origin(item);
     }
+    // Hyperedges persist in two slots (#2485): the top-level key and the
+    // node-link `graph.hyperedges`, which a node-link-only writer emits
+    // alone. A top-level list wins (an explicit [] there is not resurrected
+    // from a stale nested copy); a missing, null or malformed one falls back
+    // to the nested list (Graphify 0.9.105, #5081).
+    let hyperedges = match data.get("hyperedges") {
+        Some(Value::Array(top)) => top.clone(),
+        _ => data["graph"]["hyperedges"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default(),
+    };
     Ok(Some(LoadedGraph {
         nodes,
         edges,
-        hyperedges: list("hyperedges")?,
+        hyperedges,
         directed: truthy(&data["directed"]),
     }))
 }
@@ -449,6 +464,13 @@ pub fn build_merge_owned(
     // (and their sources by the prune inference); otherwise they move.
     let disk_sources = stored_sources(&[&disk_nodes]);
     let disk_copy = (had_graph && !options.dedup).then(|| disk_nodes.clone());
+    // The saved semantic sources, for the replaced-on-purpose list below.
+    let disk_semantic_sources = disk_nodes
+        .iter()
+        .filter(|n| n.is_object() && !is_ast_tier(n))
+        .filter_map(|n| n["source_file"].as_str().filter(|s| !s.is_empty()))
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
     let mut existing_nodes = disk_nodes;
     let mut existing_edges = existing.edges;
     if !new_sources.is_empty() {
@@ -567,6 +589,37 @@ pub fn build_merge_owned(
             }
         }
         graph.remove_edges_from(&edges);
+        // The build revalidated hyperedge members before this prune removed
+        // the deleted files' nodes, so a surviving hyperedge can still name
+        // one of them: drop the members that no longer resolve, and the
+        // hyperedge only when none remains (#1916 policy; Graphify 0.9.105,
+        // #5081).
+        if let Some(hyperedges) = graph
+            .attributes
+            .get("hyperedges")
+            .and_then(Value::as_array)
+            .filter(|h| !h.is_empty())
+            .cloned()
+        {
+            let mut kept = Vec::with_capacity(hyperedges.len());
+            for mut he in hyperedges {
+                if let Some(members) = he.get("nodes").and_then(Value::as_array) {
+                    let live = members
+                        .iter()
+                        .filter(|m| scalar_key(m).is_some() && graph.node_index(m).is_some())
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if live.is_empty() {
+                        continue;
+                    }
+                    if live.len() != members.len() {
+                        he["nodes"] = Value::Array(live);
+                    }
+                }
+                kept.push(he);
+            }
+            graph.attributes["hyperedges"] = Value::Array(kept);
+        }
         let orphaned = sweep_orphans(&mut graph, &spare_isolated, Some(&isolated_before))?;
         n_nodes += orphaned.len();
         // A stub minted in this run and then orphaned was never in graph.json,
@@ -671,6 +724,23 @@ pub fn build_merge_owned(
                 graph.nodes.len()
             ).into());
         }
+    }
+    // Saved sources whose semantic nodes this run replaced or pruned on
+    // purpose, for to_json's lost-node check: model-made ids are not stable
+    // across re-extracts. A source with an unverified shrink stays guarded
+    // (Graphify 0.9.105, #5107).
+    let mut replaced = vec![];
+    for sf in &disk_semantic_sources {
+        let norm = norm_path(sf, root.as_deref());
+        if shrink.contains_key(&norm) {
+            continue;
+        }
+        if sem.contains(sf) || sem.contains(&norm) || prune.hits(&json!(sf))? {
+            replaced.push(sf.clone());
+        }
+    }
+    if !replaced.is_empty() {
+        graph.attributes[REPLACED_SOURCES] = json!(replaced);
     }
     if !shrink.is_empty() {
         graph.attributes["_unverified_semantic_shrink"] = json!(shrink);

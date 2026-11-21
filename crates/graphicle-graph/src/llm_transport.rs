@@ -169,6 +169,39 @@ pub trait Transport: Send + Sync {
         std::thread::sleep(duration)
     }
 }
+/// `_provider_extra_headers` (Graphify 0.9.105, #3680): the usable entries
+/// of a provider's `extra_headers` object, with a warning for each one
+/// dropped.
+fn provider_extra_headers(
+    raw: Option<&Value>,
+    name: &str,
+    d: &mut Diagnostics,
+) -> Vec<(String, String)> {
+    let Some(raw) = raw.filter(|v| !v.is_null()) else {
+        return vec![];
+    };
+    let name = crate::python_compat::repr_string(name);
+    let Some(map) = raw.as_object() else {
+        d.stderr.push(format!(
+            "[graphicle] WARNING: provider {name} extra_headers is not an object; ignoring."
+        ));
+        return vec![];
+    };
+    let mut headers = vec![];
+    for (key, value) in map {
+        let key_repr = crate::python_compat::repr_string(key);
+        let Some(value) = value.as_str() else {
+            d.stderr.push(format!("[graphicle] WARNING: provider {name} extra_headers entry {key_repr} is not a string pair; ignoring it."));
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("authorization") {
+            d.stderr.push(format!("[graphicle] WARNING: provider {name} extra_headers cannot set Authorization; ignoring it."));
+            continue;
+        }
+        headers.push((key.clone(), value.to_string()));
+    }
+    headers
+}
 pub fn plan(
     config: &Configuration,
     context: CallOptions<'_>,
@@ -378,6 +411,13 @@ pub fn plan(
             } else {
                 request.url = format!("{}/chat/completions", base.trim_end_matches('/'));
                 request.headers = vec![("authorization".into(), format!("Bearer {key}"))];
+                // A custom provider's `extra_headers` go with every request
+                // (some gateways need one); string pairs only, and never an
+                // Authorization header, so the key always comes from the
+                // provider's env_key (Graphify 0.9.105, #3680).
+                request
+                    .headers
+                    .extend(provider_extra_headers(c.get("extra_headers"), backend, d));
                 request.body["stream"] = json!(false);
                 if let Some(v) = c.get("reasoning_effort").filter(|v| {
                     !v.is_null() && (extract.is_some() || crate::exporters::common::truth(v))
@@ -730,6 +770,49 @@ mod tests {
         assert_eq!(request.body["thinking"], json!({"type": "disabled"}));
         assert_eq!(request.body["options"], json!({"num_ctx": 8192}));
         assert_eq!(request.body["keep_alive"], json!("30m"));
+    }
+    #[test]
+    fn custom_provider_extra_headers_are_sent_without_authorization() {
+        // test_llm.py (Graphify 0.9.105, #3680)
+        let mut config = Configuration::builtins(crate::llm_config::Environment::new());
+        config.backends.insert(
+            "gw".into(),
+            json!({"base_url": "https://gw.example.com/v1", "default_model": "m",
+                "env_key": "GW_KEY", "pricing": {"input": 0.0, "output": 0.0},
+                "extra_headers": {"x-opencode-session": "s1", "Authorization": "Bearer other", "n": 1}}),
+        );
+        let mut d = Diagnostics::default();
+        let options = CallOptions {
+            backend: "gw",
+            model: Some("m"),
+            api_key: Some("k"),
+            user: "hello",
+            images: &[],
+            max_tokens: 100,
+            extract: None,
+        };
+        let request = plan(&config, options, &mut d).unwrap();
+        assert!(
+            request
+                .headers
+                .contains(&("x-opencode-session".into(), "s1".into()))
+        );
+        let auth = request
+            .headers
+            .iter()
+            .filter(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            auth,
+            [&("authorization".to_string(), "Bearer k".to_string())]
+        );
+        assert!(
+            d.stderr
+                .iter()
+                .any(|w| w.contains("cannot set Authorization")),
+            "{:?}",
+            d.stderr
+        );
     }
     #[test]
     fn ollama_num_ctx_counts_non_latin_text_and_the_system_prompt() {

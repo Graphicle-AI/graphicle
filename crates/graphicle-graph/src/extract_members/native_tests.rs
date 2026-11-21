@@ -8,7 +8,7 @@ use serde_json::Value;
 
 /// Every member pass, in registry order: the fixture wakes each of them, and
 /// none of the passes before them reads only JSON.
-const PASSES: [&str; 15] = [
+const PASSES: [&str; 16] = [
     "swift_member_calls",
     "python_member_calls",
     "typescript_member_calls",
@@ -24,6 +24,7 @@ const PASSES: [&str; 15] = [
     "kotlin_member_calls",
     "go_member_calls",
     "csharp_qualified_calls",
+    "csharp_constructor_calls",
 ];
 
 #[test]

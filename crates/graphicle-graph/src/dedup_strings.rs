@@ -239,6 +239,17 @@ pub fn same_word_variant(a: &str, b: &str) -> bool {
     if same_length_one_edit(&x, &y) {
         return true;
     }
+    // A token that is the other with letters prepended is a derived word,
+    // not a typo (`synchronous`/`asynchronous`, `cyclic`/`acyclic`); appended
+    // letters still fall through (Graphify 0.9.112).
+    let (shorter, longer) = if x.len() <= y.len() {
+        (&x, &y)
+    } else {
+        (&y, &x)
+    };
+    if shorter.len() < longer.len() && longer.ends_with(shorter) {
+        return false;
+    }
     x.len().min(y.len()) >= 6 && jaro_winkler(a, b) * 100.0 >= 92.0
 }
 pub fn whitespace(c: char) -> bool {

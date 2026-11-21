@@ -439,6 +439,13 @@ fn rivals_across_files(g: &Graph, tier: &[usize]) -> Vec<usize> {
 /// it comes back as a near miss listing the candidates (Graphify 0.9.94,
 /// #3917).
 pub fn resolve(g: &Graph, index: &SearchIndex, query: &str) -> std::result::Result<usize, String> {
+    // A node id names exactly one node, so it resolves before any ranking:
+    // the refusals tell the caller to retry with the id, and an id that
+    // tokenizes like a source path must not lose to that file's node
+    // (Graphify 0.9.113, #5343).
+    if let Some(i) = g.node_index(&serde_json::json!(query)) {
+        return Ok(i);
+    }
     let [source_exact, exact, prefix, substring] = tiers(g, index, query);
     let file_query = !source_exact.is_empty() && !query.contains("::");
     let Some(tier) = [source_exact, exact, prefix]
@@ -714,7 +721,38 @@ pub fn resolve_path_endpoint(
     if scored.is_empty() {
         return (None, vec![], None);
     }
+    // A name made of words the graph does not know is a miss, not the top of
+    // a weak ranking (Graphify 0.9.105, #5079, #5085).
+    if !query_uses_known_words(g, &terms) {
+        return (None, vec![], None);
+    }
     (pick_endpoint(g, &scored, query), scored, None)
+}
+/// `_query_uses_known_words`: whether every word of the query occurs in some
+/// node's id or label, split as the scorer splits them.
+fn query_uses_known_words(g: &Graph, terms: &[String]) -> bool {
+    let mut seen = BTreeSet::new();
+    let words = terms
+        .iter()
+        .flat_map(|t| tokens(t))
+        .filter(|w| seen.insert(w.clone()))
+        .collect::<Vec<_>>();
+    if words.is_empty() {
+        return false;
+    }
+    words.iter().all(|word| {
+        (0..g.nodes.len()).any(|i| {
+            tokens(&id(g, i)).contains(word)
+                || tokens(
+                    g.nodes[i]
+                        .attributes
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .unwrap_or(""),
+                )
+                .contains(word)
+        })
+    })
 }
 fn general(n: f64) -> String {
     if n == 0.0 {
@@ -1204,8 +1242,26 @@ fn weakest_shortest_path(
     let capped = paths.len() > MAX_SHORTEST_PATHS;
     paths.truncate(MAX_SHORTEST_PATHS);
     let routes = paths.len();
+    // A route through a sourceless hub (an external or stdlib import stub)
+    // is shortest by accident of degree: fewer such intermediate hops win
+    // first, then the weakest hop breaks a tie (Graphify 0.9.108, #5153).
+    let hub_penalty = |path: &[usize]| {
+        path[1..path.len().saturating_sub(1).max(1)]
+            .iter()
+            .filter(|i| {
+                !g.nodes[**i]
+                    .attributes
+                    .get("source_file")
+                    .is_some_and(crate::build::truthy)
+            })
+            .count()
+    };
+    let least = paths.iter().map(|p| hub_penalty(p)).min().unwrap_or(0);
     let mut best: Option<(Option<WeakestRank>, usize)> = None;
     for (i, path) in paths.iter().enumerate() {
+        if hub_penalty(path) != least {
+            continue;
+        }
         let hop_datas = path
             .windows(2)
             .map(|pair| {

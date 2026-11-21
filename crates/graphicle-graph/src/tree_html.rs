@@ -13,7 +13,15 @@ pub fn common_root(paths: &[String]) -> String {
     let mut parts = paths
         .iter()
         .filter(|p| !p.is_empty())
-        .map(|p| path_syntax::posix_parts(p));
+        // The files' folders, so a single file or folder is not nested under
+        // the file itself (Graphify 0.9.105, #5092): `Path(p).parent.parts`.
+        .map(|p| {
+            let mut parts = path_syntax::posix_parts(p);
+            if !(parts.len() == 1 && matches!(parts[0].as_str(), "/" | "//")) {
+                parts.pop();
+            }
+            parts
+        });
     let Some(mut prefix) = parts.next() else {
         return String::new();
     };
@@ -221,6 +229,40 @@ pub fn build_tree(
         .map(|v| v.as_array().ok_or("TypeError: graph nodes"))
         .transpose()?
         .unwrap_or(&empty);
+    // A node without `source_file` takes it from an alias, in the order the
+    // build folds them (`src` last), so a graph carrying `src`, `file`, `path`
+    // or `filepath` renders a populated tree (Graphify 0.9.104, #5030).
+    const ALIASES: [&str; 4] = ["file", "path", "filepath", "src"];
+    let alias_of = |n: &Value| -> Option<(&'static str, String)> {
+        if n.get("source_file").is_some_and(crate::build::truthy) {
+            return None;
+        }
+        ALIASES.iter().find_map(|alias| {
+            n.get(*alias)
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(|v| (*alias, v.to_string()))
+        })
+    };
+    let folded: Vec<Value>;
+    let nodes = if nodes.iter().any(|n| alias_of(n).is_some()) {
+        folded = nodes
+            .iter()
+            .map(|n| match (alias_of(n), n.as_object()) {
+                (Some((alias, value)), Some(map)) => {
+                    let mut map = map.clone();
+                    map.shift_remove(alias);
+                    map.insert("source_file".into(), json!(value));
+                    Value::Object(map)
+                }
+                _ => n.clone(),
+            })
+            .collect();
+        &folded
+    } else {
+        nodes
+    };
     // Every file, and the same split by the `repo` tag that merge-graphs and
     // `global add` set (`_repo_groups`): untagged files never count as a repo.
     type Files<'a> = BTreeMap<String, Vec<&'a Value>>;

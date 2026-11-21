@@ -286,7 +286,9 @@ fn csharp_member_chains_and_constructor_bodies() {
         serde_json::json!(["Item"])
     );
     let reset = raw_call(&result, "Reset");
-    assert_eq!(label_of(&result, &reset["caller_nid"]), "Shop");
+    // A constructor is its own node and owns its body's calls (Graphify
+    // 0.9.104, #5054; 0.9.83 credited them to the type).
+    assert_eq!(label_of(&result, &reset["caller_nid"]), ".Shop()");
     assert_eq!(reset["receiver_type"], "Cart");
     let tables = array(&result, "member_field_tables");
     let fields = &tables.iter().find(|t| t["lang"] == "csharp").unwrap()["fields"];

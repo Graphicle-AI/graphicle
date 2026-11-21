@@ -3,6 +3,69 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## Unreleased
+
+The engine takes in Graphify 0.9.104 to 0.9.112 in part (0.1.18 followed
+0.9.103); it still reports Graphify 0.9.103 until the rest of that range,
+and 0.9.113 and 0.9.114, are ported. The AST cache schema goes from 11 to
+12, so cached extractions of the languages below run again once.
+
+### Fixes
+
+- Solidity: members, free functions and types whose names differ only by
+  a leading `_` or by case get their own nodes; a call on a typed receiver
+  (`IERC20 token; token.transfer()`, `IERC20(a).transfer()`) binds to the
+  type's own declaration, and a call attached by `using A for T` binds to
+  the library or free function it attaches (#5027, #5060, #5062).
+- C#: constructors (instance, static, primary) are nodes of their own and
+  own their calls; `new X(...)`, `: base(...)` and `: this(...)` link the
+  overload their argument count fits. Calls in property and indexer
+  accessors and in operators belong to that member (#5054, #5056).
+- PHP, Java, Kotlin and Dart members, and module-level declarations in
+  many languages, whose names differ only by a leading `_` or by case no
+  longer collapse into one node (#2810).
+- JavaScript and TypeScript: a destructured `require` of a barrel file
+  reaches the declaring symbol (#5034); names captured from enclosing
+  scopes, or a `this.x = function` member's parameters, no longer make
+  false `indirect_call` edges (#5217, #5241).
+- Python: aliased imported calls are linked from methods and decorated
+  functions (#5214); a subscript annotation's value is no longer its own
+  generic argument (#5113).
+- Go: an internal `_test.go` file's methods fold into the package type
+  (#5209), and a bare receiver type resolves in the caller's own package
+  when two packages declare it (#5242). Variadic parameters reference their type in Go, Java, C#,
+  Scala and PHP (#4638).
+- SQL: comma joins and `@dblink` tables in routine bodies (#5169), Oracle
+  `[NON]EDITIONABLE` routines (#5167), and no table node for an unparsed
+  derived table's alias (#5147) or a non-ASCII table name (#5250).
+- YAML: CloudFormation intrinsic tags (`!Ref`, `!Sub`) no longer fail the
+  whole file (#5071). Maven POM namespaces in any spelling (#5124).
+- Updates: a missing graph.json or a changed `tsconfig.json`,
+  `jsconfig.json` or `package.json` rebuilds the whole graph (#5016,
+  #5017); hyperedges survive an incremental merge (#5081); a degraded
+  semantic result is not replayed from the cache (#5083); the write guard
+  no longer counts re-extracted or pruned semantic sources as lost
+  (#5107); the report keeps the token cost from cost.json (#5154).
+- Query, path and affected: a same-label seed that is a term's only match
+  is kept (#5027); a label behind a schema or namespace qualifier matches
+  its name (#5080); `--context inherits` and `implements` reach heritage
+  edges (#5178); `path` refuses an endpoint of unknown words (#5079) and
+  prefers a route away from import hubs (#5153); `affected <file>` reaches
+  callers of nested members (#5094); `explain`, get_node and
+  get_neighbors resolve an exact node id before ranking (#5343).
+- Watch reloads the ignore rules when `.gitignore` or `.graphicleignore`
+  changes (#5033). The wiki keeps both articles of labels that fold to one
+  name (#5087). Malformed learning overlay and global manifest entries are
+  skipped one by one (#5019, #5020).
+- Analyze lists two-file import cycles before its enumeration cap fills
+  (#5267). The fuzzy label merge keeps a prefixed word apart from its base
+  (`synchronous`/`asynchronous`). The Kilo installer refuses to rewrite a
+  config it cannot parse (#5265).
+- LLM extraction: a provider's `extra_headers` are sent (#3680); a reply
+  with several graph fragments is refused instead of cached as its first
+  (#5192); a truncated or timed-out document slice is retried or marked
+  for re-extraction (#5072, #5099).
+
 ## 0.1.18 - 2026-11-16
 
 Every crate is at 0.1.18, and `graphicle --version` prints

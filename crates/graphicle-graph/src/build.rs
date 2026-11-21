@@ -4,7 +4,8 @@
 pub use crate::build_global::{distinct_repo_tags, prefix_graph_for_global, prune_repo_from_graph};
 pub use crate::build_labels::is_file_node_label;
 pub use crate::build_merge::{
-    MergeOptions, build_merge, build_merge_owned, load_existing_graph, merge_raw_extraction,
+    MergeOptions, REPLACED_SOURCES, build_merge, build_merge_owned, load_existing_graph,
+    merge_raw_extraction,
 };
 pub use crate::build_normalize::*;
 use crate::{
@@ -600,7 +601,11 @@ fn normalized_file_type(value: &Value) -> Result<Value> {
     if value.is_null() || value.as_str() == Some("") {
         return Ok(json!("concept"));
     }
-    let ft = value.as_str().ok_or("Expected file_type string")?;
+    // A structured file_type from a drifting model pass folds to concept
+    // (Graphify 0.9.105, #5086, #5088).
+    let Some(ft) = value.as_str() else {
+        return Ok(json!("concept"));
+    };
     if validate::VALID_FILE_TYPES.contains(&ft) {
         return Ok(value.clone());
     }

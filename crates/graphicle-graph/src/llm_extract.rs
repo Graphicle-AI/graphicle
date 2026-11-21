@@ -106,12 +106,20 @@ impl Runtime {
             if chunk.len() != 1 || depth >= max_depth {
                 return None;
             }
-            let Unit::Slice(s) = &chunk[0] else {
-                return None;
+            let mut source = self.source.lock().ok()?;
+            let full;
+            let s = match &chunk[0] {
+                Unit::Slice(s) => s,
+                // A splittable text file below the character cap is bisected
+                // as a full-range slice too (Graphify 0.9.105, #5072).
+                Unit::Path(path) if crate::file_slice::is_splittable_text(path) => {
+                    let n = source.source.unit_source_text(path).ok()?.chars().count();
+                    full = crate::file_slice::FileSlice::new(path.clone(), 0, n as i64, 0, 1);
+                    &full
+                }
+                _ => return None,
             };
-            self.source
-                .lock()
-                .ok()?
+            source
                 .source
                 .bisect_slice(s)
                 .map(|(a, b)| (vec![Unit::Slice(a)], vec![Unit::Slice(b)]))
@@ -171,11 +179,18 @@ impl Runtime {
                             "exceeds model context"
                         }
                     ));
-                    return Ok(empty_result(o));
+                    // The chunk's files are partial, as on the hollow give-up
+                    // path, so a parent whose other slices succeeded is not
+                    // cached as complete (Graphify 0.9.107, #5099).
+                    let mut empty = empty_result(o);
+                    mark_chunk_partial(&mut empty, chunk);
+                    return Ok(empty);
                 }
                 if depth >= max_depth {
                     d.stderr.push(format!("[graphicle] chunk of {} {} at recursion depth {depth} (max {max_depth}) — dropping",chunk.len(),if timed{"still times out"}else{"still overflows context"}));
-                    return Ok(empty_result(o));
+                    let mut empty = empty_result(o);
+                    mark_chunk_partial(&mut empty, chunk);
+                    return Ok(empty);
                 }
                 d.stderr.push(format!("[graphicle] chunk of {} {reason} at depth {depth} ({:?}); splitting in half and retrying",chunk.len(),e.kind));
                 let mid = chunk.len() / 2;
