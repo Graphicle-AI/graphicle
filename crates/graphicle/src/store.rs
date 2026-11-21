@@ -505,7 +505,10 @@ impl Store {
             )));
         }
         let store = Self::existing(directory)?.ok_or_else(|| {
-            Error::bad(format!("There is no Graphicle data folder at {}", directory.display()))
+            Error::bad(format!(
+                "There is no Graphicle data folder at {}",
+                directory.display()
+            ))
         })?;
         check_reader(&store.pool.connect()?)?;
         Ok(store)

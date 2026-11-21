@@ -93,7 +93,11 @@ fn a_read_only_query_leaves_the_data_folder_byte_for_byte() {
 
     // Both ways of asking answer, through the flag and the environment.
     let mut context = graphicle(&home, &data, &docs);
-    context.args(["--read-only", "context", "What happens when a String moves?"]);
+    context.args([
+        "--read-only",
+        "context",
+        "What happens when a String moves?",
+    ]);
     assert!(ok(context).contains("ownership.md"));
     let mut call = graphicle(&home, &data, &docs);
     call.env("GRAPHICLE_READ_ONLY", "1").args([
@@ -137,7 +141,11 @@ fn a_read_only_query_leaves_the_data_folder_byte_for_byte() {
     std::fs::write(&stamp, br#"{"graphicle":"0.0.1"}"#).unwrap();
     let before = files(&data);
     let mut older = graphicle(&home, &data, &docs);
-    older.args(["--read-only", "context", "What happens when a String moves?"]);
+    older.args([
+        "--read-only",
+        "context",
+        "What happens when a String moves?",
+    ]);
     let refused = output(older);
     assert!(!refused.status.success());
     assert!(

@@ -1258,8 +1258,7 @@ fn now_ms() -> u64 {
 static READ_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// What a write transaction in [`read_only`] mode is refused with.
-pub const READ_ONLY_REFUSAL: &str =
-    "This store is open read-only (--read-only or GRAPHICLE_READ_ONLY=1); this command writes to it";
+pub const READ_ONLY_REFUSAL: &str = "This store is open read-only (--read-only or GRAPHICLE_READ_ONLY=1); this command writes to it";
 
 /// Turn read-only mode on or off for this process ([`READ_ONLY`]).
 pub fn set_read_only(on: bool) {
