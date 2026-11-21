@@ -370,6 +370,9 @@ impl Output<'_> {
     }
     fn declaration(&mut self, name: &str, line: usize) -> String {
         let id = make_id([self.stem.as_str(), name]);
+        self.declare(id, name, line)
+    }
+    fn declare(&mut self, id: String, name: &str, line: usize) -> String {
         self.node(&id, name, "code", Some(&self.path.clone()), Some(line));
         self.edge(&self.file_id.clone(), &id, "defines", None, line);
         id
@@ -693,20 +696,48 @@ impl Output<'_> {
     }
     fn methods(&mut self) -> Result<()> {
         let src = self.src;
+        let mut matches = vec![];
         for m in captures(&P.method, src)? {
             // A legacy alias, declared in 2.5 (0.9.93, #4582).
             if find(&P.typedef_line, m.get(0).unwrap().as_str())?.is_some() {
                 continue;
             }
-            let raw = m.get(1).unwrap();
-            let name = raw.as_str().rsplit('.').next().unwrap();
+            let name = m.get(1).unwrap().as_str().rsplit('.').next().unwrap();
             if FLOW.contains(&name)
                 || ["void", "dynamic", "final", "const", "get", "set"].contains(&name)
                 || name.starts_with(|c: char| c.is_ascii_uppercase())
             {
                 continue;
             }
-            let owner = self.declaration(name, self.line(raw.start()));
+            matches.push(m);
+        }
+        // A function's id is the file stem plus its name, so the private
+        // `_dispose()` and `dispose()` of one file minted one id: grouped and
+        // salted by the shared rule (Graphify 0.9.109). A `_UpperCamel` name
+        // is a private type caught in a constructor call and joins no group.
+        let mut groups: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            Default::default();
+        for m in &matches {
+            let name = m.get(1).unwrap().as_str().rsplit('.').next().unwrap();
+            let private_type = name.trim_start_matches('_').starts_with(|c: char| c.is_ascii_uppercase())
+                && name.starts_with('_');
+            if !crate::ids::normalize_id(name).is_empty() && !private_type {
+                groups
+                    .entry(make_id([self.stem.as_str(), name]))
+                    .or_default()
+                    .insert(name.to_string());
+            }
+        }
+        groups.retain(|_, names| names.len() >= 2);
+        for m in matches {
+            let raw = m.get(1).unwrap();
+            let name = raw.as_str().rsplit('.').next().unwrap();
+            let id = super::engine_types::python_underscore_salted_nid(
+                &make_id([self.stem.as_str(), name]),
+                name,
+                &groups,
+            );
+            let owner = self.declare(id, name, self.line(raw.start()));
             if let Some((offset, body)) = self.body(src, m.get(0).unwrap().start(), true) {
                 for (pattern, relation, context, blacklist) in [
                     (&P.provider, "references", "riverpod_reference", &[][..]),

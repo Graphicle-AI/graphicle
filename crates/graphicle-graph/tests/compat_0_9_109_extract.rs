@@ -59,3 +59,16 @@ fn kotlin_underscore_twin_keeps_its_own_node_and_calls() {
     assert!(calls.contains(&(ubar, other)), "{calls:?}");
     assert_ne!(one(&ids, ".run()"), one(&ids, ".Run()"));
 }
+
+#[test]
+fn dart_underscore_twins_keep_their_own_nodes() {
+    // test_dart_underscore_ids.py
+    let (ids, _) = ids_and_calls(
+        "lib/foo.dart",
+        "class Foo {\n  void bar() { ref.watch(helperProvider); }\n  void _bar() { ref.watch(otherProvider); }\n  void helper() {}\n}\nclass Other {\n  void _helper() { context.push('/home'); }\n}\n",
+    );
+    let (bar, ubar) = (one(&ids, "bar"), one(&ids, "_bar"));
+    assert_ne!(bar, ubar);
+    assert_eq!(bar, "lib_foo_bar");
+    assert_ne!(one(&ids, "helper"), one(&ids, "_helper"));
+}
