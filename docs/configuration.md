@@ -32,11 +32,14 @@ not need `graphicle init`.
 ### A read-only data folder
 
 `--read-only` on any command, or `GRAPHICLE_READ_ONLY=1`, opens the data
-folder without changing it: reads such as `graphicle context` and
-`graphicle call context` are answered, a command that would write to the
-store is refused with a message, and no file of the store changes, not even
-the count of tokens served. Use it to
-serve a store from read-only media, or to query the only copy of one.
+folder without changing it: reads such as `graphicle context`,
+`graphicle call context` and `graphicle pack` are answered; the store, its
+query files and the count of tokens served are not written; a folder's
+changes are not synced before an answer, which says so; and commands that
+write, such as `sync`, `login` and `config set`, are refused with a message.
+Use it to serve a store from read-only media, or to query the only copy of
+one. A project whose saved query files were written by another version is
+read from the store instead, more slowly.
 
 - The folder must hold a SQLite store last used by this version of
   Graphicle (its `version.json`), and its write-ahead log
