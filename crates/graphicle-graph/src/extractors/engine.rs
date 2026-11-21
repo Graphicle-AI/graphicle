@@ -133,6 +133,15 @@ pub(crate) struct Engine<'a, 't> {
     /// C#: plain method id -> `(signature, id, metadata)` of the overloads of
     /// one name on one type, in declaration order (0.9.95, #4584).
     pub csharp_overloads: BTreeMap<String, Vec<(String, String, Value)>>,
+    /// C#: every member's plain id (a constructor's id must not take one),
+    /// the signatures of each plain constructor id, and the `new X(...)` and
+    /// `: base(...)` / `: this(...)` records for the constructor pass
+    /// (Graphify 0.9.104, #5054).
+    pub csharp_member_ids: BTreeSet<String>,
+    pub csharp_ctor_overloads: BTreeMap<String, BTreeSet<String>>,
+    /// C#: the signatures of each plain indexer id (`this[]`).
+    pub csharp_indexer_overloads: BTreeMap<String, BTreeSet<String>>,
+    pub csharp_ctor_records: Vec<Value>,
     /// JS/TS: the enclosing scope of each `contains` target (a factory
     /// object `const store = {}` inside `makeStore()`), so `store.get()`
     /// inside `store.set = ...` is a sibling call (0.9.94, #4598).
@@ -242,6 +251,80 @@ impl<'a, 't> Engine<'a, 't> {
     }
     pub fn text(&self, n: Node<'_>) -> String {
         read_text(n, self.source)
+    }
+    /// `csharp_add_constructor` (Graphify 0.9.104, #5054): mint the node for
+    /// one C# constructor and own it from its type. The id is the one a
+    /// method named after the type would get, so the first declared
+    /// constructor keeps it and each other signature is salted like a method
+    /// overload; a member spelled like the type in another case already owns
+    /// that id, and the constructor takes a salted one. A static constructor
+    /// is its own signature.
+    pub fn csharp_add_constructor(
+        &mut self,
+        type_id: &str,
+        type_name: &str,
+        decl: Node<'_>,
+        params: Option<Node<'_>>,
+        line: usize,
+        is_static: bool,
+    ) -> String {
+        use sha1::Digest;
+        let (mut signature, mut meta) =
+            super::engine_types::csharp_signature_of(decl, self.source, params);
+        if is_static {
+            (signature, meta) = ("static".into(), json!({"arity": 0}));
+        }
+        let mut base = make_id([type_id, type_name]);
+        if self.csharp_member_ids.contains(&base) {
+            let salt = format!("{:x}", sha1::Sha1::digest(b".ctor"));
+            base = make_id([base.as_str(), &salt[..6]]);
+        }
+        let group = self.csharp_ctor_overloads.entry(base.clone()).or_default();
+        let known = group.contains(&signature);
+        let mut id = base.clone();
+        if !group.is_empty() && !known {
+            let salt = format!("{:x}", sha1::Sha1::digest(signature.as_bytes()));
+            id = make_id([base.as_str(), &salt[..6]]);
+        }
+        meta["signature"] = json!(signature);
+        meta["kind"] = json!("constructor");
+        let fresh = !self.seen.contains(&id);
+        self.add_node(&id, &format!(".{type_name}()"), line, None, meta);
+        if !known && fresh {
+            self.csharp_ctor_overloads
+                .entry(base)
+                .or_default()
+                .insert(signature);
+        }
+        self.edge(type_id, &id, "method", line, None, Value::Null);
+        id
+    }
+    /// `csharp_queue_member_bodies` (Graphify 0.9.104, #5056): walk a C#
+    /// property's or indexer's accessor bodies as its calls. `get { ... }` /
+    /// `set => ...` and an expression body (`int P => F();`) run code like a
+    /// method; an auto-accessor and an initializer have no body here. The
+    /// declaration is the scope, so an indexer's parameters type receivers in
+    /// every accessor.
+    pub fn csharp_queue_member_bodies(&mut self, member: &str, decl: Node<'t>, class: &str) {
+        let mut bodies = vec![];
+        if let Some(accessors) = decl.child_by_field_name("accessors") {
+            for accessor in super::engine_types::children(accessors) {
+                if accessor.kind() == "accessor_declaration"
+                    && let Some(body) = accessor.child_by_field_name("body")
+                {
+                    bodies.push(body);
+                }
+            }
+        }
+        if let Some(value) = decl.child_by_field_name("value")
+            && value.kind() == "arrow_expression_clause"
+        {
+            bodies.push(value);
+        }
+        for body in bodies {
+            self.method_scopes.insert(body.id(), (decl, class.into()));
+            self.bodies.push((member.into(), body));
+        }
     }
     pub fn add_node(
         &mut self,
@@ -1065,13 +1148,17 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
         python_attr_types: BTreeMap::new(),
         python_factory_bindings: BTreeMap::new(),
         csharp_overloads: BTreeMap::new(),
+        csharp_member_ids: BTreeSet::new(),
+        csharp_ctor_overloads: BTreeMap::new(),
+        csharp_indexer_overloads: BTreeMap::new(),
+        csharp_ctor_records: vec![],
         python_fixture_params: BTreeMap::new(),
         js_factory_scope: Table::new(),
         js_member_groups: BTreeMap::new(),
     };
     if e.is("c_sharp") {
         e.interfaces = csharp_pre_scan_interfaces(root, source);
-        (e.csharp_type_groups, e.csharp_member_groups) =
+        (e.csharp_type_groups, e.csharp_member_groups, e.csharp_member_ids) =
             csharp_pre_scan_name_collisions(root, source, &stem);
     }
     if e.is("swift") {

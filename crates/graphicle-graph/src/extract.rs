@@ -524,6 +524,13 @@ pub fn register_resolvers() {
         member_pass!("csharp_qualified_calls", [".cs"], |p, n, e| {
             members::qualified_calls("csharp", p, n, e)
         });
+        // C# constructors (`new X(a, b)`, `: base(...)`, `: this(...)`): the
+        // overload that runs, picked by argument count once the constructed
+        // type is bound; after csharp_qualified_calls so every `new` has its
+        // type edge (Graphify 0.9.104, #5054).
+        member_pass!("csharp_constructor_calls", [".cs"], |p, n, e| {
+            members::csharp_constructor_calls(p, n, e)
+        });
         add(
             "csharp_interface_dispatch",
             &[".cs"],
@@ -2253,7 +2260,12 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
         if !s(n, "id").is_empty() {
             id_label.insert(s(n, "id"), s(n, "label"));
         }
-        if s(n, "file_type") != "rationale" && s(n, "type") != "namespace" {
+        // A C# constructor is named like its type but never called by name
+        // (Graphify 0.9.104, #5054).
+        if s(n, "file_type") != "rationale"
+            && s(n, "type") != "namespace"
+            && !crate::extract_members::is_csharp_constructor_node(n)
+        {
             let name = s(n, "label")
                 .trim_matches(['(', ')'])
                 .trim_start_matches('.');
@@ -2373,6 +2385,7 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
     let mut stub_resolver: Option<extractors::csharp::CsharpNameResolver> = None;
     // method id -> owning type id, built on first use.
     let mut method_owner: Option<FxHashMap<&str, &str>> = None;
+    let mut member_owner: Option<FxHashMap<&str, &str>> = None;
     // nested type id -> its outer type's label, built on first use.
     let mut outer_type: Option<FxHashMap<&str, &str>> = None;
     // The Go package of every candidate's file, read from disk once per pass.
@@ -2453,9 +2466,10 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
                     .collect::<FxHashMap<_, _>>();
                 let mut owner = FxHashMap::default();
                 let has_arity = |id: &str| {
-                    node_by_id
-                        .get(id)
-                        .is_some_and(|n| n["metadata"].get("arity").is_some())
+                    node_by_id.get(id).is_some_and(|n| {
+                        n["metadata"].get("arity").is_some()
+                            && !crate::extract_members::is_csharp_constructor_node(n)
+                    })
                 };
                 for e in edges.iter() {
                     if rs(e, "relation") == "method" && has_arity(rs(e, "target")) {
@@ -2575,7 +2589,16 @@ pub fn bind_raw_calls<E: Rec, R: Rec>(
                     .map(|e| (rs(e, "target"), rs(e, "source")))
                     .collect::<FxHashMap<_, _>>()
             });
-            if let Some(owner) = owners.get(caller) {
+            // A property or indexer accessor's call: its type is the owner
+            // (Graphify 0.9.104, #5056).
+            let members = member_owner.get_or_insert_with(|| {
+                edges
+                    .iter()
+                    .filter(|e| rs(*e, "relation") == "defines" && rs(*e, "context") == "field")
+                    .map(|e| (rs(e, "target"), rs(e, "source")))
+                    .collect::<FxHashMap<_, _>>()
+            });
+            if let Some(owner) = owners.get(caller).or_else(|| members.get(caller)) {
                 own_type = cs
                     .iter()
                     .filter(|c| owners.get(c.as_str()) == Some(owner))

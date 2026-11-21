@@ -131,6 +131,11 @@ fn dispatch_edges<P: PerFile, E: Rec>(
             else {
                 continue;
             };
+            // A constructor shares its type's name but implements nothing
+            // (Graphify 0.9.104, #5054).
+            if node["metadata"]["kind"] == "constructor" {
+                continue;
+            }
             let name = method_label(node);
             if name.is_empty() {
                 continue;

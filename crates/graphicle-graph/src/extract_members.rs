@@ -1096,6 +1096,15 @@ pub fn cpp_out_of_line_methods<P: PerFile>(
 /// whose same-named field or property shadows it (#3797), a field chain
 /// `x.F.M()` (#4246), a `var` typed from the called method's declared return
 /// type (#4266), or the extractor's method-scoped type table.
+/// `is_csharp_constructor_node` (Graphify 0.9.104, #5054): a C# constructor
+/// (instance, static or primary). It carries its type's name but is reached
+/// only through `new` or a `: base(...)` / `: this(...)` initializer, never
+/// by that name, so the name-keyed call indexes leave it out.
+pub fn is_csharp_constructor_node(node: &Value) -> bool {
+    node["metadata"]["kind"] == "constructor"
+        && crate::rcfile::effective_suffix(crate::python_compat::string(&node["source_file"]))
+            == ".cs"
+}
 pub fn csharp_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges: &mut Vec<E>) {
     // Case and `_` are part of a C# name: `Put` and `_Put` are two methods,
     // so `this.Put()` must not bind to `_Put` (#4415). Only the label
@@ -1133,13 +1142,38 @@ pub fn csharp_members<P: PerFile, E: Rec>(per: &[P], nodes: &mut [Value], edges:
     // for the name, and the call's argument count picks among them below.
     let mut method_peers: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
     let mut enclosing: BTreeMap<String, String> = BTreeMap::new();
-    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
+    for e in edges_ro.iter() {
+        if rs(e, "relation") == "defines" && rs(e, "context") == "field" {
+            // A property or indexer whose accessors make calls is a caller
+            // in its type, like a method; never a method_index target
+            // (Graphify 0.9.104, #5056).
+            if is_cs_file(at(e, "source_file"))
+                && let (Some(owner), Some(member)) =
+                    (at(e, "source").as_str(), at(e, "target").as_str())
+            {
+                enclosing
+                    .entry(member.into())
+                    .or_insert_with(|| owner.into());
+            }
+            continue;
+        }
+        if rs(e, "relation") != "method" {
+            continue;
+        }
         let Some(method) = node_by_id.get(rs(e, "target")) else {
             continue;
         };
         enclosing
             .entry(rs(e, "target").into())
             .or_insert_with(|| rs(e, "source").into());
+        if is_csharp_constructor_node(method) {
+            // Owns its calls (`enclosing`), but is never `x.Name()`.
+            continue;
+        }
+        if method["metadata"]["kind"] == "operator" {
+            // `operator +` is never written as a call name.
+            continue;
+        }
         let method_key = (rs(e, "source").to_string(), ckey(s(method, "label")));
         method_index
             .entry(method_key.clone())
@@ -3474,3 +3508,186 @@ thread_local! {
 }
 #[cfg(test)]
 mod native_tests;
+
+/// `_resolve_csharp_constructor_calls` (Graphify 0.9.104, #5054): link a C#
+/// construction to the constructor overload it runs. `new X(a, b)` already
+/// has a `calls` edge to the type X; this adds one to the X constructor whose
+/// parameter count fits, and links a constructor's `: this(...)` to its own
+/// type's overload and `: base(...)` to its base type's. Additive: the edge
+/// to the type stays. Fail closed: the type is the one the caller's own
+/// `calls` edges bound for that name (none, or two types of that name, give
+/// no edge); `: base(...)` needs exactly one resolvable base and no
+/// unresolved one; exactly one non-static constructor must accept the
+/// argument count.
+pub fn csharp_constructor_calls<P: PerFile, E: Rec>(per: &[P], nodes: &[Value], edges: &mut Vec<E>) {
+    let records = per
+        .iter()
+        .flat_map(|r| r.raw_calls().into_iter().flatten())
+        .filter(|rc| {
+            rs(*rc, "lang") == "csharp"
+                && (rc.rec_get("csharp_ctor_site").is_some_and(truthy)
+                    || rc.rec_get("csharp_ctor_init").is_some_and(truthy))
+        })
+        .collect::<Vec<_>>();
+    if records.is_empty() {
+        return;
+    }
+    let node_by_id = nodes
+        .iter()
+        .map(|n| (s(n, "id"), n))
+        .collect::<FxHashMap<_, _>>();
+    let edges_ro: &[E] = edges;
+    let mut ctors_of: BTreeMap<String, Vec<&Value>> = BTreeMap::new();
+    let mut owner_of: BTreeMap<String, String> = BTreeMap::new();
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "method") {
+        let Some(tnode) = node_by_id.get(rs(e, "target")) else {
+            continue;
+        };
+        let Some(type_nid) = at(e, "source").as_str() else {
+            continue;
+        };
+        if !is_csharp_constructor_node(tnode) {
+            continue;
+        }
+        owner_of
+            .entry(s(tnode, "id").into())
+            .or_insert_with(|| type_nid.into());
+        let bucket = ctors_of.entry(type_nid.into()).or_default();
+        if bucket.iter().all(|c| c["id"] != tnode["id"]) {
+            bucket.push(tnode);
+        }
+    }
+    let pick = |type_nid: Option<&str>, argc: Option<i64>| -> Option<String> {
+        let ctors = ctors_of
+            .get(type_nid.unwrap_or(""))
+            .into_iter()
+            .flatten()
+            .filter(|c| c["metadata"]["signature"] != "static")
+            .collect::<Vec<_>>();
+        if ctors.is_empty() {
+            return None;
+        }
+        crate::extractors::engine_types::csharp_pick_overload(
+            ctors.iter().map(|c| (s(c, "id"), &c["metadata"])),
+            argc,
+        )
+        .map(str::to_string)
+    };
+    let bare = |label: &str| {
+        label
+            .chars()
+            .filter(|c| crate::export::python_word(*c))
+            .collect::<String>()
+    };
+    // caller -> bare type name -> {type id: confidence of the `new` edge}
+    let callers = records
+        .iter()
+        .filter(|rc| rc.rec_get("csharp_ctor_site").is_some_and(truthy))
+        .map(|rc| rs(*rc, "caller_nid").to_string())
+        .collect::<BTreeSet<_>>();
+    let mut built: BTreeMap<String, BTreeMap<String, BTreeMap<String, String>>> = BTreeMap::new();
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "calls") {
+        if !callers.contains(rs(e, "source")) {
+            continue;
+        }
+        let Some(tnode) = node_by_id.get(rs(e, "target")) else {
+            continue;
+        };
+        if owner_of.contains_key(s(tnode, "id")) || !tnode.get("source_file").is_some_and(truthy) {
+            continue;
+        }
+        let confidence = at(e, "confidence")
+            .as_str()
+            .filter(|c| !c.is_empty())
+            .unwrap_or("INFERRED")
+            .to_string();
+        built
+            .entry(rs(e, "source").into())
+            .or_default()
+            .entry(bare(s(tnode, "label")))
+            .or_default()
+            .insert(s(tnode, "id").into(), confidence);
+    }
+    let mut bases_of: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    let mut unresolved: BTreeSet<String> = BTreeSet::new();
+    for e in edges_ro.iter().filter(|e| rs(*e, "relation") == "inherits") {
+        let Some(derived) = at(e, "source").as_str() else {
+            continue;
+        };
+        if !is_cs_file(at(e, "source_file")) {
+            continue;
+        }
+        match node_by_id
+            .get(rs(e, "target"))
+            .filter(|n| n.get("source_file").is_some_and(truthy))
+        {
+            None => {
+                unresolved.insert(derived.into());
+            }
+            Some(t) => {
+                bases_of
+                    .entry(derived.into())
+                    .or_default()
+                    .insert(s(t, "id").into());
+            }
+        }
+    }
+    let mut existing = edges_ro
+        .iter()
+        .filter(|e| rs(*e, "relation") == "calls")
+        .map(|e| (at(e, "source").to_string(), at(e, "target").to_string()))
+        .collect::<BTreeSet<_>>();
+    let mut added: Vec<E> = vec![];
+    for rc in records {
+        let caller = rs(rc, "caller_nid");
+        if caller.is_empty() {
+            continue;
+        }
+        let mut confidence = "EXTRACTED".to_string();
+        let type_nid: Option<String> = if rc.rec_get("csharp_ctor_site").is_some_and(truthy) {
+            let site = string(at(rc, "csharp_ctor_site"));
+            let Some(types) = built
+                .get(caller)
+                .and_then(|m| m.get(&site))
+                .filter(|t| t.len() == 1)
+            else {
+                continue;
+            };
+            let (t, c) = types.iter().next().unwrap();
+            confidence = c.clone();
+            Some(t.clone())
+        } else if at(rc, "csharp_ctor_init") == "this" {
+            owner_of.get(caller).cloned()
+        } else {
+            let Some(owner) = owner_of.get(caller) else {
+                continue;
+            };
+            let bases = bases_of.get(owner);
+            if unresolved.contains(owner) || bases.is_none_or(|b| b.len() != 1) {
+                continue;
+            }
+            bases.and_then(|b| b.iter().next().cloned())
+        };
+        let Some(target) = pick(type_nid.as_deref(), at(rc, "arity").as_i64()) else {
+            continue;
+        };
+        if target == caller
+            || !existing.insert((json!(caller).to_string(), json!(target).to_string()))
+        {
+            continue;
+        }
+        let score = if confidence == "EXTRACTED" { 1.0 } else { 0.85 };
+        added.push(crate::resolver_registry::edge_record(json!({
+            "source": caller,
+            "target": target,
+            "relation": "calls",
+            "context": "call",
+            "confidence": confidence,
+            "confidence_score": score,
+            "source_file": rc.rec_get("source_file").cloned().unwrap_or(json!("")),
+            "source_location": at(rc, "source_location"),
+            "weight": 1.0,
+        })));
+    }
+    crate::resolver_registry::append_edges(edges, added);
+}

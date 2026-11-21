@@ -223,12 +223,15 @@ fn csharp_namespace_name(node: Node<'_>, source: &[u8]) -> String {
 /// so the second declaration was dropped. Returns `(type_groups,
 /// member_groups)` for the ids two or more distinct names share; types keyed
 /// as the walk mints them, members (methods, properties, enum members) under
-/// their type's final (already salted) id. Overloads are one name.
+/// their type's final (already salted) id. Overloads are one name. The third
+/// value is every member's plain id, which a constructor's id must not take
+/// (a member may be spelled like its type in another case; Graphify 0.9.104,
+/// #5054).
 pub fn csharp_pre_scan_name_collisions(
     root: Node<'_>,
     source: &[u8],
     stem: &str,
-) -> (NameGroups, NameGroups) {
+) -> (NameGroups, NameGroups, BTreeSet<String>) {
     fn visit<'a>(
         n: Node<'a>,
         ns: &[String],
@@ -308,8 +311,9 @@ pub fn csharp_pre_scan_name_collisions(
         let type_id = python_underscore_salted_nid(&plain, &name, &types);
         members(decl, &type_id, source, &mut member_names);
     }
+    let member_ids = member_names.keys().cloned().collect();
     member_names.retain(|_, names| names.len() >= 2);
-    (types, member_names)
+    (types, member_names, member_ids)
 }
 pub fn csharp_pre_scan_interfaces(root: Node<'_>, source: &[u8]) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
@@ -1609,12 +1613,23 @@ pub fn underscore_salted_nid(
 /// overloads apart, and the argument counts it accepts: `arity`, `min_arity`
 /// for optional, `params` and extension parameters, `variadic` for `params`.
 pub fn csharp_method_signature(node: Node<'_>, source: &[u8]) -> (String, Value) {
+    csharp_signature_of(node, source, None)
+}
+/// [`csharp_method_signature`] with the parameter list handed over: a primary
+/// constructor's list is an unnamed child of its type declaration, and the
+/// type's own type parameters are not the constructor's (Graphify 0.9.104,
+/// #5054).
+pub fn csharp_signature_of(
+    node: Node<'_>,
+    source: &[u8],
+    primary: Option<Node<'_>>,
+) -> (String, Value) {
     let squeeze = |n: Node<'_>| read_text(n, source).split_whitespace().collect::<String>();
     let mut parts = vec![];
     let (mut arity, mut required) = (0i64, 0i64);
     let (mut variadic, mut extension) = (false, false);
-    let params = node
-        .child_by_field_name("parameters")
+    let params = primary
+        .or_else(|| node.child_by_field_name("parameters"))
         .map(children)
         .unwrap_or_default();
     for (i, c) in params.iter().enumerate() {
@@ -1647,12 +1662,16 @@ pub fn csharp_method_signature(node: Node<'_>, source: &[u8]) -> (String, Value)
             variadic = true;
         }
     }
-    let type_params = children(node)
-        .into_iter()
-        .filter(|c| c.kind_name() == "type_parameter_list")
-        .flat_map(children)
-        .filter(|p| matches!(p.kind_name(), "type_parameter" | "identifier"))
-        .count();
+    let type_params = if primary.is_some() {
+        0
+    } else {
+        children(node)
+            .into_iter()
+            .filter(|c| c.kind_name() == "type_parameter_list")
+            .flat_map(children)
+            .filter(|p| matches!(p.kind_name(), "type_parameter" | "identifier"))
+            .count()
+    };
     let mut signature = parts.join(",");
     if type_params > 0 {
         signature = format!("`{type_params}:{signature}");
@@ -1680,6 +1699,23 @@ pub fn csharp_argc(call: Node<'_>) -> Option<i64> {
             .filter(|c| c.kind_name() == "argument")
             .count() as i64
     }))
+}
+/// `_csharp_creation_argc`: the argument count of a C# `new X(...)`, `new X
+/// { ... }` or `: base(...)`; no argument list runs the parameterless
+/// constructor (Graphify 0.9.104, #5054).
+pub fn csharp_creation_argc(node: Node<'_>) -> i64 {
+    node.child_by_field_name("arguments")
+        .or_else(|| {
+            children(node)
+                .into_iter()
+                .find(|c| c.kind_name() == "argument_list")
+        })
+        .map_or(0, |args| {
+            children(args)
+                .into_iter()
+                .filter(|c| c.kind_name() == "argument")
+                .count() as i64
+        })
 }
 /// `_csharp_pick_overload`: the one overload a call with `argc` arguments can
 /// mean, from `(id, metadata)` of the overloads of one name on one type.

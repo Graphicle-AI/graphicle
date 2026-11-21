@@ -393,3 +393,330 @@ fn solidity_using_for_fails_closed_when_unknown_ambiguous_or_out_of_scope() {
     );
 }
 
+// --- C# constructors, accessors, indexers and operators (#5054, #5056) -------
+
+fn cs_edges(r: &Value, relation: &str) -> BTreeSet<(String, String)> {
+    edges(r)
+        .iter()
+        .filter(|e| e["relation"] == relation)
+        .map(|e| (text(&e["source"]), text(&e["target"])))
+        .collect()
+}
+fn cs_calls(r: &Value) -> BTreeSet<(String, String)> {
+    cs_edges(r, "calls")
+}
+/// `_find`: the id of the node labelled `label` whose id contains `part`.
+fn find(r: &Value, label: &str, part: &str) -> String {
+    nodes(r)
+        .iter()
+        .find(|n| n["label"] == label && text(&n["id"]).contains(part))
+        .map(|n| text(&n["id"]))
+        .unwrap_or_else(|| panic!("{label} ({part}): {r:#}"))
+}
+/// `_ctor`: the one constructor of `type_name` with `signature`.
+fn ctor(r: &Value, type_name: &str, signature: &str) -> String {
+    let ids = nodes(r)
+        .iter()
+        .filter(|n| {
+            n["label"] == format!(".{type_name}()").as_str()
+                && n["metadata"]["kind"] == "constructor"
+                && n["metadata"]["signature"] == signature
+        })
+        .map(|n| text(&n["id"]))
+        .collect::<Vec<_>>();
+    assert_eq!(ids.len(), 1, "{type_name} {signature}: {r:#}");
+    ids[0].clone()
+}
+fn pair(a: &str, b: &str) -> (String, String) {
+    (a.to_string(), b.to_string())
+}
+fn cs(files: &[(&str, &str)]) -> Value {
+    Fixture::new().extract_files(files)
+}
+
+#[test]
+fn csharp_construction_links_the_constructor_overload_its_arguments_fit() {
+    // test_csharp_object_creation.py
+    let r = cs(&[
+        (
+            "Repo.cs",
+            "public class Repo {\n    public Repo() { }\n    public Repo(int a) { }\n    public Repo(int a, int b) { }\n}\n",
+        ),
+        ("User.cs", "public class User { public void Go() { var r = new Repo(1, 2); } }\n"),
+    ]);
+    let calls = cs_calls(&r);
+    let go = find(&r, ".Go()", "user");
+    assert!(calls.contains(&pair(&go, &find(&r, "Repo", "repo"))), "{r:#}");
+    assert!(calls.contains(&pair(&go, &ctor(&r, "Repo", "int,int"))), "{r:#}");
+    assert!(!calls.contains(&pair(&go, &ctor(&r, "Repo", "int"))));
+    assert!(!calls.contains(&pair(&go, &ctor(&r, "Repo", ""))));
+}
+
+#[test]
+fn csharp_construction_two_overloads_fit_gives_no_constructor_edge() {
+    let r = cs(&[(
+        "S.cs",
+        "public class Repo { public Repo(int a) { } public Repo(string s) { } }\npublic class User { public void Go() { var r = new Repo(1); } }\n",
+    )]);
+    let calls = cs_calls(&r);
+    let go = find(&r, ".Go()", "user");
+    assert!(calls.contains(&pair(&go, &find(&r, "Repo", "repo"))), "{r:#}");
+    for sig in ["int", "string"] {
+        assert!(!calls.contains(&pair(&go, &ctor(&r, "Repo", sig))));
+    }
+}
+
+#[test]
+fn csharp_constructor_body_and_initializer_calls_belong_to_the_constructor() {
+    let r = cs(&[(
+        "S.cs",
+        "public class Base { public Base(int a) { } }\npublic class Svc : Base {\n    public Svc(int x) : base(Seed(x)) { Init(); }\n    static int Seed(int x) { return x; }\n    void Init() { }\n}\n",
+    )]);
+    let calls = cs_calls(&r);
+    let c = ctor(&r, "Svc", "int");
+    let svc = find(&r, "Svc", "svc");
+    for callee in [".Seed()", ".Init()"] {
+        let target = find(&r, callee, "svc");
+        assert!(calls.contains(&pair(&c, &target)), "{callee}: {r:#}");
+        assert!(!calls.contains(&pair(&svc, &target)), "{callee}");
+    }
+}
+
+#[test]
+fn csharp_this_initializer_links_the_own_overload() {
+    let r = cs(&[(
+        "S.cs",
+        "public class Svc {\n    public Svc() : this(1, 2) { }\n    public Svc(int a) { }\n    public Svc(int a, int b) { }\n}\n",
+    )]);
+    let calls = cs_calls(&r);
+    let empty = ctor(&r, "Svc", "");
+    assert!(calls.contains(&pair(&empty, &ctor(&r, "Svc", "int,int"))), "{r:#}");
+    assert!(!calls.contains(&pair(&empty, &ctor(&r, "Svc", "int"))));
+}
+
+#[test]
+fn csharp_base_initializer_links_the_base_constructor_in_another_file() {
+    let r = cs(&[
+        (
+            "Base.cs",
+            "namespace Demo {\n    public class Base { public Base(int a) { } public Base(string a, int b) { } }\n}\n",
+        ),
+        (
+            "Derived.cs",
+            "namespace Demo {\n    public class Derived : Base { public Derived(int x) : base(\"s\", x) { } }\n}\n",
+        ),
+    ]);
+    let calls = cs_calls(&r);
+    let derived = ctor(&r, "Derived", "int");
+    assert!(calls.contains(&pair(&derived, &ctor(&r, "Base", "string,int"))), "{r:#}");
+    assert!(!calls.contains(&pair(&derived, &ctor(&r, "Base", "int"))));
+}
+
+#[test]
+fn csharp_base_initializer_with_an_out_of_corpus_base_gives_no_edge() {
+    let r = cs(&[(
+        "S.cs",
+        "public class Local { public Local(int a) { } }\npublic class Derived : System.Exception { public Derived(int x) : base(\"m\") { } }\n",
+    )]);
+    let derived = ctor(&r, "Derived", "int");
+    assert!(cs_calls(&r).iter().all(|(s, _)| *s != derived), "{r:#}");
+}
+
+#[test]
+fn csharp_static_constructor_is_its_own_node_and_never_constructed() {
+    let r = cs(&[(
+        "S.cs",
+        "public class Reg {\n    static Reg() { Load(); }\n    public Reg() { }\n    static void Load() { }\n}\npublic class User { public void Go() { var r = new Reg(); } }\n",
+    )]);
+    let calls = cs_calls(&r);
+    let (stat, inst) = (ctor(&r, "Reg", "static"), ctor(&r, "Reg", ""));
+    assert_ne!(stat, inst);
+    assert!(calls.contains(&pair(&stat, &find(&r, ".Load()", "reg"))), "{r:#}");
+    let go = find(&r, ".Go()", "user");
+    assert!(calls.contains(&pair(&go, &inst)), "{r:#}");
+    assert!(!calls.contains(&pair(&go, &stat)));
+}
+
+#[test]
+fn csharp_primary_constructor_competes_with_the_explicit_ones() {
+    let r = cs(&[(
+        "S.cs",
+        "public record Point(int X, int Y) { public Point(int x) : this(x, 0) { } }\npublic class User { public void Go() { var a = new Point(1, 2); var b = new Point(3); } }\n",
+    )]);
+    let calls = cs_calls(&r);
+    let (primary, explicit) = (ctor(&r, "Point", "int,int"), ctor(&r, "Point", "int"));
+    let go = find(&r, ".Go()", "user");
+    for p in [pair(&go, &primary), pair(&go, &explicit), pair(&explicit, &primary)] {
+        assert!(calls.contains(&p), "{p:?}: {r:#}");
+    }
+}
+
+#[test]
+fn csharp_constructor_never_takes_the_id_of_a_member_spelled_like_its_type() {
+    // test_csharp_underscore_collisions.py
+    for body in [
+        "public class Foo { public Foo() { Bar(); } public void foo() { } public void Bar() { } }\n",
+        "public class Foo { public void foo() { } public Foo() { Bar(); } public void Bar() { } }\n",
+    ] {
+        let r = cs(&[("Foo.cs", body)]);
+        let method = format!("{}_foo", find(&r, "Foo", ""));
+        assert_eq!(find(&r, ".foo()", ""), method);
+        let c = find(&r, ".Foo()", "");
+        assert_ne!(c, method);
+        let bar = find(&r, ".Bar()", "");
+        assert!(cs_calls(&r).contains(&pair(&c, &bar)), "{r:#}");
+        assert!(!cs_calls(&r).contains(&pair(&method, &bar)));
+    }
+}
+
+#[test]
+fn csharp_property_accessor_bodies_call_from_the_property() {
+    // test_csharp_member_nodes.py
+    let r = cs(&[(
+        "S.cs",
+        "public class Svc {\n    int _v;\n    public int Block { get { return Load(); } set { Save(value); } }\n    public int Arrow { get => Load(); }\n    public int Body => Compute();\n    public int Auto { get; set; } = Seed();\n    int Load() { return _v; }\n    void Save(int v) { _v = v; }\n    int Compute() { return 1; }\n    static int Seed() { return 0; }\n}\n",
+    )]);
+    let calls = cs_calls(&r);
+    let (load, save) = (find(&r, ".Load()", ""), find(&r, ".Save()", ""));
+    let block = find(&r, "Block", "");
+    for p in [
+        pair(&block, &load),
+        pair(&block, &save),
+        pair(&find(&r, "Arrow", ""), &load),
+        pair(&find(&r, "Body", ""), &find(&r, ".Compute()", "")),
+    ] {
+        assert!(calls.contains(&p), "{p:?}: {r:#}");
+    }
+    // An initializer runs in the constructor, not in the property.
+    assert!(!calls.contains(&pair(&find(&r, "Auto", ""), &find(&r, ".Seed()", ""))));
+}
+
+#[test]
+fn csharp_accessor_call_prefers_its_own_type_like_a_method() {
+    let r = cs(&[(
+        "S.cs",
+        "public class Svc {\n    public int Value => Load();\n    int Load() { return 1; }\n}\npublic class Other { public int Load() { return 2; } }\n",
+    )]);
+    let calls = cs_calls(&r);
+    let value = find(&r, "Value", "");
+    assert!(calls.contains(&pair(&value, &find(&r, ".Load()", "svc"))), "{r:#}");
+    assert!(!calls.contains(&pair(&value, &find(&r, ".Load()", "other"))));
+}
+
+#[test]
+fn csharp_accessor_call_through_a_typed_receiver_resolves_cross_file() {
+    let r = cs(&[
+        ("Repo.cs", "namespace Demo { public class Repo { public int Count() { return 0; } } }\n"),
+        (
+            "Svc.cs",
+            "namespace Demo { public class Svc {\n    private Repo _repo;\n    public int Total => _repo.Count();\n} }\n",
+        ),
+    ]);
+    assert!(
+        cs_calls(&r).contains(&pair(&find(&r, "Total", ""), &find(&r, ".Count()", ""))),
+        "{r:#}"
+    );
+}
+
+#[test]
+fn csharp_indexer_is_a_node_and_owns_its_accessor_calls() {
+    let r = cs(&[(
+        "S.cs",
+        "public class Bag {\n    public int This { get; set; }\n    public int this[int i] { get { return Get(i); } }\n    public int this[string k] => Find(k);\n    int Get(int i) { return i; }\n    int Find(string k) { return 0; }\n}\n",
+    )]);
+    let indexers = nodes(&r)
+        .iter()
+        .filter(|n| n["metadata"]["kind"] == "indexer")
+        .map(|n| (text(&n["metadata"]["signature"]), text(&n["id"])))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(indexers.keys().cloned().collect::<Vec<_>>(), ["int", "string"], "{r:#}");
+    assert_ne!(indexers["int"], indexers["string"]);
+    // The `This` property keeps the id it had before indexers were nodes.
+    let this = find(&r, "This", "");
+    assert_eq!(this, format!("{}_this", find(&r, "Bag", "")));
+    assert!(!indexers.values().any(|v| *v == this));
+    let calls = cs_calls(&r);
+    assert!(calls.contains(&pair(&indexers["int"], &find(&r, ".Get()", ""))), "{r:#}");
+    assert!(calls.contains(&pair(&indexers["string"], &find(&r, ".Find()", ""))));
+}
+
+#[test]
+fn csharp_operators_and_conversions_are_nodes_that_own_their_calls() {
+    let r = cs(&[(
+        "S.cs",
+        "public class Money {\n    public static Money operator +(Money a, Money b) => Add(a, b);\n    public static explicit operator int(Money m) { return ToInt(m); }\n    public static explicit operator long(Money m) { return ToLong(m); }\n    static Money Add(Money a, Money b) { return a; }\n    static int ToInt(Money m) { return 0; }\n    static long ToLong(Money m) { return 0; }\n}\n",
+    )]);
+    let ops = nodes(&r)
+        .iter()
+        .filter(|n| n["metadata"]["kind"] == "operator")
+        .map(|n| (text(&n["label"]), text(&n["id"])))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(
+        ops.keys().cloned().collect::<Vec<_>>(),
+        [".operator +()", ".operator int()", ".operator long()"],
+        "{r:#}"
+    );
+    let calls = cs_calls(&r);
+    assert!(calls.contains(&pair(&ops[".operator +()"], &find(&r, ".Add()", ""))), "{r:#}");
+    assert!(calls.contains(&pair(&ops[".operator int()"], &find(&r, ".ToInt()", ""))));
+    assert!(calls.contains(&pair(&ops[".operator long()"], &find(&r, ".ToLong()", ""))));
+    assert!(!calls.contains(&pair(&ops[".operator int()"], &find(&r, ".ToLong()", ""))));
+}
+
+#[test]
+fn csharp_accessor_base_call_resolves_to_the_base_in_another_file() {
+    let r = cs(&[
+        ("Base.cs", "namespace Demo { public class Base { public int Compute() { return 0; } } }\n"),
+        (
+            "Svc.cs",
+            "namespace Demo { public class Svc : Base {\n    public int Total => base.Compute();\n} }\n",
+        ),
+    ]);
+    assert!(
+        cs_calls(&r).contains(&pair(&find(&r, "Total", ""), &find(&r, ".Compute()", ""))),
+        "{r:#}"
+    );
+}
+
+#[test]
+fn csharp_accessor_call_binds_the_other_partial_half_over_a_same_named_method() {
+    let r = cs(&[
+        ("SvcA.cs", "namespace Demo { public partial class Svc { public int Value => Load(); } }\n"),
+        ("SvcB.cs", "namespace Demo { public partial class Svc { int Load() { return 1; } } }\n"),
+        ("Other.cs", "namespace Demo { public class Other { public int Load() { return 2; } } }\n"),
+    ]);
+    let calls = cs_calls(&r);
+    let value = find(&r, "Value", "");
+    assert!(calls.contains(&pair(&value, &find(&r, ".Load()", "svc"))), "{r:#}");
+    assert!(!calls.contains(&pair(&value, &find(&r, ".Load()", "other"))));
+}
+
+#[test]
+fn csharp_explicit_interface_indexers_keep_their_own_calls() {
+    let r = cs(&[(
+        "S.cs",
+        "public interface IA { int this[int i] { get; } }\npublic interface IB { int this[int i] { get; } }\npublic class C : IA, IB {\n    int IA.this[int i] => A();\n    int IB.this[int i] => B();\n    int A() { return 1; }\n    int B() { return 2; }\n}\n",
+    )]);
+    let by_line = nodes(&r)
+        .iter()
+        .filter(|n| n["metadata"]["kind"] == "indexer" && text(&n["id"]).contains("_c_"))
+        .map(|n| (text(&n["source_location"]), text(&n["id"])))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(by_line.len(), 2, "{r:#}");
+    let calls = cs_calls(&r);
+    assert!(calls.contains(&pair(&by_line["L4"], &find(&r, ".A()", ""))), "{r:#}");
+    assert!(calls.contains(&pair(&by_line["L5"], &find(&r, ".B()", ""))));
+    assert!(!calls.contains(&pair(&by_line["L4"], &find(&r, ".B()", ""))));
+}
+
+#[test]
+fn csharp_property_sharing_a_methods_id_does_not_lend_it_its_calls() {
+    let r = cs(&[(
+        "S.cs",
+        "public interface IRun { int Next { get; } }\npublic class Run : IRun {\n    int Next() { return Other(); }\n    int IRun.Next => Next();\n    int Other() { return 0; }\n}\n",
+    )]);
+    let method = find(&r, ".Next()", "");
+    let calls = cs_calls(&r);
+    assert!(!calls.contains(&pair(&method, &method)), "{r:#}");
+    assert!(calls.contains(&pair(&method, &find(&r, ".Other()", ""))));
+}

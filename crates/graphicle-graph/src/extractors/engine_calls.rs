@@ -1338,6 +1338,21 @@ impl<'a, 't> Engine<'a, 't> {
                         );
                         target = Some(picked.unwrap_or(peers[0].1.as_str()).to_string());
                     }
+                    if self.is("c_sharp")
+                        && n.kind_name() == "object_creation_expression"
+                        && !name.is_empty()
+                    {
+                        // Which constructor runs is picked corpus-wide once
+                        // the type is bound (Graphify 0.9.104, #5054).
+                        self.csharp_ctor_records.push(json!({
+                            "caller_nid": caller,
+                            "lang": "csharp",
+                            "csharp_ctor_site": name,
+                            "arity": csharp_creation_argc(n),
+                            "source_file": self.path,
+                            "source_location": format!("L{}", n.start_position().row + 1),
+                        }));
+                    }
                     let external = target.as_ref().is_some_and(|id| {
                         !self.nodes.iter().any(|n| {
                             n["id"] == *id
@@ -1747,6 +1762,12 @@ impl<'a, 't> Engine<'a, 't> {
             if case_of.contains(&id) {
                 continue;
             }
+            // A C# constructor shares its type's name; it is reached through
+            // `new` or an initializer, never a bare call, and must not shadow
+            // the type (Graphify 0.9.104, #5054).
+            if self.is("c_sharp") && n["metadata"]["kind"] == "constructor" {
+                continue;
+            }
             let label = n["label"]
                 .as_str()
                 .unwrap_or("")
@@ -1818,6 +1839,15 @@ impl<'a, 't> Engine<'a, 't> {
                 }
                 if e["relation"] == "contains" && self.js() {
                     self.js_factory_scope
+                        .entry(tgt.to_string())
+                        .or_insert_with(|| src.to_string());
+                }
+                if self.is("c_sharp") && e["relation"] == "defines" && e["context"] == "field" {
+                    // A property or indexer whose accessors make calls: an
+                    // unqualified call in them looks in its type first, like
+                    // a method's; never a call target by name (Graphify
+                    // 0.9.104, #5056).
+                    self.method_owner
                         .entry(tgt.to_string())
                         .or_insert_with(|| src.to_string());
                 }
@@ -2093,6 +2123,8 @@ impl<'a, 't> Engine<'a, 't> {
             );
             self.raw.extend(reads);
         }
+        let ctor_records = std::mem::take(&mut self.csharp_ctor_records);
+        self.raw.extend(ctor_records);
         // Per-file field tables for the corpus member-call resolvers, keyed
         // by class label and source file; C# also exports each class's method
         // return types (`csharp_returns`, #4266).
