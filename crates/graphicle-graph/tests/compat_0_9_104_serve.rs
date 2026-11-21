@@ -22,7 +22,8 @@ fn graph(directed: bool, nodes: &[(&str, &str, &str)], links: &[(&str, &str)]) -
 }
 
 fn seeds(g: &Value, qs: &Value, order: bool) -> Value {
-    let mut req = json!({"graph": g, "scored": qs["ranked"], "best_seed_by_term": qs["best_seed_by_term"]});
+    let mut req =
+        json!({"graph": g, "scored": qs["ranked"], "best_seed_by_term": qs["best_seed_by_term"]});
     if order {
         req["term_order"] = qs["term_order"].clone();
     }
@@ -35,9 +36,21 @@ fn pick_seeds_keeps_same_label_node_that_is_only_match_for_a_term() {
     let g = graph(
         false,
         &[
-            ("hooks_pre", "PreToolUse", "plugins/core/lib/core_hooks/handler/pre_tool_use.rb"),
-            ("hooks_run", ".run", "plugins/core/lib/core_hooks/handler/pre_tool_use.rb"),
-            ("alpha_pre", "PreToolUse", "plugins/core-alpha/lib/alpha/pre_tool_use.rb"),
+            (
+                "hooks_pre",
+                "PreToolUse",
+                "plugins/core/lib/core_hooks/handler/pre_tool_use.rb",
+            ),
+            (
+                "hooks_run",
+                ".run",
+                "plugins/core/lib/core_hooks/handler/pre_tool_use.rb",
+            ),
+            (
+                "alpha_pre",
+                "PreToolUse",
+                "plugins/core-alpha/lib/alpha/pre_tool_use.rb",
+            ),
         ],
         &[("hooks_pre", "hooks_run")],
     );

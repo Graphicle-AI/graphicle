@@ -87,7 +87,11 @@ fn sol_function_calls(r: &Value) -> BTreeSet<Vec<String>> {
         .filter_map(|e| {
             let (s, t) = (node(r, &e["source"])?, node(r, &e["target"])?);
             (t["metadata"]["kind"] == "function").then(|| {
-                vec![text(&s["label"]), text(&t["label"]), file_name(&t["source_file"])]
+                vec![
+                    text(&s["label"]),
+                    text(&t["label"]),
+                    file_name(&t["source_file"]),
+                ]
             })
         })
         .collect()
@@ -124,10 +128,22 @@ fn solidity_underscore_salt_changes_only_the_clashing_id() {
             .unwrap_or_else(|| panic!("{label}: {r:#}"))
     };
     let contract = id("Roles");
-    assert_eq!(id("grantRole()"), format!("{contract}_function_grantrole_2_bytes32_address"));
-    assert_eq!(id("hasRole()"), format!("{contract}_function_hasrole_2_bytes32_address"));
-    assert_eq!(id("RoleGranted"), format!("{contract}_event_rolegranted_rolegranted"));
-    assert!(id("_grantRole()").starts_with(&format!("{contract}_function_grantrole_2_bytes32_address_")));
+    assert_eq!(
+        id("grantRole()"),
+        format!("{contract}_function_grantrole_2_bytes32_address")
+    );
+    assert_eq!(
+        id("hasRole()"),
+        format!("{contract}_function_hasrole_2_bytes32_address")
+    );
+    assert_eq!(
+        id("RoleGranted"),
+        format!("{contract}_event_rolegranted_rolegranted")
+    );
+    assert!(
+        id("_grantRole()")
+            .starts_with(&format!("{contract}_function_grantrole_2_bytes32_address_"))
+    );
 }
 
 #[test]
@@ -144,7 +160,10 @@ fn solidity_using_for_binds_the_overload_whose_first_parameter_takes_the_receive
         .find(|e| e["relation"] == "calls")
         .map(|e| e["target"].clone())
         .unwrap_or_else(|| panic!("{r:#}"));
-    assert_eq!(node(&r, &target).unwrap()["metadata"]["first_param_type"], "uint256");
+    assert_eq!(
+        node(&r, &target).unwrap()["metadata"]["first_param_type"],
+        "uint256"
+    );
     let f = Fixture::new();
     let r = f.extract_files(&[
         ("EnumerableSet.sol", "pragma solidity ^0.8.20;\nlibrary EnumerableSet {\n    struct AddressSet { address[] values; }\n    struct UintSet { uint256[] values; }\n    function add(AddressSet storage set, address value) internal returns (bool) { return true; }\n    function add(UintSet storage set, uint256 value) internal returns (bool) { return true; }\n}\n"),
@@ -208,9 +227,7 @@ fn solidity_call_on_a_typed_state_variable_binds_the_interface_method() {
     ]);
     assert_eq!(
         sol_function_calls(&r),
-        strs(&[
-            &["pay()", "transfer()", "IERC20.sol"],
-        ]),
+        strs(&[&["pay()", "transfer()", "IERC20.sol"],]),
         "{r:#}"
     );
 }
@@ -265,9 +282,7 @@ fn solidity_using_for_binds_a_library_call_on_a_typed_value() {
     ]);
     assert_eq!(
         sol_function_calls(&r),
-        strs(&[
-            &["touch()", "toUint48()", "SafeCast.sol"],
-        ]),
+        strs(&[&["touch()", "toUint48()", "SafeCast.sol"],]),
         "{r:#}"
     );
 }
@@ -368,9 +383,7 @@ fn solidity_typed_receiver_fails_closed_when_ambiguous_or_untyped() {
     ]);
     assert_eq!(
         sol_function_calls(&r),
-        strs(&[
-            &["ok()", "g()", "Over.sol"],
-        ]),
+        strs(&[&["ok()", "g()", "Over.sol"],]),
         "{r:#}"
     );
 }
@@ -386,13 +399,10 @@ fn solidity_using_for_fails_closed_when_unknown_ambiguous_or_out_of_scope() {
     ]);
     assert_eq!(
         sol_function_calls(&r),
-        strs(&[
-            &["ok()", "toUint48()", "SafeCast.sol"],
-        ]),
+        strs(&[&["ok()", "toUint48()", "SafeCast.sol"],]),
         "{r:#}"
     );
 }
-
 // --- C# constructors, accessors, indexers and operators (#5054, #5056) -------
 
 fn cs_edges(r: &Value, relation: &str) -> BTreeSet<(String, String)> {

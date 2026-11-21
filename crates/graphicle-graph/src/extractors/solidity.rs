@@ -586,7 +586,10 @@ impl Extractor<'_> {
                 );
             }
             let mut cursor = directive.walk();
-            if directive.children(&mut cursor).any(|c| c.kind() == "global") {
+            if directive
+                .children(&mut cursor)
+                .any(|c| c.kind() == "global")
+            {
                 item.insert("global".into(), json!(true));
             }
             directives.push(Value::Object(item));
@@ -595,7 +598,11 @@ impl Extractor<'_> {
     }
     /// `first_parameter_type`: `{"first_param_type": T}` for a library or
     /// free function, the type a `using` directive attaches it to.
-    fn first_parameter_type(&self, callable: Node<'_>, context: &TypeContext) -> Map<String, Value> {
+    fn first_parameter_type(
+        &self,
+        callable: Node<'_>,
+        context: &TypeContext,
+    ) -> Map<String, Value> {
         let mut out = Map::new();
         if let Some(type_node) = named(callable)
             .into_iter()
@@ -636,8 +643,8 @@ impl Extractor<'_> {
         }
         let mut scope = inherited.clone();
         for (name, types) in found {
-            let one = (types.len() == 1)
-                .then(|| (types.into_iter().next().unwrap(), context.clone()));
+            let one =
+                (types.len() == 1).then(|| (types.into_iter().next().unwrap(), context.clone()));
             scope.insert(name, one);
         }
         scope
@@ -656,8 +663,12 @@ impl Extractor<'_> {
             "identifier" => scope.get(&self.text(node)).cloned().flatten(),
             "array_access" => {
                 let base = node.child_by_field_name("base")?;
-                let typed =
-                    self.typed_expression(unwrap_expression(base), scope, context, local_functions)?;
+                let typed = self.typed_expression(
+                    unwrap_expression(base),
+                    scope,
+                    context,
+                    local_functions,
+                )?;
                 let element = element_type(&typed.0)?;
                 (!element.is_empty()).then_some((element, typed.1))
             }
@@ -667,8 +678,12 @@ impl Extractor<'_> {
                     return Some((t.into(), file_context()));
                 }
                 let object = node.child_by_field_name("object")?;
-                let typed =
-                    self.typed_expression(unwrap_expression(object), scope, context, local_functions)?;
+                let typed = self.typed_expression(
+                    unwrap_expression(object),
+                    scope,
+                    context,
+                    local_functions,
+                )?;
                 let (struct_context, fields) =
                     self.struct_fields.get(&self.qualify(&typed.0, &typed.1))?;
                 let field = fields.get(&self.text(node.child_by_field_name("property")?))?;
@@ -1254,7 +1269,9 @@ impl Extractor<'_> {
                             self.add_edge(&caller, &target, "calls", node, None, None);
                         }
                     } else if let Some(receiver) = (!callee.is_empty())
-                        .then(|| self.member_receiver(callee_node, &scope, &file_context, &free_names))
+                        .then(|| {
+                            self.member_receiver(callee_node, &scope, &file_context, &free_names)
+                        })
                         .flatten()
                     {
                         self.member_call(&caller, &callee, arity, node, receiver);
@@ -1501,10 +1518,12 @@ pub fn resolve_solidity_inherited_calls_any<P: PerFile, E: Rec>(
     // directly, the scope the type pass binds base names in; `using`
     // directives at file level, the `global` ones by type, and free
     // functions by (file, name) for `using {f} for T` (Graphify 0.9.104).
-    if calls
-        .iter()
-        .any(|rc| matches!(at(*rc, "solidity_call").as_str(), Some("qualified" | "member")))
-    {
+    if calls.iter().any(|rc| {
+        matches!(
+            at(*rc, "solidity_call").as_str(),
+            Some("qualified" | "member")
+        )
+    }) {
         let mut file_by_id: HashMap<String, String> = HashMap::new();
         for node in nodes {
             let Some(node_file) = node.get("source_file").filter(|v| crate::build::truthy(v))
@@ -1801,11 +1820,19 @@ impl Resolver<'_> {
             }
         }
         if let Some([function, count]) = at(rc, "receiver_call").as_array().map(Vec::as_slice)
-            && let Some(function) = self.find(&linear, &python_compat::string(function), count, "inherited")
+            && let Some(function) = self.find(
+                &linear,
+                &python_compat::string(function),
+                count,
+                "inherited",
+            )
         {
             let returned = &self.meta_str(&function)["returns"];
             if crate::build::truthy(returned) {
-                readings.push((python_compat::string(returned), self.source_file_of(&function)));
+                readings.push((
+                    python_compat::string(returned),
+                    self.source_file_of(&function),
+                ));
             }
         }
         readings
@@ -1830,7 +1857,12 @@ impl Resolver<'_> {
             {
                 return None;
             }
-            return self.find(&self.linearization(&scope[0]), name, at(rc, "arity"), "member");
+            return self.find(
+                &self.linearization(&scope[0]),
+                name,
+                at(rc, "arity"),
+                "member",
+            );
         }
         None
     }
@@ -1855,7 +1887,12 @@ impl Resolver<'_> {
     }
     /// `attached_functions`: the functions named `name` that `directive`
     /// attaches, read in `scope_file`; `None` when its library is ambiguous.
-    fn attached_functions(&self, directive: &Value, scope_file: &str, name: &str) -> Option<Vec<String>> {
+    fn attached_functions(
+        &self,
+        directive: &Value,
+        scope_file: &str,
+        name: &str,
+    ) -> Option<Vec<String>> {
         let ids_of = |library: &str, function: &str| {
             self.functions
                 .get(library)
@@ -1866,8 +1903,7 @@ impl Resolver<'_> {
                 .collect::<Vec<_>>()
         };
         if let Some(library) = directive.get("library") {
-            let libraries =
-                self.visible_types(scope_file, &python_compat::string(library), true);
+            let libraries = self.visible_types(scope_file, &python_compat::string(library), true);
             if libraries.is_empty() {
                 return Some(vec![]); // a library outside the corpus
             }
@@ -2043,7 +2079,11 @@ pub fn extract_solidity(path: &Path) -> Value {
     let file_context: TypeContext = (None, BTreeSet::new());
     let field_types = |x: &Extractor<'_>, decl: Node<'_>| {
         let mut fields = HashMap::new();
-        for field in decl.child_by_field_name("body").map(named).unwrap_or_default() {
+        for field in decl
+            .child_by_field_name("body")
+            .map(named)
+            .unwrap_or_default()
+        {
             if field.kind() == "struct_member"
                 && let (Some(t), Some(n)) = (
                     field.child_by_field_name("type"),
@@ -2060,8 +2100,7 @@ pub fn extract_solidity(path: &Path) -> Value {
             if let Some(name_node) = declaration.child_by_field_name("name") {
                 let fields = field_types(&x, declaration);
                 let name = x.text(name_node);
-                x.struct_fields
-                    .insert(name, (file_context.clone(), fields));
+                x.struct_fields.insert(name, (file_context.clone(), fields));
             }
             continue;
         }
