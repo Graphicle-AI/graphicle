@@ -1097,8 +1097,9 @@ const PHP_ROUTING_VERBS: [&str; 9] = [
 /// prefixes of enclosing route groups and fluent chains (`_php_get_route_name`,
 /// #3409). A closure nested in a non-route closure gets no route name.
 ///
-/// Upstream compares argument nodes by Python object identity, which never
-/// matches, so the first string argument names the route wherever it sits.
+/// Only string arguments before the closure's own argument count (Graphify
+/// 0.9.107, #5135; earlier upstream compared nodes by object identity, which
+/// never matched, so a string after the closure named the route).
 pub fn php_route_name(closure: Node<'_>, source: &[u8]) -> Option<String> {
     let string = |n: Node<'_>| matches!(n.kind_name(), "string" | "encapsed_string");
     let unquote = |n: Node<'_>| read_text(n, source).trim_matches(['\'', '"']).to_string();
@@ -1135,7 +1136,10 @@ pub fn php_route_name(closure: Node<'_>, source: &[u8]) -> Option<String> {
                 .or_else(|| call.child_by_field_name("function"))
                 .map(|n| read_text(n, source).to_lowercase())
                 .unwrap_or_default();
-            let path = children(arguments).into_iter().find_map(|sibling| {
+            let path = children(arguments)
+                .into_iter()
+                .take_while(|sibling| *sibling != node)
+                .find_map(|sibling| {
                 let target = if sibling.kind_name() == "argument" {
                     children(sibling)
                         .into_iter()
