@@ -53,3 +53,58 @@ fn build_tree_single_file_common_root_is_directory() {
     assert_eq!(names(&tree), ["a.py"]);
     assert_eq!(names(&tree["children"][0]), ["func_a"]);
 }
+
+#[test]
+fn constructor_call_resolves_through_destructured_barrel_require() {
+    // test_js_cjs_barrel_require_call.py (#5034)
+    graphicle::rcfile::set_language_overrides(None);
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    let files = [
+        ("source.js", "class SourceCode {}\nmodule.exports = SourceCode;\n"),
+        ("index.js", "const SourceCode = require('./source');\nmodule.exports = { SourceCode };\n"),
+        ("consumer.js", "const { SourceCode } = require('./index');\nfunction create() { return new SourceCode(); }\n"),
+    ];
+    let paths = files
+        .iter()
+        .map(|(name, body)| {
+            std::fs::write(root.join(name), body).unwrap();
+            root.join(name)
+        })
+        .collect::<Vec<_>>();
+    let r = graphicle::api::extract(
+        &paths,
+        &graphicle::api::ExtractOptions {
+            root: Some(root.clone()),
+            cache_root: Some(root.join("cache")),
+            parallel: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let node = |id: &serde_json::Value| r["nodes"].as_array().unwrap().iter().find(|n| n["id"] == *id);
+    let calls = r["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["relation"] == "calls")
+        .filter_map(|e| {
+            let (s, t) = (node(&e["source"])?, node(&e["target"])?);
+            Some((
+                s["label"].as_str()?.to_string(),
+                t["label"].as_str()?.to_string(),
+                std::path::Path::new(t["source_file"].as_str()?)
+                    .file_name()?
+                    .to_string_lossy()
+                    .into_owned(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        calls.contains(&("create()".into(), "SourceCode".into(), "source.js".into())),
+        "{calls:?}"
+    );
+    // The internal keys never reach the result.
+    let text = r.to_string();
+    assert!(!text.contains("_require_target_file") && !text.contains("_require_imported_name"));
+}

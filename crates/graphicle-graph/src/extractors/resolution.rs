@@ -789,6 +789,24 @@ fn apply_pass_facts(
     context_nodes: &[Value],
     js_member_calls: &[JsMemberCall],
 ) {
+    // A destructured `require` keeps its required file and imported name on
+    // the `imports` edge until here; the keys never reach the graph
+    // (Graphify 0.9.105, #5034).
+    let mut requires: Vec<(usize, PathBuf, String)> = vec![];
+    for (index, edge) in edges.iter_mut().enumerate() {
+        let Some(map) = edge.as_object_mut() else {
+            continue;
+        };
+        let name = map.shift_remove("_require_imported_name");
+        let file = map.shift_remove("_require_target_file");
+        if map.get("relation").and_then(Value::as_str) == Some("imports")
+            && let (Some(Value::String(name)), Some(Value::String(file))) = (name, file)
+            && !name.is_empty()
+            && !file.is_empty()
+        {
+            requires.push((index, PathBuf::from(file), name));
+        }
+    }
     if facts.imports().next().is_some() {
         bind_imported_references(nodes, edges, root, &facts);
     }
@@ -1142,6 +1160,28 @@ fn apply_pass_facts(
             }
             break;
         }
+    }
+    // A destructured `require` names the immediate barrel's symbol; when the
+    // barrel defines nothing, follow it to the file that declares the symbol,
+    // so cross-file call resolution sees import evidence (Graphify 0.9.105,
+    // #5034).
+    for (index, file, name) in requires {
+        let key = (rs.get(&file), names.id(&name));
+        let o = origin(&key, &named, &stars, &symbols, &members, &mut FxHashSet::default());
+        let Some(sym) = symbols.get(&o) else {
+            continue;
+        };
+        let id = sym_id(*sym, all, context_nodes);
+        let edge = &mut edges[index];
+        if s(edge, "target") == id {
+            continue;
+        }
+        edge["target"] = json!(id);
+        edge["target_file"] = match path_map.get(&o.0) {
+            Some(&i) => json!(paths[i]),
+            None => json!(rs.path(o.0)),
+        };
+        retargeted = true;
     }
     facts.free_exports();
     drop(path_map);

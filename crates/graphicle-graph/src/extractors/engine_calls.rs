@@ -445,6 +445,12 @@ impl<'a, 't> Engine<'a, 't> {
                         Some("import"),
                         Value::Null,
                     );
+                    // Followed through a barrel to the declaring file by the
+                    // symbol pass, which drops both keys (Graphify 0.9.105,
+                    // #5034).
+                    let edge = self.edges.last_mut().unwrap();
+                    edge["_require_target_file"] = json!(crate::fsutil::path_string(&path));
+                    edge["_require_imported_name"] = json!(name);
                 }
             }
         }
