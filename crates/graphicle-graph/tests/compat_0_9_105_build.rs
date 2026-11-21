@@ -9,19 +9,19 @@ use serde_json::json;
 fn file_affected_reaches_nested_method_callers() {
     // test_affected_member_seed.py (#5094)
     let data = json!({"directed": true, "multigraph": false, "graph": {},
-        "nodes": [
-            {"id": "file_p", "label": "processor.py"},
-            {"id": "proc", "label": "Processor"},
-            {"id": "proc_call", "label": ".call()"},
-            {"id": "runner", "label": "Runner"},
-            {"id": "runner_run", "label": ".run()"},
-        ],
-        "links": [
-            {"source": "file_p", "target": "proc", "relation": "contains"},
-            {"source": "proc", "target": "proc_call", "relation": "method"},
-            {"source": "runner", "target": "runner_run", "relation": "method"},
-            {"source": "runner_run", "target": "proc_call", "relation": "calls"},
-        ]});
+    "nodes": [
+        {"id": "file_p", "label": "processor.py"},
+        {"id": "proc", "label": "Processor"},
+        {"id": "proc_call", "label": ".call()"},
+        {"id": "runner", "label": "Runner"},
+        {"id": "runner_run", "label": ".run()"},
+    ],
+    "links": [
+        {"source": "file_p", "target": "proc", "relation": "contains"},
+        {"source": "proc", "target": "proc_call", "relation": "method"},
+        {"source": "runner", "target": "runner_run", "relation": "method"},
+        {"source": "runner_run", "target": "proc_call", "relation": "calls"},
+    ]});
     let g = graphicle::paths::load_node_link_graph(&data).unwrap();
     let relations: Vec<String> = graphicle::affected::DEFAULT_AFFECTED_RELATIONS
         .iter()
@@ -61,9 +61,18 @@ fn constructor_call_resolves_through_destructured_barrel_require() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();
     let files = [
-        ("source.js", "class SourceCode {}\nmodule.exports = SourceCode;\n"),
-        ("index.js", "const SourceCode = require('./source');\nmodule.exports = { SourceCode };\n"),
-        ("consumer.js", "const { SourceCode } = require('./index');\nfunction create() { return new SourceCode(); }\n"),
+        (
+            "source.js",
+            "class SourceCode {}\nmodule.exports = SourceCode;\n",
+        ),
+        (
+            "index.js",
+            "const SourceCode = require('./source');\nmodule.exports = { SourceCode };\n",
+        ),
+        (
+            "consumer.js",
+            "const { SourceCode } = require('./index');\nfunction create() { return new SourceCode(); }\n",
+        ),
     ];
     let paths = files
         .iter()
@@ -82,7 +91,13 @@ fn constructor_call_resolves_through_destructured_barrel_require() {
         },
     )
     .unwrap();
-    let node = |id: &serde_json::Value| r["nodes"].as_array().unwrap().iter().find(|n| n["id"] == *id);
+    let node = |id: &serde_json::Value| {
+        r["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["id"] == *id)
+    };
     let calls = r["edges"]
         .as_array()
         .unwrap()

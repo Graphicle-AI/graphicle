@@ -238,7 +238,11 @@ fn root_relative_source_file(source_file: &str, root: &Path) -> String {
     }
     let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
     let mut parts = vec!["..".to_string(); b.len() - common];
-    parts.extend(a[common..].iter().map(|c| c.as_os_str().to_string_lossy().into_owned()));
+    parts.extend(
+        a[common..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned()),
+    );
     parts.join("/")
 }
 

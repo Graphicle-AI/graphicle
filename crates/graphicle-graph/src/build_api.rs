@@ -144,9 +144,7 @@ pub fn dispatch(r: &Value) -> Result<Value> {
             r["sample"].as_i64().unwrap_or(300),
             r["source_prefix"].as_str()
         ))),
-        "legacy_id_source_prefix" => Ok(json!(legacy_id_source_prefix(Path::new(s(
-            "graph_path"
-        ))))),
+        "legacy_id_source_prefix" => Ok(json!(legacy_id_source_prefix(Path::new(s("graph_path"))))),
         "_doc_twin_remap" => Ok(json!(doc_twin_remap(array("nodes")))),
         "build_from_json" => {
             let mut data = r["extraction"].clone();

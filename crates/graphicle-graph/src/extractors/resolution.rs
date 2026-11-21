@@ -1167,7 +1167,14 @@ fn apply_pass_facts(
     // #5034).
     for (index, file, name) in requires {
         let key = (rs.get(&file), names.id(&name));
-        let o = origin(&key, &named, &stars, &symbols, &members, &mut FxHashSet::default());
+        let o = origin(
+            &key,
+            &named,
+            &stars,
+            &symbols,
+            &members,
+            &mut FxHashSet::default(),
+        );
         let Some(sym) = symbols.get(&o) else {
             continue;
         };

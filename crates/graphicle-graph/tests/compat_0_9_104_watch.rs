@@ -43,7 +43,11 @@ fn update_recreates_missing_graph_with_all_sources() {
             .map(|n| n["label"].as_str().unwrap_or("").to_string())
             .collect::<BTreeSet<_>>();
         assert!(labels.contains("second()"), "{labels:?}");
-        let expected = if change_one_source { "renamed()" } else { "first()" };
+        let expected = if change_one_source {
+            "renamed()"
+        } else {
+            "first()"
+        };
         assert!(labels.contains(expected), "{labels:?}");
     }
 }

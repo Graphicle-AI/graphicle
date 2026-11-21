@@ -1241,8 +1241,11 @@ pub fn extract_generic(path: &Path, config: &LanguageConfig, source: Option<&[u8
     };
     if e.is("c_sharp") {
         e.interfaces = csharp_pre_scan_interfaces(root, source);
-        (e.csharp_type_groups, e.csharp_member_groups, e.csharp_member_ids) =
-            csharp_pre_scan_name_collisions(root, source, &stem);
+        (
+            e.csharp_type_groups,
+            e.csharp_member_groups,
+            e.csharp_member_ids,
+        ) = csharp_pre_scan_name_collisions(root, source, &stem);
     }
     if e.is("swift") {
         (e.protocols, e.swift_classes) = swift_pre_scan(root, source);

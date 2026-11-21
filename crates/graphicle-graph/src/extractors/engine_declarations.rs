@@ -1146,7 +1146,10 @@ impl<'a, 't> Engine<'a, 't> {
                 let salt = format!("{:x}", sha1::Sha1::digest(b"this[]"));
                 base = make_id([base.as_str(), &salt[..6]]);
             }
-            let group = self.csharp_indexer_overloads.entry(base.clone()).or_default();
+            let group = self
+                .csharp_indexer_overloads
+                .entry(base.clone())
+                .or_default();
             let known = group.contains(&signature);
             let mut id = base.clone();
             if !group.is_empty() && !known {
@@ -1168,7 +1171,10 @@ impl<'a, 't> Engine<'a, 't> {
             return true;
         }
         if self.is("c_sharp")
-            && matches!(t, "operator_declaration" | "conversion_operator_declaration")
+            && matches!(
+                t,
+                "operator_declaration" | "conversion_operator_declaration"
+            )
         {
             // A user-defined operator or conversion is a static method with a
             // body: a member node whose calls are its own. Its name is spelled

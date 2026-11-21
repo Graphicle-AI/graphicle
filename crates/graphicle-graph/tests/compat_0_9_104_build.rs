@@ -9,15 +9,21 @@ use serde_json::json;
 #[test]
 fn graph_has_legacy_ids_honors_the_scan_root_prefix() {
     // test_build.py test_graph_has_legacy_ids_honors_the_scan_root_prefix (#5028)
-    let fresh = [json!({"id": "pkg_mod", "source_file": "sub/pkg/mod.py", "type": "code", "source_location": "L1"})];
+    let fresh = [
+        json!({"id": "pkg_mod", "source_file": "sub/pkg/mod.py", "type": "code", "source_location": "L1"}),
+    ];
     assert!(graph_has_legacy_ids(&fresh, None, 300)); // the false positive
     assert!(!graph_has_legacy_ids_with(&fresh, None, 300, Some("sub")));
     assert!(!graph_has_legacy_ids_with(&fresh, None, 300, Some("sub/")));
     // A genuinely pre-#1504 id under the same prefix is still caught.
-    let old = [json!({"id": "v1_readme", "source_file": "sub/docs/v1/README.md", "type": "document", "source_location": "L1"})];
+    let old = [
+        json!({"id": "v1_readme", "source_file": "sub/docs/v1/README.md", "type": "document", "source_location": "L1"}),
+    ];
     assert!(graph_has_legacy_ids_with(&old, None, 300, Some("sub")));
     // A source_file outside the prefix is judged as stored.
-    let other = [json!({"id": "docs_v1_readme", "source_file": "docs/v1/README.md", "type": "document", "source_location": "L1"})];
+    let other = [
+        json!({"id": "docs_v1_readme", "source_file": "docs/v1/README.md", "type": "document", "source_location": "L1"}),
+    ];
     assert!(!graph_has_legacy_ids_with(&other, None, 300, Some("sub")));
 }
 
@@ -45,7 +51,10 @@ fn legacy_id_source_prefix_reads_the_relative_marker() {
         );
     }
     let dir = tempfile::tempdir().unwrap();
-    assert_eq!(legacy_id_source_prefix(&dir.path().join("graph.json")), None);
+    assert_eq!(
+        legacy_id_source_prefix(&dir.path().join("graph.json")),
+        None
+    );
 }
 
 #[test]
@@ -108,7 +117,11 @@ fn global_list_backs_up_wrong_manifest_shape() {
             std::fs::read_to_string(backups[0].path()).unwrap(),
             payload.to_string()
         );
-        assert!(store.warnings.iter().any(|w| w.contains("moved to")), "{:?}", store.warnings);
+        assert!(
+            store.warnings.iter().any(|w| w.contains("moved to")),
+            "{:?}",
+            store.warnings
+        );
     }
 }
 
@@ -126,11 +139,18 @@ fn global_list_isolates_malformed_repo_entries() {
     assert_eq!(store.list().unwrap(), json!({"goodA": good, "goodB": good}));
     assert!(store.manifest_path.is_file());
     let warning = store.warnings.join("\n");
-    assert!(warning.contains("dropped 1 malformed repo") && warning.contains("bad"), "{warning}");
+    assert!(
+        warning.contains("dropped 1 malformed repo") && warning.contains("bad"),
+        "{warning}"
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let mut store = graphicle::global_graph::GlobalStore::new(dir.path().to_path_buf());
-    std::fs::write(&store.manifest_path, json!({"repos": {"legacy": "invalid"}}).to_string()).unwrap();
+    std::fs::write(
+        &store.manifest_path,
+        json!({"repos": {"legacy": "invalid"}}).to_string(),
+    )
+    .unwrap();
     assert_eq!(store.list().unwrap(), json!({}));
     assert!(store.manifest_path.is_file());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
@@ -205,7 +225,9 @@ fn to_wiki_unicode_case_fold_collision_keeps_both_articles() {
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(
             headings,
-            [format!("# {first}"), format!("# {second}")].into_iter().collect(),
+            [format!("# {first}"), format!("# {second}")]
+                .into_iter()
+                .collect(),
             "{after_first:?}"
         );
         run();
@@ -232,14 +254,24 @@ fn incremental_merge_reads_the_nested_hyperedge_slot() {
             .collect::<Vec<_>>()
     };
     let nested = json!([{"id": "he_nested", "nodes": ["a"]}]);
-    assert_eq!(ids(json!({"nodes": [], "links": [], "graph": {"hyperedges": nested}})), ["he_nested"]);
     assert_eq!(
-        ids(json!({"nodes": [], "links": [], "hyperedges": "bad", "graph": {"hyperedges": nested}})),
+        ids(json!({"nodes": [], "links": [], "graph": {"hyperedges": nested}})),
         ["he_nested"]
     );
     assert_eq!(
-        ids(json!({"nodes": [], "links": [], "hyperedges": [{"id": "he_top", "nodes": ["a"]}], "graph": {"hyperedges": nested}})),
+        ids(
+            json!({"nodes": [], "links": [], "hyperedges": "bad", "graph": {"hyperedges": nested}})
+        ),
+        ["he_nested"]
+    );
+    assert_eq!(
+        ids(
+            json!({"nodes": [], "links": [], "hyperedges": [{"id": "he_top", "nodes": ["a"]}], "graph": {"hyperedges": nested}})
+        ),
         ["he_top"]
     );
-    assert!(ids(json!({"nodes": [], "links": [], "hyperedges": [], "graph": {"hyperedges": nested}})).is_empty());
+    assert!(
+        ids(json!({"nodes": [], "links": [], "hyperedges": [], "graph": {"hyperedges": nested}}))
+            .is_empty()
+    );
 }

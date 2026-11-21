@@ -3519,7 +3519,11 @@ mod native_tests;
 /// no edge); `: base(...)` needs exactly one resolvable base and no
 /// unresolved one; exactly one non-static constructor must accept the
 /// argument count.
-pub fn csharp_constructor_calls<P: PerFile, E: Rec>(per: &[P], nodes: &[Value], edges: &mut Vec<E>) {
+pub fn csharp_constructor_calls<P: PerFile, E: Rec>(
+    per: &[P],
+    nodes: &[Value],
+    edges: &mut Vec<E>,
+) {
     let records = per
         .iter()
         .flat_map(|r| r.raw_calls().into_iter().flatten())
