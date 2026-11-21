@@ -2429,30 +2429,27 @@ mod python_type_ref_tests {
             .map(|(a, b)| (a.to_string(), b.to_string()))
             .collect()
     }
-    // Expected tuples were captured from pinned engine.py::_python_collect_type_refs
-    // under py-tree-sitter 0.25.2. Its `c is value` identity test never matches the
-    // fresh Node that child_by_field_name returns, so a subscript's attribute value
-    // is emitted twice ((name, type), then (name, generic_arg)); the port matches.
+    // Since Graphify 0.9.106 (#5113) a subscript's value is walked once, as
+    // the type; before, upstream's identity test never matched and the value
+    // was emitted a second time as a generic argument.
     #[test]
-    fn attribute_subscript_emits_value_twice_like_upstream() {
+    fn attribute_subscript_emits_value_once() {
         assert_eq!(
             refs("def f() -> typing.ItemsView[str, str]: pass"),
-            s(&[("ItemsView", "type"), ("ItemsView", "generic_arg")])
+            s(&[("ItemsView", "type")])
         );
         assert_eq!(
             refs("def f() -> a.B[C, D.E[F]]: pass"),
             s(&[
                 ("B", "type"),
-                ("B", "generic_arg"),
                 ("C", "generic_arg"),
-                ("E", "generic_arg"),
                 ("E", "generic_arg"),
                 ("F", "generic_arg"),
             ])
         );
         assert_eq!(
             refs("def f(x: a.B[C]) -> None: pass"),
-            s(&[("B", "type"), ("B", "generic_arg"), ("C", "generic_arg")])
+            s(&[("B", "type"), ("C", "generic_arg")])
         );
     }
     #[test]

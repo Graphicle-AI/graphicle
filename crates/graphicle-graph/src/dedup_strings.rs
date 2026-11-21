@@ -242,7 +242,11 @@ pub fn same_word_variant(a: &str, b: &str) -> bool {
     // A token that is the other with letters prepended is a derived word,
     // not a typo (`synchronous`/`asynchronous`, `cyclic`/`acyclic`); appended
     // letters still fall through (Graphify 0.9.112).
-    let (shorter, longer) = if x.len() <= y.len() { (&x, &y) } else { (&y, &x) };
+    let (shorter, longer) = if x.len() <= y.len() {
+        (&x, &y)
+    } else {
+        (&y, &x)
+    };
     if shorter.len() < longer.len() && longer.ends_with(shorter) {
         return false;
     }

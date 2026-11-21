@@ -187,13 +187,12 @@ fn registry_salts_a_same_kind_underscore_respelling() {
     );
 }
 
-fn ids_and_calls(
-    name: &str,
-    text: &str,
-) -> (
+type IdsAndCalls = (
     std::collections::BTreeMap<String, Vec<String>>,
     BTreeSet<(String, String)>,
-) {
+);
+
+fn ids_and_calls(name: &str, text: &str) -> IdsAndCalls {
     let r = extract_one(name, text);
     let mut ids = std::collections::BTreeMap::<String, Vec<String>>::new();
     for n in r["nodes"].as_array().unwrap() {

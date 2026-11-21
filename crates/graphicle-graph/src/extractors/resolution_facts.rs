@@ -333,7 +333,8 @@ pub fn top_bodies<'t>(
         {
             let class = read_text(class, s);
             for member in children(body) {
-                let Some(method) = definition(member).filter(|m| m.kind_name() == "function_definition")
+                let Some(method) =
+                    definition(member).filter(|m| m.kind_name() == "function_definition")
                 else {
                     continue;
                 };

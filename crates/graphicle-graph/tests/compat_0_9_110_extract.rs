@@ -47,7 +47,11 @@ fn aliased_call_in_a_method_or_staticmethod_is_linked() {
         "from .a import f as g\n\nclass C:\n    def use(self):\n        return g()\n",
         "from .a import f as g\n\nclass C:\n    @staticmethod\n    def use():\n        return g()\n",
     ] {
-        assert_eq!(calls_to_f(caller), BTreeSet::from(["pkg_b_c_use".to_string()]), "{caller}");
+        assert_eq!(
+            calls_to_f(caller),
+            BTreeSet::from(["pkg_b_c_use".to_string()]),
+            "{caller}"
+        );
     }
 }
 
@@ -59,10 +63,19 @@ fn go_internal_test_file_method_folds_into_the_package_type() {
     let root = dir.path().canonicalize().unwrap();
     let files = [
         ("go.mod", "module example.com/app\n\ngo 1.22\n"),
-        ("seq/seq.go", "package seq\n\ntype Seq struct{}\n\nfunc (s *Seq) helper() int { return 1 }\n\nfunc (s *Seq) Run() int { return s.helper() }\n"),
-        ("seq/extra_test.go", "// Test-only helpers.\npackage seq\n\nfunc (s *Seq) extra() int { return 2 }\n"),
+        (
+            "seq/seq.go",
+            "package seq\n\ntype Seq struct{}\n\nfunc (s *Seq) helper() int { return 1 }\n\nfunc (s *Seq) Run() int { return s.helper() }\n",
+        ),
+        (
+            "seq/extra_test.go",
+            "// Test-only helpers.\npackage seq\n\nfunc (s *Seq) extra() int { return 2 }\n",
+        ),
         ("svc/a.go", "package svc\n\ntype Fixture struct{}\n"),
-        ("svc/b_test.go", "package svc_test\n\nfunc (f *Fixture) Reset() {}\n"),
+        (
+            "svc/b_test.go",
+            "package svc_test\n\nfunc (f *Fixture) Reset() {}\n",
+        ),
     ];
     let paths = files
         .iter()
@@ -85,7 +98,10 @@ fn go_internal_test_file_method_folds_into_the_package_type() {
     )
     .unwrap();
     let nodes = r["nodes"].as_array().unwrap();
-    let seqs = nodes.iter().filter(|n| n["label"] == "Seq").collect::<Vec<_>>();
+    let seqs = nodes
+        .iter()
+        .filter(|n| n["label"] == "Seq")
+        .collect::<Vec<_>>();
     assert_eq!(seqs.len(), 1, "{seqs:?}");
     let methods = r["edges"]
         .as_array()

@@ -11,7 +11,11 @@ fn a_prefix_derived_word_is_not_a_variant_of_its_base() {
             .unwrap()
             == serde_json::json!(true)
     };
-    for (a, b) in [("synchronous", "asynchronous"), ("cyclic", "acyclic"), ("load", "reload")] {
+    for (a, b) in [
+        ("synchronous", "asynchronous"),
+        ("cyclic", "acyclic"),
+        ("load", "reload"),
+    ] {
         assert!(!same_word_variant(a, b), "{a}/{b}");
         assert!(!same_word_variant(b, a), "{b}/{a}");
     }
@@ -29,14 +33,19 @@ fn sql_non_ascii_table_name_makes_no_empty_id() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cyr.sql");
-        std::fs::write(&path, format!("CREATE OR REPLACE PROCEDURE p IS\nBEGIN\n  {stmt}\nEND;\n/\n")).unwrap();
+        std::fs::write(
+            &path,
+            format!("CREATE OR REPLACE PROCEDURE p IS\nBEGIN\n  {stmt}\nEND;\n/\n"),
+        )
+        .unwrap();
         let r = graphicle::extractors::sql::extract_sql(&path, None).unwrap();
         for n in r["nodes"].as_array().unwrap() {
             assert!(!n["id"].as_str().unwrap_or("").is_empty(), "{stmt}: {r:#}");
         }
         for e in r["edges"].as_array().unwrap() {
             assert!(
-                !e["source"].as_str().unwrap_or("").is_empty() && !e["target"].as_str().unwrap_or("").is_empty(),
+                !e["source"].as_str().unwrap_or("").is_empty()
+                    && !e["target"].as_str().unwrap_or("").is_empty(),
                 "{stmt}: {r:#}"
             );
         }

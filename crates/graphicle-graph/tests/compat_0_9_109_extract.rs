@@ -5,10 +5,12 @@
 use graphicle::api::{ExtractOptions, extract};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn ids_and_calls(
-    name: &str,
-    text: &str,
-) -> (BTreeMap<String, Vec<String>>, BTreeSet<(String, String)>) {
+type IdsAndCalls = (
+    std::collections::BTreeMap<String, Vec<String>>,
+    BTreeSet<(String, String)>,
+);
+
+fn ids_and_calls(name: &str, text: &str) -> IdsAndCalls {
     graphicle::rcfile::set_language_overrides(None);
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().canonicalize().unwrap();

@@ -133,7 +133,7 @@ fn racily_clean_window_holds_when_seen_lands_before_mtime() {
             &json!({"operation": "detect", "function": "_mtime_may_hide_a_rewrite",
             "current_mtime": current, "stored": stored}),
         )
-        .unwrap()
+        .unwrap()["value"]
             == json!(true)
     };
     let mtime = 1_700_000_000.5;

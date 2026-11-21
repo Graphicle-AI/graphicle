@@ -309,18 +309,49 @@ pub fn record_python_syntax(
     };
     if let Some(path) = path {
         // `top_bodies(path, root, source, true)`: each top-level function's
-        // body, owned by `<file stem>_<name>`.
+        // body, owned by `<file stem>_<name>`, and each method of a top-level
+        // class, owned by `<file stem>_<class>_<name>`; decorators are
+        // unwrapped (Graphify 0.9.110, #5214).
         let stem = file_stem(path);
-        let mut cursor = root.walk();
-        for n in root.children(&mut cursor) {
-            if n.kind_name() == "function_definition"
-                && let (Some(name), Some(body)) =
-                    (n.child_by_field_name("name"), n.child_by_field_name("body"))
-            {
-                walk.bodies.insert(
-                    body.id(),
-                    make_id([stem.as_str(), read_text(name, source).as_str()]),
-                );
+        let definition = |n: Node<'_>| {
+            if n.kind_name() == "decorated_definition" {
+                n.child_by_field_name("definition")
+            } else {
+                Some(n)
+            }
+        };
+        for top in children(root) {
+            let Some(n) = definition(top) else { continue };
+            let (Some(name), Some(body)) =
+                (n.child_by_field_name("name"), n.child_by_field_name("body"))
+            else {
+                continue;
+            };
+            let name = read_text(name, source);
+            if n.kind_name() == "function_definition" {
+                walk.bodies
+                    .insert(body.id(), make_id([stem.as_str(), name.as_str()]));
+            } else if n.kind_name() == "class_definition" {
+                for member in children(body) {
+                    let Some(method) =
+                        definition(member).filter(|m| m.kind_name() == "function_definition")
+                    else {
+                        continue;
+                    };
+                    if let (Some(method_name), Some(method_body)) = (
+                        method.child_by_field_name("name"),
+                        method.child_by_field_name("body"),
+                    ) {
+                        walk.bodies.insert(
+                            method_body.id(),
+                            make_id([
+                                stem.as_str(),
+                                name.as_str(),
+                                read_text(method_name, source).as_str(),
+                            ]),
+                        );
+                    }
+                }
             }
         }
     }
