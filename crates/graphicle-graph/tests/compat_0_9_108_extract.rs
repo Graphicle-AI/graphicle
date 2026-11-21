@@ -72,3 +72,24 @@ fn sql_unparsed_derived_table_alias_is_not_read_as_a_table() {
     assert!(!labels.contains("q2"), "{labels:?}");
     assert!(has(&edges, "v", "reads_from", "items"), "{edges:?}");
 }
+
+#[test]
+fn sql_edition_keyword_matches_plain_ddl() {
+    // test_sql_oracle_editionable.py (#5167)
+    let templates = [
+        ("CREATE OR REPLACE {kw}PROCEDURE hr.load_emp IS\nBEGIN\n  INSERT INTO hr.emp_copy SELECT * FROM hr.emp;\nEND;\n/\n", "hr.load_emp()"),
+        ("CREATE OR REPLACE {kw}FUNCTION hr.f RETURN NUMBER IS\n  n NUMBER;\nBEGIN\n  SELECT COUNT(*) INTO n FROM hr.emp;\n  RETURN n;\nEND;\n/\n", "hr.f()"),
+        ("CREATE OR REPLACE {kw}TRIGGER hr.trg_emp BEFORE INSERT ON hr.emp FOR EACH ROW\nBEGIN\n  INSERT INTO hr.audit_log (id) VALUES (:new.id);\nEND;\n/\n", "hr.trg_emp"),
+    ];
+    for kw in ["EDITIONABLE ", "NONEDITIONABLE ", "editionable "] {
+        for (template, label) in templates {
+            let (_, labels) = sql_edges("edition.sql", &template.replace("{kw}", kw));
+            assert!(labels.contains(label), "{kw}{label}: {labels:?}");
+        }
+    }
+    let (_, labels) = sql_edges(
+        "t.sql",
+        "CREATE TABLE editionable (id INT);\nSELECT editionable FROM editionable;\n",
+    );
+    assert!(!labels.iter().any(|l| l.ends_with("()")), "{labels:?}");
+}

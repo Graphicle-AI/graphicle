@@ -362,8 +362,11 @@ struct Patterns {
     go_line: Regex,
 }
 static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
+    // Oracle's default DDL export writes `CREATE OR REPLACE [NON]EDITIONABLE
+    // PROCEDURE|FUNCTION|TRIGGER` (Graphify 0.9.108, #5167).
     routines: compile(concat!(
-        r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:FUNCTION|PROC(?:EDURE)?)\s+",
+        r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?",
+        r"(?:FUNCTION|PROC(?:EDURE)?)\s+",
         r"(?:IF\s+NOT\s+EXISTS\s+)?",
         r#"((?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"#,
         r#"(?:\s*\.\s*(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)"#
@@ -372,7 +375,7 @@ static P: LazyLock<Patterns> = LazyLock::new(|| Patterns {
     // in an ERROR node; the subject table is the first ON after the name.
     // `(?:.|\n)` is Python's DOTALL `.`.
     triggers: compile(concat!(
-        r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?TRIGGER\s+",
+        r"\bCREATE\s+(?:OR\s+(?:REPLACE|ALTER)\s+)?(?:(?:NON)?EDITIONABLE\s+)?TRIGGER\s+",
         r"(?:IF\s+NOT\s+EXISTS\s+)?",
         r#"((?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+)"#,
         r#"(?:\s*\.\s*(?:"(?:[^"\n]|"")+"|\[(?:[^\]\n]|\]\])+\]|[\w$]+))*)"#,
