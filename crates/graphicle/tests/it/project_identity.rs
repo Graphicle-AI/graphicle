@@ -917,7 +917,9 @@ fn a_moved_folder_names_the_projects_to_use_by_id() {
         .unwrap_err();
     assert!(refused.message.contains(&id), "{}", refused.message);
     assert!(
-        refused.message.contains(&format!("synced from {}", docs.display())),
+        refused
+            .message
+            .contains(&format!("synced from {}", docs.display())),
         "{}",
         refused.message
     );
