@@ -427,11 +427,15 @@ pub fn to_wiki(
     let mut unique = |base: String| {
         let mut slug = base.clone();
         let mut n = 2;
-        while used.contains(&slug.to_lowercase()) {
+        // Folded with casefold, the rule the orphan sweep below indexes the
+        // written names with: `Straße` and `STRASSE` lower-case apart but fold
+        // together, so both slugs were allocated and the sweep removed one
+        // current article (Graphify 0.9.105, #5087).
+        while used.contains(&crate::dedup_strings::casefold(&slug)) {
             slug = format!("{base}_{n}");
             n += 1;
         }
-        used.insert(slug.to_lowercase());
+        used.insert(crate::dedup_strings::casefold(&slug));
         slug
     };
     let mut resolver = Map::new();
@@ -513,8 +517,12 @@ pub fn to_wiki(
     // system the entry keeps its old case and holds this run's content, so it
     // is renamed through a temporary name; on a case-sensitive one the old
     // entry is a stale twin of the file just written, so it is removed.
-    let produced_by_fold: std::collections::HashMap<String, &String> = produced
-        .iter()
+    // Sorted, so the survivor is deterministic if the fold is ever not
+    // one-to-one (Graphify 0.9.105, #5087).
+    let mut sorted_produced = produced.iter().collect::<Vec<_>>();
+    sorted_produced.sort();
+    let produced_by_fold: std::collections::HashMap<String, &String> = sorted_produced
+        .into_iter()
         .map(|name| (crate::dedup_strings::casefold(name), name))
         .collect();
     let entries = std::fs::read_dir(out)?.collect::<std::io::Result<Vec<_>>>()?;
@@ -522,6 +530,11 @@ pub fn to_wiki(
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if !name.ends_with(".md") {
+            continue;
+        }
+        // Never delete a file this run wrote, even if the slug rule and the
+        // fold drift apart again (Graphify 0.9.105, #5087).
+        if produced.contains(name.as_ref()) {
             continue;
         }
         match produced_by_fold.get(&crate::dedup_strings::casefold(&name)) {

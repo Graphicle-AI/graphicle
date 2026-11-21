@@ -147,3 +147,68 @@ fn build_tree_accepts_src_and_file_aliases() {
     assert_ne!(tree["name"], "(empty graph)", "{tree:#}");
     assert_eq!(tree["total_count"], 2, "{tree:#}");
 }
+
+// Graphify 0.9.105 ---------------------------------------------------------
+
+fn wiki_graph(first: &str, second: &str) -> graphicle::graph::Graph {
+    let mut data = json!({
+        "nodes": [
+            {"id": "n1", "label": first, "file_type": "code", "source_file": "a.py"},
+            {"id": "n2", "label": second, "file_type": "code", "source_file": "b.py"},
+        ],
+        "edges": [{"source": "n1", "target": "n2", "relation": "calls", "confidence": "EXTRACTED", "weight": 1.0}],
+        "hyperedges": [],
+    });
+    let mut diagnostics = graphicle::build::Diagnostics::default();
+    graphicle::build_from_json(&mut data, true, None, &mut diagnostics).unwrap()
+}
+
+fn wiki_articles(dir: &std::path::Path) -> std::collections::BTreeMap<String, String> {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".md") && n != "index.md")
+        .map(|n| {
+            let text = std::fs::read_to_string(dir.join(&n)).unwrap();
+            (n, text)
+        })
+        .collect()
+}
+
+#[test]
+fn to_wiki_unicode_case_fold_collision_keeps_both_articles() {
+    // test_wiki.py test_to_wiki_unicode_case_fold_collision_keeps_both_articles
+    // and ..._repeat_export_is_stable (#5087)
+    for (first, second) in [("Straße", "STRASSE"), ("Σ", "ς")] {
+        let g = wiki_graph(first, second);
+        let dir = tempfile::tempdir().unwrap();
+        let communities = json!({"0": ["n1"], "1": ["n2"]});
+        let labels = json!({"0": first, "1": second});
+        let run = || {
+            graphicle::to_wiki(
+                &g,
+                &communities,
+                dir.path(),
+                labels.as_object().unwrap(),
+                &serde_json::Map::new(),
+                &[],
+            )
+            .unwrap()
+        };
+        let (count, _) = run();
+        assert_eq!(count, 2);
+        let after_first = wiki_articles(dir.path());
+        let headings = after_first
+            .values()
+            .map(|t| t.lines().next().unwrap_or("").to_string())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            headings,
+            [format!("# {first}"), format!("# {second}")].into_iter().collect(),
+            "{after_first:?}"
+        );
+        run();
+        assert_eq!(wiki_articles(dir.path()), after_first);
+    }
+}
