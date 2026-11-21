@@ -32,7 +32,10 @@ fn labels(name: &str, text: &str) -> BTreeSet<String> {
 #[test]
 fn php_route_path_comes_only_from_arguments_before_the_closure() {
     // test_extract_php_closures.py (#5135)
-    let l = labels("late_path.php", "<?php\n$app->get(function () { return 1; }, '/late');\n");
+    let l = labels(
+        "late_path.php",
+        "<?php\n$app->get(function () { return 1; }, '/late');\n",
+    );
     assert!(!l.iter().any(|x| x.starts_with("GET ")), "{l:?}");
     let l = labels(
         "late_prefix.php",
@@ -43,16 +46,46 @@ fn php_route_path_comes_only_from_arguments_before_the_closure() {
 }
 
 const UNDERSCORE_CASES: &[(&str, &str)] = &[
-    ("a.c", "int _save(void) { return 1; }\nint save(void) { return _save(); }\nint caller(void) { return save(); }\n"),
-    ("a.cpp", "int _save() { return 1; }\nint save() { return _save(); }\nint caller() { return save(); }\n"),
-    ("a.js", "function _save() { return 1 }\nfunction save() { return _save() }\nfunction caller() { return save() }\n"),
-    ("a.kt", "fun _save(): Int = 1\nfun save(): Int = _save()\nfun caller(): Int = save()\n"),
-    ("a.lua", "function _save() return 1 end\nfunction save() return _save() end\nfunction caller() return save() end\n"),
-    ("a.php", "<?php\nfunction _save() { return 1; }\nfunction save() { return _save(); }\nfunction caller() { return save(); }\n"),
-    ("a.rb", "def _save; 1; end\ndef save; _save; end\ndef caller; save; end\n"),
-    ("a.swift", "func _save() -> Int { 1 }\nfunc save() -> Int { _save() }\nfunc caller() -> Int { save() }\n"),
-    ("a.ts", "function _save(): number { return 1 }\nfunction save(): number { return _save() }\nfunction caller(): number { return save() }\n"),
-    ("arrow.ts", "const _save = (): number => 1\nconst save = (): number => _save()\nconst caller = (): number => save()\n"),
+    (
+        "a.c",
+        "int _save(void) { return 1; }\nint save(void) { return _save(); }\nint caller(void) { return save(); }\n",
+    ),
+    (
+        "a.cpp",
+        "int _save() { return 1; }\nint save() { return _save(); }\nint caller() { return save(); }\n",
+    ),
+    (
+        "a.js",
+        "function _save() { return 1 }\nfunction save() { return _save() }\nfunction caller() { return save() }\n",
+    ),
+    (
+        "a.kt",
+        "fun _save(): Int = 1\nfun save(): Int = _save()\nfun caller(): Int = save()\n",
+    ),
+    (
+        "a.lua",
+        "function _save() return 1 end\nfunction save() return _save() end\nfunction caller() return save() end\n",
+    ),
+    (
+        "a.php",
+        "<?php\nfunction _save() { return 1; }\nfunction save() { return _save(); }\nfunction caller() { return save(); }\n",
+    ),
+    (
+        "a.rb",
+        "def _save; 1; end\ndef save; _save; end\ndef caller; save; end\n",
+    ),
+    (
+        "a.swift",
+        "func _save() -> Int { 1 }\nfunc save() -> Int { _save() }\nfunc caller() -> Int { save() }\n",
+    ),
+    (
+        "a.ts",
+        "function _save(): number { return 1 }\nfunction save(): number { return _save() }\nfunction caller(): number { return save() }\n",
+    ),
+    (
+        "arrow.ts",
+        "const _save = (): number => 1\nconst save = (): number => _save()\nconst caller = (): number => save()\n",
+    ),
 ];
 
 fn extract_one(name: &str, text: &str) -> serde_json::Value {
@@ -82,7 +115,12 @@ fn underscore_twins_are_two_nodes_with_their_own_calls() {
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|n| Some((n["label"].as_str()?.to_string(), n["id"].as_str()?.to_string())))
+            .filter_map(|n| {
+                Some((
+                    n["label"].as_str()?.to_string(),
+                    n["id"].as_str()?.to_string(),
+                ))
+            })
             .collect::<std::collections::BTreeMap<_, _>>();
         for label in ["_save()", "save()", "caller()"] {
             assert!(by_label.contains_key(label), "{name}: {by_label:?}");
@@ -93,11 +131,22 @@ fn underscore_twins_are_two_nodes_with_their_own_calls() {
             .unwrap()
             .iter()
             .filter(|e| e["relation"] == "calls")
-            .map(|e| (e["source"].as_str().unwrap().to_string(), e["target"].as_str().unwrap().to_string()))
+            .map(|e| {
+                (
+                    e["source"].as_str().unwrap().to_string(),
+                    e["target"].as_str().unwrap().to_string(),
+                )
+            })
             .collect::<BTreeSet<_>>();
         assert!(!calls.iter().any(|(a, b)| a == b), "{name}: {calls:?}");
-        assert!(calls.contains(&(by_label["save()"].clone(), by_label["_save()"].clone())), "{name}: {calls:?}");
-        assert!(calls.contains(&(by_label["caller()"].clone(), by_label["save()"].clone())), "{name}: {calls:?}");
+        assert!(
+            calls.contains(&(by_label["save()"].clone(), by_label["_save()"].clone())),
+            "{name}: {calls:?}"
+        );
+        assert!(
+            calls.contains(&(by_label["caller()"].clone(), by_label["save()"].clone())),
+            "{name}: {calls:?}"
+        );
     }
 }
 
@@ -106,24 +155,45 @@ fn registry_salts_a_same_kind_underscore_respelling() {
     use graphicle::ids::DeclIdRegistry;
     let mut taken = BTreeSet::<String>::new();
     let mut registry = DeclIdRegistry::default();
-    assert_eq!(registry.resolve("a_save", "_save", "fn", |id| taken.contains(id)), "a_save");
+    assert_eq!(
+        registry.resolve("a_save", "_save", "fn", |id| taken.contains(id)),
+        "a_save"
+    );
     taken.insert("a_save".into());
     let plain = registry.resolve("a_save", "save", "fn", |id| taken.contains(id));
     assert_ne!(plain, "a_save");
     taken.insert(plain.clone());
-    assert_eq!(registry.resolve("a_save", "save", "fn", |id| taken.contains(id)), plain);
-    assert_eq!(registry.resolve("a_save", "_save", "fn", |id| taken.contains(id)), "a_save");
+    assert_eq!(
+        registry.resolve("a_save", "save", "fn", |id| taken.contains(id)),
+        plain
+    );
+    assert_eq!(
+        registry.resolve("a_save", "_save", "fn", |id| taken.contains(id)),
+        "a_save"
+    );
     assert_eq!(registry.lookup("save"), Some(plain));
     assert_eq!(registry.lookup("_save"), Some("a_save".to_string()));
 
     let mut taken = BTreeSet::<String>::new();
     let mut registry = DeclIdRegistry::default();
-    assert_eq!(registry.resolve("a_foo", "Foo", "type", |id| taken.contains(id)), "a_foo");
+    assert_eq!(
+        registry.resolve("a_foo", "Foo", "type", |id| taken.contains(id)),
+        "a_foo"
+    );
     taken.insert("a_foo".into());
-    assert_eq!(registry.resolve("a_foo", "FOO", "type", |id| taken.contains(id)), "a_foo");
+    assert_eq!(
+        registry.resolve("a_foo", "FOO", "type", |id| taken.contains(id)),
+        "a_foo"
+    );
 }
 
-fn ids_and_calls(name: &str, text: &str) -> (std::collections::BTreeMap<String, Vec<String>>, BTreeSet<(String, String)>) {
+fn ids_and_calls(
+    name: &str,
+    text: &str,
+) -> (
+    std::collections::BTreeMap<String, Vec<String>>,
+    BTreeSet<(String, String)>,
+) {
     let r = extract_one(name, text);
     let mut ids = std::collections::BTreeMap::<String, Vec<String>>::new();
     for n in r["nodes"].as_array().unwrap() {
@@ -136,7 +206,12 @@ fn ids_and_calls(name: &str, text: &str) -> (std::collections::BTreeMap<String, 
         .unwrap()
         .iter()
         .filter(|e| e["relation"] == "calls")
-        .map(|e| (e["source"].as_str().unwrap().to_string(), e["target"].as_str().unwrap().to_string()))
+        .map(|e| {
+            (
+                e["source"].as_str().unwrap().to_string(),
+                e["target"].as_str().unwrap().to_string(),
+            )
+        })
         .collect();
     (ids, calls)
 }
@@ -169,11 +244,26 @@ fn java_underscore_and_case_twins_keep_their_own_nodes_and_calls() {
         "package demo;\n\npublic class Foo {\n    public void bar() { helper(); }\n    private void _bar() { other(); }\n    void helper() {}\n    void other() {}\n    void Run() {}\n    void run() {}\n    public void caller() { _bar(); bar(); run(); Run(); }\n}\n",
     );
     let (bar, ubar) = (one(&ids, ".bar()"), one(&ids, "._bar()"));
-    let (helper, other, caller) = (one(&ids, ".helper()"), one(&ids, ".other()"), one(&ids, ".caller()"));
+    let (helper, other, caller) = (
+        one(&ids, ".helper()"),
+        one(&ids, ".other()"),
+        one(&ids, ".caller()"),
+    );
     assert_ne!(bar, ubar);
-    assert!(bar.ends_with("_foo_bar") && helper.ends_with("_foo_helper"), "{bar} {helper}");
-    for pair in [(&bar, &helper), (&ubar, &other), (&caller, &bar), (&caller, &ubar)] {
-        assert!(calls.contains(&(pair.0.clone(), pair.1.clone())), "{pair:?}: {calls:?}");
+    assert!(
+        bar.ends_with("_foo_bar") && helper.ends_with("_foo_helper"),
+        "{bar} {helper}"
+    );
+    for pair in [
+        (&bar, &helper),
+        (&ubar, &other),
+        (&caller, &bar),
+        (&caller, &ubar),
+    ] {
+        assert!(
+            calls.contains(&(pair.0.clone(), pair.1.clone())),
+            "{pair:?}: {calls:?}"
+        );
     }
     assert!(!calls.contains(&(bar.clone(), other.clone())));
     let (run, big_run) = (one(&ids, ".run()"), one(&ids, ".Run()"));

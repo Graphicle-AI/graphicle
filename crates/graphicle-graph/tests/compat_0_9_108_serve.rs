@@ -27,16 +27,31 @@ fn context_filter_reaches_heritage_edges_without_a_context() {
             .as_array()
             .unwrap()
             .iter()
-            .map(|l| format!("{}->{}", l["source"].as_str().unwrap(), l["target"].as_str().unwrap()))
+            .map(|l| {
+                format!(
+                    "{}->{}",
+                    l["source"].as_str().unwrap(),
+                    l["target"].as_str().unwrap()
+                )
+            })
             .collect::<std::collections::BTreeSet<_>>()
     };
     let inherits = edges(json!(["inheritance"]));
-    assert!(inherits.contains("square->base") && inherits.contains("ts->base"), "{inherits:?}");
+    assert!(
+        inherits.contains("square->base") && inherits.contains("ts->base"),
+        "{inherits:?}"
+    );
     assert!(!inherits.contains("square->ishape"), "{inherits:?}");
     let implements = edges(json!(["interface"]));
-    assert_eq!(implements.into_iter().collect::<Vec<_>>(), ["square->ishape"]);
+    assert_eq!(
+        implements.into_iter().collect::<Vec<_>>(),
+        ["square->ishape"]
+    );
     // `type` keeps meaning the TypeScript context only.
-    assert_eq!(edges(json!(["type"])).into_iter().collect::<Vec<_>>(), ["ts->base"]);
+    assert_eq!(
+        edges(json!(["type"])).into_iter().collect::<Vec<_>>(),
+        ["ts->base"]
+    );
 }
 
 #[test]
@@ -44,13 +59,22 @@ fn report_token_cost_comes_from_cost_json() {
     // test_report.py (#5154)
     use graphicle::report::load_report_token_cost;
     let dir = tempfile::tempdir().unwrap();
-    assert_eq!(load_report_token_cost(dir.path()), json!({"input": 0, "output": 0}));
+    assert_eq!(
+        load_report_token_cost(dir.path()),
+        json!({"input": 0, "output": 0})
+    );
     std::fs::write(
         dir.path().join("cost.json"),
         json!({"runs": [], "total_input_tokens": 1200, "total_output_tokens": 340}).to_string(),
     )
     .unwrap();
-    assert_eq!(load_report_token_cost(dir.path()), json!({"input": 1200, "output": 340}));
+    assert_eq!(
+        load_report_token_cost(dir.path()),
+        json!({"input": 1200, "output": 340})
+    );
     std::fs::write(dir.path().join("cost.json"), "[1, 2]").unwrap();
-    assert_eq!(load_report_token_cost(dir.path()), json!({"input": 0, "output": 0}));
+    assert_eq!(
+        load_report_token_cost(dir.path()),
+        json!({"input": 0, "output": 0})
+    );
 }
