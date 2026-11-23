@@ -32,7 +32,7 @@
 //! them. Backups taken earlier, provider-side retention of past model requests
 //! and copies exported earlier are outside any receipt.
 use crate::db::types::ValueRef;
-use crate::db::{Connection, params, params_from_iter};
+use crate::db::{Connection, Value as DbValue, params, params_from_iter};
 use crate::store::{Principal, Store, decode, one, repo, rows, s};
 use crate::{Error, Result, digest, id, now, string};
 use serde_json::{Value, json};
@@ -64,6 +64,7 @@ const NOT_COVERED: &[&str] = &[
     "backups taken before the deletion",
     "model-provider retention of requests already sent",
     "copies exported from Graphicle before the deletion",
+    "wiki files written to project folders on users' computers (.graphicle/wiki/)",
 ];
 /// Records of work and access rather than memory. They are excluded from
 /// state equality; residue scans still read them. Installed extensions add
@@ -390,14 +391,40 @@ fn filter<'a>(
     }
 }
 
-/// `SELECT … WHERE (instr(col, pattern) > 0 OR …) [AND scope]` for a table's
-/// text columns.
+/// Scope filter attached to a text scan (`instr_query` / `table_has_rows`).
+#[derive(Clone, Copy)]
+enum ScanScope<'a> {
+    None,
+    Column(&'a str, &'a str),
+    WorkspaceProjects(&'a str),
+}
+
+/// Join `OR` predicates as a balanced binary tree so large scans never exceed
+/// SQLite's expression-depth limit (`SQLITE_MAX_EXPR_DEPTH = 1000`).
+fn balanced_or(terms: &[String]) -> String {
+    match terms {
+        [] => "0".to_string(),
+        [single] => single.clone(),
+        many => {
+            let mid = many.len() / 2;
+            format!(
+                "({} OR {})",
+                balanced_or(&many[..mid]),
+                balanced_or(&many[mid..])
+            )
+        }
+    }
+}
+
+/// `SELECT … WHERE (instr(col, pattern) > 0 OR …) [AND scope] [AND memory_namespace …]`
+/// for a table's text columns.
 fn instr_query(
     table: &Table,
     select: &str,
     patterns: &[String],
-    filter: Option<(&str, &str)>,
-) -> (String, Vec<String>) {
+    scope: ScanScope<'_>,
+    namespace: Option<Option<&str>>,
+) -> (String, Vec<DbValue>) {
     let terms: Vec<String> = table
         .text
         .iter()
@@ -406,14 +433,64 @@ fn instr_query(
     let mut sql = format!(
         "SELECT {select} FROM {} WHERE ({})",
         quote(&table.name),
-        terms.join(" OR ")
+        balanced_or(&terms)
     );
-    let mut values: Vec<String> = patterns.to_vec();
-    if let Some((column, value)) = filter {
-        sql.push_str(&format!(" AND {}=?{}", quote(column), patterns.len() + 1));
-        values.push(value.to_string());
+    let mut values: Vec<DbValue> = patterns.iter().cloned().map(DbValue::Text).collect();
+    match scope {
+        ScanScope::None => {}
+        ScanScope::Column(column, value) => {
+            values.push(DbValue::Text(value.to_string()));
+            sql.push_str(&format!(" AND {}=?{}", quote(column), values.len()));
+        }
+        ScanScope::WorkspaceProjects(workspace) => {
+            values.push(DbValue::Text(workspace.to_string()));
+            sql.push_str(&format!(
+                " AND \"repository_id\" IN (SELECT id FROM repo_projects WHERE workspace_id=?{})",
+                values.len()
+            ));
+        }
+    }
+    if let Some(namespace) = namespace
+        && table.columns.contains("memory_namespace")
+    {
+        values.push(namespace.map_or(DbValue::Null, |ns| DbValue::Text(ns.to_string())));
+        sql.push_str(&format!(
+            " AND \"memory_namespace\" IS NOT DISTINCT FROM ?{}",
+            values.len()
+        ));
     }
     (sql, values)
+}
+
+/// Whether `table` holds any row inside `scope` (so an empty table skips
+/// multi-chunk substring scans).
+fn table_has_rows(db: &Connection, table: &Table, scope: ScanScope<'_>) -> Result<bool> {
+    let (sql, value): (String, Option<&str>) = match scope {
+        ScanScope::None => (
+            format!("SELECT EXISTS(SELECT 1 FROM {})", quote(&table.name)),
+            None,
+        ),
+        ScanScope::Column(column, value) => (
+            format!(
+                "SELECT EXISTS(SELECT 1 FROM {} WHERE {}=?1)",
+                quote(&table.name),
+                quote(column)
+            ),
+            Some(value),
+        ),
+        ScanScope::WorkspaceProjects(workspace) => (
+            format!(
+                "SELECT EXISTS(SELECT 1 FROM {} WHERE \"repository_id\" IN (SELECT id FROM repo_projects WHERE workspace_id=?1))",
+                quote(&table.name)
+            ),
+            Some(workspace),
+        ),
+    };
+    let present: bool = match value {
+        Some(v) => db.query_row(&sql, [v], |r| r.get(0))?,
+        None => db.query_row(&sql, [], |r| r.get(0))?,
+    };
+    Ok(present)
 }
 
 /// Rows whose text columns contain any pattern.
@@ -421,17 +498,20 @@ fn matching(
     db: &Connection,
     table: &Table,
     patterns: &[String],
-    filter: Option<(&str, &str)>,
+    scope: ScanScope<'_>,
+    namespace: Option<Option<&str>>,
 ) -> Result<usize> {
     if table.text.is_empty() || patterns.is_empty() {
         return Ok(0);
     }
-    let (sql, values) = instr_query(table, "count(*)", patterns, filter);
+    let (sql, values) = instr_query(table, "count(*)", patterns, scope, namespace);
     count(db, &sql, params_from_iter(values))
 }
 
 /// Exact references to deleted ids in every table in scope. Tables holding
-/// connectors' originals are checked structurally instead.
+/// connectors' originals are checked structurally instead. When `namespace` is
+/// `Some`, tables carrying a `memory_namespace` column are restricted to that
+/// scope so a per-namespace receipt never reports another namespace's rows.
 fn references(
     db: &Connection,
     tables: &[Table],
@@ -439,6 +519,7 @@ fn references(
     (repository, workspace): (&str, &str),
     skip: &[&str],
     skip_repository_tables: bool,
+    namespace: Option<Option<&str>>,
 ) -> Result<Value> {
     let mut scanned = 0;
     let mut matches = Vec::new();
@@ -450,7 +531,11 @@ fn references(
             continue;
         }
         scanned += 1;
-        let rows = matching(db, table, patterns, filter(table, repository, workspace))?;
+        let scope = match filter(table, repository, workspace) {
+            Some((col, val)) => ScanScope::Column(col, val),
+            None => ScanScope::None,
+        };
+        let rows = matching(db, table, patterns, scope, namespace)?;
         if rows > 0 {
             matches.push(json!({"table":table.name,"rows":rows}));
         }
@@ -481,7 +566,11 @@ fn document_references(
             .map(|c| format!("coalesce(CAST({} AS TEXT),'')", quote(c)))
             .collect::<Vec<_>>()
             .join("||chr(10)||");
-        let (sql, values) = instr_query(table, &joined, &ids, filter(table, repository, workspace));
+        let scope = match filter(table, repository, workspace) {
+            Some((col, val)) => ScanScope::Column(col, val),
+            None => ScanScope::None,
+        };
+        let (sql, values) = instr_query(table, &joined, &ids, scope, None);
         let mut statement = db.prepare(&sql)?;
         let mut found = statement.query(params_from_iter(values))?;
         let mut rows = 0;
@@ -526,7 +615,13 @@ fn verbatim(
             continue;
         }
         scanned += 1;
-        let rows = matching(db, table, fingerprints, Some(("repository_id", repository)))?;
+        let rows = matching(
+            db,
+            table,
+            fingerprints,
+            ScanScope::Column("repository_id", repository),
+            None,
+        )?;
         if rows > 0 {
             matches.push(json!({"table":table.name,"rows":rows}));
         }
@@ -1046,8 +1141,8 @@ pub fn delete_memories(
     repository: &str,
     memories: &[Value],
     memory_id: &str,
+    scope: &crate::memory_scope::MemoryScope,
 ) -> Result<(BTreeSet<String>, Value)> {
-    use crate::invalidation::{self, EMBEDDING, MEMORY};
     let mut removed = BTreeSet::from([memory_id.to_string()]);
     loop {
         let before = removed.len();
@@ -1092,16 +1187,11 @@ pub fn delete_memories(
             "DELETE FROM repo_memories WHERE repository_id=? AND id=?",
             params![repository, identifier],
         )?;
-        invalidation::forget_dependent(db, workspace, (MEMORY, identifier))?;
-        invalidation::clear_stale(db, workspace, MEMORY, identifier)?;
         let passage = format!("memory:{identifier}");
         vectors += db.execute(
             "DELETE FROM am_vectors WHERE repository_id=? AND identity=?",
             params![repository, passage],
         )?;
-        let key = format!("{repository}:{passage}");
-        invalidation::forget_dependent(db, workspace, (EMBEDDING, &key))?;
-        invalidation::clear_stale(db, workspace, EMBEDDING, &key)?;
     }
     counts.insert("repo_memories".to_string(), removed.len());
     counts.insert("repo_memory_revisions".to_string(), revisions);
@@ -1109,6 +1199,43 @@ pub fn delete_memories(
     counts.insert("am_vectors".to_string(), vectors);
     if pins > 0 {
         counts.insert("gf_symbol_pins".to_string(), pins);
+    }
+    strip_memory_references(
+        db,
+        workspace,
+        repository,
+        &keys,
+        Some(scope.bind()),
+        &mut counts,
+    )?;
+    Ok((removed, json!(counts)))
+}
+
+/// Ids per statement of a scan for memory ids; each id is one parameter.
+const IDS_PER_SCAN: usize = 200;
+
+/// Remove what still names the memories `keys` of `repository` once they are
+/// deleted: their dependency-index entries and their passages' (and their
+/// stale marks), and the derived rows that name them ([`NAMES_MEMORIES`]),
+/// counted per table into `counts` ([`delete_memories`]; also every memory
+/// of a deleted namespace, [`crate::namespace_owner`]). When `namespace` is
+/// `Some`, namespaced tables in [`NAMES_MEMORIES`] (`am_model_cache`,
+/// `am_query_cache`) are restricted to that namespace only.
+pub fn strip_memory_references(
+    db: &Connection,
+    workspace: &str,
+    repository: &str,
+    keys: &[String],
+    namespace: Option<Option<&str>>,
+    counts: &mut BTreeMap<String, usize>,
+) -> Result<()> {
+    use crate::invalidation::{self, EMBEDDING, MEMORY};
+    for identifier in keys {
+        invalidation::forget_dependent(db, workspace, (MEMORY, identifier))?;
+        invalidation::clear_stale(db, workspace, MEMORY, identifier)?;
+        let key = format!("{repository}:memory:{identifier}");
+        invalidation::forget_dependent(db, workspace, (EMBEDDING, &key))?;
+        invalidation::clear_stale(db, workspace, EMBEDDING, &key)?;
     }
     let catalog = tables(db)?;
     for name in NAMES_MEMORIES {
@@ -1118,19 +1245,29 @@ pub fn delete_memories(
         if table.text.is_empty() {
             continue;
         }
-        let (sql, values) =
-            instr_query(table, "rowid", &keys, filter(table, repository, workspace));
-        let rowids: Vec<i64> = {
-            let mut statement = db.prepare(&sql)?;
-            let found = statement.query_map(params_from_iter(values), |r| r.get::<_, i64>(0))?;
-            found.collect::<std::result::Result<_, _>>()?
+        let scope = match filter(table, repository, workspace) {
+            Some((col, val)) => ScanScope::Column(col, val),
+            None => ScanScope::None,
         };
-        let deleted = delete_rowids(db, &quote(name), &rowids)?;
+        if !table_has_rows(db, table, scope)? {
+            continue;
+        }
+        let mut deleted = 0;
+        for chunk in keys.chunks(IDS_PER_SCAN) {
+            let (sql, values) = instr_query(table, "rowid", chunk, scope, namespace);
+            let rowids: Vec<i64> = {
+                let mut statement = db.prepare(&sql)?;
+                let found =
+                    statement.query_map(params_from_iter(values), |r| r.get::<_, i64>(0))?;
+                found.collect::<std::result::Result<_, _>>()?
+            };
+            deleted += delete_rowids(db, &quote(name), &rowids)?;
+        }
         if deleted > 0 {
-            counts.insert(name.to_string(), deleted);
+            *counts.entry(name.to_string()).or_default() += deleted;
         }
     }
-    Ok((removed, json!(counts)))
+    Ok(())
 }
 
 /// Rows still holding any of the deleted memories, per table (all zero after
@@ -1477,6 +1614,7 @@ pub fn policy_receipt(
             (identifier, &p.workspace),
             &[],
             false,
+            None,
         )?
     } else {
         let existing: BTreeSet<String> = rows(
@@ -1587,6 +1725,7 @@ pub fn rows_receipt(
             (repository, &p.workspace),
             &retained(db)?,
             false,
+            (operation == "memory.delete").then_some(p.memory_scope().bind()),
         )?;
         let history_tables = history(db)?;
         let (history, other): (Vec<Value>, Vec<Value>) = found["matches"]
@@ -1618,6 +1757,95 @@ pub fn rows_receipt(
         "not_covered":NOT_COVERED,"storage":{"secure_delete":secure_delete(db)?}
     });
     append(db, &p.workspace, repository, operation, target, receipt)
+}
+
+/// The receipt of a deleted memory namespace ([`crate::namespace_owner`]),
+/// which spans the workspace's projects. `keys` are the deleted memory ids
+/// by project. Every table is scanned for them (except the retained audit
+/// tables and connectors' originals): each project's tables in each project,
+/// the workspace's tables once. `projects` are the projects whose vector
+/// backends were told to clear what they hold ([`crate::projection`]); the
+/// receipt is complete once those cleanups are.
+#[allow(clippy::too_many_arguments)]
+pub fn namespace_receipt(
+    db: &Connection,
+    p: &Principal,
+    namespace: &str,
+    policy: Value,
+    removed: Value,
+    keys: &BTreeMap<String, Vec<String>>,
+    remaining: Value,
+    projects: &BTreeSet<String>,
+    extra: Value,
+) -> Result<Value> {
+    const OPERATION: &str = "memory.namespace.delete";
+    let all: Vec<String> = keys.values().flatten().cloned().collect();
+    let mut hashes: Vec<String> = all.iter().map(|k| key_hash(OPERATION, k)).collect();
+    hashes.sort();
+    hashes.dedup();
+    let catalog = tables(db)?;
+    let skip = retained(db)?;
+    let history_tables = history(db)?;
+    let mut scanned = 0;
+    let mut matches = Vec::new();
+    let mut history = Vec::new();
+    if !all.is_empty() {
+        for table in &catalog {
+            if skip.contains(&table.name.as_str()) || table.columns.contains("connector_id") {
+                continue;
+            }
+            scanned += 1;
+            if table.text.is_empty() {
+                continue;
+            }
+            let scope = if table.columns.contains("repository_id") {
+                ScanScope::WorkspaceProjects(&p.workspace)
+            } else {
+                match filter(table, "", &p.workspace) {
+                    Some((col, val)) => ScanScope::Column(col, val),
+                    None => ScanScope::None,
+                }
+            };
+            if !table_has_rows(db, table, scope)? {
+                continue;
+            }
+            let mut found = 0;
+            for chunk in all.chunks(IDS_PER_SCAN) {
+                found += matching(db, table, chunk, scope, None)?;
+            }
+            if found > 0 {
+                let entry = json!({"table":table.name,"rows":found});
+                if history_tables.contains(&table.name.as_str()) {
+                    history.push(entry);
+                } else {
+                    matches.push(entry);
+                }
+            }
+        }
+    }
+    let mut cleanups = Vec::new();
+    for repository in projects {
+        cleanups.extend(external(db, repository)?);
+    }
+    let pending = cleanups.iter().any(|c| c["state"] != "complete");
+    let clean = remaining
+        .as_object()
+        .is_none_or(|counts| counts.values().all(|n| n.as_u64() == Some(0)))
+        && matches.is_empty();
+    let receipt = json!({
+        "contract":CONTRACT,"operation":OPERATION,"workspace_id":p.workspace,
+        "repository_id":"namespace","target":namespace,"requested_by":p.credential,"deleted_at":now(),
+        "policy":policy,"policy_digest":digest(&policy),
+        "removed":{"rows":removed,"keys":{"count":hashes.len(),"hashes":hashes,"hashes_digest":digest(&json!(hashes)),
+            "hashes_listed":true,"identifiers_retained":false},"projects":keys.len()},
+        "remaining":remaining,
+        "residue":{"references":{"tables_scanned":scanned,"matches":matches},"history_references":history},
+        "namespace":extra,
+        "external_cleanup":cleanups,
+        "verified_local":clean,"external_pending":pending,"complete":clean && !pending,
+        "not_covered":NOT_COVERED,"storage":{"secure_delete":secure_delete(db)?}
+    });
+    append(db, &p.workspace, "namespace", OPERATION, namespace, receipt)
 }
 
 /// Replace identifiers minted per store and clock readings, so two stores
@@ -1893,6 +2121,7 @@ pub fn project_receipt(
         (repository, &p.workspace),
         &retained,
         true,
+        None,
     )?;
     let cleanups = external(db, repository)?;
     let clean = empty(&remaining) && empty(&ids);
@@ -2027,7 +2256,7 @@ pub fn verify(store: &Store, workspace: &str, token: &str, args: &Value) -> Resu
             "connector.delete" => {
                 let scope = Scope::connector(s(&receipt, "target"));
                 let remaining = source_rows(db, workspace, &repository, &scope)?;
-                let ids = references(db, &catalog, &[scope.prefix()], (&repository, workspace), &[], false)?;
+                let ids = references(db, &catalog, &[scope.prefix()], (&repository, workspace), &[], false, None)?;
                 // Caches refill with unrelated work, so only the deleted
                 // sources' own rows and references are re-checked.
                 let visible = match &project {
@@ -2094,7 +2323,7 @@ pub fn verify(store: &Store, workspace: &str, token: &str, args: &Value) -> Resu
                 let remaining = project_rows(db, &catalog, &repository, &connectors)?;
                 let mut patterns = vec![repository.clone()];
                 patterns.extend(connectors.iter().map(|c| format!("connector:{c}:")));
-                let ids = references(db, &catalog, &patterns, (&repository, workspace), &retained(db)?, true)?;
+                let ids = references(db, &catalog, &patterns, (&repository, workspace), &retained(db)?, true, None)?;
                 json!({"verified_local":empty(&remaining) && empty(&ids),"project_rows":remaining,"source_ids":ids})
             }
             "memory.delete" => {
@@ -2109,6 +2338,23 @@ pub fn verify(store: &Store, workspace: &str, token: &str, args: &Value) -> Resu
                 let reappeared = rows(db, "SELECT id FROM repo_memories WHERE repository_id=?", [&repository])?
                     .iter()
                     .filter(|m| hashes.contains(key_hash("memory.delete", s(m, "id")).as_str()))
+                    .count();
+                json!({"verified_local":reappeared == 0 && receipt["verified_local"] == true,
+                    "reappeared_memories":reappeared})
+            }
+            "memory.namespace.delete" => {
+                // Only one-way hashes of the ids are kept: confirm no memory
+                // of the workspace carries a deleted id (an import of the
+                // namespace's archive since brings them back, and shows here).
+                let hashes: BTreeSet<&str> = receipt["removed"]["keys"]["hashes"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .collect();
+                let reappeared = rows(db, "SELECT m.id FROM repo_memories m JOIN repo_projects p ON p.id=m.repository_id WHERE p.workspace_id=?", [workspace])?
+                    .iter()
+                    .filter(|m| hashes.contains(key_hash("memory.namespace.delete", s(m, "id")).as_str()))
                     .count();
                 json!({"verified_local":reappeared == 0 && receipt["verified_local"] == true,
                     "reappeared_memories":reappeared})

@@ -4882,7 +4882,7 @@ fn checks(options: &Doctor<'_>) -> Vec<Check> {
                         &session.workspace,
                         &session.capability,
                         "read",
-                        |db, _| crate::indexed_query::readiness(db, &resolved.id),
+                        |db, p| crate::indexed_query::readiness(db, &resolved.id, p.memory_scope()),
                     ) {
                         let state = match check["state"].as_str() {
                             Some("ready") => State::Ok,

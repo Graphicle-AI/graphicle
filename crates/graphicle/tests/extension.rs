@@ -175,6 +175,9 @@ impl Extension for Probe {
     ) -> Result<Option<bool>> {
         Ok(match role {
             "probe-role" => Some(["read", "propose"].contains(&permission)),
+            "team-admin" => {
+                Some(["read", "propose", "approve", "collect", "admin"].contains(&permission))
+            }
             // An attempt to widen a Core role: the core never asks.
             "reader" => Some(true),
             _ => None,
@@ -1966,4 +1969,189 @@ async fn an_extension_may_limit_the_tokens_of_a_response() {
     let (status, body) = send(&router, listing(&token)).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
     assert!(s(&body, "error").contains("at most 120 per call"), "{body}");
+}
+
+#[test]
+fn extension_admin_and_propose_roles_respect_namespace_boundaries() {
+    let f = Fixture::new();
+    let app = f.app();
+    // A non-owner extension role with `admin` may grant shared keys, but
+    // every namespaced grant (new or existing) is owner-only.
+    let admin = s(
+        &f.store
+            .grant(
+                &f.workspace,
+                &f.owner,
+                &json!({"role":"team-admin","label":"ext-admin"}),
+            )
+            .unwrap(),
+        "capability",
+    )
+    .to_string();
+    assert_eq!(
+        f.store
+            .grant(
+                &f.workspace,
+                &admin,
+                &json!({"role":"agent","label":"ns-new","memory_namespace":"ext-ns"}),
+            )
+            .unwrap_err()
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    f.store
+        .grant(
+            &f.workspace,
+            &f.owner,
+            &json!({"role":"agent","label":"owned","memory_namespace":"owned-ns","self_review":true}),
+        )
+        .unwrap();
+    assert_eq!(
+        f.store
+            .grant(
+                &f.workspace,
+                &admin,
+                &json!({"role":"agent","label":"ns-second","memory_namespace":"owned-ns"}),
+            )
+            .unwrap_err()
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    // Even the owner cannot bind an admin-capable role to a private namespace.
+    let bad = f
+        .store
+        .grant(
+            &f.workspace,
+            &f.owner,
+            &json!({"role":"team-admin","label":"ns-admin","memory_namespace":"owned-ns"}),
+        )
+        .unwrap_err();
+    assert_eq!(bad.status, StatusCode::BAD_REQUEST);
+    // Defense in depth: even if a database row paired an admin extension role
+    // with a memory_namespace, `role_grants` strips `admin`.
+    let leaked_admin = f
+        .store
+        .grant(
+            &f.workspace,
+            &f.owner,
+            &json!({"role":"team-admin","label":"forced-ns-admin"}),
+        )
+        .unwrap();
+    let forced_id = s(&leaked_admin, "id").to_string();
+    let forced_token = s(&leaked_admin, "capability").to_string();
+    f.store
+        .transaction(|db| {
+            db.execute(
+                "UPDATE credentials SET memory_namespace='owned-ns' WHERE id=?",
+                [&forced_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        f.store
+            .retention_preview(
+                &f.workspace,
+                &forced_token,
+                &json!({"repository_id":f.repo,"sources":{"connector_ids":["c"],"max_age_days":30}})
+            )
+            .unwrap_err()
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        f.store
+            .grant(
+                &f.workspace,
+                &forced_token,
+                &json!({"role":"reader","label":"escape"}),
+            )
+            .unwrap_err()
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    // An extension role granting `propose` (`probe-role`) gets self-review in
+    // a `self_review: true` namespace.
+    let quote = "Extension roles with propose can self-review.";
+    let status = f
+        .store
+        .project_status(&f.workspace, &f.owner, &json!({"repository_id": f.repo}))
+        .unwrap();
+    let sync = f
+        .store
+        .sync_prepare(
+            &f.workspace,
+            &f.owner,
+            &json!({
+                "repository_id": f.repo,
+                "expected_snapshot": status["repository"]["snapshot"],
+                "manifest": [{
+                    "path": "notes.txt",
+                    "sha256": graphicle_memory::text::sha256(quote.as_bytes()),
+                    "bytes": quote.len()
+                }]
+            }),
+        )
+        .unwrap();
+    f.store
+        .sync_upload(
+            &f.workspace,
+            &f.owner,
+            &json!({
+                "repository_id": f.repo,
+                "sync_id": sync["sync_id"],
+                "files": [{"path": "notes.txt", "content": quote}]
+            }),
+        )
+        .unwrap();
+    f.store
+        .sync_commit(
+            &f.workspace,
+            &f.owner,
+            &json!({"repository_id": f.repo, "sync_id": sync["sync_id"]}),
+        )
+        .unwrap();
+    let probe_ns = s(
+        &f.store
+            .grant(
+                &f.workspace,
+                &f.owner,
+                &json!({"role":"probe-role","label":"probe-ns","memory_namespace":"probe-ns","self_review":true}),
+            )
+            .unwrap(),
+        "capability",
+    )
+    .to_string();
+    let proposed = api::command(
+        &app,
+        &f.workspace,
+        &probe_ns,
+        "memory.propose",
+        &json!({
+            "repository_id": f.repo,
+            "kind": "decision",
+            "title": "Extension self review",
+            "body": "Extension roles with propose can self-review when configured.",
+            "idempotency_key": "ext-self-review-1",
+            "evidence": [{"source_id": "file:notes.txt", "quote": quote}]
+        }),
+    )
+    .unwrap();
+    let memory_id = s(&proposed, "memory_id").to_string();
+    let reviewed = api::command(
+        &app,
+        &f.workspace,
+        &probe_ns,
+        "learning.review",
+        &json!({
+            "repository_id": f.repo,
+            "memory_id": memory_id,
+            "expected_revision": 1,
+            "decision": "approve",
+            "maintainer": "self",
+            "reason": "extension self review"
+        }),
+    )
+    .unwrap();
+    assert_eq!(reviewed["state"], "reviewed");
 }

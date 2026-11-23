@@ -11,10 +11,17 @@
 //! for local models, the manifest fingerprint, so a changed model or prefix
 //! never matches an old entry. Remote providers are assumed to serve fixed
 //! weights for a model name. Share one file only within one trust domain: a
-//! hit reveals that the same text was embedded before.
+//! hit reveals that the same text was embedded before. A memory namespace's
+//! memory passages have their own key space, per workspace and namespace
+//! ([`Cache::get_in`]), so no namespace learns from a hit what another
+//! embedded, also when two workspaces, or two stores sharing the file, use the
+//! same namespace name. Deleting a namespace deletes its key space
+//! ([`forget_namespace`]).
 use crate::db::{Connection, OptionalExtension, params, types::ValueRef};
+use crate::memory_scope::MemoryScope;
 use crate::platform::CanonicalExt;
 use crate::{Error, Result};
+use std::borrow::Cow;
 use std::path::Path;
 use std::time::Duration;
 
@@ -24,6 +31,9 @@ pub struct Cache {
     // Field order matters: SQLite must close before the last permission guard.
     db: Connection,
     namespace: String,
+    /// The workspace whose namespaces' memory passages this cache reads and
+    /// writes ([`Self::for_workspace`]).
+    workspace: Option<String>,
     #[cfg(unix)]
     _private_files: PrivateFiles,
 }
@@ -68,6 +78,7 @@ impl Cache {
         db.busy_timeout(Duration::from_secs(60))?;
         if db.engine() == crate::db::Engine::Sqlite {
             db.pragma_update(None, "journal_mode", "WAL")?;
+            db.pragma_update(None, "secure_delete", true)?;
         }
         db.execute_batch(
             "CREATE TABLE IF NOT EXISTS am_embedding_cache(
@@ -80,6 +91,7 @@ impl Cache {
         Ok(Self {
             db,
             namespace: format!("passage:{model_key}"),
+            workspace: None,
             #[cfg(unix)]
             _private_files: private_files,
         })
@@ -87,12 +99,45 @@ impl Cache {
 
     /// The cached vector for `text`, if any. A malformed entry is a miss.
     pub fn get(&self, text: &str) -> Result<Option<Vec<f64>>> {
+        self.get_in(None, text)
+    }
+
+    /// The cache for the memory passages of `workspace`'s namespaces; needed
+    /// before [`Self::get_in`] or [`Self::put_in`] of a namespace's memory.
+    pub fn for_workspace(mut self, workspace: &str) -> Self {
+        self.workspace = Some(workspace.to_owned());
+        self
+    }
+
+    /// The key space of a passage: the shared one for the project's sources
+    /// and shared memory (`None`, or a shared scope), and one per workspace
+    /// and namespace for a namespace's memory, so a hit never tells one
+    /// namespace that another embedded the same words.
+    fn space(&self, memory: Option<&MemoryScope>) -> Result<Cow<'_, str>> {
+        match memory.and_then(MemoryScope::bind) {
+            Some(namespace) => {
+                let workspace = self.workspace.as_deref().ok_or_else(|| {
+                    Error::bad("A namespace's embedding cache needs its workspace")
+                })?;
+                Ok(Cow::Owned(format!(
+                    "{}{}",
+                    self.namespace,
+                    namespace_suffix(workspace, namespace)
+                )))
+            }
+            None => Ok(Cow::Borrowed(&self.namespace)),
+        }
+    }
+
+    /// [`Self::get`] for a memory passage of `memory` (`None`: a source
+    /// passage).
+    pub fn get_in(&self, memory: Option<&MemoryScope>, text: &str) -> Result<Option<Vec<f64>>> {
         let vector = self
             .db
             .prepare_cached(
                 "SELECT vector FROM am_embedding_cache WHERE model_key=? AND text_sha256=?",
             )?
-            .query_row(params![self.namespace, sha(text)], |row| {
+            .query_row(params![self.space(memory)?.as_ref(), sha(text)], |row| {
                 Ok(match row.get_ref(0)? {
                     ValueRef::Blob(blob) => decode(blob),
                     _ => None,
@@ -104,6 +149,17 @@ impl Cache {
 
     /// Record vectors for texts; an existing entry is kept.
     pub fn put<'a>(&self, entries: impl IntoIterator<Item = (&'a str, &'a [f64])>) -> Result<()> {
+        self.put_in(None, entries)
+    }
+
+    /// [`Self::put`] for memory passages of `memory` (`None`: source
+    /// passages).
+    pub fn put_in<'a>(
+        &self,
+        memory: Option<&MemoryScope>,
+        entries: impl IntoIterator<Item = (&'a str, &'a [f64])>,
+    ) -> Result<()> {
+        let space = self.space(memory)?;
         let tx = self.db.unchecked_transaction()?;
         {
             let mut insert = tx.prepare_cached(
@@ -113,12 +169,39 @@ impl Cache {
                 if vector.is_empty() || !vector.iter().all(|x| x.is_finite()) {
                     continue;
                 }
-                insert.execute(params![self.namespace, sha(text), encode(vector)])?;
+                insert.execute(params![space.as_ref(), sha(text), encode(vector)])?;
             }
         }
         tx.commit()?;
         Ok(())
     }
+}
+
+/// The end of every model key of a namespace's memory passages. Neither a
+/// workspace id nor a namespace name holds `:`, so the end is unambiguous.
+fn namespace_suffix(workspace: &str, namespace: &str) -> String {
+    format!(":memory_namespace:{workspace}:{namespace}")
+}
+
+/// Delete, from the cache named by [`ENV`], every entry of `workspace`'s
+/// `namespace` under any model key: the memory passages it embedded. `None`
+/// when no cache is configured.
+pub fn forget_namespace(workspace: &str, namespace: &str) -> Result<Option<usize>> {
+    let Some(cache) = Cache::from_env("")? else {
+        return Ok(None);
+    };
+    let suffix = namespace_suffix(workspace, namespace);
+    let removed = cache.db.execute(
+        "DELETE FROM am_embedding_cache WHERE substr(model_key,1,8)='passage:' AND length(model_key)>length(CAST(?1 AS TEXT)) AND substr(model_key,length(model_key)-length(CAST(?1 AS TEXT))+1)=CAST(?1 AS TEXT)",
+        params![suffix],
+    )?;
+    // Flush deleted pages' prior images out of the SQLite WAL file.
+    if removed > 0 && cache.db.engine() == crate::db::Engine::Sqlite {
+        let _ = cache
+            .db
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
+    }
+    Ok(Some(removed))
 }
 
 /// Restricts the files before the first live connection, and holds that
@@ -213,9 +296,12 @@ fn decode(blob: &[u8]) -> Option<Vec<f64>> {
     if blob.is_empty() || !blob.len().is_multiple_of(8) {
         return None;
     }
+    // The length is a multiple of 8, so there is no remainder.
     let vector: Vec<f64> = blob
-        .chunks_exact(8)
-        .map(|bytes| f64::from_le_bytes(bytes.try_into().expect("8-byte chunk")))
+        .as_chunks::<8>()
+        .0
+        .iter()
+        .map(|bytes| f64::from_le_bytes(*bytes))
         .collect();
     vector.iter().all(|x| x.is_finite()).then_some(vector)
 }

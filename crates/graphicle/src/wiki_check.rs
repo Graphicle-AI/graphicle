@@ -47,7 +47,8 @@ pub struct Args {
     #[arg(long)]
     pub project: Option<String>,
     /// The wiki's folder [default: .graphicle/wiki/written in the project's
-    /// folder].
+    /// folder; .graphicle/wiki/namespaces/<namespace>/written for a key with
+    /// a memory namespace].
     #[arg(long, value_name = "DIR")]
     pub out: Option<std::path::PathBuf>,
     /// Run only the checks that need no model.
@@ -381,9 +382,26 @@ pub fn proposal_name(path: &str, first: usize) -> String {
 /// place, so a symbolic link committed at its name is replaced, never
 /// followed.
 pub fn write_proposal(proposals: &Path, path: &str, first: usize, text: &str) -> Result<PathBuf> {
+    write_proposal_mode(proposals, path, first, text, false)
+}
+
+fn write_proposal_mode(
+    proposals: &Path,
+    path: &str,
+    first: usize,
+    text: &str,
+    private: bool,
+) -> Result<PathBuf> {
     std::fs::create_dir_all(proposals)?;
+    if private {
+        project_wiki::restrict_dir(proposals)?;
+    }
     let file = proposals.join(proposal_name(path, first));
-    project_wiki::write_atomic(&file, text)?;
+    if private {
+        project_wiki::write_atomic_private(&file, text)?;
+    } else {
+        project_wiki::write_atomic(&file, text)?;
+    }
     Ok(file)
 }
 
@@ -615,7 +633,13 @@ async fn model_pass(
                 let corrected = s(&reply, "corrected_text").trim();
                 if reply["verdict"] == "outdated" && !corrected.is_empty() && !cites.is_empty() {
                     let diff = patch(path, &doc, first, last, corrected);
-                    item["patch"] = json!(write_proposal(&proposals, path, first, &diff)?);
+                    item["patch"] = json!(write_proposal_mode(
+                        &proposals,
+                        path,
+                        first,
+                        &diff,
+                        target.namespace.is_some()
+                    )?);
                 } else if reply["verdict"] == "outdated" {
                     item["note"] = json!("no correction kept: it cited no code that holds");
                 }

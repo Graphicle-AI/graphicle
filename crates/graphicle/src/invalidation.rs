@@ -236,28 +236,131 @@ pub fn freshness(db: &Connection, workspace: &str) -> Result<Freshness> {
 }
 
 /// Freshness restricted to artifacts belonging to one repository (ids prefixed
-/// with `repository:`), plus workspace-level artifacts (answers, memories).
+/// with `repository:`), plus shared workspace-level artifacts (answers,
+/// memories). Callers acting for a request's principal must use
+/// [`repository_freshness_scoped`] so a namespace never sees another
+/// namespace's or shared memory's stale counts.
 pub fn repository_freshness(
     db: &Connection,
     workspace: &str,
     repository: &str,
 ) -> Result<Freshness> {
+    repository_freshness_in(db, workspace, repository, None)
+}
+
+/// [`repository_freshness`] scoped to `scope`'s memory namespace: shared
+/// source and graph artifacts plus only the memories, memory embeddings,
+/// cached answers and credentials of `scope`.
+pub fn repository_freshness_scoped(
+    db: &Connection,
+    workspace: &str,
+    repository: &str,
+    scope: &crate::memory_scope::MemoryScope,
+) -> Result<Freshness> {
+    repository_freshness_in(db, workspace, repository, scope.bind())
+}
+
+fn stale_artifact_visible(
+    db: &Connection,
+    workspace: &str,
+    repository: &str,
+    namespace: Option<&str>,
+    kind: &str,
+    id: &str,
+) -> Result<bool> {
+    let repo_prefix = format!("{repository}:");
+    let memory_prefix = format!("{repository}:memory:");
+    match kind {
+        MEMORY => Ok(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE id=?1 AND repository_id=?2 AND memory_namespace IS NOT DISTINCT FROM ?3)",
+            params![id, repository, namespace],
+            |r| r.get(0),
+        )?),
+        EMBEDDING => match id.strip_prefix(&memory_prefix) {
+            Some(memory_id) => Ok(db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE id=?1 AND repository_id=?2 AND memory_namespace IS NOT DISTINCT FROM ?3)",
+                params![memory_id, repository, namespace],
+                |r| r.get(0),
+            )?),
+            None => Ok(true),
+        },
+        ANSWER => {
+            if let Some(request_hash) = id.strip_prefix(&repo_prefix) {
+                if db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM am_model_cache WHERE repository_id=?1 AND request_hash=?2 AND memory_namespace IS NOT DISTINCT FROM ?3)",
+                    params![repository, request_hash, namespace],
+                    |r| r.get(0),
+                )? {
+                    return Ok(true);
+                }
+            } else if id.contains(':') {
+                // Scoped to another repository in the same workspace.
+                return Ok(false);
+            }
+            if db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM gf_dependencies d JOIN credentials cr ON cr.capability_hash=d.source_id AND cr.workspace_id=d.workspace WHERE d.workspace=?1 AND d.dependent_kind='answer' AND d.dependent_id=?2 AND d.source_kind='principal' AND cr.memory_namespace IS NOT DISTINCT FROM ?3)",
+                params![workspace, id, namespace],
+                |r| r.get(0),
+            )? {
+                return Ok(true);
+            }
+            if namespace.is_none() {
+                return Ok(db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM gf_dependencies d JOIN workspaces w ON w.capability_hash=d.source_id AND w.id=d.workspace WHERE d.workspace=?1 AND d.dependent_kind='answer' AND d.dependent_id=?2 AND d.source_kind='principal')",
+                    params![workspace, id],
+                    |r| r.get(0),
+                )?);
+            }
+            Ok(false)
+        }
+        PRINCIPAL => {
+            if db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM credentials WHERE workspace_id=?1 AND capability_hash=?2 AND memory_namespace IS NOT DISTINCT FROM ?3)",
+                params![workspace, id, namespace],
+                |r| r.get(0),
+            )? {
+                return Ok(true);
+            }
+            if namespace.is_none() {
+                return Ok(db.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id=?1 AND capability_hash=?2)",
+                    params![workspace, id],
+                    |r| r.get(0),
+                )?);
+            }
+            Ok(false)
+        }
+        _ => Ok(true),
+    }
+}
+
+fn repository_freshness_in(
+    db: &Connection,
+    workspace: &str,
+    repository: &str,
+    namespace: Option<&str>,
+) -> Result<Freshness> {
     let pattern = format!("{}:%", repository.replace('%', "\\%").replace('_', "\\_"));
-    let mut statement = db.prepare(
-        "SELECT kind,count(*),min(since) FROM gf_stale WHERE workspace=? AND (id LIKE ? ESCAPE '\\' OR kind IN ('answer','memory','principal','invalidation_incomplete')) GROUP BY kind",
-    )?;
+    let candidates: Vec<(String, String, String)> = {
+        let mut statement = db.prepare(
+            "SELECT kind,id,since FROM gf_stale WHERE workspace=? AND (id LIKE ? ESCAPE '\\' OR kind IN ('answer','memory','principal','invalidation_incomplete'))",
+        )?;
+        let mapped = statement.query_map(params![workspace, pattern], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        mapped.collect::<std::result::Result<_, _>>()?
+    };
     let mut freshness = Freshness::default();
-    for row in statement.query_map(params![workspace, pattern], |r| {
-        Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, i64>(1)?,
-            r.get::<_, String>(2)?,
-        ))
-    })? {
-        let (kind, count, since) = row?;
-        let count = u64::try_from(count).unwrap_or(0);
-        freshness.stale_count += count;
-        freshness.by_kind.insert(kind, count);
+    for (kind, id, since) in candidates {
+        if !stale_artifact_visible(db, workspace, repository, namespace, &kind, &id)? {
+            continue;
+        }
+        freshness.stale_count += 1;
+        *freshness.by_kind.entry(kind).or_default() += 1;
         match &freshness.oldest_since {
             Some(oldest) if *oldest <= since => {}
             _ => freshness.oldest_since = Some(since),

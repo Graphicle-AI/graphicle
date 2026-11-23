@@ -154,8 +154,8 @@ fn sum(bytes: &[u8]) -> u64 {
         0xA409_3822_299F_31D0,
         0x082E_FA98_EC4E_6C89,
     ];
-    let mut chunks = bytes.chunks_exact(32);
-    for chunk in &mut chunks {
+    let (chunks, remainder) = bytes.as_chunks::<32>();
+    for chunk in chunks {
         lanes[0] = (lanes[0] ^ word(&chunk[0..8]))
             .wrapping_mul(K[0])
             .rotate_left(31);
@@ -175,7 +175,7 @@ fn sum(bytes: &[u8]) -> u64 {
             .wrapping_mul(K[1])
             .rotate_left(27);
     }
-    for &byte in chunks.remainder() {
+    for &byte in remainder {
         h = (h ^ u64::from(byte)).wrapping_mul(K[2]).rotate_left(23);
     }
     h ^= h >> 33;

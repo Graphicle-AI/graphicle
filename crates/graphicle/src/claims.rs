@@ -18,10 +18,11 @@ pub fn current(db: &Connection, repository: &Value, p: &Principal) -> Result<Vec
     let mut output = Vec::new();
     for mut row in rows(
         db,
-        "SELECT * FROM am_claims WHERE repository_id=? AND state='active' ORDER BY id",
-        [s(repository, "id")],
+        "SELECT * FROM am_claims WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? AND state='active' ORDER BY id",
+        params![s(repository, "id"), p.memory_scope().bind()],
     )? {
         if let Some(memory) = allowed.get(s(&row, "memory_id")) {
+            crate::memory_scope::conceal(&mut row);
             decode(&mut row, "data")?;
             row["memory_revision"] = memory["revision"].clone();
             output.push(row);
@@ -55,11 +56,14 @@ pub fn propose(
     let source_state = memory::state(&read);
     let mut output = Vec::new();
     for claim in checked["claims"].as_array().unwrap() {
-        let claim_id = s(claim, "id");
+        let owned = p.memory_scope().bind().map(|namespace| {
+            digest(&json!({"namespace":namespace,"repository":identifier,"claim":claim["id"]}))
+        });
+        let claim_id = owned.as_deref().unwrap_or_else(|| s(claim, "id"));
         if let Some(prior) = one(
             db,
-            "SELECT memory_id,state FROM am_claims WHERE repository_id=? AND id=?",
-            params![identifier, claim_id],
+            "SELECT memory_id,state FROM am_claims WHERE repository_id=? AND id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+            params![identifier, claim_id, p.memory_scope().bind()],
         )? {
             output.push(json!({"claim_id":claim_id,"memory_id":prior["memory_id"],"state":prior["state"],"replayed":true}));
             continue;
@@ -103,9 +107,10 @@ pub fn propose(
             body.push_str(&format!("\nValid until: {}", s(claim, "invalid_at")));
         }
         let title = graphicle_memory::text::prefix(&title, 120, 500);
-        let draft = memory::save(
+        let draft = memory::save_scoped(
             db,
             identifier,
+            p.memory_scope(),
             None,
             None,
             "observation",
@@ -118,7 +123,7 @@ pub fn propose(
         persisted["knowledge_at"] = json!(now());
         persisted["target_revision"] = data["target_revision"].clone();
         db.execute(
-            "INSERT INTO am_claims VALUES(?,?,?,?,?,?,?,?)",
+            "INSERT INTO am_claims(id,repository_id,memory_id,state,data,source_state,created_at,updated_at,memory_namespace) VALUES(?,?,?,?,?,?,?,?,?)",
             params![
                 claim_id,
                 identifier,
@@ -127,7 +132,8 @@ pub fn propose(
                 persisted.to_string(),
                 source_state,
                 now(),
-                now()
+                now(),
+                p.memory_scope().bind()
             ],
         )?;
         output.push(json!({"claim_id":claim_id,"memory_id":draft["id"],"revision":draft["revision"],"state":"draft","action":claim["action"]}));
@@ -139,14 +145,16 @@ pub fn propose(
 pub fn apply_memory_review(
     db: &Connection,
     repository: &str,
+    scope: &crate::memory_scope::MemoryScope,
     draft_id: &str,
     result_id: &str,
     decision: &str,
 ) -> Result<()> {
+    let namespace = scope.bind();
     let Some(mut claim) = one(
         db,
-        "SELECT * FROM am_claims WHERE repository_id=? AND memory_id=?",
-        params![repository, draft_id],
+        "SELECT * FROM am_claims WHERE repository_id=? AND memory_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, draft_id, scope.bind()],
     )?
     else {
         return Ok(());
@@ -165,15 +173,15 @@ pub fn apply_memory_review(
     if let Some(target) = data["target_id"].as_str() {
         let mut old = one(
             db,
-            "SELECT * FROM am_claims WHERE repository_id=? AND id=? AND state='active'",
-            params![repository, target],
+            "SELECT * FROM am_claims WHERE repository_id=? AND id=? AND memory_namespace IS NOT DISTINCT FROM ? AND state='active'",
+            params![repository, target, namespace],
         )?
         .ok_or_else(|| Error::conflict("Claim target is no longer current"))?;
         decode(&mut old, "data")?;
         let mut memory = one(
             db,
-            "SELECT * FROM repo_memories WHERE repository_id=? AND id=?",
-            params![repository, s(&old, "memory_id")],
+            "SELECT * FROM repo_memories WHERE repository_id=? AND id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+            params![repository, s(&old, "memory_id"), namespace],
         )?
         .ok_or_else(|| Error::conflict("Target memory disappeared"))?;
         decode(&mut memory, "data")?;
@@ -183,9 +191,10 @@ pub fn apply_memory_review(
         if ["SUPERSEDE", "CORRECT", "RETRACT"].contains(&action.as_str()) {
             let mut old_data = memory["data"].clone();
             old_data["retirement"] = json!({"action":action,"by_claim":claim["id"],"knowledge_at":stamp,"valid_at":data["valid_at"]});
-            memory::save(
+            memory::save_scoped(
                 db,
                 repository,
+                scope,
                 Some(s(&memory, "id")),
                 memory["revision"].as_i64(),
                 s(&memory, "kind"),
@@ -204,14 +213,15 @@ pub fn apply_memory_review(
                 params![old["data"].to_string(), stamp, s(&old, "id")],
             )?;
             db.execute(
-                "INSERT INTO am_claim_events VALUES(?,?,?,?,?,?)",
+                "INSERT INTO am_claim_events(id,repository_id,claim_id,action,data,created_at,memory_namespace) VALUES(?,?,?,?,?,?,?)",
                 params![
                     id(),
                     repository,
                     s(&old, "id"),
                     "RETIRE",
                     old["data"].to_string(),
-                    stamp
+                    stamp,
+                    namespace
                 ],
             )?;
         }
@@ -219,23 +229,24 @@ pub fn apply_memory_review(
         // on a fact that this revision deliberately superseded.
         if let Some(mut memory) = one(
             db,
-            "SELECT * FROM repo_memories WHERE repository_id=? AND id=?",
-            params![repository, result_id],
+            "SELECT * FROM repo_memories WHERE repository_id=? AND id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+            params![repository, result_id, namespace],
         )? {
             decode(&mut memory, "data")?;
+            crate::memory_scope::conceal(&mut memory);
             if let Some(notes) = memory["data"]["notes"].as_object_mut() {
                 notes.remove(s(&old, "memory_id"));
             }
             memory["data"]["historical_target"] = data["target_revision"].clone();
             db.execute(
-                "UPDATE repo_memories SET data=? WHERE id=?",
-                params![memory["data"].to_string(), result_id],
+                "UPDATE repo_memories SET data=? WHERE id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+                params![memory["data"].to_string(), result_id, namespace],
             )?;
             let mut journal = memory.clone();
             journal["data"] = json!(memory["data"].to_string());
             db.execute(
-                "UPDATE repo_memory_revisions SET data=? WHERE memory_id=? AND revision=?",
-                params![journal.to_string(), result_id, memory["revision"].as_i64()],
+                "UPDATE repo_memory_revisions SET data=? WHERE memory_id=? AND revision=? AND memory_namespace IS NOT DISTINCT FROM ?",
+                params![journal.to_string(), result_id, memory["revision"].as_i64(), namespace],
             )?;
         }
     }
@@ -250,14 +261,15 @@ pub fn apply_memory_review(
         params![result_id, state, data.to_string(), stamp, s(&claim, "id")],
     )?;
     db.execute(
-        "INSERT INTO am_claim_events VALUES(?,?,?,?,?,?)",
+        "INSERT INTO am_claim_events(id,repository_id,claim_id,action,data,created_at,memory_namespace) VALUES(?,?,?,?,?,?,?)",
         params![
             id(),
             repository,
             s(&claim, "id"),
             action,
             data.to_string(),
-            stamp
+            stamp,
+            namespace
         ],
     )?;
     if state == "active" {
@@ -269,25 +281,32 @@ pub fn apply_memory_review(
                 .unwrap()
                 .first()
                 .map(|v| v["id"].clone());
-            let entity_id = digest(
-                &json!({"repository":repository,"name":name,"speaker":data["speaker"],"source":provenance}),
-            );
+            let entity_id = if namespace.is_some() {
+                digest(
+                    &json!({"repository":repository,"memory_namespace":namespace,"name":name,"speaker":data["speaker"],"source":provenance}),
+                )
+            } else {
+                digest(
+                    &json!({"repository":repository,"name":name,"speaker":data["speaker"],"source":provenance}),
+                )
+            };
             db.execute(
-                "INSERT INTO am_entities VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                "INSERT INTO am_entities(id,repository_id,name,kind,data,created_at,memory_namespace) VALUES(?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
                 params![
                     entity_id,
                     repository,
                     name,
                     "source_scoped",
                     json!({"speaker":data["speaker"],"source":provenance}).to_string(),
-                    stamp
+                    stamp,
+                    namespace
                 ],
             )?;
             entities.push(entity_id);
         }
         db.execute(
-            "INSERT INTO am_entity_links VALUES(?,?,?,?) ON CONFLICT(repository_id,claim_id) DO UPDATE SET subject_id=excluded.subject_id,object_id=excluded.object_id",
-            params![repository, s(&claim, "id"), entities[0], entities[1]],
+            "INSERT INTO am_entity_links(repository_id,claim_id,subject_id,object_id,memory_namespace) VALUES(?,?,?,?,?) ON CONFLICT(repository_id,claim_id) DO UPDATE SET subject_id=excluded.subject_id,object_id=excluded.object_id WHERE am_entity_links.memory_namespace IS NOT DISTINCT FROM excluded.memory_namespace",
+            params![repository, s(&claim, "id"), entities[0], entities[1], namespace],
         )?;
     }
     Ok(())
@@ -386,18 +405,19 @@ impl Store {
                 .map_err(Error::bad)?;
             for mut row in rows(
                 db,
-                "SELECT * FROM am_claims WHERE repository_id=? ORDER BY created_at,id",
-                [s(&repository, "id")],
+                "SELECT * FROM am_claims WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? ORDER BY created_at,id",
+                params![s(&repository, "id"), p.memory_scope().bind()],
             )? {
                 if !memories.iter().any(|m| m["id"] == row["memory_id"]) {
                     continue;
                 }
+                crate::memory_scope::conceal(&mut row);
                 decode(&mut row, "data")?;
                 // Reconstruct the knowledge view from immutable events. The
                 // current row may contain an invalidation learned much later.
                 if let Some(at) = known_at {
                     let mut selected=None;
-                    for mut event in rows(db,"SELECT action,data,created_at FROM am_claim_events WHERE repository_id=? AND claim_id=? ORDER BY created_at,rowid",params![s(&repository,"id"),s(&row,"id")])? {
+                    for mut event in rows(db,"SELECT action,data,created_at FROM am_claim_events WHERE repository_id=? AND claim_id=? AND memory_namespace IS NOT DISTINCT FROM ? ORDER BY created_at,rowid",params![s(&repository,"id"),s(&row,"id"),p.memory_scope().bind()])? {
                         if graphicle_memory::temporal::instant(s(&event,"created_at")).map_err(Error::bad)?<=at {
                             decode(&mut event,"data")?;selected=Some(event);
                         }

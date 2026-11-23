@@ -388,7 +388,7 @@ async fn real_qdrant_filters_fingerprints_and_authorized_candidate_ids() {
             .connect()
             .unwrap()
             .execute(
-                "INSERT INTO am_vectors VALUES(?,?,?,?,?,?)",
+                "INSERT INTO am_vectors(repository_id,identity,source_sha,model_key,dimensions,vector) VALUES(?,?,?,?,?,?)",
                 graphicle_runtime::params![
                     f.project,
                     s(row, "identity"),

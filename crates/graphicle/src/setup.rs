@@ -471,8 +471,8 @@ pub fn setup_report(
     }
     // How fast questions are: the passage index and the saved code graph.
     if let Ok(questions) =
-        store.authorized_read(&session.workspace, &session.capability, "read", |db, _| {
-            crate::indexed_query::readiness(db, &repository)
+        store.authorized_read(&session.workspace, &session.capability, "read", |db, p| {
+            crate::indexed_query::readiness(db, &repository, p.memory_scope())
         })
     {
         project_report["questions"] = questions;

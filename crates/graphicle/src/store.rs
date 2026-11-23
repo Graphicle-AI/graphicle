@@ -146,13 +146,46 @@ pub struct Store {
     #[allow(dead_code)]
     copying: Option<Arc<crate::db::CopyLock>>,
 }
+#[path = "memory_scope.rs"]
+pub mod scope;
+
+/// Who a request authenticated as. Built only here ([`authenticate_hash`],
+/// [`Principal::shared`]): its memory scope is private, so nothing outside
+/// this module can give a request another credential's namespace.
 #[derive(Clone)]
 pub struct Principal {
     pub workspace: String,
     pub credential: String,
     pub hash: String,
     pub role: String,
+    scope: scope::MemoryScope,
+    self_review: bool,
 }
+impl Principal {
+    /// A principal of shared memory (the owner, a credential without a
+    /// namespace, a test or extension that builds one). No public
+    /// constructor makes a namespaced principal: only authentication does.
+    pub fn shared(workspace: &str, credential: &str, hash: &str, role: &str) -> Self {
+        Self {
+            workspace: workspace.into(),
+            credential: credential.into(),
+            hash: hash.into(),
+            role: role.into(),
+            scope: scope::MemoryScope::shared(),
+            self_review: false,
+        }
+    }
+    /// The memory this request reads and writes.
+    pub fn memory_scope(&self) -> &scope::MemoryScope {
+        &self.scope
+    }
+    /// The owner set `self_review` on this credential's namespace: its own
+    /// credentials (with `propose`) approve its drafts.
+    pub fn self_review(&self) -> bool {
+        self.self_review && self.scope.is_private()
+    }
+}
+
 /// The roles a workspace credential may have in Core, besides the owner
 /// capability. An installed extension may define more
 /// (`Extension::role_permits`).
@@ -510,7 +543,14 @@ impl Store {
                 directory.display()
             ))
         })?;
-        check_reader(&store.pool.connect()?)?;
+        let db = store.pool.connect()?;
+        check_reader(&db)?;
+        if !namespace_schema_ready(&db)? {
+            return Err(Error::bad(format!(
+                "Read-only mode needs a store upgraded to store format {READER_FORMAT}; {} does not have the memory-namespace tables and columns yet. Open it once without --read-only to update it.",
+                directory.display()
+            )));
+        }
         Ok(store)
     }
 
@@ -555,6 +595,11 @@ impl Store {
 /// migration.
 fn run_migrations(db: &Connection) -> Result<()> {
     let sqlite = db.engine() == crate::db::Engine::Sqlite;
+    // Record store format 2 before any table receives a `memory_namespace`
+    // column (including `schema.sql` on a fresh store), so earlier releases
+    // refuse the store even if a non-transactional SQLite migration stops
+    // partway through.
+    require_namespace_reader(db)?;
     db.execute_batch(include_str!("schema.sql"))?;
     if sqlite {
         // SQLite stores have kept an FTS5 index of passage text since the
@@ -570,6 +615,27 @@ fn run_migrations(db: &Connection) -> Result<()> {
     crate::graph_delta::migrate(db)?;
     db.execute_batch(include_str!("product_schema.sql"))?;
     crate::work_state::migrate(db)?;
+    // Memory namespaces: a nullable `memory_namespace` on credentials and on
+    // every table of agent-written memory and its caches (NULL: shared, as
+    // before). Store format 2 was recorded above ([`require_namespace_reader`]).
+    ensure_column(db, "credentials", "memory_namespace", "TEXT")?;
+    for &(table, parent) in crate::memory_scope::TABLES {
+        if table_exists(db, table)? {
+            ensure_column(db, table, "memory_namespace", "TEXT")?;
+            // Constant names, never a client's. SQLite serves
+            // `IS NOT DISTINCT FROM` (its `IS`) from an index; PostgreSQL
+            // cannot, so there the index would only cost every insert, and
+            // the queries filter by the parent's own index.
+            db.execute_batch(&if sqlite {
+                format!(
+                    "CREATE INDEX IF NOT EXISTS {table}_namespace_lookup ON {table}({parent},memory_namespace)"
+                )
+            } else {
+                format!("DROP INDEX IF EXISTS {table}_namespace_lookup")
+            })?;
+        }
+    }
+    crate::memory_scope::migrate(db)?;
     // Each folder's freshness record.
     crate::fresh::migrate(db)?;
     // Documents' mention links to code symbols.
@@ -737,12 +803,27 @@ impl Store {
             return Err(Error::denied());
         }
         self.transaction(|db| {
-            let principal = authorize_hash(
-                db,
-                workspace,
-                &graphicle_memory::text::sha256(token.as_bytes()),
-                permission,
-            )?;
+            let hash = graphicle_memory::text::sha256(token.as_bytes());
+            let mut principal = authorize_hash(db, workspace, &hash, permission)?;
+            // `stats` reports when a namespace was last read and written: a
+            // call that only needs `read` (recall over the write path, which
+            // counts what it served) is a read. Updating the namespace row
+            // before `f` also acquires PostgreSQL's `FOR NO KEY UPDATE` lock
+            // on `am_memory_namespaces`, serializing this transaction with any
+            // concurrent `namespace_delete` (`FOR UPDATE`); re-authorizing on
+            // PostgreSQL immediately catches credentials that `erase` revoked
+            // while this transaction waited on the lock.
+            if let Some(namespace) = principal.memory_scope().bind() {
+                let sql = if permission == "read" {
+                    "UPDATE am_memory_namespaces SET last_read_at=? WHERE workspace_id=? AND name=?"
+                } else {
+                    "UPDATE am_memory_namespaces SET last_write_at=? WHERE workspace_id=? AND name=?"
+                };
+                db.execute(sql, params![now(), workspace, namespace])?;
+                if db.engine() == crate::db::Engine::Postgres {
+                    principal = authorize_hash(db, workspace, &hash, permission)?;
+                }
+            }
             f(db, &principal)
         })
     }
@@ -757,15 +838,28 @@ impl Store {
         if token.len() > 512 {
             return Err(Error::denied());
         }
-        self.read(|db| {
+        let mut namespace: Option<String> = None;
+        let result = self.read(|db| {
             let principal = authorize_hash(
                 db,
                 workspace,
                 &graphicle_memory::text::sha256(token.as_bytes()),
                 permission,
             )?;
-            f(db, &principal)
-        })
+            let value = f(db, &principal)?;
+            namespace = principal.memory_scope().bind().map(str::to_owned);
+            Ok(value)
+        })?;
+        if let Some(namespace) = namespace {
+            // The timestamp is best-effort; it must never turn a successful
+            // memory read into an error due to a competing telemetry writer.
+            let _=self.counter(|db| {
+                db.execute("UPDATE am_memory_namespaces SET last_read_at=? WHERE workspace_id=? AND name=?",
+                    params![now(),workspace,namespace])?;
+                Ok(())
+            });
+        }
+        Ok(result)
     }
     pub fn create_workspace(&self, name: &str) -> Result<Value> {
         string(&json!({"name":name}), "name", 100)?;
@@ -790,7 +884,7 @@ impl Store {
         })
     }
     pub fn grant(&self, workspace: &str, token: &str, args: &Value) -> Result<Value> {
-        self.authorized(workspace,token,"admin",|db,_| {
+        self.authorized(workspace,token,"admin",|db,p| {
             let role=string(args,"role",30)?;
             if !CREDENTIAL_ROLES.contains(&role) {
                 // A role an installed extension defines, which it may refuse
@@ -800,27 +894,56 @@ impl Store {
                 extensions.grant_role(db,workspace,role)?;
             }
             let label=string(args,"label",100)?; let token=format!("{}{}",id(),id()); let identifier=id();
+            let namespace = args.get("memory_namespace").filter(|v| !v.is_null())
+                .map(|v| v.as_str().ok_or_else(||Error::bad("memory_namespace must be a string")))
+                .transpose()?;
+            let namespace = namespace.map(scope::Namespace::parse).transpose().map_err(Error::bad)?;
+            let namespace = namespace.as_ref().map(scope::Namespace::as_str);
+            let requested_review = match args.get("self_review") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(v.as_bool().ok_or_else(||Error::bad("self_review must be a boolean"))?),
+            };
+            if namespace.is_none() && requested_review == Some(true) {
+                return Err(Error::bad("self_review requires a private memory_namespace"));
+            }
+            let mut self_review = false;
+            if let Some(namespace) = namespace {
+                // Only the owner creates namespaces and mints keys in them:
+                // namespaces have owner-only lifecycle operations (`stats`,
+                // `export`, `import`, `delete`) and an immutable `self_review`
+                // policy.
+                if p.role != "owner" {
+                    return Err(Error::denied());
+                }
+                // Admin operations span every namespace, so an admin role
+                // (e.g. from an extension) cannot be bound to one namespace.
+                let candidate = Principal::shared(workspace, "", "", role);
+                if role_grants(db, &candidate, "admin")? {
+                    return Err(Error::bad("An admin role cannot carry a memory_namespace"));
+                }
+                if let Some(existing) = one(db,
+                    "SELECT self_review FROM am_memory_namespaces WHERE workspace_id=? AND name=?",
+                    params![workspace,namespace])? {
+                    self_review = existing["self_review"] == 1;
+                    if requested_review.is_some_and(|wanted| wanted != self_review) {
+                        return Err(Error::conflict("Namespace self_review policy is immutable"));
+                    }
+                } else {
+                    self_review = requested_review.unwrap_or(false);
+                    db.execute("INSERT INTO am_memory_namespaces(workspace_id,name,self_review,created_at) VALUES(?,?,?,?)",
+                        params![workspace,namespace,i64::from(self_review),now()])?;
+                    require_namespace_reader(db)?;
+                }
+            }
             let expiry=args.get("expires_at").and_then(Value::as_str);
             if let Some(value)=expiry && graphicle_memory::temporal::instant(value).map_err(Error::bad)?<=chrono::Utc::now().fixed_offset() {return Err(Error::bad("Expiry must be in the future"));}
-            db.execute("INSERT INTO credentials VALUES (?,?,?,?,?,?,?,NULL)",params![identifier,workspace,graphicle_memory::text::sha256(token.as_bytes()),role,label,now(),expiry])?;
-            Ok(json!({"id":identifier,"capability":token,"role":role,"label":label,"expires_at":expiry}))
+            db.execute("INSERT INTO credentials(id,workspace_id,capability_hash,role,label,created_at,expires_at,revoked_at,memory_namespace) VALUES (?,?,?,?,?,?,?,NULL,?)",params![identifier,workspace,graphicle_memory::text::sha256(token.as_bytes()),role,label,now(),expiry,namespace])?;
+            Ok(json!({"id":identifier,"capability":token,"role":role,"label":label,"expires_at":expiry,"memory_namespace":namespace,"self_review":self_review}))
         })
     }
     pub fn revoke(&self, workspace: &str, token: &str, credential: &str) -> Result<Value> {
-        self.authorized(workspace,token,"admin",|db,_| {
-            if db.execute("UPDATE credentials SET revoked_at=? WHERE id=? AND workspace_id=?",params![now(),credential,workspace])?!=1 {return Err(Error::bad("Credential not found"));}
-            // A member linked to the credential is deactivated too, on any
-            // store that has the team tables, so the revocation holds in
-            // every edition that opens the store.
-            crate::store_compat::credential_revoked(db,workspace,credential)?;
-            crate::extension::installed().credential_revoked(db,workspace,credential)?;
-            // A queued job never retains the authority of a revoked credential.
-            db.execute("UPDATE am_jobs SET state='cancelled',updated_at=? WHERE principal_hash IN (SELECT capability_hash FROM credentials WHERE id=?) AND state IN ('queued','retry','running')",params![now(),credential])?;
-            // Cached answers produced under the revoked credential are no longer current.
-            let hash:String=db.query_row("SELECT capability_hash FROM credentials WHERE id=?",[credential],|r|r.get(0))?;
-            let revoked_sources=credential_sources(db,workspace,credential)?;
-            crate::invalidation::permissions_changed(db,workspace,Some(&hash),&revoked_sources,"credential_revoked")?;
-            Ok(json!({"revoked":true,"sources":revoked_sources}))
+        self.authorized(workspace, token, "admin", |db, _| {
+            revoke_credential(db, workspace, credential)
         })
     }
     pub fn register(&self, workspace: &str, token: &str, args: &Value) -> Result<Value> {
@@ -1252,11 +1375,68 @@ pub fn credential_sources(
     Ok(sources.into_iter().collect())
 }
 
+/// Revoke `credential` of `workspace` ([`Store::revoke`]; also every key of a
+/// deleted memory namespace).
+pub(crate) fn revoke_credential(
+    db: &Connection,
+    workspace: &str,
+    credential: &str,
+) -> Result<Value> {
+    if db.execute(
+        "UPDATE credentials SET revoked_at=? WHERE id=? AND workspace_id=?",
+        params![now(), credential, workspace],
+    )? != 1
+    {
+        return Err(Error::bad("Credential not found"));
+    }
+    // A member linked to the credential is deactivated too, on any
+    // store that has the team tables, so the revocation holds in
+    // every edition that opens the store.
+    crate::store_compat::credential_revoked(db, workspace, credential)?;
+    crate::extension::installed().credential_revoked(db, workspace, credential)?;
+    // A queued job never retains the authority of a revoked credential.
+    db.execute("UPDATE am_jobs SET state='cancelled',updated_at=? WHERE principal_hash IN (SELECT capability_hash FROM credentials WHERE id=?) AND state IN ('queued','retry','running')",params![now(),credential])?;
+    // Cached answers produced under the revoked credential are no longer current.
+    let hash: String = db.query_row(
+        "SELECT capability_hash FROM credentials WHERE id=?",
+        [credential],
+        |r| r.get(0),
+    )?;
+    let revoked_sources = credential_sources(db, workspace, credential)?;
+    crate::invalidation::permissions_changed(
+        db,
+        workspace,
+        Some(&hash),
+        &revoked_sources,
+        "credential_revoked",
+    )?;
+    Ok(json!({"revoked":true,"sources":revoked_sources}))
+}
+
 /// The store format this program reads ([`require_reader`]). Format 1 is
 /// Graphicle 0.1.3's: the first program that checks the format when it opens
 /// a store, and one that honours the `credential_requirements` contract
-/// ([`required_capabilities`]).
-pub const READER_FORMAT: i64 = 1;
+/// ([`required_capabilities`]). Format 2 is Graphicle 0.1.20's: memory
+/// namespaces ([`require_namespace_reader`]).
+pub const READER_FORMAT: i64 = 2;
+
+/// The first release that reads store format 2.
+pub(crate) const NAMESPACE_READER_VERSION: &str = "0.1.20";
+
+/// Recorded by every open of a store, as soon as its tables carry the
+/// `memory_namespace` column, whether or not a namespace was ever made.
+/// Releases before 0.1.20 insert into several of those tables without naming
+/// their columns (`INSERT INTO repo_memories VALUES(?,...)`, credentials,
+/// claims, entities, model calls and caches), which SQLite refuses once a
+/// table has one more column: they would open the store and fail at their
+/// first save. With this record they refuse to open it instead (from 0.1.3
+/// on, [`check_reader`]). Once a store has a namespace, an older program
+/// would also read a namespaced key as an ordinary key of its role and
+/// namespaced memory as shared. So the upgrade is one-way, on both engines:
+/// go back to an earlier release only with a backup taken before.
+pub(crate) fn require_namespace_reader(db: &Connection) -> Result<()> {
+    require_reader(db, "memory_namespaces", 2, NAMESPACE_READER_VERSION)
+}
 
 /// The formats a store requires of the programs that open it, by reason.
 const READERS: &str = "CREATE TABLE IF NOT EXISTS store_readers (
@@ -1295,6 +1475,41 @@ pub fn require_reader(db: &Connection, reason: &str, format: i64, version: &str)
         params![reason, format, version, now()],
     )?;
     Ok(())
+}
+
+/// Whether `store_readers` already records the format-2 namespace marker.
+fn namespace_reader_recorded(db: &Connection) -> Result<bool> {
+    if !table_exists(db, "store_readers")? {
+        return Ok(false);
+    }
+    let format: Option<i64> = db
+        .query_row(
+            "SELECT format FROM store_readers WHERE reason='memory_namespaces'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(format.is_some_and(|f| f >= 2))
+}
+
+/// Whether `db` has the complete namespace schema (format-2 reader record,
+/// `am_memory_namespaces`, and `memory_namespace` on `credentials` and every
+/// present table of [`crate::memory_scope::TABLES`]). Checked by
+/// [`Store::open_read_only`] so an un-upgraded or partially migrated store is
+/// refused at open instead of failing mid-query with `no such column`.
+fn namespace_schema_ready(db: &Connection) -> Result<bool> {
+    if !namespace_reader_recorded(db)?
+        || !table_exists(db, "am_memory_namespaces")?
+        || !column_exists(db, "credentials", "memory_namespace")?
+    {
+        return Ok(false);
+    }
+    for &(table, _) in crate::memory_scope::TABLES {
+        if table_exists(db, table)? && !column_exists(db, table, "memory_namespace")? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// Refuse a store that requires a newer store format than this program reads
@@ -1503,6 +1718,9 @@ fn schema_current(db: &Connection, digest: &str) -> Result<bool> {
     if recorded != digest || count != tables(db)?.len() as i64 {
         return Ok(false);
     }
+    if !namespace_reader_recorded(db)? {
+        return Ok(false);
+    }
     Ok(!crate::doc_links::relink_pending(db)?
         && !crate::graph_projection::legacy_pr_projects_pending(db)?)
 }
@@ -1524,16 +1742,15 @@ pub fn authenticate_hash(db: &Connection, workspace: &str, hash: &str) -> Result
         .optional()?
         .ok_or_else(Error::denied)?;
     let principal = if owner.as_bytes().ct_eq(hash.as_bytes()).into() {
-        Principal {
-            workspace: workspace.into(),
-            hash: hash.into(),
-            credential: "owner".into(),
-            role: "owner".into(),
-        }
+        Principal::shared(workspace, "owner", hash, "owner")
     } else {
         let row = match one(
             db,
-            "SELECT id,role,expires_at,revoked_at,capability_hash FROM credentials WHERE workspace_id=? AND capability_hash=?",
+            "SELECT c.id,c.role,c.expires_at,c.revoked_at,c.capability_hash,
+                    c.memory_namespace, n.self_review FROM credentials c
+             LEFT JOIN am_memory_namespaces n
+                    ON n.workspace_id=c.workspace_id AND n.name=c.memory_namespace
+             WHERE c.workspace_id=? AND c.capability_hash=?",
             params![workspace, hash],
         )? {
             Some(row) => row,
@@ -1567,6 +1784,15 @@ pub fn authenticate_hash(db: &Connection, workspace: &str, hash: &str) -> Result
             hash: s(&row, "capability_hash").into(),
             credential: s(&row, "id").into(),
             role: s(&row, "role").into(),
+            scope: match row["memory_namespace"].as_str() {
+                None => scope::MemoryScope::shared(),
+                // A stored name that no longer parses is refused, never read
+                // as shared.
+                Some(name) => scope::MemoryScope::private(
+                    scope::Namespace::parse(name).map_err(|_| Error::denied())?,
+                ),
+            },
+            self_review: row["self_review"] == 1 || row["self_review"] == true,
         }
     };
     Ok(principal)
@@ -1590,6 +1816,16 @@ pub fn authorize_hash(
 /// [`Principal::permits`] says, and a role the core does not define only as
 /// the installed extension that defines it says (`Extension::role_permits`).
 pub fn role_grants(db: &Connection, p: &Principal, permission: &str) -> Result<bool> {
+    // Workspace admin operations span every namespace (retention, deletion
+    // verification, credential management, usage metering): a credential bound
+    // to a private memory namespace never holds `admin`, even through an
+    // extension role.
+    if permission == "admin" && p.memory_scope().is_private() {
+        return Ok(false);
+    }
+    if permission == "approve" && p.self_review() && role_grants(db, p, "propose")? {
+        return Ok(true);
+    }
     if p.permits(permission) {
         return Ok(true);
     }
@@ -1677,9 +1913,45 @@ pub fn heads(db: &Connection, repository: &str) -> Result<BTreeMap<String, Strin
     .collect())
 }
 pub fn event(db: &Connection, repository: &str, kind: &str, value: Value) -> Result<()> {
+    event_in(db, repository, None, kind, value)
+}
+/// An event about memory of `scope` (its ids are that namespace's): stamped
+/// with the namespace, so a namespace's export and delete take it along.
+pub fn event_scoped(
+    db: &Connection,
+    repository: &str,
+    scope: &scope::MemoryScope,
+    kind: &str,
+    value: Value,
+) -> Result<()> {
+    event_in(db, repository, scope.bind(), kind, value)
+}
+/// An event of a job, stamped with the namespace the job was queued in.
+pub fn job_event(
+    db: &Connection,
+    repository: &str,
+    job: &str,
+    kind: &str,
+    value: Value,
+) -> Result<()> {
     db.execute(
-        "INSERT INTO repo_events(repository_id,kind,data,created_at) VALUES(?,?,?,?)",
-        params![repository, kind, value.to_string(), now()],
+        "INSERT INTO repo_events(repository_id,kind,data,created_at,memory_namespace) VALUES(?,?,?,?,(SELECT memory_namespace FROM am_jobs WHERE id=?))",
+        params![repository, kind, value.to_string(), now(), job],
+    )?;
+    Ok(())
+}
+/// Only for this module and [`crate::memory`]'s private save path, which
+/// already hold a namespace that came from a [`scope::MemoryScope`].
+pub(crate) fn event_in(
+    db: &Connection,
+    repository: &str,
+    namespace: Option<&str>,
+    kind: &str,
+    value: Value,
+) -> Result<()> {
+    db.execute(
+        "INSERT INTO repo_events(repository_id,kind,data,created_at,memory_namespace) VALUES(?,?,?,?,?)",
+        params![repository, kind, value.to_string(), now(),namespace],
     )?;
     Ok(())
 }
@@ -1689,6 +1961,66 @@ pub fn invalidate(db: &Connection, repository: &str) -> Result<()> {
     db.execute(
         "DELETE FROM am_query_cache WHERE repository_id=?",
         [repository],
+    )?;
+    Ok(())
+}
+
+/// Acquire a non-exclusive write-side row lock on `am_memory_namespaces` on
+/// PostgreSQL so background worker writes serialize against concurrent
+/// `namespace_delete` (`FOR UPDATE`) without deadlocking against other
+/// `UPDATE am_memory_namespaces` statements (`FOR NO KEY UPDATE`). SQLite
+/// already serializes writers via `BEGIN IMMEDIATE`.
+pub(crate) fn lock_namespace_for_write(
+    db: &Connection,
+    workspace: &str,
+    namespace: &str,
+) -> Result<()> {
+    if db.engine() == crate::db::Engine::Postgres {
+        let _ = db
+            .query_row(
+                "SELECT 1 FROM am_memory_namespaces WHERE workspace_id=? AND name=? FOR NO KEY UPDATE",
+                params![workspace, namespace],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+    }
+    Ok(())
+}
+
+/// Acquire an exclusive row lock on `am_memory_namespaces` on PostgreSQL for
+/// destructive or whole-namespace operations (`erase`, `restore`), waiting for
+/// in-flight writes in `namespace` to finish and blocking new ones until this
+/// transaction commits.
+pub(crate) fn lock_namespace_for_erase(
+    db: &Connection,
+    workspace: &str,
+    namespace: &str,
+) -> Result<()> {
+    if db.engine() == crate::db::Engine::Postgres {
+        let _ = db
+            .query_row(
+                "SELECT 1 FROM am_memory_namespaces WHERE workspace_id=? AND name=? FOR UPDATE",
+                params![workspace, namespace],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+    }
+    Ok(())
+}
+
+/// [`invalidate`] for a memory change in one scope: leaves other namespaces'
+/// cached query vectors untouched so saving memory in one namespace never
+/// evicts or reveals activity to another.
+pub(crate) fn invalidate_scope(
+    db: &Connection,
+    repository: &str,
+    namespace: Option<&str>,
+) -> Result<()> {
+    crate::projection::enqueue(db, repository, "source_or_permission_state_changed")?;
+    graphicle_memory::cache::clear(repository).map_err(Error::bad)?;
+    db.execute(
+        "DELETE FROM am_query_cache WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, namespace],
     )?;
     Ok(())
 }
@@ -1869,9 +2201,10 @@ mod reader_format_tests {
         drop(db);
         let error = Store::open(dir.path()).err().expect("refused");
         assert!(
-            error
-                .message
-                .starts_with("This store needs Graphicle 9.9.9 or newer (store format 2)"),
+            error.message.starts_with(&format!(
+                "This store needs Graphicle 9.9.9 or newer (store format {})",
+                READER_FORMAT + 1
+            )),
             "{}",
             error.message
         );

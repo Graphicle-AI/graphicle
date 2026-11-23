@@ -37,6 +37,13 @@
 //!   subfolder that the engine's `export wiki` (which replaces the `.md`
 //!   files at the top of `wiki/`) never touches. When `wiki/index.md` does
 //!   not exist, a short one that points to `written/index.md` is written.
+//!   A key with a memory namespace writes its own wiki, from the shared
+//!   project and its namespace's memory, in
+//!   `.graphicle/wiki/namespaces/<namespace>/written/` with its own manifest
+//!   and lock: it never touches the shared wiki, and the shared wiki never
+//!   holds a namespace's memory. (A namespace keeps memory apart between
+//!   keys, not files on disk: anyone who can read the project's folder can
+//!   read that wiki.)
 //!   `--out DIR` writes elsewhere, for a wiki kept in the repository. A
 //!   file there that this program did not write (its front matter says) is
 //!   never replaced, and a lock file keeps two runs from writing at once.
@@ -151,7 +158,8 @@ pub struct WriteArgs {
     #[arg(long)]
     pub project: Option<String>,
     /// The wiki's folder [default: .graphicle/wiki/written in the project's
-    /// folder].
+    /// folder; .graphicle/wiki/namespaces/<namespace>/written for a key with
+    /// a memory namespace].
     #[arg(long, value_name = "DIR")]
     pub out: Option<PathBuf>,
     /// The configured model profile [default: the answer model].
@@ -220,26 +228,90 @@ pub struct Target {
     pub project: String,
     pub name: String,
     pub folder: Option<PathBuf>,
+    /// The session key's memory namespace: its wiki is its own
+    /// ([`folder_of`], [`article_id`]).
+    pub namespace: Option<String>,
 }
 
 /// The project of `requested`, brought up to date with its folder first.
 pub fn target(store: &Store, config: &model::Config, requested: Option<String>) -> Result<Target> {
     let (session, project, folder) = crate::cli::long_context_target(store, config, requested)?;
-    let name =
+    let (name, namespace) =
         store.authorized_read(&session.workspace, &session.capability, "read", |db, p| {
             let repository = crate::store::repo(db, p, &project)?;
-            Ok(s(&repository, "name").to_string())
+            Ok((
+                s(&repository, "name").to_string(),
+                p.memory_scope().bind().map(str::to_string),
+            ))
         })?;
     Ok(Target {
         session,
         project,
         name,
         folder,
+        namespace,
     })
 }
 
+/// Whether `stem` (before the first `.`) is a Windows reserved device name.
+fn windows_reserved(stem: &str) -> bool {
+    matches!(
+        stem.to_ascii_lowercase().as_str(),
+        "con"
+            | "prn"
+            | "aux"
+            | "nul"
+            | "com1"
+            | "com2"
+            | "com3"
+            | "com4"
+            | "com5"
+            | "com6"
+            | "com7"
+            | "com8"
+            | "com9"
+            | "lpt1"
+            | "lpt2"
+            | "lpt3"
+            | "lpt4"
+            | "lpt5"
+            | "lpt6"
+            | "lpt7"
+            | "lpt8"
+            | "lpt9"
+    )
+}
+
+/// Safe, collision-free folder name for `namespace`. Lowercase names that are
+/// valid on every filesystem stay readable as-is; names containing uppercase
+/// letters (which fold on macOS and Windows), ending in `.` (stripped on
+/// Windows) or naming a Windows reserved device are suffixed with `~` (outside
+/// `Namespace`'s alphabet, so it never collides with an unescaped name) and a
+/// 12-hex SHA-256 digest of the exact namespace name.
+pub fn namespace_folder_name(namespace: &str) -> String {
+    let stem = namespace.split('.').next().unwrap_or("");
+    let directly_safe = !namespace.bytes().any(|b| b.is_ascii_uppercase())
+        && !namespace.ends_with('.')
+        && !windows_reserved(stem);
+    if directly_safe {
+        return namespace.to_string();
+    }
+    let hash = graphicle_memory::text::sha256(namespace.as_bytes());
+    let mut prefix: String = namespace.to_ascii_lowercase();
+    while prefix.ends_with('.') {
+        prefix.pop();
+    }
+    if prefix.is_empty() || windows_reserved(prefix.split('.').next().unwrap_or("")) {
+        prefix.insert(0, '_');
+    }
+    prefix.truncate(50);
+    format!("{prefix}~{}", &hash[..12])
+}
+
 /// The wiki's folder: `out`, else `.graphicle/wiki/written` (the engine's
-/// output folder, `GRAPHICLE_OUT` when set) in the project's folder.
+/// output folder, `GRAPHICLE_OUT` when set) in the project's folder, or
+/// `.graphicle/wiki/namespaces/<folder>/written` for a key with a memory
+/// namespace, whose wiki holds that namespace's memory.
 pub fn folder_of(target: &Target, out: Option<&Path>) -> Result<(PathBuf, bool)> {
     if let Some(out) = out {
         return Ok((out.to_path_buf(), false));
@@ -253,7 +325,16 @@ pub fn folder_of(target: &Target, out: Option<&Path>) -> Result<(PathBuf, bool)>
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| ".graphicle".into());
-    Ok((folder.join(engine).join("wiki").join(FOLDER), true))
+    let wiki = folder.join(engine).join("wiki");
+    Ok(match &target.namespace {
+        Some(namespace) => (
+            wiki.join("namespaces")
+                .join(namespace_folder_name(namespace))
+                .join(FOLDER),
+            true,
+        ),
+        None => (wiki.join(FOLDER), true),
+    })
 }
 
 /// One code symbol of an area.
@@ -748,6 +829,11 @@ impl Manifest {
 
     /// Write the manifest in `dir`, whole or not at all.
     pub fn save(&self, dir: &Path, project: &str) -> Result<()> {
+        self.save_mode(dir, project, false)
+    }
+
+    /// [`Self::save`], with owner-only file permissions on Unix when `private`.
+    fn save_mode(&self, dir: &Path, project: &str, private: bool) -> Result<()> {
         let articles: Map<String, Value> = self
             .articles
             .iter()
@@ -759,17 +845,41 @@ impl Manifest {
         };
         let value =
             json!({"rules":RULES,"project":project,"settings":settings,"articles":articles});
-        write_if_changed(
+        write_if_changed_mode(
             &dir.join(MANIFEST),
             &format!("{}\n", serde_json::to_string_pretty(&value)?),
+            private,
         )?;
         Ok(())
     }
 }
 
+/// Restrict `dir` to owner-only permissions (`0700`) on Unix so a private
+/// namespace's wiki folder is not readable by other local users.
+pub(crate) fn restrict_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
 /// Write `text` to `path` through a new temporary file beside it, renamed
 /// into place: a symbolic link at `path` is replaced, never followed.
 pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
+    write_atomic_mode(path, text, false)
+}
+
+/// [`write_atomic`] with owner-only file permissions (`0600`) on Unix, for a
+/// private namespace's wiki files and proposals.
+pub(crate) fn write_atomic_private(path: &Path, text: &str) -> Result<()> {
+    write_atomic_mode(path, text, true)
+}
+
+fn write_atomic_mode(path: &Path, text: &str, private: bool) -> Result<()> {
     use std::io::Write;
     let name = path
         .file_name()
@@ -777,10 +887,13 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
         .unwrap_or_else(|| "file".into());
     let temporary = path.with_file_name(format!(".{name}.{}.tmp", std::process::id()));
     let create = || {
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        if private {
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        }
+        options.open(&temporary)
     };
     // A file left by an earlier run with the same process id, or a link
     // put there, is removed (the link itself, not what it names) rather
@@ -792,6 +905,11 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
         }
         other => other?,
     };
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     let written = file
         .write_all(text.as_bytes())
         .and_then(|()| file.sync_all());
@@ -804,11 +922,16 @@ pub fn write_atomic(path: &Path, text: &str) -> Result<()> {
 }
 
 /// Write `text` to `path` unless it already holds it; whether it wrote.
-fn write_if_changed(path: &Path, text: &str) -> Result<bool> {
+fn write_if_changed_mode(path: &Path, text: &str, private: bool) -> Result<bool> {
     if std::fs::read_to_string(path).ok().as_deref() == Some(text) {
+        #[cfg(unix)]
+        if private {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+        }
         return Ok(false);
     }
-    write_atomic(path, text)?;
+    write_atomic_mode(path, text, private)?;
     Ok(true)
 }
 
@@ -835,6 +958,10 @@ pub fn ours(path: &Path) -> bool {
 /// dropped; `None` when another run holds it. A symbolic link at the lock's
 /// path is refused, not followed.
 pub fn lock(dir: &Path) -> Result<Option<std::fs::File>> {
+    lock_mode(dir, false)
+}
+
+fn lock_mode(dir: &Path, private: bool) -> Result<Option<std::fs::File>> {
     let path = dir.join(LOCK);
     if std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()) {
         return Err(Error::bad(format!(
@@ -845,8 +972,18 @@ pub fn lock(dir: &Path) -> Result<Option<std::fs::File>> {
     let mut options = std::fs::OpenOptions::new();
     options.create(true).truncate(false).read(true).write(true);
     #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+    {
+        std::os::unix::fs::OpenOptionsExt::custom_flags(&mut options, libc::O_NOFOLLOW);
+        if private {
+            std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        }
+    }
     let file = options.open(&path)?;
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
@@ -1373,6 +1510,7 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
             dir.display()
         )));
     }
+    let private = target.namespace.is_some();
     // A run that writes holds the folder's lock before it reads the
     // manifest, so two runs never write it, or spend, at once.
     let _lock = if args.dry_run {
@@ -1382,7 +1520,13 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
         // creates the folder or the lock.
         Manifest::load(&dir)?;
         std::fs::create_dir_all(&dir)?;
-        match lock(&dir)? {
+        if private {
+            restrict_dir(&dir)?;
+            if default_place && let Some(parent) = dir.parent() {
+                restrict_dir(parent)?;
+            }
+        }
+        match lock_mode(&dir, private)? {
             Some(file) => Some(file),
             None => {
                 return Err(Error::bad(format!(
@@ -1499,7 +1643,7 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
         }
         manifest.articles.remove(slug);
     }
-    manifest.save(&dir, &target.name)?;
+    manifest.save_mode(&dir, &target.name, private)?;
     for planned in plan.iter().filter(|p| p.write) {
         let area = &found.areas[planned.area];
         if stopped.is_some() {
@@ -1630,9 +1774,9 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
             "memories":planned.inputs.memories.iter().map(|m| json!({"id":m["id"],"title":m["title"]})).collect::<Vec<_>>(),
             "dropped":{"paragraphs":lost.paragraphs,"citations":lost.citations},"reply":checked});
         let text = render(&area.slug, &record, &links_of(area, &found.areas));
-        write_atomic(&path, &text)?;
+        write_atomic_mode(&path, &text, private)?;
         manifest.articles.insert(area.slug.clone(), record);
-        manifest.save(&dir, &target.name)?;
+        manifest.save_mode(&dir, &target.name, private)?;
         written.push(area.slug.clone());
     }
     // Unchanged articles: their listed sections follow the areas as they
@@ -1647,7 +1791,7 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
                 continue;
             }
             let text = render(&area.slug, record, &links_of(area, &found.areas));
-            if write_if_changed(&path, &text)? {
+            if write_if_changed_mode(&path, &text, private)? {
                 rerendered.push(area.slug.clone());
             }
         }
@@ -1679,14 +1823,14 @@ async fn write(store: &Store, config: &model::Config, args: WriteArgs, update: b
         not_ours.push(index_path.clone());
         false
     } else {
-        write_if_changed(&index_path, &index_text)?
+        write_if_changed_mode(&index_path, &index_text, private)?
     };
     if default_place
         && !entries.is_empty()
         && let Some(parent) = dir.parent()
         && !parent.join("index.md").exists()
     {
-        write_atomic(&parent.join("index.md"), POINTER)?;
+        write_atomic_mode(&parent.join("index.md"), POINTER, private)?;
     }
     if !written.is_empty() || !removed.is_empty() {
         let record = record_sources(store, &target, &entries, &removed);
@@ -1791,12 +1935,12 @@ fn record_sources(
         "collect",
         |db, p| {
             for slug in removed {
-                let id = article_id(&target.project, slug);
+                let id = article_id(&target.project, target.namespace.as_deref(), slug);
                 index::forget_dependent(db, &p.workspace, (index::SUMMARY, &id))?;
                 index::clear_stale(db, &p.workspace, index::SUMMARY, &id)?;
             }
             for (slug, record) in entries {
-                let id = article_id(&target.project, slug);
+                let id = article_id(&target.project, target.namespace.as_deref(), slug);
                 index::forget_dependent(db, &p.workspace, (index::SUMMARY, &id))?;
                 for file in record["files"].as_array().into_iter().flatten() {
                     let path = file.as_str().unwrap_or("");
@@ -1815,9 +1959,13 @@ fn record_sources(
     )
 }
 
-/// An article's id in the dependency index.
-pub fn article_id(project: &str, slug: &str) -> String {
-    format!("wiki:{project}:{slug}")
+/// An article's id in the dependency index; a namespace's wiki has its own
+/// ids, so that its articles and the shared wiki's never share an entry.
+pub fn article_id(project: &str, namespace: Option<&str>, slug: &str) -> String {
+    match namespace {
+        Some(namespace) => format!("wiki:{project}:namespace:{namespace}:{slug}"),
+        None => format!("wiki:{project}:{slug}"),
+    }
 }
 
 /// `--dry-run`: the articles to write, their worst-case input and cost,
@@ -2162,6 +2310,103 @@ fn hook(store: &Store, config: &model::Config, args: HookArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn target_of(namespace: Option<&str>) -> Target {
+        Target {
+            session: Session {
+                workspace: "w".into(),
+                capability: "c".into(),
+                project: None,
+            },
+            project: "p".into(),
+            name: "P".into(),
+            folder: Some(PathBuf::from("/project")),
+            namespace: namespace.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_namespaced_key_has_its_own_wiki_folder_and_article_ids() {
+        if std::env::var_os("GRAPHICLE_OUT").is_some() {
+            return;
+        }
+        let (shared, _) = folder_of(&target_of(None), None).unwrap();
+        let (private, default) = folder_of(&target_of(Some("dev-a")), None).unwrap();
+        assert_eq!(shared, Path::new("/project/.graphicle/wiki/written"));
+        assert_eq!(
+            private,
+            Path::new("/project/.graphicle/wiki/namespaces/dev-a/written")
+        );
+        assert!(default);
+        // --out is the caller's choice, namespaced or not.
+        let out = Path::new("/elsewhere");
+        assert_eq!(
+            folder_of(&target_of(Some("dev-a")), Some(out)).unwrap().0,
+            out
+        );
+        assert_ne!(
+            article_id("p", None, "core"),
+            article_id("p", Some("dev-a"), "core")
+        );
+    }
+
+    #[test]
+    fn namespace_folder_names_avoid_case_and_windows_collisions() {
+        assert_eq!(namespace_folder_name("dev-a"), "dev-a");
+        assert_eq!(namespace_folder_name("team_1.alpha-2"), "team_1.alpha-2");
+        let upper = namespace_folder_name("DEV-A");
+        assert_ne!(upper.to_ascii_lowercase(), "dev-a");
+        assert!(upper.contains('~'), "{upper}");
+        let mixed = namespace_folder_name("Dev-A");
+        assert_ne!(upper.to_ascii_lowercase(), mixed.to_ascii_lowercase());
+        for bad in [
+            "CON", "con", "PRN", "AUX", "NUL", "COM1", "com9", "LPT1", "lpt9", "con.txt", "dev.",
+            "a...",
+        ] {
+            let mapped = namespace_folder_name(bad);
+            assert!(mapped.contains('~'), "{bad} -> {mapped}");
+            assert!(!mapped.ends_with('.'), "{bad} -> {mapped}");
+            let stem = mapped.split('.').next().unwrap_or("");
+            assert!(!windows_reserved(stem), "{bad} -> {mapped}");
+        }
+        assert_ne!(
+            namespace_folder_name("dev.").to_ascii_lowercase(),
+            namespace_folder_name("dev..").to_ascii_lowercase()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn private_wiki_files_and_dirs_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let private_dir = dir.path().join("private");
+        std::fs::create_dir_all(&private_dir).unwrap();
+        restrict_dir(&private_dir).unwrap();
+        assert_eq!(
+            std::fs::metadata(&private_dir)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        let article = private_dir.join("core.md");
+        write_atomic_private(&article, "secret memory\n").unwrap();
+        assert_eq!(
+            std::fs::metadata(&article).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _guard = lock_mode(&private_dir, true).unwrap().unwrap();
+        assert_eq!(
+            std::fs::metadata(private_dir.join(LOCK))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
 
     fn area(hub: &str, files: &[&str]) -> Area {
         Area {

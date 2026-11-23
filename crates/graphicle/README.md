@@ -390,6 +390,75 @@ accepts the account email and site URL. SharePoint, Salesforce and other
 connectors are not implemented, nor are Jira attachments and Confluence
 macros or attachments.
 
+### Private memory per key
+
+One project can serve many developers without their agents' memories
+mixing. The owner gives a key a **memory namespace** when making it, and can
+let that namespace approve its own drafts:
+
+```sh
+curl -X POST https://memory.example.com/api/workspaces/WORKSPACE_ID/credentials \
+  -H "Authorization: Bearer OWNER_KEY" -H "Content-Type: application/json" \
+  -d '{"role":"agent","label":"dev-17","memory_namespace":"dev-17","self_review":true}'
+```
+
+A key with a namespace reads the shared project (graph, sources, wiki) as any
+key does, and reads and writes only its own namespace's memory: proposed and
+reviewed memories, their revisions, work state, claims and entities, its
+queued jobs and the model results cached for them. It never sees shared
+memory or another namespace's, by any tool: not the text, a count, an id or a
+cached answer. Asking for another namespace's memory id gets the answer an
+unknown id gets (`Memory unavailable`). Several keys may share a namespace
+(one developer's key, rotated); only the owner makes a key with a memory
+namespace, and a role that grants `admin` cannot carry one. A key's
+namespace and a namespace's `self_review` cannot be changed afterwards. A
+key without a namespace keeps
+the shared, reviewed memory it always had, and never sees a namespace's.
+Grounding is as strict inside a namespace: quotes of current sources, the
+size limits, `<private>` spans dropped and credentials redacted.
+
+Apart from whose memory it reaches, a namespaced key works exactly as any
+key: dense retrieval and Qdrant rank its own memory beside the sources,
+its query vectors are cached for it, it reads and writes the observer notes
+of the sources it can read, and its MCP tools, their descriptions and its
+replies are those of a key without a namespace. Embeddings of a namespace's
+memory are stored under that namespace (in the store, in the embedding
+cache, keyed by workspace and namespace, and in Qdrant) and read by nobody
+else. `graphicle wiki build` with a namespaced key writes that key's own
+wiki, with its namespace's memory, in
+`.graphicle/wiki/namespaces/<namespace>/written/`; the shared wiki never
+holds a namespace's memory. On Unix that folder and its files are readable
+by their owner only; a namespace name that a case-insensitive or Windows
+file system could confuse with another gets a folder name with a short
+hash.
+
+The owner manages a namespace across all of the workspace's projects:
+
+| Request | What it does |
+| --- | --- |
+| `GET /api/workspaces/W/memory-namespaces/N/stats` | rows, bytes and the last read and write |
+| `GET /api/workspaces/W/memory-namespaces/N/export` | every row of the namespace, as one archive with its SHA-256 |
+| `POST /api/workspaces/W/memory-namespaces/N/import` | restore that archive into the same, empty namespace |
+| `POST /api/workspaces/W/memory-namespaces/N/delete` | delete everything the namespace holds and revoke its keys, with a hash-chained receipt and a residue check |
+
+Deleting a namespace deletes, in every project, its rows and what still
+names its memories elsewhere (served and outcome records, hints, the
+dependency index), its key space in the embedding cache, and its vectors in
+each project's vector backend (the backend is cleared and rebuilt at the next
+publication; the receipt stays pending until that cleanup is done). Every key
+of the namespace is revoked. The namespace itself, with its `self_review`,
+stays, so that its archive can be imported again; the owner makes new keys
+for it. Deleting a project deletes its namespaced memory too.
+
+Source retention (`retention.preview`, `retention.apply`) is for admins: it
+runs for the whole project, keeps a document that any namespace's reviewed
+memory cites, and its plan counts every namespace's memory.
+
+The namespace columns change the shape of the store's tables, so a store
+opened by this release (with or without a namespace) needs Graphicle 0.1.20
+or newer (store format 2): earlier releases refuse to open it. Keep a backup
+from before the upgrade if you may need to go back.
+
 ## Answering and memory
 
 Use **Connections → Answering models → Configure model**. Save a model name,

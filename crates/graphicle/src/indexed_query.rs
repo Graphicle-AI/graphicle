@@ -12,7 +12,8 @@
 //! take the full path ([`ineligible`]), as does a project whose index is
 //! missing or lacks more than [`MAX_MISSING`] of its current files.
 use crate::code_graph_arm;
-use crate::db::Connection;
+use crate::db::{Connection, params};
+use crate::memory_scope::MemoryScope;
 use crate::passage_index::{self, Index};
 use crate::query::{self, Indexed, Lift, LiftScoring, Passages, Snapshot};
 use crate::store::{Principal, s};
@@ -238,12 +239,17 @@ fn bm25(
 }
 
 /// The `file:` ids memories cite: the text their staleness checks may read.
-fn memory_sources(db: &Connection, repository: &str) -> Result<BTreeSet<String>> {
+fn memory_sources(
+    db: &Connection,
+    repository: &str,
+    scope: &crate::memory_scope::MemoryScope,
+) -> Result<BTreeSet<String>> {
+    let namespace = scope.bind();
     let mut wanted = BTreeSet::new();
     for row in crate::store::rows(
         db,
-        "SELECT data FROM repo_memories WHERE repository_id=?",
-        [repository],
+        "SELECT data FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        crate::params![repository, namespace],
     )? {
         let data: Value = serde_json::from_str(s(&row, "data")).unwrap_or(Value::Null);
         for field in ["dependencies", "evidence_links", "native_sources"] {
@@ -328,8 +334,8 @@ pub fn packet(
     let id = s(repository, "id");
     // A project with reviewed memory walks its graph over every passage.
     let reviewed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND state='reviewed')",
-        [id],
+        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? AND state='reviewed')",
+        crate::params![id,p.memory_scope().bind()],
         |r| r.get(0),
     )?;
     if reviewed && args["graph_retrieval"] != false && args["memory_retrieval"] != false {
@@ -393,8 +399,8 @@ pub fn packet(
         return Ok(None);
     }
     crate::phase::phase("context_index_missing", || index.add_files(added))?;
-    docs.load(db, repository, &memory_sources(db, id)?)?;
-    let memories = memory::list_of(db, repository, &docs.list, true)?;
+    docs.load(db, repository, &memory_sources(db, id, p.memory_scope())?)?;
+    let memories = memory::list_of_scoped(db, repository, &docs.list, true, p.memory_scope())?;
     // The file relationships: the saved ones of the current episode
     // (crate::query_graph), else the snapshot's graph as `context` reads it.
     let current = crate::graph_projection::current_episode(db, id)?;
@@ -834,10 +840,11 @@ pub fn packet(
     })?;
     packet["local_dense"] = json!({"status":"disabled"});
     packet["identifier_arm"] = identifiers.report;
-    packet["freshness"] = json!(crate::invalidation::repository_freshness(
+    packet["freshness"] = json!(crate::invalidation::repository_freshness_scoped(
         db,
         &p.workspace,
-        id
+        id,
+        p.memory_scope()
     )?);
     packet["passage_index"] = json!({"status":"ready","files":index.files.len(),
         "passages":totals.passages,"read_here":coverage.missing.len()});
@@ -851,17 +858,18 @@ pub fn packet(
 
 /// Whether a question to `repository` takes the passage index's path, and
 /// fast: its index is built and current enough ([`MAX_MISSING`]), it has no
-/// reviewed memory, and the code graph `context` reads is saved
-/// ([`crate::query_graph`]). What the prompt hook and `doctor` check.
-pub fn ready(db: &Connection, repository: &str) -> Result<bool> {
+/// reviewed memory in `scope` (the memory the asking key reads), and the code
+/// graph `context` reads is saved ([`crate::query_graph`]). What the prompt
+/// hook and `doctor` check.
+pub fn ready(db: &Connection, repository: &str, scope: &MemoryScope) -> Result<bool> {
     let heads = crate::store::heads(db, repository)?;
     let coverage = passage_index::coverage(db, repository, &heads)?;
     if !coverage.exists() || coverage.missing.len() > MAX_MISSING {
         return Ok(false);
     }
     let reviewed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND state='reviewed')",
-        [repository],
+        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? AND state='reviewed')",
+        params![repository, scope.bind()],
         |r| r.get(0),
     )?;
     if reviewed {
@@ -894,11 +902,11 @@ pub enum HookRoute {
     Quick,
 }
 
-/// [`HookRoute`] of `repository`: a project of fewer than
-/// [`SMALL_PROJECT_FILES`] files is asked in full, a project with reviewed
-/// memory in full ([`HookRoute::Memory`]), and a larger one in full when it
-/// is [`ready`], else for the quick packet.
-pub fn hook_route(db: &Connection, repository: &str) -> Result<HookRoute> {
+/// [`HookRoute`] of `repository` for a key reading `scope`: a project of
+/// fewer than [`SMALL_PROJECT_FILES`] files is asked in full, a project with
+/// reviewed memory in that scope in full ([`HookRoute::Memory`]), and a
+/// larger one in full when it is [`ready`], else for the quick packet.
+pub fn hook_route(db: &Connection, repository: &str, scope: &MemoryScope) -> Result<HookRoute> {
     let files: i64 = db.query_row(
         "SELECT count(*) FROM repo_heads WHERE repository_id=?",
         [repository],
@@ -908,14 +916,14 @@ pub fn hook_route(db: &Connection, repository: &str) -> Result<HookRoute> {
         return Ok(HookRoute::Full);
     }
     let reviewed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND state='reviewed')",
-        [repository],
+        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? AND state='reviewed')",
+        params![repository, scope.bind()],
         |r| r.get(0),
     )?;
     if reviewed {
         return Ok(HookRoute::Memory);
     }
-    Ok(if ready(db, repository)? {
+    Ok(if ready(db, repository, scope)? {
         HookRoute::Full
     } else {
         HookRoute::Quick
@@ -927,14 +935,15 @@ pub fn hook_route(db: &Connection, repository: &str) -> Result<HookRoute> {
 /// `query_file`), a `detail` line and the command that `fix`es it, and the
 /// state of the code graph's query file (`crate::query_graph::query_file_state`).
 /// A project whose index is missing or stale reads every file for each
-/// question, and the prompt hook then gives the quick packet only.
-pub fn readiness(db: &Connection, repository: &str) -> Result<Value> {
+/// question, and the prompt hook then gives the quick packet only. Reviewed
+/// memory counts in `scope`, the memory the asking key reads.
+pub fn readiness(db: &Connection, repository: &str, scope: &MemoryScope) -> Result<Value> {
     let heads = crate::store::heads(db, repository)?;
     let coverage = passage_index::coverage(db, repository, &heads)?;
     let files = heads.len();
     let reviewed: bool = db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND state='reviewed')",
-        [repository],
+        "SELECT EXISTS(SELECT 1 FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? AND state='reviewed')",
+        params![repository, scope.bind()],
         |r| r.get(0),
     )?;
     // The code graph and the query file of the episode `context` reads.

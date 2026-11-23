@@ -18,14 +18,20 @@ pub fn metadata(value: &Value) -> Result<Metadata> {
 
 /// Only a member-approved note (or the existing explicit review workflow)
 /// can introduce trusted recall metadata. An edit that omits it preserves it.
-pub fn attach(db: &Connection, repository: &str, args: &Value, data: &mut Value) -> Result<()> {
+pub fn attach(
+    db: &Connection,
+    repository: &str,
+    scope: &crate::memory_scope::MemoryScope,
+    args: &Value,
+    data: &mut Value,
+) -> Result<()> {
     if let Some(value) = args.get("recall") {
         data["recall"] = serde_json::to_value(metadata(value)?)?;
     } else if let Some(identifier) = args["memory_id"].as_str()
         && let Some(mut prior) = crate::store::one(
             db,
-            "SELECT data FROM repo_memories WHERE repository_id=? AND id=?",
-            params![repository, identifier],
+            "SELECT data FROM repo_memories WHERE repository_id=? AND id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+            params![repository, identifier, scope.bind()],
         )?
     {
         decode(&mut prior, "data")?;
@@ -93,7 +99,13 @@ pub fn replacement(args: &Value, data: &mut Value, memories: &[Value]) -> Result
     Ok(Some(old.clone()))
 }
 
-pub fn close_replaced(db: &Connection, repository: &str, old: &Value, new: &Value) -> Result<()> {
+pub fn close_replaced(
+    db: &Connection,
+    repository: &str,
+    scope: &crate::memory_scope::MemoryScope,
+    old: &Value,
+    new: &Value,
+) -> Result<()> {
     let mut data = old["data"].clone();
     let mut recall = metadata(&data["recall"])?;
     recall.valid_to = metadata(&new["data"]["recall"])?.valid_from;
@@ -102,9 +114,10 @@ pub fn close_replaced(db: &Connection, repository: &str, old: &Value, new: &Valu
     data["recall"] = serde_json::to_value(recall)?;
     // Preserve reviewed status. The interval withholds a future-dated
     // replacement until it takes effect, and keeps the old fact before then.
-    memory::save(
+    memory::save_scoped(
         db,
         repository,
+        scope,
         Some(s(old, "id")),
         old["revision"].as_i64(),
         s(old, "kind"),
@@ -155,7 +168,7 @@ impl Store {
         self.authorized_read(workspace, token, "read", |db, p| {
             let repository = repo(db, p, string(args, "repository_id", 100)?)?;
             let documents = memory::documents(db, &repository, p)?;
-            let visible = memory::list_of(db, &repository, &documents, true)?;
+            let visible = memory::list_of_scoped(db, &repository, &documents, true, p.memory_scope())?;
             let mut memories = Vec::new();
             let mut descriptors = Vec::new();
             let mut evidence_memories = Vec::new();
@@ -172,11 +185,12 @@ impl Store {
                 let selected = if let Some(known) = known {
                     let mut selected = None;
                     for mut revision in rows(db,
-                        "SELECT data,created_at FROM repo_memory_revisions WHERE memory_id=? ORDER BY revision",
-                        [s(current, "id")])? {
+                        "SELECT data,created_at FROM repo_memory_revisions WHERE memory_id=? AND memory_namespace IS NOT DISTINCT FROM ? ORDER BY revision",
+                        params![s(current, "id"), p.memory_scope().bind()])? {
                         if graphicle_memory::temporal::instant(s(&revision, "created_at")).map_err(Error::bad)? <= known {
                             decode(&mut revision, "data")?;
                             let mut value = revision["data"].clone();
+                            crate::memory_scope::conceal(&mut value);
                             decode(&mut value, "data")?;
                             selected = Some(value);
                         }

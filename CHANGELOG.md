@@ -3,6 +3,97 @@
 Notable changes to Graphicle: the graph engine (`graphicle-graph`), the memory
 library (`graphicle-memory`) and the `graphicle` program.
 
+## Unreleased
+
+### Added
+
+- Private memory per key. The owner can give a key a `memory_namespace`
+  (and `self_review`) when making it. Such a key reads the shared project as
+  before, and reads and writes only its namespace's memory: memories and
+  their revisions, work state, claims, entities, events, jobs, embeddings,
+  cached query vectors and cached model results. It never sees shared memory
+  or another namespace's, through any tool or cache, and another namespace's
+  memory id gets the answer an unknown id gets. Everything else works as for
+  any key: dense retrieval, cached query vectors, Qdrant, observer notes and
+  the MCP tools and their descriptions, and its replies have the same fields
+  as a key without a namespace, `freshness` included (it counts only the
+  stale memory, answers and keys of the caller's scope). Keys without a
+  namespace are unchanged. Only the owner makes a key with a memory
+  namespace, and a role that grants `admin` cannot carry one (a namespaced
+  key never holds `admin`, even through an extension's role). The owner API
+  adds `stats`, `export`, `import` (archives up to 64 MiB, over HTTP too)
+  and `delete` for a namespace
+  (`/api/workspaces/W/memory-namespaces/N/…`). Deleting a namespace deletes,
+  in every project, its rows and what names its memories elsewhere (served
+  and outcome records, hints, the dependency index, its cached answers'
+  and wiki articles' index entries), its embedding-cache entries (with
+  `secure_delete` and a WAL checkpoint on a SQLite cache) and its vectors in
+  the projects' vector backends, revokes its keys, and signs a receipt whose
+  residue scan covers every table; `deletion.verify` checks it. Importing an
+  archive checks that every row's parents (memory, claim, entity, job) are
+  the namespace's own, and rebuilds the memories' dependency index and
+  symbol pins. Deleting a project deletes its namespaced memory.
+- `graphicle wiki build` and `wiki update` with a namespaced key write that
+  key's own wiki in `.graphicle/wiki/namespaces/<namespace>/written/`, with
+  its own manifest (`0700`/`0600` on Unix, and collision-free folder names
+  for uppercase, trailing-dot and Windows reserved device names); the shared
+  wiki never holds a namespace's memory.
+
+### Behaviour changes
+
+- `retention.preview` needs `admin`, as `retention.apply` does: the plan
+  counts every namespace's memory. `skip_cited_by_reviewed` keeps a document
+  that any namespace's reviewed memory cites.
+- Qdrant points carry a `partition` (`source`, `memory` or
+  `memory:<namespace>`), and a reader accepts only the sources' and its own
+  memory's. An owner's publication includes every namespace's reviewed memory
+  vectors. Points published by earlier releases have none and are read as
+  before; publish again to partition them.
+- The opt-in embedding cache (`GRAPHICLE_EMBEDDING_CACHE`) keeps each
+  namespace's memory passages in their own key space, per workspace and
+  namespace. Source passages and shared memory keep the shared one, so
+  existing entries are still used.
+- Cached query vectors are evicted per namespace (the newest 500 each), so
+  one namespace's questions never evict another's.
+- A memory namespace's name may not be only dots (`.`, `..`).
+- `note` with a `memory_id` updates that memory; it no longer creates a new
+  memory under an id the caller chose. An id that is not the caller's to
+  read gets `Memory unavailable`, whoever holds it.
+- `workflow.retry` retries a job only in the scope that queued it: the owner
+  no longer re-runs a namespace's job (it would have run in shared memory).
+- A memory change clears the cached query vectors, jobs and cached answers
+  of its own scope only: saving or deleting memory in one scope, shared
+  memory included, no longer clears another namespace's. Deleting memory
+  detaches `am_model_calls` before removing jobs so token-usage metering
+  records survive.
+- Read-only mode refuses a data folder whose store lacks the namespace
+  columns (one last used by 0.1.19, or a migration that stopped part way),
+  instead of failing at the first query: open it once without
+  `--read-only`.
+- Deletion receipts list wiki files written to project folders on users'
+  computers among what they do not cover.
+
+### After upgrading
+
+- The store gains a nullable `memory_namespace` column on credentials and on
+  the tables of agent-written memory and their caches, and an
+  `am_memory_namespaces` table. Existing rows stay shared (NULL); nothing is
+  rewritten. Code that inserts into these tables without naming its columns
+  must name them now.
+- The upgrade is one-way, on SQLite and PostgreSQL. Earlier releases insert
+  into those tables without naming their columns, which SQLite refuses once
+  a table has one more column, so a store this release opens records that it
+  needs Graphicle 0.1.20 or newer (store format 2), with or without a
+  namespace: 0.1.3 to 0.1.19 refuse to open it instead of failing at their
+  first save (or, once it has a namespace, reading namespaced keys as
+  ordinary keys and namespaced memory as shared). To go back, restore a
+  backup taken before the upgrade.
+- `graphicle import-sqlite` records store format 2 on the PostgreSQL store it
+  makes, also from a SQLite store of an earlier release.
+- The tables' namespace indexes are made on SQLite only: PostgreSQL cannot
+  use an index for the namespace predicate (`IS NOT DISTINCT FROM`), so
+  there they would only slow every insert.
+
 ## 0.1.19 - 2026-11-21
 
 Every crate is at 0.1.19, and `graphicle --version` prints

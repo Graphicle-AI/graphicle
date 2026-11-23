@@ -108,9 +108,9 @@ impl Store {
                     let known=args["known_at"].as_str().map(graphicle_memory::temporal::instant).transpose().map_err(Error::bad)?;
                     let mut versions=Vec::new();
                     let docs=memory::documents(db,&repository,p)?;
-                    for mut row in rows(db,"SELECT data,created_at FROM repo_memory_revisions WHERE memory_id=? ORDER BY revision",[memory_id])? {
+                    for mut row in rows(db,"SELECT data,created_at FROM repo_memory_revisions WHERE memory_id=? AND memory_namespace IS NOT DISTINCT FROM ? ORDER BY revision",params![memory_id,p.memory_scope().bind()])? {
                         if known.is_some_and(|at|graphicle_memory::temporal::instant(s(&row,"created_at")).is_ok_and(|t|t>at)){continue;}
-                        decode(&mut row,"data")?;let mut memory=row["data"].clone();decode(&mut memory,"data")?;
+                        decode(&mut row,"data")?;let mut memory=row["data"].clone();crate::memory_scope::conceal(&mut memory);decode(&mut memory,"data")?;
                         if memory::accessible(&memory["data"],&docs,&memories){versions.push(memory);}
                     }
                     if known.is_some(){Ok(json!({"memory":versions.last(),"historical":true}))}else{Ok(json!({"versions":versions}))}
@@ -119,7 +119,7 @@ impl Store {
                 // Reviewed procedures and decisions with an allow-list of
                 // fields and no client-identifying text.
                 "memory.template"=>{
-                    let docs=memory::documents(db,&repository,p)?;let memories=memory::list_of(db,&repository,&docs,false)?;
+                    let docs=memory::documents(db,&repository,p)?;let memories=memory::list_of_scoped(db,&repository,&docs,false,p.memory_scope())?;
                     crate::packs::template(db,&p.workspace,&repository,&docs,&memories,args)
                 },
                 "history"=>Ok(json!({"snapshots":rows(db,"SELECT sha256,metadata,created_at FROM repo_snapshots WHERE repository_id=? ORDER BY created_at DESC LIMIT 100",[identifier])?})),
@@ -150,15 +150,23 @@ impl Store {
                 "memory.state"=>{
                     let memories=memory::list(db,&repository,p,true)?;let old=memories.iter().find(|m|m["id"]==args["memory_id"]).ok_or_else(||Error::bad("Memory unavailable"))?;
                     if args["state"]!="retired"{return Err(Error::bad("Use draft review to approve a memory"));}
-                    let data=old["data"].clone();let result=memory::save(db,identifier,Some(s(old,"id")),args["expected_revision"].as_i64(),s(old,"kind"),s(old,"title"),s(old,"body"),"retired",&data)?;
-                    db.execute("UPDATE am_claims SET state='retired',updated_at=? WHERE repository_id=? AND memory_id=?",params![now(),identifier,s(old,"id")])?;Ok(result)
+                    let data=old["data"].clone();let result=memory::save_scoped(db,identifier,p.memory_scope(),Some(s(old,"id")),args["expected_revision"].as_i64(),s(old,"kind"),s(old,"title"),s(old,"body"),"retired",&data)?;
+                    db.execute("UPDATE am_claims SET state='retired',updated_at=? WHERE repository_id=? AND memory_id=? AND memory_namespace IS NOT DISTINCT FROM ?",params![now(),identifier,s(old,"id"),p.memory_scope().bind()])?;Ok(result)
                 },
                 "memory.delete"=>{
                     let memories=memory::list(db,&repository,p,true)?;let memory_id=string(args,"memory_id",100)?;
                     if !memories.iter().any(|m|s(m,"id")==memory_id){return Err(Error::bad("Memory unavailable"));}
                     // The memory, its dependents and everything naming them go in one transaction, with a hash-chained receipt.
-                    let (deleted,counts)=crate::deletion::delete_memories(db,&p.workspace,identifier,&memories,memory_id)?;
-                    purge_derived_cache(db,identifier)?;
+                    let (deleted,counts)=crate::deletion::delete_memories(db,&p.workspace,identifier,&memories,memory_id,p.memory_scope())?;
+                    // Shared memory never feeds a private namespace (`SHARED_FALLBACK_ENABLED`
+                    // is false), and a namespace's memory feeds only its own answers:
+                    // clear only the caller's scope so deleting shared or private memory
+                    // never wipes another namespace's jobs, vectors or caches.
+                    if p.memory_scope().is_shared() {
+                        purge_shared_cache(db,identifier,p.memory_scope())?;
+                    } else {
+                        purge_namespace_cache(db,identifier,p.memory_scope())?;
+                    }
                     let keys:Vec<String>=deleted.iter().cloned().collect();
                     let remaining=crate::deletion::memory_rows(db,identifier,&keys)?;
                     let receipt=crate::deletion::rows_receipt(db,p,identifier,"memory.delete","memories",json!({"rule":"memory_with_dependent_notes_and_historical_versions"}),counts,&keys,remaining,true)?;
@@ -191,7 +199,7 @@ impl Store {
                     if !named.is_empty() { proposal["symbols"]=json!(named); }
                     let fingerprint=crate::digest(&proposal);
                     // Replays compare the whole proposal; a key names one proposal only.
-                    if let Some(old)=one(db,"SELECT id,state,json_extract(data,'$.proposal.digest') AS digest FROM repo_memories WHERE repository_id=? AND json_extract(data,'$.proposal.idempotency_key')=?",params![identifier,key])?{
+                    if let Some(old)=one(db,"SELECT id,state,json_extract(data,'$.proposal.digest') AS digest FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? AND json_extract(data,'$.proposal.idempotency_key')=?",params![identifier,p.memory_scope().bind(),key])?{
                         if old["digest"]!=json!(fingerprint){return Err(Error::conflict("Idempotency key already refers to a different proposal"));}
                         return Ok(json!({"memory_id":old["id"],"state":old["state"],"replayed":true}));
                     }
@@ -212,8 +220,8 @@ impl Store {
                     data["authority"]=json!("agent_proposed_draft");data["notes"]=json!({});
                     if let Some(recall)=recall { data["recall"]=recall; }
                     data["proposal"]=json!({"idempotency_key":key,"digest":fingerprint,"reason":reason,"files":files,"proposed_at":now()});
-                    let saved=memory::save(db,identifier,None,None,kind,title,body,"draft",&data)?;
-                    store::event(db,identifier,"memory_proposed",json!({"id":saved["id"],"kind":kind}))?;
+                    let saved=memory::save_scoped(db,identifier,p.memory_scope(),None,None,kind,title,body,"draft",&data)?;
+                    store::event_scoped(db,identifier,p.memory_scope(),"memory_proposed",json!({"id":saved["id"],"kind":kind}))?;
                     Ok(json!({"memory_id":saved["id"],"revision":saved["revision"],"state":"draft","approval_required":true,"review":"learning.review"}))
                 },
                 "memory.import"=>{
@@ -228,7 +236,7 @@ impl Store {
                         if data.get("symbols").is_some_and(|v|!v.is_array()) || data.get("symbol_files").is_some_and(|v|!v.is_object()){return Err(Error::bad("Invalid symbol links"));}
                         let report=crate::symbols::reground(db,identifier,&mut data,&docs)?;
                         regrounded+=report["regrounded"].as_u64().unwrap_or(0);unresolved+=report["unresolved"].as_u64().unwrap_or(0);
-                        imported.push(memory::save(db,identifier,None,None,string(value,"kind",100)?,string(value,"title",500)?,string(value,"body",64000)?,"draft",&data)?);
+                        imported.push(memory::save_scoped(db,identifier,p.memory_scope(),None,None,string(value,"kind",100)?,string(value,"title",500)?,string(value,"body",64000)?,"draft",&data)?);
                     }
                     let mut result=json!({"imported":imported,"approval_required":true});
                     // Only an import that carried symbol links reports them.
@@ -240,7 +248,7 @@ impl Store {
                 "memory.import_pack"=>{
                     let values=args["memories"].as_array().ok_or_else(||Error::bad("Expected memories, a list"))?;
                     let docs=memory::documents(db,&repository,p)?;
-                    crate::packs::import(db,identifier,&docs,values)
+                    crate::packs::import_scoped(db,identifier,&docs,values,p.memory_scope())
                 },
                 _=>Err(Error::bad("Unsupported project mutation"))
             }
@@ -253,6 +261,12 @@ impl Store {
     }
 }
 pub fn purge_derived_cache(db: &crate::db::Connection, repository: &str) -> Result<()> {
+    // Detach model-call metering records before deleting jobs so `ON DELETE
+    // CASCADE` does not erase billable token-usage history.
+    db.execute(
+        "UPDATE am_model_calls SET job_id=NULL WHERE repository_id=?",
+        [repository],
+    )?;
     for table in [
         "am_model_cache",
         "am_query_cache",
@@ -269,6 +283,88 @@ pub fn purge_derived_cache(db: &crate::db::Connection, repository: &str) -> Resu
     }
     db.execute("DELETE FROM am_jobs WHERE repository_id=?", [repository])?;
     store::invalidate(db, repository)
+}
+/// The shared-scope counterpart of [`purge_namespace_cache`]: clears shared
+/// caches, vectors, reads, jobs and shared report/community derivations for
+/// `repository` without touching any private namespace's rows, while keeping
+/// `am_model_calls` token-usage records intact.
+fn purge_shared_cache(
+    db: &crate::db::Connection,
+    repository: &str,
+    scope: &crate::memory_scope::MemoryScope,
+) -> Result<()> {
+    let bind = scope.bind();
+    db.execute(
+        "UPDATE am_model_calls SET job_id=NULL WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_model_cache WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_query_cache WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_vectors WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_document_reads WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_jobs WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_preparation_steps WHERE repository_id=?",
+        [repository],
+    )?;
+    db.execute("DELETE FROM am_reports WHERE repository_id=?", [repository])?;
+    db.execute(
+        "DELETE FROM am_communities WHERE repository_id=?",
+        [repository],
+    )?;
+    crate::projection::enqueue(db, repository, "source_or_permission_state_changed")?;
+    graphicle_memory::cache::clear(repository).map_err(crate::Error::bad)
+}
+/// The cached answers, reads and jobs of one namespace in `repository`: what
+/// a namespaced credential's memory change makes stale, as
+/// [`purge_shared_cache`] is for shared memory. A job's result may quote the
+/// memory, so the namespace's jobs go too, after detaching `am_model_calls` so
+/// deleting a memory never erases token-usage metering records. The rest of
+/// [`store::invalidate`], without its project-wide `am_query_cache` delete:
+/// another namespace's cached query vectors are not this one's.
+pub fn purge_namespace_cache(
+    db: &crate::db::Connection,
+    repository: &str,
+    scope: &crate::memory_scope::MemoryScope,
+) -> Result<()> {
+    let bind = scope.bind();
+    db.execute(
+        "UPDATE am_model_calls SET job_id=NULL WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_model_cache WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_query_cache WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_document_reads WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    db.execute(
+        "DELETE FROM am_jobs WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, bind],
+    )?;
+    crate::projection::enqueue(db, repository, "source_or_permission_state_changed")?;
+    graphicle_memory::cache::clear(repository).map_err(crate::Error::bad)
 }
 pub fn redact(value: &str) -> String {
     use std::sync::OnceLock;

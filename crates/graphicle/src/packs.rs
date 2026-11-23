@@ -423,12 +423,14 @@ fn bump(counts: &mut Value, key: &str) {
 }
 
 /// `memory.import_pack`: import the reviewed memories of `items` as drafts
-/// (see the module documentation). Other states are skipped and counted.
-pub fn import(
+/// of the caller's memory scope (see the module documentation). Other
+/// states are skipped and counted.
+pub fn import_scoped(
     db: &Connection,
     repository: &str,
     documents: &[Value],
     items: &[Value],
+    scope: &crate::memory_scope::MemoryScope,
 ) -> Result<Value> {
     if items.len() > MAX_PACK {
         return Err(Error::bad(format!("Import at most {MAX_PACK} memories")));
@@ -546,8 +548,8 @@ pub fn import(
             }
         }
         data["pack"] = marks;
-        imported.push(memory::save(
-            db, repository, None, None, kind, title, body, "draft", &data,
+        imported.push(memory::save_scoped(
+            db, repository, scope, None, None, kind, title, body, "draft", &data,
         )?);
     }
     let mut result = json!({"imported":imported,"skipped":skipped,"approval_required":true});

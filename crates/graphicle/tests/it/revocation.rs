@@ -494,7 +494,7 @@ fn revocation_matches_credential_ids_exactly_not_as_substrings() {
     // Two credentials whose ids nest: `cred-a` is a prefix of `cred-ab`.
     for (id, token) in [("cred-a", "token-a"), ("cred-ab", "token-ab")] {
         db.execute(
-            "INSERT INTO credentials VALUES(?,?,?,?,?,?,NULL,NULL)",
+            "INSERT INTO credentials(id,workspace_id,capability_hash,role,label,created_at,expires_at,revoked_at) VALUES(?,?,?,?,?,?,NULL,NULL)",
             graphicle_runtime::params![
                 id,
                 f.workspace,
