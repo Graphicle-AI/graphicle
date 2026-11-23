@@ -1574,7 +1574,7 @@ impl Store {
                 "truncated": truncated,
                 "contradictions": contradictions(db, identifier, Some(&episode))?,
                 "hyperedges": hyperedges,"hyperedges_truncated":hyperedges_truncated,
-                "freshness": crate::invalidation::repository_freshness(db, &p.workspace, identifier)?,
+                "freshness": crate::invalidation::repository_freshness_scoped(db, &p.workspace, identifier, p.memory_scope())?,
             }))
         })
     }

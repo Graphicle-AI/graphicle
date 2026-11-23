@@ -360,6 +360,32 @@ pub fn lift(
     })
 }
 
+/// Reviewed memory ids in `p`'s namespace that reference any symbol in `ids`,
+/// either directly in `repo_memories.data` or through a pinned quote in
+/// `gf_symbol_pins`.
+fn named_memories(
+    db: &Connection,
+    p: &Principal,
+    project: &str,
+    ids: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    Ok(rows(
+        db,
+        "SELECT m.id AS id FROM repo_memories m, json_each(m.data,'$.symbols') j \
+         WHERE m.repository_id=?1 AND m.memory_namespace IS NOT DISTINCT FROM ?3 AND m.state='reviewed' \
+         AND json_extract(j.value,'$.stable_id') IN (SELECT value FROM json_each(?2)) \
+         UNION SELECT g.memory_id AS id FROM gf_symbol_pins g \
+         JOIN repo_memories m ON m.id=g.memory_id AND m.repository_id=g.repository_id, json_each(g.symbols) j \
+         WHERE g.repository_id=?1 AND g.state='pinned' \
+         AND m.memory_namespace IS NOT DISTINCT FROM ?3 AND m.state='reviewed' \
+         AND json_extract(j.value,'$.stable_id') IN (SELECT value FROM json_each(?2))",
+        params![project, json!(ids).to_string(), p.memory_scope().bind()],
+    )?
+    .iter()
+    .map(|row| s(row, "id").to_string())
+    .collect())
+}
+
 /// Back-links: each node fact (a graph tool's citation) with a
 /// `stable_id` gains `linked`, the current reviewed memories of the project
 /// that link that symbol (`memories`: id, kind, title, the memory's
@@ -385,19 +411,7 @@ pub fn attach(
     }
     // Which reviewed memories name these symbols at all: only then is the
     // reader's view of the project's memories read.
-    let named: BTreeSet<String> = rows(
-        db,
-        "SELECT m.id AS id FROM repo_memories m, json_each(m.data,'$.symbols') j \
-         WHERE m.repository_id=?1 AND m.state='reviewed' \
-         AND json_extract(j.value,'$.stable_id') IN (SELECT value FROM json_each(?2)) \
-         UNION SELECT g.memory_id AS id FROM gf_symbol_pins g, json_each(g.symbols) j \
-         WHERE g.repository_id=?1 AND g.state='pinned' \
-         AND json_extract(j.value,'$.stable_id') IN (SELECT value FROM json_each(?2))",
-        params![project, json!(ids).to_string()],
-    )?
-    .iter()
-    .map(|row| s(row, "id").to_string())
-    .collect();
+    let named = named_memories(db, p, project, &ids)?;
     // One view of what the reader may read for every node: each project's
     // documents are listed at most once per call (the project's own once,
     // shared with its memory listing).
@@ -407,7 +421,7 @@ pub fn attach(
     } else {
         let documents = crate::memory::documents(db, repository, p)?;
         naming = naming.knowing(project, &documents);
-        crate::memory::list_of(db, repository, &documents, false)?
+        crate::memory::list_of_scoped(db, repository, &documents, false, p.memory_scope())?
             .into_iter()
             .filter(|m| {
                 named.contains(s(m, "id")) && m["state"] == "reviewed" && m["stale"] != true
@@ -521,5 +535,79 @@ mod tests {
             .map(|entry| s(entry, "stable_id"))
             .collect();
         assert_eq!(found, ["s1"]);
+    }
+
+    #[test]
+    fn named_memories_scopes_pinned_rows_by_namespace() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = crate::store::Store::open(dir.path()).unwrap();
+        let ws = store.create_workspace("Pins").unwrap();
+        let workspace = s(&ws, "id").to_string();
+        let owner = s(&ws, "capability").to_string();
+        let repo = s(
+            &store
+                .register(&workspace, &owner, &json!({"project_key":"p","name":"p"}))
+                .unwrap(),
+            "id",
+        )
+        .to_string();
+        let a = s(
+            &store
+                .grant(
+                    &workspace,
+                    &owner,
+                    &json!({"role":"agent","label":"a","memory_namespace":"dev-a","self_review":true}),
+                )
+                .unwrap(),
+            "capability",
+        )
+        .to_string();
+        let b = s(
+            &store
+                .grant(
+                    &workspace,
+                    &owner,
+                    &json!({"role":"agent","label":"b","memory_namespace":"dev-b","self_review":true}),
+                )
+                .unwrap(),
+            "capability",
+        )
+        .to_string();
+        let db = store.connect().unwrap();
+        db.execute(
+            "INSERT INTO repo_memories(id,repository_id,kind,title,body,state,revision,data,created_at,updated_at,memory_namespace) VALUES(?,?,?,?,?,'reviewed',1,'{}','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z','dev-a')",
+            params!["m-a", &repo, "note", "t", "b"],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO gf_symbol_pins(repository_id,memory_id,relpath,sha256,byte_start,byte_end,state,covered,symbols,episode,created_at,pinned_at) VALUES(?,'m-a','a.py','sha',0,1,'pinned',1,?,'1','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')",
+            params![&repo, json!([{"stable_id":"sym-1"}]).to_string()],
+        )
+        .unwrap();
+        let ids: BTreeSet<String> = ["sym-1".to_string()].into_iter().collect();
+        let a_found = store
+            .authorized_read(&workspace, &a, "read", |db, p| {
+                named_memories(db, p, &repo, &ids)
+            })
+            .unwrap();
+        let b_found = store
+            .authorized_read(&workspace, &b, "read", |db, p| {
+                named_memories(db, p, &repo, &ids)
+            })
+            .unwrap();
+        let shared_found = store
+            .authorized_read(&workspace, &owner, "read", |db, p| {
+                named_memories(db, p, &repo, &ids)
+            })
+            .unwrap();
+        assert!(a_found.contains("m-a"), "{a_found:?}");
+        assert!(
+            b_found.is_empty(),
+            "B saw A's pinned memory id: {b_found:?}"
+        );
+        assert!(
+            shared_found.is_empty(),
+            "shared saw A's pinned memory id: {shared_found:?}"
+        );
     }
 }

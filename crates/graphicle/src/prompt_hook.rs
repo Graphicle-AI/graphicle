@@ -219,7 +219,9 @@ fn project(directory: &Path, cwd: &Path) -> Option<(String, crate::indexed_query
         .ok()
         .flatten()?;
     let route = store
-        .read(|db| crate::indexed_query::hook_route(db, &project))
+        .authorized_read(&session.workspace, &session.capability, "read", |db, p| {
+            crate::indexed_query::hook_route(db, &project, p.memory_scope())
+        })
         .unwrap_or(crate::indexed_query::HookRoute::Quick);
     Some((project, route))
 }

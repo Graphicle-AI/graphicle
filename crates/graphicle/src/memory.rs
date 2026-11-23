@@ -1,4 +1,5 @@
 use crate::db::{Connection, OptionalExtension, params};
+use crate::memory_scope::MemoryScope;
 use crate::store::{self, Principal, Store, decode, one, repo, rows, s};
 use crate::{Error, Result, digest, id, integer, native, now, string};
 use serde_json::{Value, json};
@@ -176,6 +177,19 @@ pub fn reviewed_state_of(
     documents: &[Value],
 ) -> Result<String> {
     reviewed_state_for(db, repository, &list_of(db, repository, documents, true)?)
+}
+/// The reviewed state pinned for a specific credential memory namespace.
+pub fn reviewed_state_scoped_of(
+    db: &Connection,
+    repository: &Value,
+    documents: &[Value],
+    scope: &MemoryScope,
+) -> Result<String> {
+    reviewed_state_for(
+        db,
+        repository,
+        &list_of_scoped(db, repository, documents, true, scope)?,
+    )
 }
 pub fn reviewed_state_for(
     db: &Connection,
@@ -388,24 +402,50 @@ pub fn list(
     p: &Principal,
     include_retired: bool,
 ) -> Result<Vec<Value>> {
-    list_of(
+    list_of_scoped(
         db,
         repository,
         &documents(db, repository, p)?,
         include_retired,
+        p.memory_scope(),
     )
 }
-/// `list` over the sources one principal can read (`documents`).
+/// `list` of **shared** memory over the sources one principal can read
+/// (`documents`). Never for a request's principal: use [`list_of_scoped`]
+/// with [`Principal::memory_scope`], or [`list`].
 pub fn list_of(
     db: &Connection,
     repository: &Value,
     documents: &[Value],
     include_retired: bool,
 ) -> Result<Vec<Value>> {
+    list_in(db, repository, documents, include_retired, None)
+}
+
+/// The memories of `scope` over `documents`. The namespace filter is in the
+/// SQL, before any row is decoded, counted or checked for staleness: a
+/// namespaced caller never learns that another namespace's row exists.
+pub fn list_of_scoped(
+    db: &Connection,
+    repository: &Value,
+    documents: &[Value],
+    include_retired: bool,
+    scope: &MemoryScope,
+) -> Result<Vec<Value>> {
+    list_in(db, repository, documents, include_retired, scope.bind())
+}
+
+fn list_in(
+    db: &Connection,
+    repository: &Value,
+    documents: &[Value],
+    include_retired: bool,
+    namespace: Option<&str>,
+) -> Result<Vec<Value>> {
     let mut values = rows(
         db,
-        "SELECT * FROM repo_memories WHERE repository_id=? ORDER BY updated_at DESC,id",
-        [s(repository, "id")],
+        "SELECT * FROM repo_memories WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? ORDER BY updated_at DESC,id",
+        params![s(repository, "id"), namespace],
     )?;
     if values.len() > graphicle_memory::lifecycle::MAX_MEMORIES {
         return Err(Error::bad(format!(
@@ -414,6 +454,7 @@ pub fn list_of(
         )));
     }
     for row in &mut values {
+        crate::memory_scope::conceal(row);
         decode(row, "data")?;
     }
     let original = values.clone();
@@ -482,11 +523,60 @@ fn accessible_with(data: &Value, allowed: &BTreeSet<&str>, by_id: &BTreeMap<&str
     }
     true
 }
+/// Save **shared** memory (owner tooling, tests). A request saves through
+/// [`save_scoped`] with its principal's scope.
 // The arguments mirror the shared immutable revision record.
 #[allow(clippy::too_many_arguments)]
 pub fn save(
     db: &Connection,
     repository: &str,
+    identifier: Option<&str>,
+    expected: Option<i64>,
+    kind: &str,
+    title: &str,
+    body: &str,
+    state: &str,
+    data: &Value,
+) -> Result<Value> {
+    save_in(
+        db, repository, None, identifier, expected, kind, title, body, state, data,
+    )
+}
+
+/// Insert or update a memory of `scope` only. A memory id of another
+/// namespace gets the same answer as an unknown id.
+#[allow(clippy::too_many_arguments)]
+pub fn save_scoped(
+    db: &Connection,
+    repository: &str,
+    scope: &MemoryScope,
+    identifier: Option<&str>,
+    expected: Option<i64>,
+    kind: &str,
+    title: &str,
+    body: &str,
+    state: &str,
+    data: &Value,
+) -> Result<Value> {
+    save_in(
+        db,
+        repository,
+        scope.bind(),
+        identifier,
+        expected,
+        kind,
+        title,
+        body,
+        state,
+        data,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_in(
+    db: &Connection,
+    repository: &str,
+    namespace: Option<&str>,
     identifier: Option<&str>,
     expected: Option<i64>,
     kind: &str,
@@ -503,11 +593,12 @@ pub fn save(
     {
         return Err(Error::bad("Invalid memory title, body or state"));
     }
+    let existing = identifier.is_some();
     let identifier = identifier.map(str::to_string).unwrap_or_else(id);
     let old = one(
         db,
-        "SELECT * FROM repo_memories WHERE repository_id=? AND id=?",
-        params![repository, identifier],
+        "SELECT * FROM repo_memories WHERE repository_id=? AND id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![repository, identifier, namespace],
     )?;
     if let Some(ref row) = old {
         if expected != row["revision"].as_i64() {
@@ -517,6 +608,11 @@ pub fn save(
         }
     } else if expected.is_some() {
         return Err(Error::conflict("Memory no longer exists"));
+    } else if existing {
+        // Callers never mint a new memory under a chosen identifier: an
+        // identifier that is absent from this repository and namespace gets
+        // the same answer whether it is unknown or belongs to another scope.
+        return Err(Error::bad("Memory unavailable"));
     }
     let revision = old
         .as_ref()
@@ -528,7 +624,7 @@ pub fn save(
         .as_ref()
         .map(|r| s(r, "created_at").to_string())
         .unwrap_or(stamp.clone());
-    let written = db.execute("INSERT INTO repo_memories VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,revision=excluded.revision,state=excluded.state,title=excluded.title,body=excluded.body,data=excluded.data,updated_at=excluded.updated_at WHERE repo_memories.repository_id=excluded.repository_id",params![identifier,repository,kind,revision,state,title,body,data.to_string(),created,stamp])?;
+    let written = db.execute("INSERT INTO repo_memories(id,repository_id,kind,revision,state,title,body,data,created_at,updated_at,memory_namespace) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,revision=excluded.revision,state=excluded.state,title=excluded.title,body=excluded.body,data=excluded.data,updated_at=excluded.updated_at WHERE repo_memories.repository_id=excluded.repository_id AND repo_memories.memory_namespace IS NOT DISTINCT FROM excluded.memory_namespace",params![identifier,repository,kind,revision,state,title,body,data.to_string(),created,stamp,namespace])?;
     if written != 1 {
         return Err(Error::conflict(
             "Memory identifier unavailable in this repository",
@@ -536,18 +632,19 @@ pub fn save(
     }
     let raw = json!({"id":identifier,"repository_id":repository,"kind":kind,"revision":revision,"state":state,"title":title,"body":body,"data":data.to_string(),"created_at":created,"updated_at":stamp});
     db.execute(
-        "INSERT INTO repo_memory_revisions VALUES(?,?,?,?)",
-        params![identifier, revision, raw.to_string(), stamp],
+        "INSERT INTO repo_memory_revisions(memory_id,revision,data,created_at,memory_namespace) VALUES(?,?,?,?,?)",
+        params![identifier, revision, raw.to_string(), stamp, namespace],
     )?;
-    store::invalidate(db, repository)?;
+    store::invalidate_scope(db, repository, namespace)?;
     let workspace = crate::invalidation::workspace_of(db, repository)?;
     crate::invalidation::record_memory(db, &workspace, repository, &identifier, data)?;
     // Quotes written before their code was projected wait to
     // be pinned to their symbols.
     crate::symbols::record_pins(db, repository, &identifier, data)?;
-    store::event(
+    store::event_in(
         db,
         repository,
+        namespace,
         "memory_saved",
         json!({"id":identifier,"revision":revision,"state":state}),
     )?;
@@ -621,19 +718,26 @@ impl Store {
             data["notes"] = json!({});
             data["authority"] = json!("member_reviewed_statement");
             data["maintainer"] = json!(args["maintainer"].as_str().unwrap_or("Member"));
-            crate::structured_memory::attach(db, s(&repository, "id"), args, &mut data)?;
+            crate::structured_memory::attach(
+                db,
+                s(&repository, "id"),
+                p.memory_scope(),
+                args,
+                &mut data,
+            )?;
             let replaced = if args.get("supersedes").is_some() {
                 crate::structured_memory::replacement(
                     args,
                     &mut data,
-                    &list_of(db, &repository, &docs, true)?,
+                    &list_of_scoped(db, &repository, &docs, true, p.memory_scope())?,
                 )?
             } else {
                 None
             };
-            let result = save(
+            let result = save_scoped(
                 db,
                 s(&repository, "id"),
+                p.memory_scope(),
                 args["memory_id"].as_str(),
                 args["expected_revision"].as_i64(),
                 args["kind"].as_str().unwrap_or("note"),
@@ -643,7 +747,13 @@ impl Store {
                 &data,
             )?;
             if let Some(old) = replaced {
-                crate::structured_memory::close_replaced(db, s(&repository, "id"), &old, &result)?;
+                crate::structured_memory::close_replaced(
+                    db,
+                    s(&repository, "id"),
+                    p.memory_scope(),
+                    &old,
+                    &result,
+                )?;
             }
             Ok(result)
         })
@@ -724,9 +834,10 @@ pub(crate) fn apply_review(
         if current["state"] == "retired" || current["revision"] != target["revision"] {
             return Err(Error::conflict("Refresh target changed"));
         }
-        let result = save(
+        let result = save_scoped(
             db,
             identifier,
+            p.memory_scope(),
             Some(s(current, "id")),
             current["revision"].as_i64(),
             s(current, "kind"),
@@ -737,9 +848,10 @@ pub(crate) fn apply_review(
         )?;
         let mut retired = old["data"].clone();
         retired["applied_to"] = json!(s(current, "id"));
-        save(
+        save_scoped(
             db,
             identifier,
+            p.memory_scope(),
             Some(s(old, "id")),
             old["revision"].as_i64(),
             s(old, "kind"),
@@ -750,9 +862,10 @@ pub(crate) fn apply_review(
         )?;
         result
     } else {
-        save(
+        save_scoped(
             db,
             identifier,
+            p.memory_scope(),
             Some(s(old, "id")),
             old["revision"].as_i64(),
             s(old, "kind"),
@@ -762,7 +875,14 @@ pub(crate) fn apply_review(
             &data,
         )?
     };
-    crate::claims::apply_memory_review(db, identifier, s(old, "id"), s(&result, "id"), decision)?;
+    crate::claims::apply_memory_review(
+        db,
+        identifier,
+        p.memory_scope(),
+        s(old, "id"),
+        s(&result, "id"),
+        decision,
+    )?;
     Ok(result)
 }
 
@@ -904,9 +1024,10 @@ pub fn propose_refresh(
     // And the symbol links of the files it keeps.
     crate::symbols::carry(&mut data, &old["data"], &kept);
     data["notes"] = old["data"].get("notes").cloned().unwrap_or(json!({}));
-    let draft = save(
+    let draft = save_scoped(
         db,
         s(repository, "id"),
+        p.memory_scope(),
         None,
         None,
         s(&old, "kind"),

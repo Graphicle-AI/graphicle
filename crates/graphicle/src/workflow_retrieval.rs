@@ -244,10 +244,10 @@ pub(crate) fn context(
                     &json!({"kind":field,"profile":key,"source_state":snapshot.state,
                     "principal":job.principal_hash,"repository":job.repository,"arguments":args,"rankings":rankings}),
                 );
-                db.execute("INSERT INTO am_call_reservations(id,job_id,request_hash,state,input_reserved,output_reserved,created_at) VALUES(?,?,?,'started',?,0,?)",
+                db.execute("INSERT INTO am_call_reservations(id,job_id,request_hash,state,input_reserved,output_reserved,created_at,memory_namespace) VALUES(?,?,?,'started',?,0,?,(SELECT memory_namespace FROM am_jobs WHERE id=?2))",
                     params![call,job.id,hash,tokens,now()])?;
                 db.execute(
-                    "INSERT INTO am_model_calls VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO am_model_calls(id,repository_id,job_id,provider,model,request_hash,input_tokens,output_tokens,elapsed_ms,cached,created_at,memory_namespace) VALUES(?,?,?,?,?,?,?,?,?,?,?,(SELECT memory_namespace FROM am_jobs WHERE id=?3))",
                     params![
                         call,
                         job.repository,

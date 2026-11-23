@@ -117,6 +117,27 @@ pub(crate) async fn clear_projection(
     .await?;
     Ok(())
 }
+/// The part of a project's collection one point belongs to: `source` for a
+/// source passage, which every credential reads, `memory` for shared memory,
+/// and `memory:<namespace>` for a namespace's memory. A reader accepts only
+/// the points of the parts it reads ([`readable`]), beside its own
+/// candidates' identities and fingerprints.
+fn partition(identity: &str, namespace: Option<&str>) -> String {
+    match (identity.starts_with("memory:"), namespace) {
+        (false, _) => "source".to_string(),
+        (true, None) => "memory".to_string(),
+        (true, Some(namespace)) => format!("memory:{namespace}"),
+    }
+}
+
+/// The parts of the collection a scope reads (its [`MemoryScope::bind`]):
+/// the sources and its own memory.
+///
+/// [`MemoryScope::bind`]: crate::memory_scope::MemoryScope::bind
+fn readable(namespace: Option<&str>) -> [String; 2] {
+    [partition("", None), partition("memory:", namespace)]
+}
+
 pub async fn publish(
     store: &Store,
     client: &reqwest::Client,
@@ -138,7 +159,33 @@ pub async fn publish(
                 "SELECT * FROM am_vectors WHERE repository_id=? AND model_key=? ORDER BY identity",
                 params![s(&r, "id"), string(args, "model_key", 64)?],
             )?;
-            vectors.retain(|v| valid.get(s(v, "identity")) == Some(&s(v, "source_sha")));
+            let reviewed_private: std::collections::BTreeSet<(String, String)> = rows(
+                db,
+                "SELECT id, memory_namespace FROM repo_memories WHERE repository_id=? AND state='reviewed' AND memory_namespace IS NOT NULL",
+                [s(&r, "id")],
+            )?
+            .into_iter()
+            .filter_map(|row| {
+                Some((
+                    s(&row, "id").to_string(),
+                    row["memory_namespace"].as_str()?.to_string(),
+                ))
+            })
+            .collect();
+            // The owner publishes for every scope: what its own view holds
+            // current, and each namespace's reviewed memory passages, which
+            // only that namespace's readers accept, and only while current for
+            // them ([`ranking`]). Draft or retired private memory vectors are
+            // never uploaded to the external backend.
+            vectors.retain(|v| {
+                valid.get(s(v, "identity")) == Some(&s(v, "source_sha"))
+                    || s(v, "identity")
+                        .strip_prefix("memory:")
+                        .zip(v["memory_namespace"].as_str())
+                        .is_some_and(|(id, ns)| {
+                            reviewed_private.contains(&(id.to_string(), ns.to_string()))
+                        })
+            });
             for v in &mut vectors {
                 decode(v, "vector")?;
             }
@@ -194,7 +241,7 @@ pub async fn publish(
             }
             Ok(())
         })?;
-        let points=batch.iter().map(|v|json!({"id":point(&format!("{scope}:{model_key}:{}",s(v,"identity"))),"vector":v["vector"],"payload":{"scope":scope,"identity":v["identity"],"source_sha":v["source_sha"],"model_key":model_key,"generation":generation}})).collect::<Vec<_>>();
+        let points=batch.iter().map(|v|json!({"id":point(&format!("{scope}:{model_key}:{}",s(v,"identity"))),"vector":v["vector"],"payload":{"scope":scope,"identity":v["identity"],"source_sha":v["source_sha"],"model_key":model_key,"generation":generation,"partition":partition(s(v,"identity"),v["memory_namespace"].as_str())}})).collect::<Vec<_>>();
         touched=true;
         request(
             store,
@@ -245,7 +292,10 @@ pub async fn ranking(
     if vector.is_empty() || vector.len() > 8192 || vector.iter().any(|n| !n.is_finite()) {
         return Err(Error::bad("Invalid search vector"));
     }
-    let config = jobs::guarded_read(&worker.store, job, |db, _, _| config(db, &job.repository))?;
+    let (config, memory_scope) = jobs::guarded_read(&worker.store, job, |db, p, _| {
+        Ok((config(db, &job.repository)?, p.memory_scope().clone()))
+    })?;
+    let readable = readable(memory_scope.bind());
     let valid = candidates
         .iter()
         .map(|v| (s(v, "identity"), s(v, "source_sha")))
@@ -276,6 +326,10 @@ pub async fn ranking(
             p["payload"]["scope"] == job.repository
                 && p["payload"]["model_key"] == model_key
                 && valid.get(s(&p["payload"], "identity")) == Some(&s(&p["payload"], "source_sha"))
+                // A point of a release before partitions is shared.
+                && p["payload"]["partition"]
+                    .as_str()
+                    .is_none_or(|part| readable.iter().any(|r| r == part))
         })
         .map(|p| p["payload"]["identity"].clone())
         .collect::<Vec<_>>();
@@ -294,5 +348,15 @@ mod tests {
         assert!(validate_collection(&collection(3, "Dot"), 3).is_err());
         assert!(validate_collection(&collection(3, "Euclid"), 3).is_err());
         assert!(validate_collection(&collection(4, "Cosine"), 3).is_err());
+    }
+
+    #[test]
+    fn partitions_keep_each_namespace_apart() {
+        assert_eq!(partition("file:a.md#0", None), "source");
+        assert_eq!(partition("file:a.md#0", Some("dev-a")), "source");
+        assert_eq!(partition("memory:m1", None), "memory");
+        assert_eq!(partition("memory:m1", Some("dev-a")), "memory:dev-a");
+        assert_eq!(readable(None), ["source", "memory"]);
+        assert_eq!(readable(Some("dev-a")), ["source", "memory:dev-a"]);
     }
 }

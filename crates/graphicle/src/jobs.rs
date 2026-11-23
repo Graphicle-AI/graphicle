@@ -849,7 +849,41 @@ pub fn guarded<T>(
 ) -> Result<T> {
     store.transaction(|db| {
         let (p, repository) = still_valid(db, job)?;
+        if db.engine() == crate::db::Engine::Postgres
+            && let Some(namespace) = p.memory_scope().bind()
+        {
+            crate::store::lock_namespace_for_write(db, &job.workspace, namespace)?;
+            let (p, repository) = still_valid(db, job)?;
+            return f(db, &p, &repository);
+        }
         f(db, &p, &repository)
+    })
+}
+/// Whether a namespaced job and its credential are still live (neither deleted
+/// by `memory.delete`/`namespace_delete` nor revoked). Checked before writing
+/// private memory vectors to the external embedding cache so an in-flight
+/// `embed` job does not resurrect entries after erasure.
+pub(crate) fn namespace_job_active(
+    store: &Store,
+    job: &Job,
+    scope: &crate::memory_scope::MemoryScope,
+) -> Result<bool> {
+    let bind = scope.bind();
+    store.read(|db| {
+        let job_live: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM am_jobs WHERE id=? AND memory_namespace IS NOT DISTINCT FROM ?)",
+            params![&job.id, bind],
+            |r| r.get(0),
+        )?;
+        if !job_live {
+            return Ok(false);
+        }
+        let cred_live: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM credentials WHERE workspace_id=? AND capability_hash=? AND revoked_at IS NULL AND memory_namespace IS NOT DISTINCT FROM ?)",
+            params![&job.workspace, &job.principal_hash, bind],
+            |r| r.get(0),
+        )?;
+        Ok(cred_live)
     })
 }
 /// `guarded` for steps that only read: the same lease, authority and source
@@ -895,7 +929,7 @@ fn still_valid(db: &Connection, job: &Job) -> Result<(Principal, Value)> {
             ));
         }
         if job.payload["memory_state"].is_string()
-            && memory::reviewed_state_of(db, &repository, &documents)?
+            && memory::reviewed_state_scoped_of(db, &repository, &documents, p.memory_scope())?
                 != s(&job.payload, "memory_state")
         {
             return Err(Error::conflict("Reviewed memory changed during the job"));
@@ -1073,7 +1107,12 @@ pub fn queue(
     crate::workflow_retrieval::pin(&mut payload, config)?;
     let documents = memory::documents(db, &repository, p)?;
     payload["source_state"] = json!(memory::state(&documents));
-    payload["memory_state"] = json!(memory::reviewed_state_of(db, &repository, &documents)?);
+    payload["memory_state"] = json!(memory::reviewed_state_scoped_of(
+        db,
+        &repository,
+        &documents,
+        p.memory_scope()
+    )?);
     if !source_task(kind) {
         let (name, profile) = config.profile(selected_model)?;
         payload["model"] = json!(name);
@@ -1124,13 +1163,13 @@ pub fn queue(
     let progress = match kind {
         "extract" => one(
             db,
-            "SELECT count(*) AS count,max(created_at) AS latest FROM am_document_reads WHERE repository_id=?",
-            [identifier],
+            "SELECT count(*) AS count,max(created_at) AS latest FROM am_document_reads WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ?",
+            params![identifier, p.memory_scope().bind()],
         )?,
         "embed" => one(
             db,
-            "SELECT count(*) AS count FROM am_vectors WHERE repository_id=?",
-            [identifier],
+            "SELECT count(*) AS count FROM am_vectors WHERE repository_id=? AND (memory_namespace IS NOT DISTINCT FROM ? OR identity NOT LIKE 'memory:%')",
+            params![identifier, p.memory_scope().bind()],
         )?,
         crate::observer::KIND => one(
             db,
@@ -1151,8 +1190,8 @@ pub fn queue(
     let input_hash = digest(&json!({"payload":payload,"principal":p.hash}));
     if let Some(mut old) = one(
         db,
-        "SELECT id,state,result,error FROM am_jobs WHERE repository_id=? AND kind=? AND input_hash=?",
-        params![identifier, kind, input_hash],
+        "SELECT id,state,result,error FROM am_jobs WHERE repository_id=? AND kind=? AND input_hash=? AND memory_namespace IS NOT DISTINCT FROM ?",
+        params![identifier, kind, input_hash, p.memory_scope().bind()],
     )? {
         decode(&mut old, "result")?;
         old["replayed"] = json!(true);
@@ -1171,10 +1210,11 @@ pub fn queue(
     )?;
     let identifier_job = id();
     let stamp = now();
-    db.execute("INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,max_attempts,not_before,created_at,updated_at) VALUES(?,?,?,?,?,?,'queued',?,?,?,?)",params![identifier_job,identifier,kind,input_hash,encoded,p.hash,max_attempts,stamp,stamp,stamp])?;
-    store::event(
+    db.execute("INSERT INTO am_jobs(id,repository_id,kind,input_hash,payload,principal_hash,state,max_attempts,not_before,created_at,updated_at,memory_namespace) VALUES(?,?,?,?,?,?,'queued',?,?,?,?,?)",params![identifier_job,identifier,kind,input_hash,encoded,p.hash,max_attempts,stamp,stamp,stamp,p.memory_scope().bind()])?;
+    store::event_scoped(
         db,
         identifier,
+        p.memory_scope(),
         "workflow_queued",
         json!({"id":identifier_job,"kind":kind}),
     )?;
@@ -1216,8 +1256,8 @@ impl Store {
             let mut reviewed:Option<String>=None;
             // The list is a recent window; an ID lookup must search outside it.
             let jobs = match args["job_id"].as_str() {
-                Some(job_id) => rows(db,"SELECT id,kind,state,payload,principal_hash,attempt,result,error,created_at,updated_at FROM am_jobs WHERE repository_id=? AND id=?",[s(&repository,"id"),job_id])?,
-                None => rows(db,"SELECT id,kind,state,payload,principal_hash,attempt,result,error,created_at,updated_at FROM am_jobs WHERE repository_id=? ORDER BY created_at DESC LIMIT 100",[s(&repository,"id")])?,
+                Some(job_id) => rows(db,"SELECT id,kind,state,payload,principal_hash,attempt,result,error,created_at,updated_at FROM am_jobs WHERE repository_id=? AND id=? AND memory_namespace IS NOT DISTINCT FROM ?",params![s(&repository,"id"),job_id,p.memory_scope().bind()])?,
+                None => rows(db,"SELECT id,kind,state,payload,principal_hash,attempt,result,error,created_at,updated_at FROM am_jobs WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? ORDER BY created_at DESC LIMIT 100",params![s(&repository,"id"),p.memory_scope().bind()])?,
             };
             for mut row in jobs {
                 if p.role!="owner" && s(&row,"principal_hash")!=p.hash {continue;}
@@ -1236,13 +1276,14 @@ impl Store {
                         row["result"]=Value::Null;row["result_unavailable"]=json!("source_view_changed");
                     }
                     if row["payload"]["memory_state"].is_string() {
-                        if reviewed.is_none() {reviewed=Some(memory::reviewed_state_of(db,&repository,view)?);}
+                        if reviewed.is_none() {reviewed=Some(memory::reviewed_state_scoped_of(db,&repository,view,p.memory_scope())?);}
                         if Some(s(&row["payload"],"memory_state"))!=reviewed.as_deref() {
                             row["result"]=Value::Null;row["result_unavailable"]=json!("reviewed_memory_changed");
                         }
                     }
                 }
-                let calls=rows(db,"SELECT c.*,r.state AS call_state,r.usage_reported,r.error FROM am_model_calls c LEFT JOIN am_call_reservations r ON r.id=c.id WHERE c.job_id=? ORDER BY c.created_at",[s(&row,"id")])?;
+                let mut calls=rows(db,"SELECT c.*,r.state AS call_state,r.usage_reported,r.error FROM am_model_calls c LEFT JOIN am_call_reservations r ON r.id=c.id WHERE c.job_id=? ORDER BY c.created_at",[s(&row,"id")])?;
+                calls.iter_mut().for_each(crate::memory_scope::conceal);
                 row["calls"]=json!(calls);row.as_object_mut().unwrap().remove("principal_hash");row.as_object_mut().unwrap().remove("payload");result.push(row);
             }
             if args["job_id"].is_string() {result.into_iter().next().ok_or_else(||Error::bad("Job unavailable"))}else{Ok(json!({"jobs":result}))}
@@ -1259,10 +1300,13 @@ impl Store {
     ) -> Result<Value> {
         let retry = self.authorized(workspace, token, "read", |db, p| {
             let repository = repo(db, p, string(args, "repository_id", 100)?)?;
+            // A job is retried only in the namespace that queued it; another
+            // namespace's job is "unavailable", as an unknown id is, and the
+            // owner does not re-run a namespace's job in shared memory.
             let mut old = one(
                 db,
-                "SELECT * FROM am_jobs WHERE repository_id=? AND id=?",
-                params![s(&repository, "id"), string(args, "job_id", 100)?],
+                "SELECT * FROM am_jobs WHERE repository_id=?1 AND id=?2 AND memory_namespace IS NOT DISTINCT FROM ?3",
+                params![s(&repository, "id"), string(args, "job_id", 100)?, p.memory_scope().bind()],
             )?
             .ok_or_else(|| Error::bad("Job unavailable"))?;
             if p.role != "owner" && s(&old, "principal_hash") != p.hash {
@@ -1305,8 +1349,8 @@ impl Store {
             let job_id = string(args, "job_id", 100)?;
             let job = one(
                 db,
-                "SELECT * FROM am_jobs WHERE repository_id=? AND id=?",
-                params![s(args, "repository_id"), job_id],
+                "SELECT * FROM am_jobs WHERE repository_id=?1 AND id=?2 AND (?3=1 OR memory_namespace IS NOT DISTINCT FROM ?4)",
+                params![s(args, "repository_id"), job_id, i64::from(p.role == "owner"), p.memory_scope().bind()],
             )?
             .ok_or_else(|| Error::bad("Job unavailable"))?;
             if p.role != "owner" && s(&job, "principal_hash") != p.hash {
@@ -1402,7 +1446,7 @@ impl Store {
             // Exponential backoff per attempt (G08): 30 s, 60 s, 120 s, ... capped.
             let later=crate::ingestion::backoff_stamp(current["attempt"].as_u64().unwrap_or(1));
             db.execute("UPDATE am_jobs SET state=?,result=?,error=?,not_before=?,lease_token=NULL,lease_until=NULL,updated_at=? WHERE id=?",params![state,value,error,later,now(),job.id])?;
-            store::event(db,&job.repository,"workflow_finished",json!({"id":job.id,"state":state}))?;Ok(())
+            store::job_event(db,&job.repository,&job.id,"workflow_finished",json!({"id":job.id,"state":state}))?;Ok(())
         })
     }
 }
@@ -1521,9 +1565,14 @@ impl Worker {
             .as_deref()
             .map(|reference| self.store.resolve_credential(&job.workspace, reference))
             .transpose()?;
-        let request_hash = digest(
-            &json!({"model":model::key(profile),"instructions":instructions,"input":input,"schema":schema,"scope":job.repository,"source_state":job.payload["source_state"]}),
-        );
+        let namespace = guarded_read(&self.store, job, |_, p, _| {
+            Ok(p.memory_scope().bind().map(str::to_owned))
+        })?;
+        let mut request = json!({"model":model::key(profile),"instructions":instructions,"input":input,"schema":schema,"scope":job.repository,"source_state":job.payload["source_state"]});
+        if let Some(ref namespace) = namespace {
+            request["memory_namespace"] = json!(namespace);
+        }
+        let request_hash = digest(&request);
         let reservation = id();
         let input_tokens = model::request_tokens(instructions, input, schema);
         let mut output_limit = profile.output_limit;
@@ -1531,15 +1580,16 @@ impl Worker {
             renew(db, job)?;
             if let Some(row) = one(
                 db,
-                "SELECT result FROM am_model_cache WHERE repository_id=? AND request_hash=? AND source_state=?",
+                "SELECT result FROM am_model_cache WHERE repository_id=? AND request_hash=? AND source_state=? AND memory_namespace IS NOT DISTINCT FROM ?",
                 params![
                     job.repository,
                     request_hash,
-                    s(&job.payload, "source_state")
+                    s(&job.payload, "source_state"),
+                    namespace.as_deref()
                 ],
             )? {
                 db.execute(
-                    "INSERT INTO am_model_calls VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO am_model_calls(id,repository_id,job_id,provider,model,request_hash,input_tokens,output_tokens,elapsed_ms,cached,created_at,memory_namespace) VALUES(?,?,?,?,?,?,?,?,?,?,?,(SELECT memory_namespace FROM am_jobs WHERE id=?3))",
                     params![
                         reservation,
                         job.repository,
@@ -1573,9 +1623,9 @@ impl Worker {
                     "Workflow inference budget exhausted; completed work is retained",
                 ));
             }
-            db.execute("INSERT INTO am_call_reservations(id,job_id,request_hash,state,input_reserved,output_reserved,created_at) VALUES(?,?,?,'started',?,?,?)",params![reservation,job.id,request_hash,input_tokens,output_limit,now()])?;
+            db.execute("INSERT INTO am_call_reservations(id,job_id,request_hash,state,input_reserved,output_reserved,created_at,memory_namespace) VALUES(?,?,?,'started',?,?,?,(SELECT memory_namespace FROM am_jobs WHERE id=?2))",params![reservation,job.id,request_hash,input_tokens,output_limit,now()])?;
             db.execute(
-                "INSERT INTO am_model_calls VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO am_model_calls(id,repository_id,job_id,provider,model,request_hash,input_tokens,output_tokens,elapsed_ms,cached,created_at,memory_namespace) VALUES(?,?,?,?,?,?,?,?,?,?,?,(SELECT memory_namespace FROM am_jobs WHERE id=?3))",
                 params![
                     reservation,
                     job.repository,
@@ -1648,26 +1698,27 @@ impl Worker {
         let restored = value != raw;
         let cut = cap_arrays(schema, &mut value, capped);
         validate_output(schema, &value)?;
-        guarded(&self.store, job, |db, _, _| {
+        guarded(&self.store, job, |db, p, _| {
             if restored {
-                store::event(
+                store::event_scoped(
                     db,
                     &job.repository,
+                    p.memory_scope(),
                     "model_array_envelope_restored",
                     json!({"job_id":job.id,"request_hash":request_hash,"semantic_fields_changed":false}),
                 )?;
             }
             db.execute(
-                "INSERT INTO am_model_cache VALUES(?,?,?,?,?) ON CONFLICT(repository_id,request_hash) DO UPDATE SET source_state=excluded.source_state,result=excluded.result,created_at=excluded.created_at",
+                "INSERT INTO am_model_cache(repository_id,request_hash,source_state,result,created_at,memory_namespace) VALUES(?,?,?,?,?,?) ON CONFLICT(repository_id,request_hash) DO UPDATE SET source_state=excluded.source_state,result=excluded.result,created_at=excluded.created_at WHERE am_model_cache.memory_namespace IS NOT DISTINCT FROM excluded.memory_namespace",
                 params![
                     job.repository,
                     request_hash,
                     s(&job.payload, "source_state"),
                     serde_json::to_string(&reply)?,
-                    now()
+                    now(),namespace.as_deref()
                 ],
             )?;
-            db.execute("DELETE FROM am_model_cache WHERE repository_id=? AND request_hash IN (SELECT request_hash FROM am_model_cache WHERE repository_id=? ORDER BY created_at DESC LIMIT ALL OFFSET 500)",params![job.repository,job.repository])?;
+            db.execute("DELETE FROM am_model_cache WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? AND request_hash IN (SELECT request_hash FROM am_model_cache WHERE repository_id=? AND memory_namespace IS NOT DISTINCT FROM ? ORDER BY created_at DESC LIMIT ALL OFFSET 500)",params![job.repository,namespace.as_deref(),job.repository,namespace.as_deref()])?;
             // A cached answer is only as current as the principal that produced it.
             crate::invalidation::record_dependency(
                 db,
@@ -1731,9 +1782,9 @@ impl Worker {
             {
                 return Err(Error::bad("Embedding budget exhausted"));
             }
-            db.execute("INSERT INTO am_call_reservations(id,job_id,request_hash,state,input_reserved,output_reserved,created_at) VALUES(?,?,?,'started',?,0,?)",params![call_id,job.id,request_hash,input,now()])?;
+            db.execute("INSERT INTO am_call_reservations(id,job_id,request_hash,state,input_reserved,output_reserved,created_at,memory_namespace) VALUES(?,?,?,'started',?,0,?,(SELECT memory_namespace FROM am_jobs WHERE id=?2))",params![call_id,job.id,request_hash,input,now()])?;
             db.execute(
-                "INSERT INTO am_model_calls VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO am_model_calls(id,repository_id,job_id,provider,model,request_hash,input_tokens,output_tokens,elapsed_ms,cached,created_at,memory_namespace) VALUES(?,?,?,?,?,?,?,?,?,?,?,(SELECT memory_namespace FROM am_jobs WHERE id=?3))",
                 params![
                     call_id,
                     job.repository,
@@ -1797,4 +1848,88 @@ fn validate_output(schema: &Value, value: &Value) -> Result<()> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn namespace_job_active_detects_deleted_job_and_revoked_key() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let store = Store::open(dir.path()).unwrap();
+        let ws = store.create_workspace("Jobs").unwrap();
+        let workspace = s(&ws, "id").to_string();
+        let owner = s(&ws, "capability").to_string();
+        let repo = s(
+            &store
+                .register(&workspace, &owner, &json!({"project_key":"j","name":"j"}))
+                .unwrap(),
+            "id",
+        )
+        .to_string();
+        let granted = store
+            .grant(
+                &workspace,
+                &owner,
+                &json!({"role":"agent","label":"a","memory_namespace":"dev-a","self_review":true}),
+            )
+            .unwrap();
+        let token = s(&granted, "capability").to_string();
+        let cred_id = s(&granted, "id").to_string();
+        let hash = graphicle_memory::text::sha256(token.as_bytes());
+        let scope = store
+            .authorized_read(&workspace, &token, "read", |_, p| {
+                Ok(p.memory_scope().clone())
+            })
+            .unwrap();
+        let db = store.connect().unwrap();
+        db.execute(
+            "INSERT INTO am_jobs(id,repository_id,kind,input_hash,state,payload,principal_hash,attempt,max_attempts,not_before,created_at,updated_at,memory_namespace) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            params![
+                "job-live",
+                &repo,
+                "embed",
+                "ih-live",
+                "running",
+                "{}",
+                &hash,
+                1,
+                1,
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+                "2026-01-01T00:00:00Z",
+                "dev-a"
+            ],
+        )
+        .unwrap();
+        let job = Job {
+            id: "job-live".into(),
+            repository: repo,
+            workspace,
+            principal_hash: hash,
+            lease: "lease".into(),
+            kind: "embed".into(),
+            payload: json!({}),
+        };
+        assert!(namespace_job_active(&store, &job, &scope).unwrap());
+        db.execute(
+            "UPDATE credentials SET revoked_at='2026-01-02T00:00:00Z' WHERE id=? AND memory_namespace='dev-a'",
+            [&cred_id],
+        )
+        .unwrap();
+        assert!(!namespace_job_active(&store, &job, &scope).unwrap());
+        db.execute(
+            "UPDATE credentials SET revoked_at=NULL WHERE id=? AND memory_namespace='dev-a'",
+            [&cred_id],
+        )
+        .unwrap();
+        assert!(namespace_job_active(&store, &job, &scope).unwrap());
+        db.execute(
+            "DELETE FROM am_jobs WHERE id='job-live' AND memory_namespace='dev-a'",
+            [],
+        )
+        .unwrap();
+        assert!(!namespace_job_active(&store, &job, &scope).unwrap());
+    }
 }

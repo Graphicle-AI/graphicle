@@ -294,29 +294,47 @@ fn document_date(metadata: &Value, by: Dated) -> Option<chrono::DateTime<chrono:
     })
 }
 
+/// The sources the project's reviewed memories cite, in shared memory and in
+/// every memory namespace. Retention forgets documents for the whole project
+/// (forgetting one removes the memories of every namespace that cite it), so
+/// `skip_cited_by_reviewed` keeps a document a namespace's reviewed memory
+/// cites as it keeps one shared memory cites, whoever runs the policy. Only
+/// admins plan retention ([`Store::retention_preview`], `retention.apply`),
+/// so the plan never tells another key what a namespace cites.
+fn cited_by_reviewed(
+    db: &Connection,
+    repository: &str,
+) -> Result<std::collections::BTreeSet<String>> {
+    let mut cited = std::collections::BTreeSet::new();
+    for memory in rows(
+        db,
+        "SELECT data FROM repo_memories WHERE repository_id=? AND state='reviewed'",
+        [repository],
+    )? {
+        let data: Value = serde_json::from_str(s(&memory, "data")).unwrap_or(Value::Null);
+        for field in ["native_sources", "evidence_links"] {
+            if let Some(sources) = data[field].as_object() {
+                cited.extend(sources.keys().cloned());
+            }
+        }
+    }
+    Ok(cited)
+}
+
 /// Select the documents `policy` would forget at `now`.
 pub fn source_plan(
     db: &Connection,
-    principal: &crate::store::Principal,
     repository: &Value,
     policy: &SourcePolicy,
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<SourcePlan> {
     let identifier = s(repository, "id");
     let cutoff = now - chrono::Duration::days(i64::from(policy.max_age_days));
-    let mut cited = std::collections::BTreeSet::new();
-    if policy.skip_cited_by_reviewed {
-        for memory in crate::memory::list(db, repository, principal, true)? {
-            if memory["state"] != "reviewed" {
-                continue;
-            }
-            for field in ["native_sources", "evidence_links"] {
-                if let Some(sources) = memory["data"][field].as_object() {
-                    cited.extend(sources.keys().cloned());
-                }
-            }
-        }
-    }
+    let cited = if policy.skip_cited_by_reviewed {
+        cited_by_reviewed(db, identifier)?
+    } else {
+        Default::default()
+    };
     let mut plan = SourcePlan {
         cutoff: cutoff.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         ..SourcePlan::default()
@@ -372,15 +390,19 @@ pub fn source_plan(
 }
 
 impl Store {
-    /// `retention.preview` (read): what a [`SourcePolicy`] would forget now,
-    /// per connector with the rows certified deletion would remove, and the
-    /// `plan_hash` `retention.apply` must echo. Deletes nothing.
+    /// `retention.preview` (admin, as `retention.apply`): what a
+    /// [`SourcePolicy`] would forget now, per connector with the rows
+    /// certified deletion would remove, and the `plan_hash`
+    /// `retention.apply` must echo. Deletes nothing. The plan counts the
+    /// memory of every namespace (what apply removes, and what
+    /// `skip_cited_by_reviewed` keeps), so it is the owner's view, never a
+    /// reader's.
     pub fn retention_preview(&self, workspace: &str, token: &str, args: &Value) -> Result<Value> {
         let policy = SourcePolicy::from_args(args)?;
-        self.authorized(workspace, token, "read", |db, p| {
+        self.authorized(workspace, token, "admin", |db, p| {
             let repository = repo(db, p, crate::string(args, "repository_id", 100)?)?;
             let identifier = s(&repository, "id");
-            let plan = source_plan(db, p, &repository, &policy, chrono::Utc::now())?;
+            let plan = source_plan(db, &repository, &policy, chrono::Utc::now())?;
             let mut connectors = serde_json::Map::new();
             for (connector, documents) in &plan.documents {
                 let mut removes: std::collections::BTreeMap<&str, usize> = Default::default();

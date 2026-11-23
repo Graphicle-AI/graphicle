@@ -939,7 +939,7 @@ pub fn answer(db: &Connection, p: &Principal, repository: &Value, args: &Value) 
             "graph_episode": episode},
         "code_graph": {"status": "identifier_route", "episode": episode,
             "episode_lag": lag.as_ref().map_or(0, |lag| lag.changed)},
-        "freshness": crate::invalidation::repository_freshness(db, &p.workspace, id)?,
+        "freshness": crate::invalidation::repository_freshness_scoped(db, &p.workspace, id, p.memory_scope())?,
         REPORT: route,
     });
     Ok(Routed::Answered(packet))

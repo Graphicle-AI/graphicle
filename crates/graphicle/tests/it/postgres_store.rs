@@ -345,3 +345,37 @@ fn an_unfinished_store_of_unknown_origin_names_both_commands_and_is_replaced() {
         imported["schema"].as_str().unwrap()
     );
 }
+
+/// Importing a pre-0.1.20 SQLite store (whose `store_readers` table lacks the
+/// `memory_namespaces` format-2 record) into PostgreSQL still leaves the
+/// imported schema stamped with format 2 before `Store::open` runs again.
+#[test]
+fn sqlite_import_keeps_format_2_namespace_reader_record() {
+    if !postgres_store() {
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let folder = dir.path().join("data");
+    let source = sqlite_source(&folder);
+    // Simulate a pre-0.1.20 SQLite store whose `store_readers` table has no
+    // `memory_namespaces` entry.
+    let lite = rusqlite::Connection::open(&source).unwrap();
+    lite.execute(
+        "DELETE FROM store_readers WHERE reason='memory_namespaces'",
+        [],
+    )
+    .unwrap();
+    drop(lite);
+
+    let imported = import_sqlite::import(&source, &folder).unwrap();
+    assert_eq!(imported["imported"], true, "{imported}");
+    let db = graphicle_runtime::db::open_existing(&folder).unwrap();
+    let format: i64 = db
+        .query_row(
+            "SELECT format FROM store_readers WHERE reason='memory_namespaces'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(format, 2);
+}

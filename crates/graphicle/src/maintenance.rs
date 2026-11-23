@@ -100,7 +100,7 @@ fn apply_source_retention(
 ) -> Result<Value> {
     let identifier = s(repository, "id");
     let policy = crate::retention::SourcePolicy::from_args(args)?;
-    let plan = crate::retention::source_plan(db, p, repository, &policy, chrono::Utc::now())?;
+    let plan = crate::retention::source_plan(db, repository, &policy, chrono::Utc::now())?;
     if args["plan_hash"].as_str() != Some(plan.plan_hash.as_str()) {
         return Err(Error::conflict(
             "The retention plan changed or was not previewed; run retention.preview and pass its plan_hash",

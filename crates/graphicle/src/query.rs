@@ -497,7 +497,7 @@ pub fn snapshot(db: &Connection, repository: &Value, p: &Principal) -> Result<Sn
     })?;
     // One read of the sources serves the memory listing too.
     let memories = crate::phase::phase("snapshot_memories", || {
-        memory::list_of(db, repository, &documents, true)
+        memory::list_of_scoped(db, repository, &documents, true, p.memory_scope())
     })?;
     let graph = crate::phase::phase("snapshot_graph", || source_graph(db, repository, p))?;
     let state = digest(
@@ -2492,8 +2492,8 @@ pub fn project_packet(
         let key = crate::model::key(profile);
         for row in crate::store::rows(
             db,
-            "SELECT identity,source_sha,vector FROM am_vectors WHERE repository_id=? AND model_key=?",
-            crate::params![s(repository, "id"), key],
+            "SELECT identity,source_sha,vector FROM am_vectors WHERE repository_id=? AND model_key=? AND (memory_namespace IS NOT DISTINCT FROM ? OR identity NOT LIKE 'memory:%')",
+            crate::params![s(repository, "id"), key, p.memory_scope().bind()],
         )? {
             if valid.get(s(&row, "identity")) == Some(&s(&row, "source_sha")) {
                 vectors.insert(
@@ -2635,10 +2635,11 @@ pub fn project_packet(
         packet["filter"] = filter;
     }
     packet["model_calls"] = json!(packet["model_calls"].as_u64().unwrap_or(0) + dense_calls);
-    packet["freshness"] = json!(crate::invalidation::repository_freshness(
+    packet["freshness"] = json!(crate::invalidation::repository_freshness_scoped(
         db,
         &p.workspace,
-        s(repository, "id")
+        s(repository, "id"),
+        p.memory_scope()
     )?);
     Ok((snap, packet))
 }
@@ -2653,7 +2654,7 @@ impl Store {
                 "draft_memories":snap.memories.iter().filter(|m|m["state"]=="draft").count(),"source_state":snap.state,"native_runtime":{"enabled":true,"language":"rust","service_version":env!("CARGO_PKG_VERSION"),"core_version":graphicle_memory::VERSION},
                 "structural_revision":graphicle_memory::structure::REVISION,"graph":snap.graph,"automatic_model_calls":observed,
                 "write_lock":crate::store::lock_report(),
-                "freshness":crate::invalidation::repository_freshness(db,&p.workspace,s(&repository,"id"))?}))
+                "freshness":crate::invalidation::repository_freshness_scoped(db,&p.workspace,s(&repository,"id"),p.memory_scope())?}))
         })
     }
     pub fn read_project_source(&self, workspace: &str, token: &str, args: &Value) -> Result<Value> {
@@ -3061,12 +3062,7 @@ mod tests {
             .collect();
         let snapshot = synthetic(documents, vec![]);
         let db = crate::db::Connection::open_in_memory().unwrap();
-        let principal = crate::store::Principal {
-            workspace: "w".into(),
-            credential: "c".into(),
-            hash: "h".into(),
-            role: "owner".into(),
-        };
+        let principal = crate::store::Principal::shared("w", "c", "h", "owner");
         let args = json!({"question":"note 50000","graph_retrieval":true});
         let graph =
             crate::graph::for_query(&db, &snapshot.repository, &principal, &snapshot, &args)
@@ -3224,12 +3220,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let store = crate::store::Store::open(dir.path()).unwrap();
         let db = store.connect().unwrap();
-        let principal = crate::store::Principal {
-            workspace: "w".into(),
-            credential: "c".into(),
-            hash: "h".into(),
-            role: "owner".into(),
-        };
+        let principal = crate::store::Principal::shared("w", "c", "h", "owner");
         let args = json!({"question":"refresh token","graph_retrieval":true});
         let graph =
             crate::graph::for_query(&db, &snapshot.repository, &principal, &snapshot, &args)

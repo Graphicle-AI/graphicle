@@ -327,6 +327,9 @@ fn copy_all(
         copied.insert(table.clone(), count);
     }
     crate::archive::reset_identities(&tx)?;
+    // Importing an earlier SQLite store replaces `store_readers`; stamp
+    // format 2 so earlier releases cannot open the migrated PostgreSQL store.
+    crate::store::require_namespace_reader(&tx)?;
     tx.commit()?;
     let rows: u64 = copied.values().sum();
     Ok(

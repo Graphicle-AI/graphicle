@@ -130,6 +130,12 @@ Kubernetes (25,899 code files) builds in minutes on 4 vCPUs (chart above). By de
 </details>
 
 <details>
+<summary><b>Can several developers share one server without sharing memory?</b></summary>
+
+Yes. Give each developer's key a memory namespace: every key reads the same project, and each one's memory stays private to its namespace ([private memory per key](crates/graphicle/README.md#private-memory-per-key)). Keys without one share the project's reviewed memory, as before.
+</details>
+
+<details>
 <summary><b>Is there a version for teams?</b></summary>
 
 Graphicle is free and open source under Apache-2.0, for individuals and teams alike. A commercial edition for teams is in private preview. To talk to us, start a [discussion](https://github.com/graphicle-ai/graphicle/discussions).

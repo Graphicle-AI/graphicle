@@ -43,9 +43,20 @@ pub fn migrate(db: &Connection) -> Result<()> {
     }
     // A pre-migration reverted proposal has lost its acceptance timestamp.
     // Do not invent historical acceptance. Current accepted rows are known.
+    // Shared proposals only: a namespace's (restored, or written by an
+    // extension) never becomes the shared alias history. This runs before
+    // the store gains its namespace columns, and without them no proposal is
+    // a namespace's.
+    let shared = if crate::store::column_exists(db, "gf_alias_proposals", "memory_namespace")? {
+        " AND p.memory_namespace IS NULL"
+    } else {
+        ""
+    };
     for row in rows(
         db,
-        "SELECT * FROM gf_alias_proposals p WHERE state='accepted' AND NOT EXISTS(SELECT 1 FROM gf_aliases a WHERE a.repository_id=p.repository_id AND a.proposal_id=p.id)",
+        &format!(
+            "SELECT * FROM gf_alias_proposals p WHERE state='accepted'{shared} AND NOT EXISTS(SELECT 1 FROM gf_aliases a WHERE a.repository_id=p.repository_id AND a.proposal_id=p.id)"
+        ),
         [],
     )? {
         let at = instant(s(&row, "decided_at"))?;
