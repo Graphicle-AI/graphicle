@@ -31,6 +31,7 @@ mod capture;
 mod code_relationships;
 mod core_limits;
 mod cross_repo;
+mod data_dir;
 mod deletion;
 mod doc_links;
 mod easy_flow;

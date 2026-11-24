@@ -16,7 +16,7 @@ pub struct Session {
     pub project: Option<String>,
 }
 pub fn data_dir() -> PathBuf {
-    if let Some(value) = std::env::var_os("GRAPHICLE_DATA_DIR") {
+    if let Some(value) = std::env::var_os("GRAPHICLE_DATA_DIR").filter(|value| !value.is_empty()) {
         return value.into();
     }
     default_data_dir()
@@ -41,6 +41,7 @@ pub fn default_data_dir() -> PathBuf {
     #[cfg(all(not(target_os = "macos"), not(windows)))]
     {
         std::env::var_os("XDG_DATA_HOME")
+            .filter(|value| !value.is_empty())
             .map(PathBuf::from)
             .unwrap_or_else(|| user_dir.join(".local/share"))
             .join("graphicle")
