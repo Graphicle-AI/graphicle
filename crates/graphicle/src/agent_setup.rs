@@ -1483,6 +1483,7 @@ fn hook_file(client: &str, cwd: &Path) -> Result<PathBuf> {
         "claude-code" => Ok(cwd.join(".claude/settings.local.json")),
         "codex" => {
             let home = std::env::var_os("CODEX_HOME")
+                .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .or_else(|| crate::platform::home_dir().map(|h| h.join(".codex")))
                 .ok_or_else(|| Error::bad("Home directory unavailable"))?;
