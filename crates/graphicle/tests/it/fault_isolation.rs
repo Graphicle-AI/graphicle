@@ -182,4 +182,20 @@ fn a_slow_write_transaction_is_reported_with_its_call_site() {
         .project_status(&f.workspace, &f.key, &f.args(json!({})))
         .unwrap();
     assert!(status["write_lock"]["write_transactions"].as_u64().unwrap() > 0);
+
+    // A reader sees the project's status without the process-wide lock report.
+    let reader = f
+        .store
+        .grant(
+            &f.workspace,
+            &f.key,
+            &json!({"role":"reader","label":"Reader"}),
+        )
+        .unwrap();
+    let status = f
+        .store
+        .project_status(&f.workspace, s(&reader, "capability"), &f.args(json!({})))
+        .unwrap();
+    assert!(status.get("write_lock").is_none(), "{status}");
+    assert!(status["freshness"].is_object(), "{status}");
 }

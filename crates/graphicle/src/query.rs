@@ -2648,12 +2648,22 @@ impl Store {
         self.authorized_read(workspace,token,"read",|db,p| {
             let repository=repo(db,p,string(args,"repository_id",100)?)?;let snap=snapshot(db,&repository,p)?;
             let observed:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM am_connectors WHERE repository_id=? AND state='active' AND json_type(config,'$.observe')='object')",[s(&repository,"id")],|r|r.get(0))?;
-            Ok(json!({"repository":repository,"files":snap.documents.iter().filter(|d|d["source_kind"]=="repository_file").count(),
+            let mut status = json!({"repository":repository,"files":snap.documents.iter().filter(|d|d["source_kind"]=="repository_file").count(),
                 "evidence_sources":snap.documents.len(),"memories":snap.memories.len(),"stale_memories":snap.memories.iter().filter(|m|m["stale"]==true).count(),
                 "draft_memories":snap.memories.iter().filter(|m|m["state"]=="draft").count(),"source_state":snap.state,"native_runtime":{"enabled":true,"language":"rust","service_version":env!("CARGO_PKG_VERSION"),"core_version":graphicle_memory::VERSION},
-                "structural_revision":graphicle_memory::structure::REVISION,"graph":snap.graph,"automatic_model_calls":observed,
-                "write_lock":crate::store::lock_report(),
-                "freshness":crate::invalidation::repository_freshness(db,&p.workspace,s(&repository,"id"))?}))
+                "structural_revision":graphicle_memory::structure::REVISION,"graph":snap.graph,"automatic_model_calls":observed});
+            // The lock report covers every workspace this process serves and
+            // names code locations, so only a credential that may administer
+            // the workspace sees it.
+            if p.permits("admin") {
+                status["write_lock"] = crate::store::lock_report();
+            }
+            status["freshness"] = json!(crate::invalidation::repository_freshness(
+                db,
+                &p.workspace,
+                s(&repository, "id")
+            )?);
+            Ok(status)
         })
     }
     pub fn read_project_source(&self, workspace: &str, token: &str, args: &Value) -> Result<Value> {

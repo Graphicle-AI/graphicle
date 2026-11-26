@@ -173,8 +173,9 @@ per-request usage counters are the exception: they lock only their own
 row, so requests are not held up behind a long write such as indexing. A
 writer that waits more than 10 seconds for the lock fails with "database
 is locked". A project's status (`graphicle status --json`, the
-`repository_status` tool) reports the answering process's use of the
-lock under `write_lock`: holds and waits of 2 seconds or more in the
+`repository_status` tool) reports, to a credential that may administer
+the workspace, the answering process's use of the lock under
+`write_lock`: holds and waits of 2 seconds or more in the
 store's write transactions, with the code location (migrations, request
 counts, metering, offboarding and backup loads take the lock on their
 own and are not counted) (`GRAPHICLE_PHASE_TIMINGS=1` also logs each one). Each
