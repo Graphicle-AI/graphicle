@@ -74,6 +74,7 @@ mod query_graph_source;
 mod query_variants;
 mod read_only;
 mod receipts;
+mod redis_worker;
 mod release_0_4;
 mod rerank_depth;
 mod retention;

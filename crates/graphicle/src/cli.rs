@@ -1189,18 +1189,16 @@ where
             return Err(Error::bad("Queue configuration exceeds limits"));
         }
         let queue: crate::distributed::Queue = serde_json::from_slice(&bytes)?;
-        let password = std::env::var(&queue.credential_ref).map_err(|_| {
-            Error::bad("Worker queue credential environment variable is unavailable")
-        })?;
+        let password = std::env::var(&queue.credential_ref)
+            .ok()
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                Error::bad("Worker queue credential environment variable is unavailable")
+            })?;
         let config = model::Config::load(cli.config.as_deref())?;
         let (_, profile) = config.profile(model_profile.as_deref())?;
-        let credential = profile
-            .key_env
-            .as_ref()
-            .map(|name| {
-                std::env::var(name).map_err(|_| Error::bad("Worker model credential unavailable"))
-            })
-            .transpose()?;
+        let credential = model::environment_credential(profile)
+            .map_err(|_| Error::bad("Worker model credential unavailable"))?;
         let result = tokio::select! {
             result=crate::distributed::consume(&queue,&password,profile,credential.as_deref(),*once)=>result?,
             _=tokio::signal::ctrl_c()=>json!({"stopped":true})
