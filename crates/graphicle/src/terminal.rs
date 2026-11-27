@@ -1064,6 +1064,7 @@ fn shell_quote(value: &str) -> String {
 /// in a container. `graphicle update` and `graphicle uninstall` both use it.
 pub fn installed(exe: &Path) -> Install {
     let cargo_bin = std::env::var_os("CARGO_HOME")
+        .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .or_else(|| home_dir().map(|h| h.join(".cargo")))
         .map(|cargo| cargo.join("bin"));
