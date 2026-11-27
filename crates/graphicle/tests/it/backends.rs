@@ -292,6 +292,55 @@ fn workspace_model_settings_are_live_and_isolated() {
         .unwrap();
     assert_eq!(queued["state"], "queued");
 }
+#[test]
+fn model_status_treats_empty_environment_credentials_as_unavailable() {
+    const CHILD: &str = "GRAPHICLE_MODEL_STATUS_CHILD";
+    const EMPTY: &str = "GRAPHICLE_TEST_EMPTY_PROVIDER_KEY";
+    const PRESENT: &str = "GRAPHICLE_TEST_PRESENT_PROVIDER_KEY";
+    if std::env::var_os(CHILD).is_none() {
+        let output = crate::fork_guard::spawn(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "backends::model_status_treats_empty_environment_credentials_as_unavailable",
+                    "--exact",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .env(EMPTY, "")
+                .env(PRESENT, "fixture-provider-key")
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped()),
+        )
+        .unwrap()
+        .wait_with_output()
+        .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && text.contains("1 passed"),
+            "{text}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let config: model::Config = serde_json::from_value(json!({"models":{
+        "empty":{"protocol":"anthropic","base_url":"https://api.anthropic.com/v1","model":"fixture","key_env":EMPTY},
+        "present":{"protocol":"anthropic","base_url":"https://api.anthropic.com/v1","model":"fixture","key_env":PRESENT}
+    }}))
+    .unwrap();
+    let status = config.status();
+    let models = status["models"].as_array().unwrap();
+    let available = |name| {
+        models
+            .iter()
+            .find(|profile| profile["name"] == name)
+            .unwrap()["credentials_available"]
+            .as_bool()
+            .unwrap()
+    };
+    assert!(!available("empty"));
+    assert!(available("present"));
+}
 #[tokio::test]
 #[ignore = "Requires isolated Neo4j on 127.0.0.1:17474"]
 async fn real_neo4j_roundtrip_revalidates_deleted_sources() {

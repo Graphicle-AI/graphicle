@@ -487,7 +487,7 @@ impl Config {
     pub fn status(&self) -> Value {
         json!({"default_model":self.default_model,"embedding_model":self.embedding_model,
             "models":self.models.iter().map(|(name,p)|json!({"name":name,"protocol":p.protocol,"model":p.model,
-                "credentials_available":p.key_env.as_ref().is_none_or(|v|std::env::var(v).is_ok()),"input_limit":p.input_limit,"output_limit":p.output_limit,"structured_output":p.structured_output})).collect::<Vec<_>>()})
+                "credentials_available":environment_credential(p).is_ok(),"input_limit":p.input_limit,"output_limit":p.output_limit,"structured_output":p.structured_output})).collect::<Vec<_>>()})
     }
     pub fn profile(&self, name: Option<&str>) -> Result<(&str, &Profile)> {
         let name = name.or(self.default_model.as_deref()).ok_or_else(|| {
