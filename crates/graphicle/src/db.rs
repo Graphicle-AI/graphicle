@@ -42,6 +42,7 @@ use std::{
     borrow::Cow,
     cell::{Cell, RefCell},
     collections::HashMap,
+    ffi::OsString,
     fmt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, PoisonError},
@@ -1592,14 +1593,24 @@ fn normalize_verify_ssl_mode(address: &str) -> String {
     normalized
 }
 
+/// The libpq password file path, treating empty environment values as unset.
+fn pgpass_path(env: &dyn Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
+    env("PGPASSFILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            env("HOME")
+                .filter(|value| !value.is_empty())
+                .map(|home| PathBuf::from(home).join(".pgpass"))
+        })
+}
+
 /// The password for `config` from the libpq password file (`PGPASSFILE`,
 /// or `~/.pgpass`), read as libpq reads it: `host:port:database:user:password`
 /// lines, `*` matching anything, `\:` and `\\` escaped, `localhost` for a
 /// Unix socket, and the file ignored unless only its owner can read it.
 fn pgpass_password(config: &postgres::Config) -> Option<String> {
-    let path = std::env::var_os("PGPASSFILE")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".pgpass")))?;
+    let path = pgpass_path(&|name| std::env::var_os(name))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -4126,6 +4137,40 @@ mod tests {
             Some("fallback")
         );
         assert_eq!(pgpass_lookup("other:5432:*:g:nope\n", &wanted("db")), None);
+    }
+
+    #[test]
+    fn password_file_path_treats_empty_environment_values_as_unset() {
+        let custom = Path::new("secrets").join("pgpass");
+        let home = Path::new("home").join("graphicle");
+        let env = |pgpass: Option<OsString>, home: Option<OsString>| {
+            move |name: &str| match name {
+                "PGPASSFILE" => pgpass.clone(),
+                "HOME" => home.clone(),
+                _ => None,
+            }
+        };
+
+        assert_eq!(
+            pgpass_path(&env(
+                Some(custom.clone().into_os_string()),
+                Some(home.clone().into_os_string())
+            )),
+            Some(custom)
+        );
+        assert_eq!(
+            pgpass_path(&env(
+                Some(OsString::new()),
+                Some(home.clone().into_os_string())
+            )),
+            Some(home.join(".pgpass"))
+        );
+        assert_eq!(
+            pgpass_path(&env(None, Some(home.clone().into_os_string()))),
+            Some(home.join(".pgpass"))
+        );
+        assert_eq!(pgpass_path(&env(None, Some(OsString::new()))), None);
+        assert_eq!(pgpass_path(&env(None, None)), None);
     }
 
     #[test]
