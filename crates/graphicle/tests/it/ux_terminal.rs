@@ -89,8 +89,18 @@ impl Sandbox {
     }
     /// The program with this sandbox's environment, in `cwd`.
     fn command(&self, cwd: &Path, args: &[&str], env: &[(&str, &str)]) -> Command {
+        self.command_of(Path::new(env!("CARGO_BIN_EXE_graphicle")), cwd, args, env)
+    }
+    /// [`Sandbox::command`] for `program`.
+    fn command_of(
+        &self,
+        program: &Path,
+        cwd: &Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Command {
         let home = self.home();
-        let mut command = Command::new(env!("CARGO_BIN_EXE_graphicle"));
+        let mut command = Command::new(program);
         command
             .current_dir(cwd)
             .arg("--data-dir")
@@ -914,6 +924,78 @@ fn update_without_a_feed_says_how_to_update_and_sync_defaults_to_this_folder() {
         "{again}"
     );
     assert!(again.contains("Code graph: 7 nodes"), "{again}");
+}
+
+/// Update and uninstall treat an empty CARGO_HOME as unset.
+#[test]
+fn update_and_uninstall_treat_an_empty_cargo_home_as_unset() {
+    let sandbox = Sandbox::new();
+    let cargo_bin = sandbox.home().join(".cargo").join("bin");
+    std::fs::create_dir_all(&cargo_bin).unwrap();
+    let program = cargo_bin.join(crate::child_env::program("graphicle"));
+    if std::fs::hard_link(env!("CARGO_BIN_EXE_graphicle"), &program).is_err() {
+        std::fs::copy(env!("CARGO_BIN_EXE_graphicle"), &program).unwrap();
+    }
+    for env in [&[][..], &[("CARGO_HOME", "")][..]] {
+        let update = json_of(
+            &crate::fork_guard::spawn(&mut sandbox.command_of(
+                &program,
+                &sandbox.elsewhere(),
+                &["update"],
+                env,
+            ))
+            .unwrap()
+            .wait_with_output()
+            .unwrap(),
+        );
+        assert_eq!(update["installed"], "cargo", "{update}");
+        let commands = update["update"].as_array().unwrap();
+        assert!(
+            commands.iter().any(|command| {
+                command.as_str() == Some("cargo install --path runtime --locked --force")
+            }),
+            "{update}"
+        );
+    }
+    let custom = sandbox.root.join("cargo");
+    std::fs::create_dir_all(custom.join("bin")).unwrap();
+    let that_program = custom
+        .join("bin")
+        .join(crate::child_env::program("graphicle"));
+    if std::fs::hard_link(env!("CARGO_BIN_EXE_graphicle"), &that_program).is_err() {
+        std::fs::copy(env!("CARGO_BIN_EXE_graphicle"), &that_program).unwrap();
+    }
+    let update = json_of(
+        &crate::fork_guard::spawn(&mut sandbox.command_of(
+            &that_program,
+            &sandbox.elsewhere(),
+            &["update"],
+            &[("CARGO_HOME", custom.to_str().unwrap())],
+        ))
+        .unwrap()
+        .wait_with_output()
+        .unwrap(),
+    );
+    assert_eq!(update["installed"], "cargo", "{update}");
+    std::fs::create_dir_all(sandbox.data()).unwrap();
+    let report = json_of(
+        &crate::fork_guard::spawn(&mut sandbox.command_of(
+            &program,
+            &sandbox.elsewhere(),
+            &["uninstall"],
+            &[("CARGO_HOME", "")],
+        ))
+        .unwrap()
+        .wait_with_output()
+        .unwrap(),
+    );
+    assert_eq!(report["remove_program"]["method"], "cargo", "{report:#}");
+    assert!(
+        report["remove_program"]["command"]
+            .as_str()
+            .is_some_and(|command| command.starts_with("cargo uninstall ")),
+        "{report:#}"
+    );
 }
 
 #[test]
