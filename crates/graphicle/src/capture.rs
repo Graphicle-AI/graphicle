@@ -1404,9 +1404,11 @@ pub fn default_root(client: Client) -> Option<std::path::PathBuf> {
     let home = crate::platform::home_dir();
     match client {
         Client::ClaudeCode => std::env::var_os("CLAUDE_CONFIG_DIR")
+            .filter(|d| !d.is_empty())
             .map(|d| std::path::PathBuf::from(d).join("projects"))
             .or_else(|| home.map(|h| h.join(".claude/projects"))),
         Client::Codex => std::env::var_os("CODEX_HOME")
+            .filter(|d| !d.is_empty())
             .map(|d| std::path::PathBuf::from(d).join("sessions"))
             .or_else(|| home.map(|h| h.join(".codex/sessions"))),
         // Muse Code keeps its data under the XDG data folder on every

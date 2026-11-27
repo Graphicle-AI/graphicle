@@ -1741,6 +1741,49 @@ fn sessions_cli_imports_only_transcripts_of_synced_projects() {
 }
 
 #[test]
+fn sessions_cli_empty_client_home_uses_the_default_folder() {
+    let f = Fixture::new();
+    let home = TempDir::new().unwrap();
+    let current = TempDir::new().unwrap();
+    let cwd = f.root.to_string_lossy();
+    let cases = [
+        (
+            "claude-code",
+            "CLAUDE_CONFIG_DIR",
+            home.path().join(".claude/projects/project/x.jsonl"),
+            claude(&cwd, true),
+            2,
+        ),
+        (
+            "codex",
+            "CODEX_HOME",
+            home.path().join(".codex/sessions/2026/09/30/rollout.jsonl"),
+            codex(&cwd),
+            1,
+        ),
+    ];
+    for (client, variable, transcript, contents, turns) in cases {
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        std::fs::write(transcript, contents).unwrap();
+        let mut command = binary(&f);
+        crate::child_env::home(&mut command, home.path());
+        command
+            .args(["sessions", "import", "--client", client])
+            .current_dir(current.path())
+            .env(variable, "");
+        let output = run_without_input(&mut command);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["transcripts"], 1, "{report:#}");
+        assert_eq!(report["turns_imported"], turns, "{report:#}");
+    }
+}
+
+#[test]
 fn connect_merges_claude_code_hooks_and_stays_idempotent() {
     let f = Fixture::new();
     let settings = f.root.join(".claude/settings.local.json");

@@ -455,6 +455,24 @@ fn disconnect_all_leaves_other_data_folders_alone() {
     );
 }
 
+#[test]
+fn setup_codex_empty_home_writes_hooks_under_the_default_home() {
+    let m = Machine::new();
+    let repo = m.repo("code/app");
+    assert!(repo.exists());
+    let args = ["setup", "--yes", "--clients", "codex", "--no-instructions"];
+    json_of(
+        &m.run_with(&repo, &m.data, &args, &[("CODEX_HOME", "")]),
+        &args,
+    );
+    let hooks = m.home.join(".codex/hooks.json");
+    assert!(hooks.exists());
+    let stop = read_json(&hooks)["hooks"]["Stop"].clone();
+    assert!(!stop.as_array().unwrap().is_empty(), "{stop:#}");
+    assert!(stop.to_string().contains("graphicle"), "{stop:#}");
+    assert!(!repo.join("hooks.json").exists());
+}
+
 /// Entries and capture hooks run the program through the link on PATH, so a
 /// Homebrew upgrade that removes the old version leaves them working; hooks
 /// an older setup pinned to a version that is gone are repaired by `doctor
