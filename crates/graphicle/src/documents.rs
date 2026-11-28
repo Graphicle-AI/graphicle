@@ -11,8 +11,9 @@ use calamine::{Reader, open_workbook_auto_from_rs};
 use quick_xml::{Reader as XmlReader, events::Event};
 use serde_json::{Value, json};
 use std::{
+    ffi::OsString,
     io::{Cursor, Read},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 /// The largest document (PDF, Office, EPUB, HTML, image) read:
@@ -501,16 +502,22 @@ fn helper_only(name: &str) -> bool {
 }
 
 /// The native document helper (`graphicle-document`, which the Mac app
-/// bundles): `GRAPHICLE_DOCUMENT_HELPER`, else next to this program. `None`
-/// when it is not installed.
-fn helper() -> Option<std::path::PathBuf> {
-    std::env::var_os("GRAPHICLE_DOCUMENT_HELPER")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|p| p.join("graphicle-document")))
-        })
+/// bundles): non-empty `GRAPHICLE_DOCUMENT_HELPER`, else next to this program.
+/// `None` when it is not installed.
+fn helper() -> Option<PathBuf> {
+    helper_with(
+        std::env::var_os("GRAPHICLE_DOCUMENT_HELPER"),
+        std::env::current_exe().ok(),
+    )
+}
+
+/// [`helper`] from the variable's value and this program's path: an empty
+/// value counts as unset; a set value that is no absolute file means none.
+fn helper_with(variable: Option<OsString>, program: Option<PathBuf>) -> Option<PathBuf> {
+    variable
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| program.and_then(|p| p.parent().map(|p| p.join("graphicle-document"))))
         .filter(|p| p.is_absolute() && p.is_file())
 }
 
@@ -760,6 +767,64 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn document_helper_treats_an_empty_variable_as_unset() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("graphicle");
+        let bundled = directory.path().join("graphicle-document");
+        let configured = directory.path().join("configured-helper");
+        std::fs::write(&bundled, b"").unwrap();
+        std::fs::write(&configured, b"").unwrap();
+
+        assert_eq!(
+            helper_with(None, Some(program.clone())),
+            Some(bundled.clone())
+        );
+        assert_eq!(
+            helper_with(Some(OsString::new()), Some(program.clone())),
+            Some(bundled)
+        );
+        assert_eq!(
+            helper_with(
+                Some(configured.clone().into_os_string()),
+                Some(program.clone())
+            ),
+            Some(configured)
+        );
+        assert_eq!(
+            helper_with(
+                Some(directory.path().join("missing-helper").into_os_string()),
+                Some(program.clone())
+            ),
+            None
+        );
+        assert_eq!(
+            helper_with(Some(OsString::from("relative-helper")), Some(program)),
+            None
+        );
+        assert_eq!(
+            helper_with(Some(directory.path().as_os_str().to_owned()), None),
+            None
+        );
+        let elsewhere = tempfile::tempdir().unwrap();
+        assert_eq!(
+            helper_with(
+                Some(OsString::new()),
+                Some(elsewhere.path().join("graphicle"))
+            ),
+            None
+        );
+        assert_eq!(helper_with(None, None), None);
+        // Only an empty value is unset; whitespace is a (relative) path.
+        assert_eq!(
+            helper_with(
+                Some(OsString::from(" ")),
+                Some(directory.path().join("graphicle"))
+            ),
+            None
+        );
+    }
 
     #[test]
     fn a_folder_reads_html_as_it_is_and_converts_other_documents() {
