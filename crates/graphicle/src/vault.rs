@@ -15,6 +15,35 @@ use rand::{RngCore, rngs::OsRng};
 use serde_json::{Value, json};
 use std::io::{Read, Write};
 
+fn local_vault_key(path: &std::path::Path) -> Result<Option<[u8; 32]>> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let mut file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() != 32 {
+        return Err(Error::bad("Invalid local vault key"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(Error::bad("Vault key permissions must be owner-only"));
+        }
+    }
+    let mut key = [0u8; 32];
+    file.read_exact(&mut key)?;
+    Ok(Some(key))
+}
+
 impl Store {
     fn vault_key(&self) -> Result<[u8; 32]> {
         // An extension that holds the key answers for it, errors included.
@@ -22,6 +51,9 @@ impl Store {
             return key;
         }
         let path = self.directory.join("vault.key");
+        if let Some(key) = local_vault_key(&path)? {
+            return Ok(key);
+        }
         let mut temporary = tempfile::NamedTempFile::new_in(&*self.directory)?;
         let mut new_key = [0u8; 32];
         OsRng.fill_bytes(&mut new_key);
@@ -30,28 +62,8 @@ impl Store {
         match temporary.persist_noclobber(&path) {
             Ok(_) => Ok(new_key),
             Err(e) if e.error.kind() == std::io::ErrorKind::AlreadyExists => {
-                let mut options = std::fs::OpenOptions::new();
-                options.read(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.custom_flags(libc::O_NOFOLLOW);
-                }
-                let mut file = options.open(&path)?;
-                let metadata = file.metadata()?;
-                if !metadata.is_file() || metadata.len() != 32 {
-                    return Err(Error::bad("Invalid local vault key"));
-                }
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    if metadata.permissions().mode() & 0o077 != 0 {
-                        return Err(Error::bad("Vault key permissions must be owner-only"));
-                    }
-                }
-                let mut key = [0u8; 32];
-                file.read_exact(&mut key)?;
-                Ok(key)
+                local_vault_key(&path)?
+                    .ok_or_else(|| Error::from(std::io::Error::from(std::io::ErrorKind::NotFound)))
             }
             Err(e) => Err(e.error.into()),
         }
@@ -191,5 +203,74 @@ impl Store {
             .ok()
             .filter(|v| !v.is_empty())
             .ok_or_else(|| Error::bad("Credential is unavailable; add it in Connections"))
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::{
+        collections::BTreeSet,
+        ffi::OsString,
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+    };
+
+    struct PermissionGuard {
+        path: PathBuf,
+        permissions: fs::Permissions,
+    }
+
+    impl PermissionGuard {
+        fn make_read_only(path: &Path) -> Self {
+            let permissions = fs::metadata(path).unwrap().permissions();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o500)).unwrap();
+            Self {
+                path: path.to_owned(),
+                permissions,
+            }
+        }
+    }
+
+    impl Drop for PermissionGuard {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.path, self.permissions.clone());
+        }
+    }
+
+    fn entries(path: &Path) -> BTreeSet<OsString> {
+        fs::read_dir(path)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect()
+    }
+
+    #[test]
+    fn an_existing_vault_key_is_read_from_a_directory_that_cannot_be_written() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Store::open(directory.path()).unwrap();
+        let workspace = store.create_workspace("Read-only vault").unwrap();
+        let workspace = workspace["id"].as_str().unwrap();
+        store
+            .save_secret(workspace, "model key", "saved value")
+            .unwrap();
+        let saved = fs::read(directory.path().join("vault.key")).unwrap();
+        let before = entries(directory.path());
+
+        // Check that an existing vault.key is read without creating anything in
+        // a data folder that cannot be written, as on read-only media served by
+        // `--read-only`. This calls `vault_key` directly; it does not use
+        // `Store::secret` or toggle read-only mode.
+        let _permissions = PermissionGuard::make_read_only(directory.path());
+        let error = fs::File::create(directory.path().join("write-probe"))
+            .expect_err("the directory must be unwritable for this test; running as root?");
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::PermissionDenied,
+            "the directory must be unwritable for this test; running as root?"
+        );
+        assert_eq!(store.vault_key().unwrap().as_slice(), saved.as_slice());
+        assert_eq!(entries(directory.path()), before);
     }
 }
